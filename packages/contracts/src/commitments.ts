@@ -159,7 +159,8 @@ export interface FollowupView {
   commitmentId: string | null;
   origin: FollowupOrigin;
   recipient: { id: string; name: string | null } | null;
-  /** The established labels: "a DM", "a group DM" or "#name". Null when the conversation is unknown. */
+  /** R17: "#name", "DM with <name>" or "group DM with <a>, <b> +n" ("a DM" / "a group DM" when the
+   * participants are unknown). Null when the conversation is unknown. */
   conversationLabel: string | null;
   threadReply: boolean;
   /** The original message expired, so the draft posts as a new message. */

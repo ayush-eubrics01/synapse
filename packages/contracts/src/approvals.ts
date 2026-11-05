@@ -32,7 +32,7 @@ export interface Approval {
 export interface OutgoingPreview {
   text: string;
   recipientName: string | null;
-  /** `#name`, `a DM` or `a group DM`. */
+  /** R17: `#name`, `DM with <name>` or `group DM with <a>, <b> +n` (`a DM` / `a group DM` when unknown). */
   conversationLabel: string;
   /** False when the message is posted to the conversation, not into a thread. */
   threadReply: boolean;

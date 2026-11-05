@@ -13,7 +13,9 @@ export function approvalRoutes(c: Container): Hono {
     if (status !== undefined && status !== "pending") {
       return ctx.json({ error: "only status=pending is supported" }, 400);
     }
-    return ctx.json(withOutgoingPreviews(c.db, c.approvals.listPending()));
+    return ctx.json(
+      withOutgoingPreviews(c.db, c.approvals.listPending(), c.settings.get("slack.selfUserId")),
+    );
   });
   app.post("/api/approvals/:id/approve", zValidator("json", decisionBody), (ctx) =>
     ctx.json(c.approvals.approve(ctx.req.param("id"))),

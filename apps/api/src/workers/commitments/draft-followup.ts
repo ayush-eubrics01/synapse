@@ -19,7 +19,6 @@ const {
   slackMessages,
   slackUsers,
   slackConversations,
-  jobs,
   commitments,
   commitmentSources,
   commitmentUpdates,
@@ -107,13 +106,28 @@ export function registerDraftFollowup(deps: CommitmentJobDeps, c: CommitmentCont
       const fallback = [...sources].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
       const conversationId = newest?.conversationId ?? fallback?.conversationId ?? null;
       if (conversationId === null) return { skipped: "no_source" as const };
-      const sourceConv = newest
-        ? tx
-            .select({ type: slackConversations.type })
-            .from(slackConversations)
-            .where(eq(slackConversations.id, newest.conversationId))
-            .get()
-        : undefined;
+      const sourceConv = tx
+        .select({ type: slackConversations.type })
+        .from(slackConversations)
+        .where(eq(slackConversations.id, conversationId))
+        .get();
+      // R17: a DM or group DM follow-up reaches that conversation's members, so the owner must be one
+      // (an owner only mentioned there, e.g. "<@Y> will handle it" in a DM with X, is not).
+      if (sourceConv && sourceConv.type !== "channel") {
+        const ownerPosted = tx
+          .select({ id: slackMessages.id })
+          .from(slackMessages)
+          .innerJoin(slackUsers, eq(slackUsers.id, slackMessages.senderUserId))
+          .where(
+            and(
+              eq(slackMessages.conversationId, conversationId),
+              eq(slackUsers.externalId, c.ownerSlackUserId),
+            ),
+          )
+          .limit(1)
+          .get();
+        if (!ownerPosted) return { skipped: "owner_not_in_conversation" as const };
+      }
       const approved =
         tx
           .select({ id: commitmentUpdates.id })

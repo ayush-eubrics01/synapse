@@ -316,7 +316,15 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   });
   const commitments = new CommitmentStore({ db, clock, settings, events });
   const commitmentLifecycle = new CommitmentLifecycle({ db, clock, settings, events });
-  const followupService = new FollowupService({ db, clock, audit, events, queue, outgoing });
+  const followupService = new FollowupService({
+    db,
+    clock,
+    audit,
+    events,
+    queue,
+    outgoing,
+    selfUserId: () => settings.get("slack.selfUserId"),
+  });
   dispatcher.subscribe("followup.sent", "commitments.followup_sent", (event, tx) =>
     followupService.onFollowupSent(event, tx),
   );

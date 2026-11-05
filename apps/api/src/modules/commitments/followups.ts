@@ -5,7 +5,7 @@ import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
-import { conversationLabel } from "../../intelligence/people/history";
+import { participantLabel } from "../outgoing/preview";
 import { FollowupNotFound, InvalidOutgoingText, type OutgoingService } from "../outgoing/service";
 import { resolveActions } from "../outgoing/urgent-reply";
 import { UnknownCommitment } from "./lifecycle";
@@ -64,6 +64,8 @@ export interface FollowupServiceDeps {
   events: EventPublisher;
   queue: Pick<JobQueue, "enqueue">;
   outgoing: Pick<OutgoingService, "requestSend">;
+  /** The user's Slack id (`slack.selfUserId`), for DM participant labels (R17). */
+  selfUserId: () => string | null;
 }
 
 type FollowupRow = typeof followups.$inferSelect;
@@ -138,6 +140,7 @@ export class FollowupService {
         .all()
         .map((u) => [u.externalId, u.name]),
     );
+    const selfId = this.deps.selfUserId();
     return rows.map((r) => {
       const o = r.outgoingId === null ? undefined : outgoing.get(r.outgoingId);
       const conv = convOf(r.conversationId);
@@ -156,7 +159,7 @@ export class FollowupService {
           r.recipientSlackUserId === null
             ? null
             : { id: r.recipientSlackUserId, name: names.get(r.recipientSlackUserId) ?? null },
-        conversationLabel: conv ? conversationLabel(conv.type, conv.name, conv.externalId) : null,
+        conversationLabel: conv ? participantLabel(db, conv, selfId) : null,
         threadReply: r.threadTs !== null,
         noThread: noThread.has(r.id),
         draftText: r.draftText,

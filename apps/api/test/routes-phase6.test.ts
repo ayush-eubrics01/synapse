@@ -92,6 +92,25 @@ function message(o: Partial<typeof schema.slackMessages.$inferInsert> = {}): str
     .run();
   return id;
 }
+/** Self plus three more participants in c1, each older than Grace's NOW message. */
+function others(): void {
+  const users = [
+    ["u-self", SELF, "Me", 0],
+    ["u-ada", "UADA000001", "Ada", 1],
+    ["u-bea", "UBEA000001", "Bea", 2],
+    ["u-cy", "UCY0000001", "Cy", 3],
+  ] as const;
+  for (const [id, externalId, name, hoursAgo] of users) {
+    c.db.insert(schema.slackUsers).values({ id, externalId, name }).run();
+    message({
+      id: `m-${id}`,
+      ts: `179387000${hoursAgo}.000100`,
+      senderUserId: id,
+      sentAt: new Date(Date.parse(NOW) - hoursAgo * 3_600_000 - 1000).toISOString(),
+      urgencyLevel: null,
+    });
+  }
+}
 const reply = (id: string, text = SECRET, extra: object = {}) =>
   post(`/api/urgent/${id}/reply`, { text, ...extra });
 const outgoingRow = () => c.db.select().from(schema.outgoingMessages).get();
@@ -154,11 +173,22 @@ describe("urgent reply", () => {
     expect(rest).not.toContain(SECRET);
   });
 
-  test("DM and group DM labels", async () => {
+  test("R17: DM and group DM labels name the participants (self excluded)", async () => {
+    c.settings.set("slack.selfUserId", SELF);
+    c.db.update(schema.slackConversations).set({ type: "im", name: null }).run();
+    await reply(message());
+    others();
+    expect((await approvals())[0]?.outgoing?.conversationLabel).toBe("DM with Grace");
+    c.db.update(schema.slackConversations).set({ type: "mpim" }).run();
+    expect((await approvals())[0]?.outgoing?.conversationLabel).toBe("group DM with Grace, Ada +2");
+  });
+
+  test("R17: without a known partner the labels stay generic", async () => {
     c.db.update(schema.slackConversations).set({ type: "im", name: null }).run();
     await reply(message());
     expect((await approvals())[0]?.outgoing?.conversationLabel).toBe("a DM");
     c.db.update(schema.slackConversations).set({ type: "mpim" }).run();
+    c.db.update(schema.slackUsers).set({ name: null }).run();
     expect((await approvals())[0]?.outgoing?.conversationLabel).toBe("a group DM");
   });
 
@@ -536,6 +566,23 @@ describe("followup routes", () => {
   test("send accepts an external conversation id as stored by urgent replies and a failed draft again", async () => {
     const id = followupRow({ conversationId: "C0SYNTH01", status: "failed" });
     expect((await post(`/api/followups/${id}/send`, { text: "again" })).status).toBe(200);
+  });
+
+  test("R17: the list labels a DM by its participant, not the recipient", async () => {
+    c.settings.set("slack.selfUserId", SELF);
+    c.db.update(schema.slackConversations).set({ type: "im", name: null }).run();
+    c.db
+      .insert(schema.slackUsers)
+      .values({ id: "u-x", externalId: "UXAVI00001", name: "Xavi" })
+      .run();
+    c.db.insert(schema.slackUsers).values({ id: "u-self", externalId: SELF, name: "Me" }).run();
+    message({ senderUserId: "u-x", urgencyLevel: null });
+    const id = followupRow();
+    const v = (await followupViews()).find((x) => x.id === id);
+    expect(v).toMatchObject({
+      recipient: { id: SENDER, name: "Grace" },
+      conversationLabel: "DM with Xavi",
+    });
   });
 
   test("a draft whose conversation cannot be resolved lists discard only, and send is 409", async () => {

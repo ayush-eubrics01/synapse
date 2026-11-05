@@ -450,7 +450,14 @@ describe("commitments.reminders", () => {
   });
 });
 
+/** Earlier DM history: the owner has a stored message (null text) in the DM, long before any source. */
+const ownerInDm = () => msg({ from: "priya", text: null, sentAt: ago(24 * 60) });
+
 describe("commitments.draft_followup", () => {
+  beforeEach(() => {
+    ownerInDm();
+  });
+
   async function stalled(
     src: string | null = msg({ from: "self", text: `${SECRET} src` }),
     o: Parameters<typeof commitment>[0] = {},
@@ -655,6 +662,76 @@ describe("commitments.draft_followup", () => {
     expect(followups()).toHaveLength(0);
   });
 
+  describe("R17 owner must be in a DM / group DM source", () => {
+    const XAVI = "UXAVI00001";
+    beforeEach(() => {
+      db.insert(schema.slackUsers).values({ id: "su-xavi", externalId: XAVI, name: "Xavi" }).run();
+    });
+    const fromXavi = (conv: string) => {
+      const id = msg({ from: "self", conv });
+      db.update(schema.slackMessages)
+        .set({ senderUserId: "su-xavi" })
+        .where(eq(schema.slackMessages.id, id))
+        .run();
+      return id;
+    };
+
+    test("owner mentioned in a DM with someone else: skipped, no run, no draft, no history", async () => {
+      db.insert(schema.slackConversations)
+        .values({ id: "c-dm-x", externalId: "D2", type: "im" })
+        .run();
+      fromXavi("c-dm-x");
+      const src = msg({ from: "self", conv: "c-dm-x" });
+      const { input } = await stalled(src, { conv: "c-dm-x" });
+      expect(await call("commitments.draft_followup", input)).toEqual({
+        skipped: "owner_not_in_conversation",
+      });
+      expect(requests).toHaveLength(0);
+      expect(followups()).toHaveLength(0);
+      expect(db.select().from(schema.followupHistory).all()).toHaveLength(0);
+    });
+
+    test("group DM without an owner message: skipped; a manual request too", async () => {
+      db.insert(schema.slackConversations)
+        .values({ id: "c-mp", externalId: "G1", type: "mpim" })
+        .run();
+      fromXavi("c-mp");
+      const src = msg({ from: "self", conv: "c-mp" });
+      const { id, input } = await stalled(src, { conv: "c-mp" });
+      expect(await call("commitments.draft_followup", input)).toEqual({
+        skipped: "owner_not_in_conversation",
+      });
+      expect(
+        await call("commitments.draft_followup", {
+          commitmentId: id,
+          manual: true,
+          origin: "manual",
+        }),
+      ).toEqual({ skipped: "owner_not_in_conversation" });
+      expect(requests).toHaveLength(0);
+    });
+
+    test("group DM where the owner posted: drafted", async () => {
+      db.insert(schema.slackConversations)
+        .values({ id: "c-mp", externalId: "G1", type: "mpim" })
+        .run();
+      fromXavi("c-mp");
+      msg({ from: "priya", conv: "c-mp", text: null, sentAt: ago(24 * 60) });
+      const src = msg({ from: "self", conv: "c-mp" });
+      const { input } = await stalled(src, { conv: "c-mp" });
+      expect(await call("commitments.draft_followup", input)).toMatchObject({ drafted: true });
+    });
+
+    test("a channel is not restricted", async () => {
+      db.insert(schema.slackConversations)
+        .values({ id: "c-ch", externalId: "C1", type: "channel", name: "x" })
+        .run();
+      const src = msg({ from: "self", conv: "c-ch" });
+      const { input } = await stalled(src, { conv: "c-ch" });
+      expect(await call("commitments.draft_followup", input)).toMatchObject({ drafted: true });
+    });
+  });
+
   describe("R11 thread placement", () => {
     const draftThread = async (src: string, o: Parameters<typeof commitment>[0] = {}) => {
       const { input } = await stalled(src, o);
@@ -689,6 +766,9 @@ describe("commitments.draft_followup", () => {
 });
 
 describe("commitments.draft_followup manual (Task 9)", () => {
+  beforeEach(() => {
+    ownerInDm();
+  });
   const manual = (id: string) => ({ commitmentId: id, manual: true, origin: "manual" });
 
   test("a manual request drafts an unstalled commitment with origin manual", async () => {
