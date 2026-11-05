@@ -20,6 +20,7 @@ import { parseStructured } from "../core/orchestrator/structured";
 import { type AssessBatchItem, buildAssessRequest } from "../intelligence/urgency/assess-prompt";
 import {
   buildSuggestRequest,
+  MAX_CONTEXT_MESSAGES,
   type SuggestContextItem,
 } from "../intelligence/urgency/suggest-prompt";
 import { renderExcerpt } from "../modules/security-flags/detector";
@@ -43,7 +44,6 @@ export interface UrgencyJobDeps {
 const ASSESS_TIMEOUT_MS = 360_000;
 const SUGGEST_TIMEOUT_MS = 360_000;
 const DRAFT_MAX_CHARS = 2000;
-const CONTEXT_MAX = 10;
 const FALLBACK_REASON = "Rule-based (assessment unavailable)";
 const LEVEL_TITLE: Record<UrgencyLevel, string> = {
   critical: "Critical",
@@ -366,7 +366,7 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
         ),
       )
       .orderBy(desc(slackMessages.ts))
-      .limit(CONTEXT_MAX)
+      .limit(MAX_CONTEXT_MESSAGES)
       .all()
       .reverse()
       .map((r) => ({

@@ -56,6 +56,6 @@ export function wrapFailure(err: unknown): { classified: ClassifiedError; rethro
   const classified: ClassifiedError =
     err instanceof JobError
       ? err.classified
-      : { kind: "unknown", message: "unexpected urgency assessment failure" };
+      : { kind: "unknown", message: "unexpected urgency job failure" };
   return { classified, rethrow: err instanceof JobError ? err : new JobError(classified) };
 }
