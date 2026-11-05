@@ -10,7 +10,6 @@ export interface AuditRecord {
   targetRef?: string;
   approvalId?: string;
   result: string;
-  /** Accepted for interface compatibility; audit_events has no column for it yet, so it is not persisted. */
   details?: Record<string, unknown>;
 }
 
@@ -30,6 +29,7 @@ export class AuditLogger {
         targetRef: e.targetRef,
         approvalId: e.approvalId,
         result: e.result,
+        details: e.details,
         occurredAt: isoNow(this.clock),
       })
       .run();

@@ -41,7 +41,7 @@ test("handler runs once even if dispatched twice (idempotent)", () => {
 });
 
 test("failing consumer does not block others and is retried then dead", () => {
-  const { db, pub, d } = setup();
+  const { db, clock, pub, d } = setup();
   let ok = 0;
   d.subscribe("settings.changed", "bad", () => {
     throw new Error("boom");
@@ -50,9 +50,21 @@ test("failing consumer does not block others and is retried then dead", () => {
     ok++;
   });
   const id = pub.publish(db, ev("settings.changed", { key: "x" }));
+  const attemptsOf = () =>
+    db
+      .select()
+      .from(schema.eventConsumptions)
+      .where(eq(schema.eventConsumptions.consumer, "bad"))
+      .get()?.attempts;
   d.dispatchOnce();
   expect(db.select().from(schema.domainEvents).get()?.dispatchedAt).toBeNull();
+  expect(attemptsOf()).toBe(1);
+  d.dispatchOnce(); // still in backoff: no retry
+  expect(attemptsOf()).toBe(1);
+  clock.advance(10 * 60_000);
   d.dispatchOnce();
+  expect(attemptsOf()).toBe(2);
+  clock.advance(10 * 60_000);
   d.dispatchOnce();
   const bad = db
     .select()

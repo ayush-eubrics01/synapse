@@ -13,3 +13,17 @@ test("audit row written", () => {
   expect(rows[0]?.id).toBe(id);
   expect(rows[0]?.occurredAt).toBe("2026-01-01T00:00:00.000Z");
 });
+
+test("audit details round-trip", () => {
+  const { db } = openDatabase(":memory:");
+  runMigrations(db);
+  const audit = new AuditLogger(new FakeClock("2026-01-01T00:00:00.000Z"));
+  audit.record(db, {
+    actor: "user",
+    module: "test",
+    action: "x",
+    result: "ok",
+    details: { a: 1, b: ["z"] },
+  });
+  expect(db.select().from(schema.auditEvents).get()?.details).toEqual({ a: 1, b: ["z"] });
+});

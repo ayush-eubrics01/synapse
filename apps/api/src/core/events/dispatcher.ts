@@ -1,6 +1,6 @@
 import type { DomainEvent, EventType } from "@synapse/contracts";
 import { type Db, schema, type Tx } from "@synapse/database";
-import { type Clock, isoNow, newId } from "@synapse/shared";
+import { backoffMs, type Clock, isoNow, newId } from "@synapse/shared";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { LiveBus } from "./live-bus.ts";
 
@@ -63,7 +63,7 @@ export class OutboxDispatcher {
         else if (outcome === "retry" || outcome === "failed") {
           failed++;
           if (outcome === "retry") settled = false;
-        }
+        } else if (outcome === "waiting") settled = false;
       }
       if (!settled) continue;
 
@@ -80,7 +80,7 @@ export class OutboxDispatcher {
   private deliver(
     event: DomainEvent<EventType>,
     sub: Subscription,
-  ): "done" | "retry" | "failed" | "skipped" {
+  ): "done" | "retry" | "failed" | "skipped" | "waiting" {
     const existing = this.db
       .select()
       .from(schema.eventConsumptions)
@@ -92,6 +92,7 @@ export class OutboxDispatcher {
       )
       .get();
     if (existing?.status === "done" || existing?.status === "failed") return "skipped";
+    if (existing?.nextAttemptAt && existing.nextAttemptAt > isoNow(this.clock)) return "waiting";
 
     try {
       this.db.transaction((tx) => {
@@ -106,7 +107,12 @@ export class OutboxDispatcher {
           })
           .onConflictDoUpdate({
             target: [schema.eventConsumptions.consumer, schema.eventConsumptions.eventId],
-            set: { status: "done", attempts: (existing?.attempts ?? 0) + 1, lastError: null },
+            set: {
+              status: "done",
+              attempts: (existing?.attempts ?? 0) + 1,
+              lastError: null,
+              nextAttemptAt: null,
+            },
           })
           .run();
       });
@@ -114,6 +120,12 @@ export class OutboxDispatcher {
     } catch (err) {
       const attempts = (existing?.attempts ?? 0) + 1;
       const status = attempts >= this.maxAttempts ? "failed" : "pending";
+      const nextAttemptAt =
+        status === "failed"
+          ? null
+          : new Date(
+              this.clock.now().getTime() + backoffMs(attempts, { baseMs: 5_000, maxMs: 300_000 }),
+            ).toISOString();
       const lastError = { message: err instanceof Error ? err.message : String(err) };
       this.db
         .insert(schema.eventConsumptions)
@@ -124,10 +136,11 @@ export class OutboxDispatcher {
           status,
           attempts,
           lastError,
+          nextAttemptAt,
         })
         .onConflictDoUpdate({
           target: [schema.eventConsumptions.consumer, schema.eventConsumptions.eventId],
-          set: { status, attempts, lastError },
+          set: { status, attempts, lastError, nextAttemptAt },
         })
         .run();
       return status === "failed" ? "failed" : "retry";

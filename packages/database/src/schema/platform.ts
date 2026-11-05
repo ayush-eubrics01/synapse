@@ -152,6 +152,7 @@ export const eventConsumptions = sqliteTable(
     status: text("status").notNull(),
     attempts: integer("attempts").notNull().default(0),
     lastError: json("last_error"),
+    nextAttemptAt: text("next_attempt_at"),
   },
   (t) => [uniqueIndex("event_consumptions_consumer_event_id_uq").on(t.consumer, t.eventId)],
 );
@@ -189,6 +190,7 @@ export const auditEvents = sqliteTable("audit_events", {
   targetRef: text("target_ref"),
   approvalId: text("approval_id").references(() => approvals.id),
   result: text("result").notNull(),
+  details: json("details"),
   occurredAt: text("occurred_at").notNull(),
 });
 

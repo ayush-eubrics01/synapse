@@ -8,6 +8,13 @@
       "when": 1793881000682,
       "tag": "0000_platform",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1793881277561,
+      "tag": "0001_outbox_backoff_audit_details",
+      "breakpoints": true
     }
   ]
 }
