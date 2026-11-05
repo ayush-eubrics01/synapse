@@ -7,7 +7,6 @@ import {
   type ProfileSection,
   profileContentSchema,
   profileUpdateOutputSchema,
-  type SuspectedInjection,
   unknownAssessmentOutputSchema,
 } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
@@ -47,7 +46,13 @@ import {
 import type { TemporaryContacts } from "../modules/people/temporary";
 import { renderExcerpt } from "../modules/security-flags/detector";
 import type { SecurityFlagsService } from "../modules/security-flags/service";
-import { createRunHelpers, safely, wrapFailure } from "./intelligence-shared";
+import {
+  createRunHelpers,
+  flaggedMessageOf,
+  flagTargetOf,
+  safely,
+  wrapFailure,
+} from "./intelligence-shared";
 
 export interface PeopleJobDeps {
   db: Db;
@@ -533,21 +538,10 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
  * the user's messages were provided, and then no flag is recorded.
  */
 export function flagTarget(items: HistoryItem[]): string | null {
-  const newestBy = (ok: (a: HistoryItem["author"]) => boolean) =>
-    items.findLast((i) => ok(i.author))?.messageId ?? null;
-  return newestBy((a) => a === "them") ?? newestBy((a) => a !== "self");
+  return flagTargetOf(items);
 }
 
-/** R1/R5: the provided non-self message whose text holds the model's quote, else `fallback`. */
-function flaggedMessage(
-  used: HistoryItem[],
-  s: SuspectedInjection,
-  fallback: string | null,
-): string | null {
-  const quote = s.quote.trim();
-  if (quote === "") return fallback;
-  return used.find((i) => i.author !== "self" && i.text.includes(quote))?.messageId ?? fallback;
-}
+const flaggedMessage = flaggedMessageOf;
 
 /**
  * R7 M-3: a removal's citations, stored on the recommendation under `remove:<section>.<key>` so the

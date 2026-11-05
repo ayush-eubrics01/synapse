@@ -47,6 +47,16 @@ Commitment fields: ID, description, owner, owed-to, source conversation and mess
 
 `dedup_key` = normalized (owner, counterparty, source message/issue, description hash). Repeated extraction from the same source updates rather than duplicates.
 
+## Extraction (implemented)
+
+- Consumer `commitments.queue` on `message.received` queues `commitments.extract` (key `commitments.extract:<debounce bucket>`, `runAfter` at the bucket end, group `commitments.intelligence`, priority 50) for a recent message (within `people.history.days`), not expired, not yet extracted, in a conversation involving the user (im, mpim, a mention of the user, a thread the user posted in, or the user's own message). `slack.selfUserId` null queues nothing.
+- The handler takes up to `commitments.extract.batchMax` unextracted eligible messages, oldest first. Each is one untrusted part with source `slack message <id> by <you|them:<slackUserId>> in <label> at <sentAt>` (the author id appears only there). Tools: `ToolSearch` only; model `commitments.models.extract`; timeout 420 s.
+- Validation (`intelligence/commitments/validate.ts`): evidence ids outside the batch are removed, none left drops the candidate; `low` confidence is dropped; owner and counterparty must each be the author of a cited message or a `<@ID>` mention in one (owner equal to counterparty is dropped); `dueAt` is kept only after the cited message and within a year of it.
+- `commitments.dedup_key` = sha256(owner|counterparty|normalized description). A repeated extraction only adds a new `commitment_sources` row. New commitments are `open` and `pending_review` (`accepted` when `commitments.requireReviewForDetected` is false); `direction` is `mine` when the owner is the user. Emits `commitment.detected`.
+- A `completion` never creates a commitment and never changes a status. It inserts a `commitment_updates` proposal (`actor: ai`, `field: status`, `to_value: completed`, `reason: proposed:<source ref>`) on an open, accepted commitment of the same owner with a source in the same conversation; otherwise it is dropped. Task 6 confirms proposals.
+- The batch's messages get `commitments_extracted_at` in the same transaction as the writes, including messages without a candidate. After a failed run they stay unmarked. The next batch is queued while eligible messages remain.
+- Flags follow Phase 5 R5: never attributed to the user's own message.
+
 ## Status lifecycle
 
 `open` → `in_progress` → `completed`. Any state may go to `blocked` or `cancelled`. A commitment closes only when completion is confirmed by evidence (a message or Jira status) or when the user marks it complete. Every change writes `commitment_updates` with actor and reason.

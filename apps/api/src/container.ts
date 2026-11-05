@@ -43,6 +43,8 @@ import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { SlackSender } from "./integrations/slack/sender";
+import { ExtractionQueue } from "./modules/commitments/extraction-queue";
+import { CommitmentStore } from "./modules/commitments/store";
 import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
@@ -56,6 +58,7 @@ import { PeopleService } from "./modules/people/service";
 import { TemporaryContacts } from "./modules/people/temporary";
 import { PeopleViews } from "./modules/people/views";
 import { SecurityFlagsService } from "./modules/security-flags/service";
+import { registerCommitmentJobs } from "./workers/commitments";
 import { createRunHelpers } from "./workers/intelligence-shared";
 import { registerOutgoingJobs } from "./workers/outgoing";
 import { registerPeopleJobs } from "./workers/people";
@@ -96,6 +99,8 @@ export interface Container {
   securityFlags: SecurityFlagsService;
   /** Approved Slack sends: requests, the `slack.send` executor, verification and resolution. */
   outgoing: OutgoingService;
+  /** Commitments and their sources and status proposals (read and review APIs build on it). */
+  commitments: CommitmentStore;
   /** Urgent-reply drafts sent through approval. */
   urgentReplies: UrgentReplies;
   /** Run by startup recovery and the reaper (main.ts), so core never imports workers. */
@@ -303,6 +308,21 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     securityFlags,
     handlers,
   });
+  const commitments = new CommitmentStore({ db, clock, settings, events });
+  const extractionQueue = new ExtractionQueue({ db, clock, settings, queue });
+  dispatcher.subscribe("message.received", "commitments.queue", (event, tx) =>
+    extractionQueue.handle(event, tx),
+  );
+  registerCommitmentJobs({
+    db,
+    clock,
+    settings,
+    queue,
+    orchestrator,
+    securityFlags,
+    store: commitments,
+    handlers,
+  });
   const urgency = registerUrgencyJobs({
     db,
     clock,
@@ -363,6 +383,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     securityFlags,
     outgoing,
     urgentReplies,
+    commitments,
     handlers,
     recoverySweeps: [
       { name: "urgency.assess", run: urgency.recoverySweep },
