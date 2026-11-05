@@ -66,6 +66,16 @@ Events that are purely for live UI updates (SSE) may skip the outbox and are mar
 | `claude.job_failed` | orchestrator | requesting module, health | ClassifiedError |
 | `quota.threshold_reached` | orchestrator | notifications, scheduler | Non-urgent jobs paused until resetsAt |
 | `auth.expiry_warning` | health | notifications | Refresh token < 48 h from expiry |
+| `autoreply.sent` | inbox / commitments | audit, dashboard (return digest) | ADR-033; only after verified send |
+| `autoreply.skipped` | inbox / commitments | approvals, dashboard | Policy check failed; reason recorded; draft queued |
+| `away_mode.changed` | settings | dashboard (digest on turning off) | |
+| `security.injection_suspected` | security-flags | notifications (high), dashboard, auto-reply policy | ADR-034 |
+| `security.flag_reviewed` | security-flags | dashboard | acknowledged/contacted/dismissed |
+| `repository.registered` | engineering-brain | engineering-brain (inspection) | ADR-035 |
+| `repository.branch_config_changed` | engineering-brain | audit, dashboard | tracked branch or environments changed by the user |
+| `repository.drift_detected` | engineering-brain | notifications | |
+| `claude_session.activity_changed` | claude-activity | orchestrator (yield), dashboard | User became active or idle (ADR-036) |
+| `claude_session.pr_detected` | claude-activity | engineering-brain, jira-tracking, dashboard | PR opened from an interactive session |
 | `approval.requested` | approvals | notifications, dashboard | |
 | `approval.approved` | approvals | requesting module | Execution happens after revalidation |
 | `approval.rejected` | approvals | requesting module | |

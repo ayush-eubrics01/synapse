@@ -11,9 +11,10 @@ Every external write needs user approval by default, enforced centrally by the p
 
 ## Consequences
 - Positive: nothing leaves the machine without the user's consent; full audit trail.
-- Negative: work waits while the user is away. This conflicts with requirements 5c/5f (answering or reminding people while away); see open questions.
+- Negative: work waits while the user is away.
+- Amended by [ADR-033](ADR-033-away-mode-auto-replies.md): in away mode, tagged auto-replies to priority people (code answers, stalled reminders, follow-up questions, acknowledgements) are sent without approval after deterministic policy checks. Every other external write still needs approval.
 - Rule: modules never call write adapters directly. Only the approval engine executes approved actions.
 
 ## Related
-- [ADR-030](ADR-030-single-engineering-task-and-git-workflow.md), [ADR-032](ADR-032-untrusted-content-isolation.md)
+- [ADR-033](ADR-033-away-mode-auto-replies.md), [ADR-030](ADR-030-single-engineering-task-and-git-workflow.md), [ADR-032](ADR-032-untrusted-content-isolation.md)
 - [security-model.md](../../architecture/security-model.md), [open-questions.md](../../product/open-questions.md)

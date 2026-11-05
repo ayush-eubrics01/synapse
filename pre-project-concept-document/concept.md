@@ -633,7 +633,7 @@ For Critical and High messages:
 - Generate suggested response or action.
 - Allow acknowledgement and status tracking.
 
-Never automatically send a response.
+Never automatically send a response, except away-mode auto-replies to priority people tagged `Sent using @claude` (update 2026-11-05, see `docs/decisions/ADR/ADR-033-away-mode-auto-replies.md`).
 
 Never automatically execute an engineering task.
 
@@ -906,7 +906,7 @@ In Phase 0 a misconfigured run caused Haiku to write fake tool calls and fabrica
 | Analyze conversations | Allowed |
 | Generate recommendations | Allowed |
 | Update People Memory | Approval required |
-| Send Slack message | Approval required |
+| Send Slack message | Approval required (except away-mode auto-replies to priority people, ADR-033) |
 | Modify Jira | Approval required |
 | Modify source code | Approval required |
 | Git commit | Approval required |
@@ -978,9 +978,11 @@ Every engineering task follows this sequence:
 3. Update the parent branch:
      git pull origin <parent-branch> && git pull upstream <parent-branch>
 4. Merge the task branch locally into the parent branch
-5. Raise a PR
+5. Push the parent branch to origin, then raise a PR from origin/<parent-branch> into upstream/<parent-branch>
 6. Merge the PR
 ```
+
+Update 2026-11-05: before step 1, the user confirms the parent branch. Each repository has a tracked branch and optional deployment environments (for example flexi-demo: stage, prod). See `docs/decisions/ADR/ADR-035-repository-branch-registry.md`. Prompt-injection isolation and red flags: ADR-032, ADR-034.
 
 Rules:
 

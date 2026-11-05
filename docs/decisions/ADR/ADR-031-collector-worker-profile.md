@@ -1,7 +1,7 @@
 # ADR-031: Collector Worker Profile
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-05
-- **Source:** Phase 0 results
+- **Source:** Phase 0 results; accepted 2026-11-05 (fits the use case: cheap, read-only, validated collection runs)
 
 ## Context
 The concept defines two worker profiles, Intelligence and Engineering. Phase 0 showed that collection runs have distinct needs: read-only connector tools, a cheap model, short runs, and a minimal context. A default `claude -p` run loaded ~134k tokens of plugins, skills and ~387 tools.

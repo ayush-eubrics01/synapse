@@ -52,12 +52,16 @@ Rules:
 | `people` | `people`, `temporary_contacts`, `people_profiles*`, `people_priority_settings` | `message.received`, approvals | `person.*` |
 | `commitments` | `commitments`, `commitment_sources`, `commitment_updates`, `followups`, `followup_history` | messages, Jira updates, approvals | `commitment.*`, `followup.*` |
 | `jira-tracking` | `jira_*` tables | `IssueSource` port | `jira.*` |
-| `engineering-brain` | `projects`, `project_*` tables | `RepositoryProvider` port, messages, Jira | `project.*` |
+| `engineering-brain` | `repositories`, `repository_environments`, `projects`, `project_*` tables | `RepositoryProvider` port, messages, Jira | `project.*` |
 | `engineering-tasks` | `engineering_tasks`, `engineering_task_steps` | approvals, orchestrator, `RepositoryProvider` | `engineering.*` |
+| `security-flags` | `security_flags`, `security_flag_rules` | `message.received`, intelligence results, `claude.job_*` | `security.*` |
+| `claude-activity` | `claude_sessions`, `claude_session_prs` | `~/.claude/projects` session metadata (read-only, registered repos only) | `claude_session.*` |
 | `dashboard` | `dashboard_*` tables | read APIs of other modules | — |
 | `settings` | user-facing settings over `app_settings` | `ConfigService` | `settings.changed` |
 
 ## Intelligence (`apps/api/src/intelligence`)
+
+Every intelligence output schema includes a `suspectedInjection` field (ADR-034). Prompt builders tag each input part with its provenance (ADR-032).
 
 Prompt builders and Zod output schemas for each AI task: screening (rules only, no AI), urgency assessment, commitment extraction, people profile recommendations, knowledge recommendations, response and follow-up drafting, Jira analysis.
 

@@ -63,5 +63,9 @@ File naming: `ADR/ADR-NNN-kebab-case-title.md`. Number sequentially; never reuse
 | ADR-028 | Haiku Is the Default Model for Collection and Screening | Accepted | [ADR-028-haiku-default-for-collection.md](ADR/ADR-028-haiku-default-for-collection.md) |
 | ADR-029 | Quota Gate on `rate_limit_event` Utilization | Accepted | [ADR-029-quota-gate-on-rate-limit-event.md](ADR/ADR-029-quota-gate-on-rate-limit-event.md) |
 | ADR-030 | One Engineering Task at a Time and a Fixed Git Workflow | Accepted | [ADR-030-single-engineering-task-and-git-workflow.md](ADR/ADR-030-single-engineering-task-and-git-workflow.md) |
-| ADR-031 | Collector Worker Profile | Proposed | [ADR-031-collector-worker-profile.md](ADR/ADR-031-collector-worker-profile.md) |
-| ADR-032 | Untrusted Content Isolation | Proposed | [ADR-032-untrusted-content-isolation.md](ADR/ADR-032-untrusted-content-isolation.md) |
+| ADR-031 | Collector Worker Profile | Accepted | [ADR-031-collector-worker-profile.md](ADR/ADR-031-collector-worker-profile.md) |
+| ADR-032 | Untrusted Content Isolation | Accepted | [ADR-032-untrusted-content-isolation.md](ADR/ADR-032-untrusted-content-isolation.md) |
+| ADR-033 | Away-Mode Auto-Replies to Priority People | Accepted | [ADR-033-away-mode-auto-replies.md](ADR/ADR-033-away-mode-auto-replies.md) |
+| ADR-034 | Prompt-Injection Detection and Red Flags | Accepted | [ADR-034-injection-detection-red-flags.md](ADR/ADR-034-injection-detection-red-flags.md) |
+| ADR-035 | Repository Branch Registry and Branch Confirmation | Accepted | [ADR-035-repository-branch-registry.md](ADR/ADR-035-repository-branch-registry.md) |
+| ADR-036 | Observe Interactive Claude Code Sessions (Metadata Only) | Accepted | [ADR-036-interactive-session-observation.md](ADR/ADR-036-interactive-session-observation.md) |

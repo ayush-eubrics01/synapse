@@ -24,9 +24,39 @@ Non-responsibilities:
 
 ## Owned data (tables)
 
-`projects`, `project_repositories`, `project_facts`, `project_decisions`, `project_milestones`, `project_dependencies`, `project_knowledge_recommendations`, `project_knowledge_evidence`.
+`repositories`, `repository_environments`, `projects`, `project_repositories`, `project_facts`, `project_decisions`, `project_milestones`, `project_dependencies`, `project_knowledge_recommendations`, `project_knowledge_evidence`.
 
 Facts and decisions carry `status` (approved/needs_review/unknown/outdated), `source_refs`, `approved_at` and supersede links. Milestones carry name, target date, actual date, status, source and confidence.
+
+## Repository registry (ADR-035)
+
+The Engineering Brain owns the list of registered repositories. Only registered paths can be read or worked on. The registry is stored only in the database (`repositories`, `repository_environments`), entered and edited through the UI. There are no config or seed files.
+
+| Field | Meaning |
+|---|---|
+| `name`, `local_path` | Registered path |
+| `origin_url`, `upstream_url`, `upstream_push_disabled` | Detected from `git remote -v` |
+| `tracked_branch` | Default parent branch for work in this repo |
+| `notes` | User note |
+
+**Deployment environments** (`repository_environments`): name → branch, plus notes. Example, `flexi-demo` (confirmed by the user 2026-11-05; illustrative only. Real values are stored in the database at registration, never in files):
+
+| Environment | Branch |
+|---|---|
+| `stage` | `stage` |
+| `prod` | `prod` |
+
+Registration flow:
+
+```text
+user adds a path ─▶ Synapse detects: current branch, remotes (incl. disabled upstream push),
+                    branches that look like environments (stage, staging, prod, production, main, develop)
+                ─▶ proposal shown ─▶ user confirms/edits tracked branch + environments ─▶ saved (audited)
+```
+
+Drift check (daily, no AI): the checkout moved off `tracked_branch`, an environment's branch disappeared, or the remotes changed → notification. The registry is never updated automatically.
+
+Milestones and go-live dates can reference an environment (for example, "go-live on `prod` 2026-12-01").
 
 ## Project profile
 
@@ -98,6 +128,8 @@ Read repositories, analyze, recommend: allowed. Persist important knowledge (fac
 - Conflicting go-live dates → conflict recommendation.
 - Approval supersedes an old fact; history retained.
 - Unregistered repository path → denied.
+- Registration proposes tracked branch and environments from Git; nothing is saved until the user confirms.
+- Drift (checkout on another branch, environment branch deleted) → notification only, registry unchanged.
 - Inspection run has no write tools (permission denials recorded if attempted).
 - Expired source → evidence still traceable.
 

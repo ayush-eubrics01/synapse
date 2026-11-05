@@ -28,12 +28,19 @@ interface AIExecutionRequest {
   model: 'haiku' | 'sonnet' | 'opus' | string;
   systemPrompt: string;
   prompt: string;                // must name exact tool names and arguments
+  promptParts: PromptPart[];     // provenance of every input (ADR-032); validated before the run
   allowedTools: string[];        // always includes 'ToolSearch' when MCP tools are needed
   disallowedTools: string[];
   maxTurns: number;
   timeoutMs: number;
   workingDirectory: string;      // registered repo path for engineering; scratch dir otherwise
   expectedToolNames?: string[];  // run fails if none of these produced a real tool_result
+}
+
+interface PromptPart {
+  provenance: 'untrusted' | 'user_approved' | 'system';
+  source?: string;               // e.g. slack:<channel>:<ts>, jira:<key>
+  content: string;
 }
 
 interface AIExecutionResult {
@@ -210,6 +217,19 @@ interface RepositoryProvider {
   inspect(repositoryId: string, request: RepositoryInspectionRequest): Promise<RepositoryInspectionResult>;
   getHistory(repositoryId: string, query: GitHistoryQuery): Promise<GitCommit[]>;
   getStatus(repositoryId: string): Promise<RepositoryStatus>;  // clean tree, current branch, remotes, merge in progress
+}
+```
+
+```typescript
+interface Repository {
+  id: string;
+  name: string;
+  localPath: string;
+  originUrl?: string;
+  upstreamUrl?: string;
+  upstreamPushDisabled: boolean;
+  trackedBranch: string;               // user-confirmed default parent branch (ADR-035)
+  environments: { name: string; branch: string; notes?: string }[];  // e.g. stage→stage, prod→prod
 }
 ```
 

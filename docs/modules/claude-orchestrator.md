@@ -28,11 +28,11 @@ Non-responsibilities:
 
 `claude_runs`, `quota_snapshots`, `leases` (row `engineering`), plus the `jobs` rows it executes. The `engineering-tasks` module owns `engineering_tasks` and `engineering_task_steps`. The orchestrator writes `claude_run_id` references into them.
 
-## Worker profiles (ADR-031, proposed)
+## Worker profiles (ADR-031; isolation rules per ADR-032)
 
 | Profile | Used for | Tools | Default model | Untrusted input? |
 |---|---|---|---|---|
-| `collector` | Slack/Jira collection, approved single sends/writes | `ToolSearch` + the exact connector tools for the job | haiku | yields it (doesn't interpret it) |
+| `collector` | Slack/Jira collection; approved or ADR-033 single sends/writes as separate narrow runs | collection: `ToolSearch` + read-only connector tools; send/write runs: exactly one tool with arguments fixed by code and no untrusted text | haiku | collection yields it (doesn't interpret it); send runs: none |
 | `intelligence` | screening follow-up, urgency, commitments, profiles, knowledge, drafting, Jira analysis | `ToolSearch` + read-only connector tools if needed; no write/send tools; no Bash/Edit/Write | haiku (sonnet for heavier analysis) | yes |
 | `engineering` | repository investigation, bug analysis, plans, approved code changes, tests, Git steps | read-only by default; Edit/Write/Bash only in an approved step, scoped to the registered repo; **no Slack/Jira/other connector tools** | sonnet/opus (configurable) | no: only approved task descriptions (ADR-032) |
 
@@ -111,12 +111,13 @@ Owned jointly: `engineering-tasks` holds the task state machine; the orchestrato
 
 | # | Step | Approval |
 |---|---|---|
-| 0 | Preflight: clean tree, `origin` + `upstream` exist | — (fail → `NEEDS_ATTENTION`) |
+| 0a | **Branch confirmation** (ADR-035): show repo, suggested environment, parent branch (from environment, else `tracked_branch`), task branch name, PR `origin/<parent>` → `upstream/<parent>`. The user confirms or changes it, optionally "remember as tracked branch" | part of the plan approval |
+| 0b | Preflight: clean tree, `origin` + `upstream` exist, confirmed parent branch exists on both | — (fail → `NEEDS_ATTENTION`) |
 | 1 | Create a local task branch from the parent branch | code modification approval (approved plan) |
 | 2 | Develop and test on the task branch | covered by the plan approval; commit needs approval |
 | 3 | `git pull origin <parent> && git pull upstream <parent>` | — (conflict → `NEEDS_ATTENTION`) |
 | 4 | Merge the task branch locally into the parent branch | approval (conflict → `NEEDS_ATTENTION`) |
-| 5 | Raise a PR | approval (push + PR) |
+| 5 | Push the local parent branch to `origin`, then open a PR from `origin/<parent>` into `upstream/<parent>` | approval (push + PR) |
 | 6 | Merge the PR | approval |
 
 Conflicts are never auto-resolved without approval. The task records branch names, commits, PR link and final status.
@@ -127,17 +128,35 @@ Conflicts are never auto-resolved without approval. The task records branch name
 bug/task reported (Slack/Jira) → engineering.task_proposed
  → automatic read-only investigation (allowed): analysis, proposed fix, plan, size estimate
  → if spec unclear: commitments drafts follow-up questions; task stays proposed
- → user approves plan (approval scoped to task + repo)
- → lock acquired → steps 0–2 on the task branch → tests
+ → user approves plan + confirms branch/environment (approval scoped to task + repo + parent branch)
+ → lock acquired → steps 0b–2 on the task branch → tests
  → engineering.task_awaiting_approval: "N small issues from <people> are ready — ship?"
  → user approves steps 4–6 one by one (or rejects → cleanup, lock released)
 ```
 
 Approval to investigate isn't permission to modify code. Approval to modify code isn't permission to deploy.
 
-### Untrusted content isolation (ADR-032, proposed)
+### Untrusted content isolation (ADR-032, accepted)
 
-The engineering worker never receives raw Slack or Jira text. It receives a task description the user approved (derived by the intelligence worker). The intelligence worker, which reads raw text, has no write, send, Bash or Edit tools.
+Every `ClaudeJob` lists its prompt parts with a provenance: `untrusted` (Slack/Jira text), `user_approved` (texts or plans the user approved) or `system`. The **request validator** runs before any process starts and rejects:
+
+- any request with an `untrusted` part whose `allowedTools` includes a send/write/create/update/delete connector tool, `Bash`, `Edit`, `Write` or `NotebookEdit`
+- any `engineering` request with an `untrusted` part
+- any request without an explicit `--disallowedTools` denylist covering every claude.ai connector tool it doesn't need (including Gmail, Drive and other non-Slack/Jira connectors)
+- any send request with more than one allowed tool, or with arguments not fixed by application code
+
+The engineering worker receives only the user-approved task description and repository context. Untrusted parts are wrapped in delimited blocks with a per-run random boundary and labeled as data. After every run that contained untrusted content, `permission_denials` and unexpected tool calls are passed to `security-flags` (ADR-034). The tool catalog classifies each known tool as read or write; unknown tools are treated as write.
+
+## Interactive session observation (ADR-036)
+
+Owned by the `claude-activity` module; the orchestrator consumes its "user active" signal.
+
+- Every 120 s, parse `~/.claude/projects/*/<sessionId>.jsonl` incrementally (by file offset), only for sessions whose `cwd` is inside a registered repository.
+- Read only: `sessionId`, `cwd`, `gitBranch`, timestamps, `ai-title`, `pr-link` (`prUrl`, `prNumber`, `prRepository`), `version`, `entrypoint`. Never message content, tool data, thinking or attachments.
+- **Yield:** if any session was active within 10 min, the quota gate behaves as if at the `soft` level: only urgent assessment, incremental collection and approved/auto-reply sends run. Heavy analysis and engineering steps wait.
+- **Activity widget:** sessions per repo (title, branch, last active, active now), plus PRs opened from sessions, linked to projects, engineering tasks and Jira where branch or PR matches.
+- **Work-in-progress reminders (to the user only):** a branch with session activity but no PR after 3 days; a session PR still open after 3 days.
+- Never resumes, writes to, or injects into a user session. The format is undocumented: unknown line types are skipped; if nothing parses, observation is disabled with a health warning.
 
 ## Events
 
@@ -183,13 +202,21 @@ Threshold and timeout defaults are proposals to tune with real usage.
 - Merge conflict at step 3 or 4 → `NEEDS_ATTENTION`.
 - Restart mid-merge with lock held → `NEEDS_ATTENTION`, lock retained.
 - Engineering run invoked with Slack text in its prompt → rejected by the request validator.
+- Request with an `untrusted` part plus `slack_send_message` (or Bash/Edit/Write) → rejected.
+- Request missing the connector denylist → rejected.
+- Run with untrusted content and a non-empty `permission_denials` → runtime flag passed to security-flags.
+- Branch confirmation: changing the branch updates the plan; "remember" updates `tracked_branch` and audits it; a nonexistent branch fails preflight.
+- Push never targets `upstream`.
+- Interactive session active within the window → non-urgent jobs deferred; idle → resumed.
+- Session file with unknown line types → skipped without error; message content is never stored (assert on synthetic fixtures).
+- Session in an unregistered folder → ignored.
 - Refresh token < 48 h → `auth.expiry_warning`.
 - stream-json parser fixtures: init (pending/connected), tool_use/tool_result pairing, rate_limit_event, result.
 
 ## Open questions
 
-- **OQ-3:** PR source and target in the Git workflow. After merging locally into the parent branch, which branch is pushed, and the PR is opened from where to where (e.g. `origin/<parent>` → `upstream/<parent>`)?
+- OQ-3 resolved: push the parent branch to `origin`; PR from `origin/<parent>` into `upstream/<parent>` (ADR-030).
 - **OQ-4:** whether the Claude Code refresh-token expiry slides on refresh.
-- **OQ-5:** whether "monitor my Claude Code" (requirement 7) includes the user's interactive sessions or only Synapse-launched jobs.
+- OQ-5 resolved by ADR-036: interactive sessions are observed (metadata only), never read or controlled.
 
 See `docs/product/open-questions.md`.

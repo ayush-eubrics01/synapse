@@ -126,6 +126,6 @@ Analyze conversations and generate recommendations: allowed. Create or update a 
 ## Open questions
 
 - Temporary contact TTL (30 days) is a proposal, not from the concept.
-- OQ-1 affects whether response guidelines feed auto-sent replies or only drafts.
+- OQ-1 resolved by ADR-033: manual priority also decides who may receive away-mode auto-replies. Response guidelines feed both drafts and auto-replies.
 
 See `docs/product/open-questions.md`.

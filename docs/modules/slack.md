@@ -158,7 +158,7 @@ Read Slack: allowed. Send, schedule or draft a message, react, create a conversa
 
 ## Open questions
 
-- OQ-1: away-mode replies vs the approval rule (affects sends).
+- OQ-1 resolved by ADR-033: away-mode auto-replies go through `MessageSink` with the tag `Sent using @claude`.
 - OQ-6: sustained Slack rate limits during backfill (only a 5-page burst tested).
 - OQ-7: local bot-filter safety net (deferred per ADR-027). Slack's `include_bots: false` is trusted; the connector exposes no bot flag.
 

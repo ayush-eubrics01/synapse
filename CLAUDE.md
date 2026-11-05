@@ -37,7 +37,7 @@ apps/api/src/
   core/                   Platform: config, events/outbox, jobs, scheduler, leases,
                           permissions, approvals, audit, notifications, health,
                           orchestrator (the only path to Claude)
-  modules/                Domain modules (inbox, people, commitments, jira-tracking,
+  modules/                Domain modules (inbox, people, commitments, jira-tracking, security-flags, claude-activity,
                           engineering-brain, engineering-tasks, dashboard, settings)
   intelligence/           Prompt builders + output schemas for AI tasks
   integrations/           Adapters implementing ports (slack, jira, repository, claude-code)
@@ -56,10 +56,12 @@ Architecture style: **modular monolith with ports and adapters (hexagonal).** Do
 ## Hard rules
 
 1. **Never bypass the orchestrator.** Only `core/orchestrator` may run Claude Code. Feature modules and adapters submit work to it; they never spawn `claude` themselves.
-2. **Never bypass permissions or approvals.** Every external write (Slack send, Jira change, code change, commit, push, PR, merge, deploy) goes through the permission manager and approval engine.
+2. **Never bypass permissions or approvals.** Every external write (Slack send, Jira change, code change, commit, push, PR, merge, deploy) goes through the permission manager and approval engine. The only exception is ADR-033 away-mode auto-replies to priority people, which go through the deterministic `AutoReplyPolicy` and always carry the tag `Sent using @claude`.
 3. **Raw tool results are the only trusted data.** Parse source data only from `tool_result` events in Claude's `stream-json` output. Never store the model's text reply as source data. A run with no real tool result for the expected tool has failed. (ADR-026)
 4. **One engineering task at a time.** A global engineering lock is held from pickup until PR merge or cleanup. (ADR-030)
-5. **Untrusted content never reaches a worker that can act.** Slack/Jira text goes only to workers without write or send tools. The engineering worker receives only an approved task description. (ADR-032)
+5. **Untrusted content never reaches a worker that can act.** Every prompt part carries a provenance tag; the orchestrator's request validator rejects untrusted content alongside any write/send tool, and any untrusted content in engineering runs. The engineering worker receives only the user-approved task description. Suspected injection attempts become red flags (ADR-032, ADR-034).
+13. **Branches come from the registry and the user.** Each engineering task uses the parent branch the user confirmed (ADR-035). Never push to `upstream`.
+14. **Interactive Claude Code sessions are observed, never read or controlled.** Only metadata from `~/.claude/projects` for registered repos (ADR-036). Synapse's own runs always use `--no-session-persistence`.
 6. **Business logic stays out of the frontend.** Widgets and pages call backend APIs only.
 7. **Use shared contracts** at every integration boundary. Don't import adapter internals from modules.
 8. **Every schema change has a migration.** Never edit an applied migration.

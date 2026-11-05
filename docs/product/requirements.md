@@ -12,12 +12,12 @@ Source: `pre-project-concept-document/requirements.md` (the user's own list) and
 | UR-4 | On a set frequency, summarize what is going on in each conversation with new messages. Don't call Claude for conversations with nothing new | `slack.md`, `urgency-engine.md` |
 | UR-5a | One central place for everything that needs attention | Dashboard, Urgent Inbox |
 | UR-5b | Clear priority for important people | `people-memory.md` (manual priority) |
-| UR-5c | Answer specific questions from the codebase while the user is away | `claude-orchestrator.md` (intelligence worker); **sending blocked by OQ-1** |
+| UR-5c | Answer specific questions from the codebase while the user is away | `urgency-engine.md`, `claude-orchestrator.md` (intelligence worker); auto-sent to priority people in away mode (ADR-033) |
 | UR-5d | Detect reported bugs/tasks; fix small ones on a separate branch, ready for approval | `claude-orchestrator.md`, engineering tasks, ADR-030 |
-| UR-5e | When a task spec is unclear, draft follow-up questions to the reporter | `commitments.md` |
-| UR-5f | Track stalled conversations ("I'll check and let you know") and remind the other person | `commitments.md`; **sending blocked by OQ-1** |
+| UR-5e | When a task spec is unclear, draft follow-up questions to the reporter | `commitments.md`; auto-sent to priority people in away mode (ADR-033) |
+| UR-5f | Track stalled conversations ("I'll check and let you know") and remind the other person | `commitments.md`; auto-sent to priority people in away mode (ADR-033) |
 | UR-6 | Engineering Brain tracking what the user builds, with go-live dates | `engineering-brain.md` |
-| UR-7 | Monitor Jira tasks and act as admin/operations manager of Claude Code | `jira.md`, `claude-orchestrator.md`; **scope in OQ-5** |
+| UR-7 | Monitor Jira tasks and act as admin/operations manager of Claude Code | `jira.md`, `claude-orchestrator.md`; covers Synapse jobs plus metadata-only observation of interactive sessions (ADR-036) |
 
 Note on UR-4: with the connector-based collector, Synapse can't know whether anything is new without one Claude run per poll. "Don't call Claude" therefore applies to the *intelligence* step: no analysis run when collection finds nothing new. See `slack.md`.
 
@@ -38,6 +38,10 @@ Note on UR-4: with the connector-based collector, Synapse can't know whether any
 | FR-11 | Jira sync of assigned and relevant issues, blockers and stale issues |
 | FR-12 | Engineering investigation and approved code changes following the fixed Git workflow, one task at a time |
 | FR-13 | Approval queue for all external writes, with scoped and expiring approvals |
+| FR-17 | Detect messages that try to instruct Claude; show red flags per person on the dashboard; never auto-reply to flagged messages (ADR-034) |
+| FR-18 | Repository registry with tracked branch and deployment environments per repo; branch confirmation before each engineering task (ADR-035) |
+| FR-19 | Observe the user's interactive Claude Code sessions (metadata only): yield background work while the user is active, show sessions and session PRs, remind about stale work in progress (ADR-036) |
+| FR-16 | Away mode: when on, auto-reply to priority people (code answers, stalled reminders, follow-up questions, acknowledgements) tagged `Sent using @claude`; digest on return (ADR-033) |
 | FR-14 | Customizable dashboard (add, remove, reorder, resize, configure, save layouts) |
 | FR-15 | Retention: Slack message content deleted after 180 days (configurable); derived knowledge kept |
 

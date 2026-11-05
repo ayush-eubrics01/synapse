@@ -31,7 +31,7 @@ It:
 
 ## Principles
 
-1. **The user stays in control.** Every external action (sending a message, changing Jira, changing code, committing, pushing, merging, deploying) needs approval.
+1. **The user stays in control.** Every external action (sending a message, changing Jira, changing code, committing, pushing, merging, deploying) needs approval. The one exception is user-configured: in away mode, tagged auto-replies to priority people (ADR-033).
 2. **Local-first.** Everything runs and is stored on the user's machine.
 3. **Claude is a provider, not the system.** Synapse owns state, scheduling and history. Claude Code understands and executes.
 4. **Spend Claude carefully.** No Claude call per message. Batch work, use the cheapest model that works, and gate on real quota.
@@ -44,5 +44,5 @@ It:
 - Multi-user or team use.
 - Group-level People Memory.
 - Remote or cloud hosting.
-- Automatic sending of any message without approval (see OQ-1 in `open-questions.md`).
+- Automatic sending without approval, except away-mode auto-replies to priority people (ADR-033).
 - Deployment automation beyond explicit, approved steps.

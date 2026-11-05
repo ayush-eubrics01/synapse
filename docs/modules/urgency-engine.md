@@ -41,7 +41,8 @@ message.received
        keywords/patterns (prod, down, outage, urgent, blocker, ASAP, deadline, today, …)
        DM vs channel, mentions of the user, priority person, thread with the user,
        Jira keys of blocked/due issues, upcoming go-live projects
-  → message.screened {candidate: bool, score, matchedRules}
+  → security rules scan (security-flags, ADR-034): suspected instructions to Claude → security_flags
+  → message.screened {candidate: bool, score, matchedRules, securityFlag?}
        │
        ├─ candidate → urgency.assess (batched within a short window)
        │                → Critical / High / Medium / Low + reason
@@ -75,7 +76,9 @@ message.received
 
 Urgent assessment jobs get high queue priority. The quota gate (ADR-029) may still defer them when the five-hour window is exhausted. In that case the rule-based level is shown with "not yet assessed."
 
-Requirement 5c (answering questions while the user is out): `urgency.suggest_response` can use the engineering profile in read-only mode to inspect the registered repository and draft a technical answer. Whether that answer may be sent without approval is OQ-1.
+Requirement 5c (answering questions while the user is out): `urgency.suggest_response` uses the **intelligence** profile with read-only access to the registered repository and the Engineering Brain to draft a technical answer. It never uses the engineering profile, which must not see raw Slack text (ADR-032). When away mode is on and the sender is a priority person, the draft goes to the auto-reply policy (ADR-033). Otherwise it waits for approval.
+
+Away-mode acknowledgements: when away mode is on, a Critical/High message from a priority person that can't be answered with confidence gets an `acknowledgement` auto-reply (ADR-033), and the full draft is queued for approval.
 
 ## Events
 
@@ -110,12 +113,15 @@ Assess and suggest: allowed. Send a suggested response: approval required. Start
 - Non-candidate messages never trigger a Claude run.
 - Quota exhausted → rule fallback, notification still sent for likely incidents.
 - Invalid assessment output → retry, then fallback.
-- Suggested response never sent without approval.
+- Suggested response never sent without approval, except an ADR-033 auto-reply (away mode on + priority sender + policy checks pass).
+- Away mode on, priority sender, low-confidence answer → acknowledgement auto-sent, full draft queued.
+- Message with an open warning/high security flag → never auto-replied; draft queued.
+- Intelligence output schemas include `suspectedInjection`; a positive value is forwarded to security-flags.
 - Acknowledge/resolve status transitions.
 
 ## Open questions
 
-- **OQ-1:** auto-reply while away (requirement 5c) vs the approval rule.
-- **OQ-2:** notifications and approvals while away. Desktop notifications don't reach the user when they're out, and the app is localhost-only.
+- OQ-1 resolved by ADR-033 (away-mode auto-replies to priority people).
+- **OQ-2 (deferred):** notifications and approvals while away for non-priority senders. Desktop notifications don't reach the user when they're out, and the app is localhost-only. Their drafts wait until the user returns.
 
 See `docs/product/open-questions.md`.

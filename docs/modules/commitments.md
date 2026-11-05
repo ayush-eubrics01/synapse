@@ -14,13 +14,13 @@ Responsibilities:
 - Commitment approval, status lifecycle and history.
 - Detect stalled items: someone said they'd come back, and nothing followed.
 - Detect unclear specs in task requests and draft clarifying questions.
-- Reminders to the user (automatic) and follow-up drafts to others (approval required).
+- Reminders to the user (automatic). Follow-ups to others need approval, except ADR-033 auto-replies (away mode on, priority person, `stalled_reminder` or `followup_question`).
 - Escalation recommendations (never executed automatically).
 - Commitments Dashboard views.
 
 Non-responsibilities:
 
-- Sending messages directly. Sends go through approvals → `MessageSink`.
+- Sending messages directly. Sends go through approvals, or the ADR-033 auto-reply policy, → `MessageSink`.
 - Assuming completion because someone said they'd do something.
 
 ## Owned data (tables)
@@ -75,17 +75,20 @@ approved commitment owed by another person, no reply or evidence
 after the configured wait (or past due)
  → mark stalled (next_action = follow up)
  → followup.recommended → draft_followup (uses People Memory guidelines)
- → followup.draft_created → approval.requested
- → approved: send via MessageSink, verify, followup.sent, history recorded
+ → followup.draft_created
+ → away mode on + priority person + policy checks pass (ADR-033):
+      auto-send with tag "Sent using @claude", verify, followup.sent, autoreply.sent
+ → otherwise: approval.requested → approved: send via MessageSink, verify, followup.sent
+ → history recorded either way
 ```
 
-Unclear spec (requirement 5e): a task or bug request lacking key information (expected behaviour, steps, scope, environment, acceptance criteria) gets a clarity check. If it's unclear, Synapse drafts specific follow-up questions to the requester for approval, and the related engineering task stays in `proposed` until answers arrive.
+Unclear spec (requirement 5e): a task or bug request lacking key information (expected behaviour, steps, scope, environment, acceptance criteria) gets a clarity check. If it's unclear, Synapse drafts specific follow-up questions to the requester for approval, and the related engineering task stays in `proposed` until answers arrive. In away mode, questions to a priority person are auto-sent per ADR-033.
 
 Reminders to the user (upcoming, overdue) are automatic notifications. Escalation is recommended in the UI, never executed.
 
 ## Permissions and approvals
 
-Extract and recommend: allowed. Create a commitment record: user review (`approval_status`). Send any follow-up or reminder to another person: approval required. Escalation: recommendation only.
+Extract and recommend: allowed. Create a commitment record: user review (`approval_status`). Send any follow-up or reminder to another person: approval required, except ADR-033 away-mode auto-replies to priority people (`stalled_reminder`, `followup_question`). Escalation: recommendation only.
 
 ## Failure handling
 
@@ -116,11 +119,13 @@ All, assigned to me, owed by others, open, in progress, blocked, overdue, due so
 - Approval revoked before send → nothing sent.
 - Send timeout with uncertain result → verified, no duplicate.
 - Expired source message → commitment kept with external ref.
+- Away mode on, priority person stalled → reminder auto-sent once with the tag; daily cap respected.
+- Away mode off, or non-priority person → draft only, nothing sent.
 
 ## Open questions
 
-- **OQ-1:** requirement 5f wants Claude to remind people that an item is stuck on them. As specified, every send to others needs approval, so reminders wait for the user. Unresolved: auto-send for chosen people/situations vs drafts only.
-- **OQ-2:** approving follow-ups while away (phone/remote access).
+- OQ-1 resolved by ADR-033: stalled reminders and follow-up questions to priority people are auto-sent in away mode.
+- **OQ-2 (deferred):** approving follow-ups to non-priority people while away (phone/remote access).
 - Stall wait time and business-hours rules are proposals.
 
 See `docs/product/open-questions.md`.

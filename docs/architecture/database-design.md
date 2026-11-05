@@ -75,6 +75,12 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 
 ## Engineering Brain tables (owned by `engineering-brain`)
 
+| Table | Notes |
+|---|---|
+| `repositories` | `name`, `local_path` unique, `origin_url`, `upstream_url`, `upstream_push_disabled`, `tracked_branch`, `notes`, `registered_at`, `last_drift_check_at` (ADR-035) |
+| `repository_environments` | `repository_id` FK, `name` (e.g. stage/prod), `branch`, `notes`, unique(`repository_id`,`name`) |
+
+
 `projects`, `project_repositories`, `project_facts`, `project_decisions`, `project_milestones` (including go-live dates), `project_dependencies`, `project_knowledge_recommendations`, `project_knowledge_evidence`. Facts and decisions carry `status` (approved/needs_review/unknown/outdated), `source_refs`, `approved_at`, and supersede links for history.
 
 ## Jira tables (owned by `jira-tracking`)
@@ -91,8 +97,30 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 
 | Table | Notes |
 |---|---|
-| `engineering_tasks` | `source_ref` (message/Jira/commitment), `repository_id`, `parent_branch`, `task_branch`, `status` (proposed/approved/in_progress/awaiting_approval/completed/failed/cancelled/needs_attention), `plan` JSON, `pr_url`, timestamps |
+| `engineering_tasks` | `source_ref` (message/Jira/commitment), `repository_id` FK, `environment_id` FK nullable, `parent_branch` (user-confirmed, ADR-035), `task_branch`, `approved_description` (the only text given to the engineering worker, ADR-032), `status` (proposed/approved/in_progress/awaiting_approval/completed/failed/cancelled/needs_attention), `plan` JSON, `pr_url`, timestamps |
 | `engineering_task_steps` | Ordered steps of the Git workflow (§10.6): `step` (branch/develop/test/update_parent/merge_local/raise_pr/merge_pr), `status`, `approval_id`, `claude_run_id`, `output` JSON |
+
+## Auto-reply table (owned by `inbox`, used by `commitments`)
+
+| Table | Notes |
+|---|---|
+| `auto_replies` | ADR-033 decisions: `source_message_id` FK, `recipient_person_id` FK, `kind` (code_answer/stalled_reminder/followup_question/acknowledgement), `conversation_id`, `thread_ts`, `text` (including tag), `confidence`, `policy_result` JSON (each check + outcome), `status` (sent/skipped/failed), `sent_ts`, `approval_id` (if it fell back to approval), `idempotency_key` unique, `created_at`. Index (`recipient_person_id`,`created_at`) for daily caps. Kept like audit (not deleted by message retention) |
+
+Away mode itself is the `autoReply.awayMode` key in `app_settings`, with changes recorded in `audit_events`.
+
+## Security flag tables (owned by `security-flags`)
+
+| Table | Notes |
+|---|---|
+| `security_flags` | `message_id` FK nullable, `source_external_ref` (always kept), `slack_user_id`, `person_id` FK nullable, `conversation_id`, `detector` (rules/ai/runtime), `rule_id`, `claude_run_id` FK nullable, `severity` (info/warning/high), `excerpt` (≤ 300 chars), `reason`, `status` (open/acknowledged/contacted/dismissed), `rules_version`, `created_at`, `reviewed_at`. Unique(`message_id`,`detector`,`rule_id`). Index (`status`,`severity`), (`slack_user_id`). Kept like audit (not deleted by message retention) |
+| `security_flag_rules` | Versioned rule config: `version`, `rules` JSON, `active`, `created_at` |
+
+## Claude activity tables (owned by `claude-activity`, ADR-036)
+
+| Table | Notes |
+|---|---|
+| `claude_sessions` | `session_id` unique, `repository_id` FK, `cwd`, `git_branch`, `title`, `entrypoint`, `cli_version`, `started_at`, `last_activity_at`, `file_path`, `read_offset` (incremental parsing). Metadata only, never message content |
+| `claude_session_prs` | `session_id` FK, `pr_url` unique, `pr_number`, `pr_repository`, `first_seen_at`, links to `engineering_tasks` / `jira_issues` when matched |
 
 ## Dashboard tables (owned by `dashboard`)
 
