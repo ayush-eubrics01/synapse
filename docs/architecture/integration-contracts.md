@@ -14,16 +14,33 @@ Used **only** by `core/orchestrator`.
 
 ```typescript
 type WorkerProfile = 'collector' | 'intelligence' | 'engineering';
+type PriorityClass = 'urgent' | 'send' | 'collection' | 'engineering' | 'batch' | 'backfill';
 
+// Narrowed in Phase 2: getCapabilities() is deferred until a consumer needs it.
 interface AIProvider {
   execute(request: AIExecutionRequest, signal: AbortSignal): Promise<AIExecutionResult>;
-  getCapabilities(): Promise<AICapability[]>;
-  getHealth(): Promise<ProviderHealth>;
+  getHealth(): Promise<{ status: HealthStatus; detail?: string; version?: string }>;
+}
+
+// What modules submit to the orchestrator; it fills runId, model, timeouts, disallowedTools, etc.
+interface ClaudeJobRequest {
+  jobId?: string;
+  workerProfile: WorkerProfile;
+  priorityClass: PriorityClass;
+  instructions: string;
+  parts?: PromptPart[];
+  systemPrompt?: string;
+  allowedTools: string[];          // non-empty
+  expectedToolNames?: string[];
+  maxTurns: number;                // 1..50
+  model?: string;
+  timeoutMs?: number;
+  workingDirectory?: string;
 }
 
 interface AIExecutionRequest {
   runId: string;                 // internal UUID, one per attempt
-  jobId: string;
+  jobId: string | null;
   workerProfile: WorkerProfile;
   model: 'haiku' | 'sonnet' | 'opus' | string;
   systemPrompt: string;
@@ -52,7 +69,14 @@ interface AIExecutionResult {
   usage: AIUsage;
   quota?: QuotaSnapshot;         // from rate_limit_event
   permissionDenials: string[];
+  connectors: ConnectorStatus[]; // from the system/init event
+  exitCode: number | null;       // null when killed or never started
   error?: ClassifiedError;
+}
+
+interface ConnectorStatus {
+  name: string;
+  status: string;
 }
 
 interface RawToolResult {

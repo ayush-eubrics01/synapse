@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export type ErrorKind =
   | "transient_network"
   | "connector_not_ready"
@@ -11,6 +13,21 @@ export type ErrorKind =
   | "provider_error"
   | "timeout"
   | "unknown";
+
+export const errorKindSchema = z.enum([
+  "transient_network",
+  "connector_not_ready",
+  "rate_limited",
+  "quota_exhausted",
+  "auth_failed",
+  "permission_denied",
+  "invalid_input",
+  "incomplete_ai_output",
+  "parse_failed",
+  "provider_error",
+  "timeout",
+  "unknown",
+] as const satisfies readonly ErrorKind[]);
 
 export interface ClassifiedError {
   kind: ErrorKind;
