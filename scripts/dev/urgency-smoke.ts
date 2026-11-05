@@ -5,6 +5,7 @@ import { type Job, JobError } from "@synapse/contracts";
 import { schema } from "@synapse/database";
 import { createContainer } from "../../apps/api/src/container";
 import { loadConfig } from "../../apps/api/src/core/config/config";
+import { NoopDesktopNotifier } from "../../apps/api/src/infrastructure/notifier";
 import { SlackConnectorSource } from "../../apps/api/src/integrations/slack/connector-source";
 
 export const USAGE = `Usage: bun scripts/dev/urgency-smoke.ts [--pages N]
@@ -14,7 +15,7 @@ temporary database, lets rule screening run, then runs the urgency.assess handle
 (at most one more real Claude run) and prints counts only. Suggested replies are never
 generated. Spends a little Claude quota and reads real Slack; run deliberately. Never
 prints message text, names, emails, conversation names, permalinks, excerpts or ids. The
-temporary database is deleted afterwards. In-app notification rows stay in that database.
+temporary database is deleted afterwards. In-app notification rows stay in that database; no desktop notification is shown.
 
   --pages N   pages to collect, 1..3 (default 1)`;
 
@@ -142,8 +143,8 @@ async function main(): Promise<number> {
   };
   try {
     const config = { ...loadConfig(process.env), dbPath: join(dir, "smoke.db") };
-    // There is no desktop notifier: notifications are in-app rows in the temp database only.
-    const c = createContainer(config);
+    // A no-op desktop notifier: notifications are in-app rows in the temp database only.
+    const c = createContainer(config, { notifier: new NoopDesktopNotifier() });
     sqlite = c.sqlite;
     c.settings.set("urgency.maxAgeHours", 24);
     const source = new SlackConnectorSource({ orchestrator: c.orchestrator, clock: c.clock });

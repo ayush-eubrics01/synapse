@@ -314,7 +314,7 @@ test("Q1: skip advances the checkpoint by exactly 1 s, clears the error, audits 
     .where(eq(schema.auditEvents.action, "slack.checkpoint_skipped"))
     .all();
   expect(audits).toHaveLength(1);
-  expect(JSON.stringify(audits[0]?.details)).toContain("1793872921.000500");
+  expect(audits[0]?.details).toEqual({ from: "1793872920.000500", to: "1793872921.000500" });
   const jobs = c.db
     .select()
     .from(schema.jobs)
@@ -323,4 +323,17 @@ test("Q1: skip advances the checkpoint by exactly 1 s, clears the error, audits 
   expect(jobs.some((j) => j.idempotencyKey.startsWith("skip:"))).toBe(true);
   // A second call has nothing to skip.
   expect((await send("POST", "/api/slack/incremental/skip")).status).toBe(409);
+});
+
+test("Q1: skip is 409 for a null or malformed checkpoint and changes nothing", async () => {
+  c.sync.update(c.db, "slack.messages", {
+    lastError: { kind: "parse_failed", message: "x" },
+  });
+  expect(c.sync.get("slack.messages").checkpoint).toBeNull();
+  expect((await send("POST", "/api/slack/incremental/skip")).status).toBe(409);
+  c.sync.update(c.db, "slack.messages", { checkpoint: "not-a-ts" });
+  expect((await send("POST", "/api/slack/incremental/skip")).status).toBe(409);
+  const st = c.sync.get("slack.messages");
+  expect(st.checkpoint).toBe("not-a-ts");
+  expect(st.lastError?.kind).toBe("parse_failed");
 });

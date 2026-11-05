@@ -5,5 +5,6 @@ export * from "./events";
 export * from "./health";
 export * from "./jobs";
 export * from "./messages";
+export * from "./notifier";
 export * from "./permissions";
 export * from "./urgency";

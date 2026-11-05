@@ -30,6 +30,8 @@ const settingSchemas = {
   "urgency.suggest.model": z.string().min(1).default("haiku"),
   "urgency.maxAgeHours": z.number().positive().default(24),
   "urgency.candidateThreshold": z.number().default(2),
+  "notifications.desktop.enabled": z.boolean().default(true),
+  "notifications.desktop.minSeverity": flagSeveritySchema.default("warning"),
   "security.flags.notifyOnSeverity": flagSeveritySchema.default("high"),
   "security.flags.widgetMinSeverity": flagSeveritySchema.default("warning"),
   "security.flags.excerptMaxChars": z.number().int().positive().default(300),

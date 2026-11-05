@@ -503,3 +503,13 @@ test("Q2: a failed run counts the searches it spent; a successful run's count is
   await run("slack.collect_incremental");
   expect(sync.get("slack.messages").searchCount).toBe(3);
 });
+
+test("Q2: a backfill rate_limited run counts details.searches once", async () => {
+  slack.startBackfill();
+  fake.next.push(
+    boom(new JobError({ kind: "rate_limited", message: "slow", details: { searches: 2 } })),
+  );
+  finishBackfill();
+  await run("slack.backfill");
+  expect(sync.get("slack.backfill").searchCount).toBe(2);
+});

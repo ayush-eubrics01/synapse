@@ -81,7 +81,7 @@ claude run denials / unexpected tools ───┘                              
                                        ┌─────────────────────────────────┴───────────────┐
                                  warning/high                                           info
                        Red Flags widget (grouped by person)                 person page only
-                       high → in-app notification (no desktop notifier yet)
+                       high → in-app + desktop notification (title only)
                        auto-reply blocked for that message (ADR-033)
                                        │
                  user: acknowledged / contacted / dismissed ─▶ security.flag_reviewed
@@ -119,7 +119,7 @@ Detection and recording: allowed. Reviewing flags: user only. This module sends 
 - **Review.** `acknowledged`, `contacted` and `dismissed` are user actions; a reviewed flag stays reviewed on re-detection. The widget shows `warning` and above by default (`security.flags.widgetMinSeverity`), grouped by person; the per-person history shows every severity.
 - **Routes.** `GET /api/security/flags?includeReviewed` (grouped by person), `GET /api/security/flags/person/:slackUserId` (full history, newest first), `POST /api/security/flags/:id/review` (404 for an unknown flag).
 - **Auto-reply hook.** `hasOpenFlag(messageId, "warning")` exists for the Phase 6 auto-reply policy; nothing sends in Phase 4.
-- **Out of scope.** The seeded rules are a snapshot, not user-editable in the UI yet. Notifications are in-app only.
+- **Out of scope.** The seeded rules are a snapshot, not user-editable in the UI yet. Desktop notifications go through the `notify-send` adapter (see `urgency-engine.md`, Notifications).
 
 ## Tests
 

@@ -7,9 +7,13 @@ import {
   recoverOnStartup,
   recoverOrphanRuns,
 } from "./core/recovery/recovery";
+import { NotifySendNotifier } from "./infrastructure/notifier";
 
 const config = loadConfig(process.env);
-const c = createContainer(config, { testHandlers: process.env.SYNAPSE_TEST_HANDLERS === "1" });
+const c = createContainer(config, {
+  testHandlers: process.env.SYNAPSE_TEST_HANDLERS === "1",
+  notifier: new NotifySendNotifier(),
+});
 recoverOnStartup({ db: c.db, clock: c.clock, leases: c.leases, audit: c.audit });
 recoverOrphanRuns(c.db, c.clock);
 try {

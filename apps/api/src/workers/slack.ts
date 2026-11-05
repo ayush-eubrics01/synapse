@@ -235,6 +235,9 @@ export function registerSlackJobs(deps: SlackJobDeps): {
       }
       const backoffAt = db.transaction(
         (tx) => {
+          // Q2: this branch never reaches fail(), so count the searches the failed run spent.
+          const spent = e.details?.searches;
+          if (typeof spent === "number" && spent > 0) sync.countSearches(tx, stream, spent);
           const cur = sync.get(stream, tx);
           const backoff = Math.min(maxBackoff, Math.max(minMinutes, cur.backoffMinutes * 2));
           const retryAfterMs = e.retryAfter ? Date.parse(e.retryAfter) : 0;

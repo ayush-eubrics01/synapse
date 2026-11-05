@@ -189,6 +189,16 @@ export function securityRulesCheck(rules: { rulesFallbackActive(): boolean }): H
   );
 }
 
+/** Degraded when `notify-send` is missing or the last desktop notification failed. */
+export function desktopNotifierCheck(n: {
+  health(): { ok: boolean; detail?: string };
+}): HealthCheck {
+  return guarded(async () => {
+    const h = n.health();
+    return h.ok ? { status: "ok" } : { status: "degraded", detail: h.detail ?? "unavailable" };
+  });
+}
+
 /** Degraded while any user-edited screening keyword regex is invalid and skipped. */
 export function screeningRulesCheck(rules: { invalidKeywordIds(): string[] }): HealthCheck {
   return guarded(async () => {

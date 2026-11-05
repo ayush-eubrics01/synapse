@@ -120,7 +120,7 @@ Assess and suggest: allowed. Send a suggested response: approval required. Start
 
 ## Implementation notes (Phase 4)
 
-Where the Phase 4 code differs from, or is stricter than, the sections above. Rulings are in the Phase 4 plan workspace (R1-R13).
+Where the Phase 4 code differs from, or is stricter than, the sections above. Rulings are in the Phase 4 plan workspace (R1-R14).
 
 ### Screening (no AI)
 
@@ -159,6 +159,10 @@ Where the Phase 4 code differs from, or is stricter than, the sections above. Ru
 - **Terminal fallback.** When a job fails terminally (attempts exhausted, `needs_attention` or `fail`), every message of the batch takes its rule level, marked `fallback` with a fixed reason, and the usual notification rule applies. The next batch is then enqueued.
 - A retryable failure just rethrows; the queue retries with backoff.
 
+### Desktop notifications (R14)
+
+`NotificationService` writes the in-app row, then (when `notifications.desktop.enabled`, default true, and severity is at least `notifications.desktop.minSeverity`, default `warning`) hands the notification to the `DesktopNotifier` port (`packages/contracts`). The adapter (`infrastructure/notifier.ts`) runs `notify-send --app-name=Synapse --urgency=<critical|normal|low> <title>` through `Bun.spawn` with an argv array (no shell), title only (sender name, conversation label and level, never message text), with a 5 s timeout. Callers write inside their own synchronous transaction, so the desktop call is deferred to a macrotask after the transaction ends, re-checks the row still exists (rolled-back notifications never pop up) and is fire-and-forget: a failure logs one content-free line and the in-app row remains. The `desktop-notifier` health check is `degraded` when `notify-send` is not on PATH or the last call failed. Tests and the smoke scripts inject `NoopDesktopNotifier`; `main.ts` injects the real adapter.
+
 ### Suggested responses
 
 - `urgency.suggest_response` (priority 150, group `urgency.suggest`, key `urgency.suggest:<messageId>`) runs for each critical or high message, including after a deferral notification.
@@ -185,7 +189,6 @@ Both are recorded through `SecurityFlagsService` (see `security-flags.md`): AI f
 
 - Sending a reply and away-mode auto-replies (ADR-033): moved to Phase 6. Phase 4 produces display-only drafts and sends nothing.
 - Jira and Engineering Brain urgency signals: Phases 7 and 8.
-- Desktop notifications: there is no desktop notifier yet; notifications are in-app rows.
 
 ### Smoke
 

@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { AIProvider } from "@synapse/contracts";
+import type { AIProvider, DesktopNotifier } from "@synapse/contracts";
 import { type Db, openDatabase, runMigrations } from "@synapse/database";
 import { type Clock, newId, systemClock } from "@synapse/shared";
 import { ApprovalEngine } from "./core/approvals/approvals";
@@ -17,6 +17,7 @@ import {
   bunVersionCheck,
   claudeCheck,
   databaseCheck,
+  desktopNotifierCheck,
   eventsCheck,
   heartbeatCheck,
   jobsCheck,
@@ -35,6 +36,7 @@ import { ClaudeOrchestrator } from "./core/orchestrator/orchestrator";
 import { PermissionManager } from "./core/permissions/permissions";
 import { SchedulerService } from "./core/scheduler/scheduler";
 import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
+import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notifier";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
@@ -86,6 +88,8 @@ export interface ContainerDeps {
   run?: (cmd: string[]) => Promise<string>;
   /** Registers the `test.noop` job handler (set from SYNAPSE_TEST_HANDLERS by main.ts). */
   testHandlers?: boolean;
+  /** Desktop notification adapter. Defaults to a no-op; main.ts injects the real one. */
+  notifier?: DesktopNotifier & NotifierHealth;
 }
 
 const CORE_MODULES = [
@@ -125,7 +129,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   const settings = new SettingsService(db, clock, events.publish.bind(events));
   const permissions = new PermissionManager(db, audit);
   const approvals = new ApprovalEngine(db, clock, events, audit, permissions);
-  const notifications = new NotificationService(db, clock, live);
+  const notifier = deps.notifier ?? new NoopDesktopNotifier();
+  const notifications = new NotificationService(db, clock, live, { notifier, settings });
   const registry = new ModuleRegistry(db);
 
   for (const name of CORE_MODULES) registry.register({ name, version: "1.0.0", dependsOn: [] });
@@ -234,6 +239,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     claude: claudeCheck(provider, clock),
     "security-rules": securityRulesCheck(securityFlags),
     "screening-rules": screeningRulesCheck(screening),
+    "desktop-notifier": desktopNotifierCheck(notifier),
   });
 
   return {

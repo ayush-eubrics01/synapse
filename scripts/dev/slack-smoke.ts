@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { JobError, type MessagePage } from "@synapse/contracts";
 import { createContainer } from "../../apps/api/src/container";
 import { loadConfig } from "../../apps/api/src/core/config/config";
+import { NoopDesktopNotifier } from "../../apps/api/src/infrastructure/notifier";
 import { SlackConnectorSource } from "../../apps/api/src/integrations/slack/connector-source";
 
 export const USAGE = `Usage: bun scripts/dev/slack-smoke.ts [--pages N]
@@ -90,7 +91,7 @@ async function main(): Promise<number> {
   const outcome: SmokeOutcome = { pages: [], persisted: [], searches: 0, status: "ok" };
   try {
     const config = { ...loadConfig(process.env), dbPath: join(dir, "smoke.db") };
-    const c = createContainer(config);
+    const c = createContainer(config, { notifier: new NoopDesktopNotifier() });
     sqlite = c.sqlite;
     const source = new SlackConnectorSource({ orchestrator: c.orchestrator, clock: c.clock });
     const afterTs = String(Math.floor(c.clock.now().getTime() / 1000) - 86400);
