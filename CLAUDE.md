@@ -18,16 +18,17 @@ Synapse is a local-first, single-user service that runs on the user's Linux mach
 
 | Layer | Choice |
 |---|---|
+| Runtime | Bun ≥ 1.4.4: runtime, package manager (workspaces) and test runner (ADR-039). The system Node (v16) is never used |
 | Language | TypeScript everywhere (strict mode) |
-| Frontend | Next.js (`apps/web`) |
-| Backend + workers | NestJS (`apps/api`) |
-| Database | SQLite (WAL, foreign keys on, busy timeout) + Drizzle ORM, explicit migrations |
+| Frontend | Next.js (`apps/web`), run with `bun --bun next` |
+| Backend + workers | Hono on `Bun.serve` (`apps/api`); plain composition root, no DI framework (ADR-038) |
+| Database | SQLite via `bun:sqlite` (WAL, foreign keys on, busy timeout) + Drizzle ORM (`drizzle-orm/bun-sqlite`), explicit migrations |
 | Validation | Zod; shared schemas in `packages/contracts` |
 | Jobs | Database-backed durable queue (no Redis) |
 | AI | Claude Code CLI (`claude -p`) behind the `AIProvider` port |
 | API | REST + Server-Sent Events, bound to localhost |
 | Process management | systemd user services |
-| Tests | Vitest/Jest unit, contract, integration and failure-path tests |
+| Tests | `bun test`: unit, contract, integration and failure-path tests |
 
 ## Repository layout
 

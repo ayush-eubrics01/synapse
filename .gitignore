@@ -21,3 +21,6 @@ backups/
 # Logs and OS files
 *.log
 .DS_Store
+
+# Agent workflow scratch
+.superpowers/

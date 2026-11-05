@@ -34,7 +34,7 @@ File naming: `ADR/ADR-NNN-kebab-case-title.md`. Number sequentially; never reuse
 | ID | Title | Status | File |
 |---|---|---|---|
 | ADR-001 | Next.js + TypeScript Frontend | Accepted | [ADR-001-nextjs-frontend.md](ADR/ADR-001-nextjs-frontend.md) |
-| ADR-002 | NestJS + TypeScript Backend | Accepted | [ADR-002-nestjs-backend.md](ADR/ADR-002-nestjs-backend.md) |
+| ADR-002 | NestJS + TypeScript Backend | Superseded by ADR-038 | [ADR-002-nestjs-backend.md](ADR/ADR-002-nestjs-backend.md) |
 | ADR-003 | SQLite + Drizzle ORM | Accepted | [ADR-003-sqlite-drizzle.md](ADR/ADR-003-sqlite-drizzle.md) |
 | ADR-004 | Modular Monolith | Accepted | [ADR-004-modular-monolith.md](ADR/ADR-004-modular-monolith.md) |
 | ADR-005 | Local-First Architecture | Accepted | [ADR-005-local-first-architecture.md](ADR/ADR-005-local-first-architecture.md) |
@@ -70,3 +70,5 @@ File naming: `ADR/ADR-NNN-kebab-case-title.md`. Number sequentially; never reuse
 | ADR-035 | Repository Branch Registry and Branch Confirmation | Accepted | [ADR-035-repository-branch-registry.md](ADR/ADR-035-repository-branch-registry.md) |
 | ADR-036 | Observe Interactive Claude Code Sessions (Metadata Only) | Accepted | [ADR-036-interactive-session-observation.md](ADR/ADR-036-interactive-session-observation.md) |
 | ADR-037 | Keep the Claude Code Login Alive Without Repeated Re-Login | Accepted | [ADR-037-claude-auth-renewal.md](ADR/ADR-037-claude-auth-renewal.md) |
+| ADR-038 | Hono + TypeScript Backend (supersedes ADR-002) | Accepted | [ADR-038-hono-backend.md](ADR/ADR-038-hono-backend.md) |
+| ADR-039 | Bun as Runtime, Package Manager and Test Runner | Accepted | [ADR-039-bun-runtime.md](ADR/ADR-039-bun-runtime.md) |

@@ -4,7 +4,7 @@
 
 | Service | Contents | Restart |
 |---|---|---|
-| `synapse-api.service` | NestJS API, scheduler, job processor, event dispatcher, orchestrator, health monitor | `Restart=on-failure`, backoff |
+| `synapse-api.service` | Hono API on Bun (ADR-038, ADR-039), scheduler, job processor, event dispatcher, orchestrator, health monitor | `Restart=on-failure`, backoff |
 | `synapse-web.service` | Next.js server | `Restart=on-failure` |
 
 Both are **systemd user services**. The API runs independently of the web service. Don't build a custom supervisor.
@@ -12,7 +12,7 @@ Both are **systemd user services**. The API runs independently of the web servic
 ### systemd requirements (from Phase 0)
 
 - Lingering must be on (`loginctl enable-linger <user>`), or services stop at logout. Setup checks this and tells the user.
-- The service environment doesn't inherit the shell's PATH. The unit sets `PATH` explicitly to include the `claude` binary directory (`~/.local/bin`) and Node.
+- The service environment doesn't inherit the shell's PATH. The unit sets `PATH` explicitly to include `~/.bun/bin` (Bun) and `~/.local/bin` (`claude`). Node isn't required. `ExecStart=%h/.bun/bin/bun run …`.
 - `claude` runs with stdin from `/dev/null`.
 - Graceful shutdown on `SIGTERM`: stop claiming jobs, let running non-engineering Claude runs finish within a grace period or abort them, keep the engineering lock lease (recovery decides), flush logs.
 - Logs go to journald (structured JSON lines).

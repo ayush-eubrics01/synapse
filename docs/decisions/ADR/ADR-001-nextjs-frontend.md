@@ -16,5 +16,5 @@ Build the frontend with Next.js and TypeScript in `apps/web`. It is a presentati
 - Rule: no business logic in components or widgets. Anything beyond display and input calls a backend endpoint.
 
 ## Related
-- [ADR-002](ADR-002-nestjs-backend.md), [ADR-023](ADR-023-customizable-dashboard-widgets.md)
+- [ADR-038](ADR-038-hono-backend.md), [ADR-039](ADR-039-bun-runtime.md), [ADR-023](ADR-023-customizable-dashboard-widgets.md)
 - [system-architecture.md](../../architecture/system-architecture.md), [module-boundaries.md](../../architecture/module-boundaries.md)

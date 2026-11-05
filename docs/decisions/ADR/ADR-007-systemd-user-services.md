@@ -11,7 +11,7 @@ Run both processes as systemd **user** services. Use `Restart=on-failure`, grace
 
 Phase 0 requirements:
 - Enable lingering (`loginctl enable-linger <user>`). Otherwise user services stop at logout.
-- Set `PATH` and the required environment explicitly in the unit file. The service environment doesn't inherit the interactive shell's PATH (`node` was missing in Phase 0).
+- Set `PATH` (including `~/.bun/bin` and `~/.local/bin`) and the required environment explicitly in the unit file; `ExecStart` uses Bun (ADR-039). The service environment doesn't inherit the interactive shell's PATH (`node` was missing in Phase 0).
 - Run Claude Code with stdin redirected from `/dev/null`.
 
 ## Consequences
