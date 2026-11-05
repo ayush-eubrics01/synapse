@@ -62,8 +62,9 @@ export class JobQueue {
     const nowDate = this.clock.now();
     const now = nowDate.toISOString();
     const leaseExpiresAt = new Date(nowDate.getTime() + leaseMs).toISOString();
-    return this.db.transaction((tx) => {
-      const rows = tx.all<{ id: string; attempts: number }>(sql`
+    return this.db.transaction(
+      (tx) => {
+        const rows = tx.all<{ id: string; attempts: number }>(sql`
         UPDATE jobs
         SET status = 'RUNNING', lease_owner = ${workerId}, lease_expires_at = ${leaseExpiresAt},
             attempts = attempts + 1, started_at = ${now}
@@ -83,19 +84,21 @@ export class JobQueue {
           LIMIT 1
         )
         RETURNING id, attempts`);
-      const row = rows[0];
-      if (!row) return null;
-      tx.insert(jobAttempts)
-        .values({
-          id: newId(),
-          jobId: row.id,
-          attempt: row.attempts,
-          startedAt: now,
-          status: "running",
-        })
-        .run();
-      return this.getIn(tx, row.id);
-    });
+        const row = rows[0];
+        if (!row) return null;
+        tx.insert(jobAttempts)
+          .values({
+            id: newId(),
+            jobId: row.id,
+            attempt: row.attempts,
+            startedAt: now,
+            status: "running",
+          })
+          .run();
+        return this.getIn(tx, row.id);
+      },
+      { behavior: "immediate" },
+    );
   }
 
   heartbeat(jobId: string, workerId: string, leaseMs: number): boolean {
@@ -111,80 +114,92 @@ export class JobQueue {
 
   complete(jobId: string, workerId: string, output?: unknown): boolean {
     const now = isoNow(this.clock);
-    return this.db.transaction((tx) => {
-      const res = tx
-        .update(jobs)
-        .set({
-          status: "COMPLETED",
-          output: output ?? null,
-          finishedAt: now,
-          leaseOwner: null,
-          leaseExpiresAt: null,
-        })
-        .where(this.owned(jobId, workerId))
-        .returning({ id: jobs.id })
-        .all();
-      if (res.length === 0) return false;
-      this.closeAttempt(tx, jobId, "completed", now, null);
-      return true;
-    });
+    return this.db.transaction(
+      (tx) => {
+        const res = tx
+          .update(jobs)
+          .set({
+            status: "COMPLETED",
+            output: output ?? null,
+            finishedAt: now,
+            leaseOwner: null,
+            leaseExpiresAt: null,
+          })
+          .where(this.owned(jobId, workerId))
+          .returning({ id: jobs.id })
+          .all();
+        if (res.length === 0) return false;
+        this.closeAttempt(tx, jobId, "completed", now, null);
+        return true;
+      },
+      { behavior: "immediate" },
+    );
   }
 
   fail(jobId: string, workerId: string, error: ClassifiedError): JobStatus {
     const nowDate = this.clock.now();
     const now = nowDate.toISOString();
-    return this.db.transaction((tx) => {
-      const job = tx.select().from(jobs).where(this.owned(jobId, workerId)).get();
-      if (!job) return this.currentStatus(tx, jobId);
-      const outcome = decideFailure(error, job.attempts, job.maxAttempts, nowDate, this.random);
-      if (outcome.status === "DEFER") {
-        this.deferIn(tx, jobId, outcome.runAfter, now, error);
-        return "PENDING";
-      }
-      const terminal = outcome.status !== "RETRY";
-      tx.update(jobs)
-        .set({
-          status: outcome.status,
-          lastError: error,
-          leaseOwner: null,
-          leaseExpiresAt: null,
-          ...("runAfter" in outcome ? { runAfter: outcome.runAfter } : {}),
-          ...(terminal ? { finishedAt: now } : {}),
-        })
-        .where(eq(jobs.id, jobId))
-        .run();
-      this.closeAttempt(tx, jobId, "failed", now, error);
-      return outcome.status;
-    });
+    return this.db.transaction(
+      (tx) => {
+        const job = tx.select().from(jobs).where(this.owned(jobId, workerId)).get();
+        if (!job) return this.currentStatus(tx, jobId);
+        const outcome = decideFailure(error, job.attempts, job.maxAttempts, nowDate, this.random);
+        if (outcome.status === "DEFER") {
+          this.deferIn(tx, jobId, outcome.runAfter, now, error);
+          return "PENDING";
+        }
+        const terminal = outcome.status !== "RETRY";
+        tx.update(jobs)
+          .set({
+            status: outcome.status,
+            lastError: error,
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            ...("runAfter" in outcome ? { runAfter: outcome.runAfter } : {}),
+            ...(terminal ? { finishedAt: now } : {}),
+          })
+          .where(eq(jobs.id, jobId))
+          .run();
+        this.closeAttempt(tx, jobId, "failed", now, error);
+        return outcome.status;
+      },
+      { behavior: "immediate" },
+    );
   }
 
   defer(jobId: string, workerId: string, runAfter: string): void {
     const now = isoNow(this.clock);
-    this.db.transaction((tx) => {
-      if (!tx.select({ id: jobs.id }).from(jobs).where(this.owned(jobId, workerId)).get()) return;
-      this.deferIn(tx, jobId, runAfter, now, null);
-    });
+    this.db.transaction(
+      (tx) => {
+        if (!tx.select({ id: jobs.id }).from(jobs).where(this.owned(jobId, workerId)).get()) return;
+        this.deferIn(tx, jobId, runAfter, now, null);
+      },
+      { behavior: "immediate" },
+    );
   }
 
   checkpoint(jobId: string, data: unknown): void {
     const now = isoNow(this.clock);
-    this.db.transaction((tx) => {
-      const existing = tx
-        .select({ id: jobCheckpoints.id })
-        .from(jobCheckpoints)
-        .where(eq(jobCheckpoints.jobId, jobId))
-        .get();
-      if (existing) {
-        tx.update(jobCheckpoints)
-          .set({ checkpoint: data, updatedAt: now })
-          .where(eq(jobCheckpoints.id, existing.id))
-          .run();
-      } else {
-        tx.insert(jobCheckpoints)
-          .values({ id: newId(), jobId, checkpoint: data, updatedAt: now })
-          .run();
-      }
-    });
+    this.db.transaction(
+      (tx) => {
+        const existing = tx
+          .select({ id: jobCheckpoints.id })
+          .from(jobCheckpoints)
+          .where(eq(jobCheckpoints.jobId, jobId))
+          .get();
+        if (existing) {
+          tx.update(jobCheckpoints)
+            .set({ checkpoint: data, updatedAt: now })
+            .where(eq(jobCheckpoints.id, existing.id))
+            .run();
+        } else {
+          tx.insert(jobCheckpoints)
+            .values({ id: newId(), jobId, checkpoint: data, updatedAt: now })
+            .run();
+        }
+      },
+      { behavior: "immediate" },
+    );
   }
 
   getCheckpoint<T>(jobId: string): T | undefined {

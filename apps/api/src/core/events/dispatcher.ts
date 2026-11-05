@@ -101,27 +101,30 @@ export class OutboxDispatcher {
     if (existing?.nextAttemptAt && existing.nextAttemptAt > isoNow(this.clock)) return "waiting";
 
     try {
-      this.db.transaction((tx) => {
-        sub.handler(event, tx);
-        tx.insert(schema.eventConsumptions)
-          .values({
-            id: existing?.id ?? newId(),
-            consumer: sub.consumer,
-            eventId: event.id,
-            status: "done",
-            attempts: (existing?.attempts ?? 0) + 1,
-          })
-          .onConflictDoUpdate({
-            target: [schema.eventConsumptions.consumer, schema.eventConsumptions.eventId],
-            set: {
+      this.db.transaction(
+        (tx) => {
+          sub.handler(event, tx);
+          tx.insert(schema.eventConsumptions)
+            .values({
+              id: existing?.id ?? newId(),
+              consumer: sub.consumer,
+              eventId: event.id,
               status: "done",
               attempts: (existing?.attempts ?? 0) + 1,
-              lastError: null,
-              nextAttemptAt: null,
-            },
-          })
-          .run();
-      });
+            })
+            .onConflictDoUpdate({
+              target: [schema.eventConsumptions.consumer, schema.eventConsumptions.eventId],
+              set: {
+                status: "done",
+                attempts: (existing?.attempts ?? 0) + 1,
+                lastError: null,
+                nextAttemptAt: null,
+              },
+            })
+            .run();
+        },
+        { behavior: "immediate" },
+      );
       return "done";
     } catch (err) {
       const attempts = (existing?.attempts ?? 0) + 1;

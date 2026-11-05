@@ -3,8 +3,8 @@ import type { NewDomainEvent } from "@synapse/contracts";
 import { type DbOrTx, openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock, isoNow, newId } from "@synapse/shared";
 import { eq } from "drizzle-orm";
-import { loadConfig } from "../../src/core/config/config.ts";
-import { SettingsService } from "../../src/core/config/settings.ts";
+import { loadConfig } from "../../src/core/config/config";
+import { SettingsService } from "../../src/core/config/settings";
 
 function setup() {
   const { db } = openDatabase(":memory:");

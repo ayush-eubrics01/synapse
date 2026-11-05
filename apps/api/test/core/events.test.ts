@@ -3,9 +3,9 @@ import type { EventType, NewDomainEvent } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock, newId } from "@synapse/shared";
 import { eq } from "drizzle-orm";
-import { OutboxDispatcher } from "../../src/core/events/dispatcher.ts";
-import { LiveBus } from "../../src/core/events/live-bus.ts";
-import { EventPublisher } from "../../src/core/events/publisher.ts";
+import { OutboxDispatcher } from "../../src/core/events/dispatcher";
+import { LiveBus } from "../../src/core/events/live-bus";
+import { EventPublisher } from "../../src/core/events/publisher";
 
 function setup() {
   const { db } = openDatabase(":memory:");

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
-import { AuditLogger } from "../../src/core/audit/audit.ts";
+import { AuditLogger } from "../../src/core/audit/audit";
 
 test("audit row written", () => {
   const { db } = openDatabase(":memory:");

@@ -40,20 +40,23 @@ export class SettingsService {
   set<K extends SettingKey>(key: K, value: SettingValue<K>, opts: { emit?: boolean } = {}): void {
     const parsed = settingSchemas[key].parse(value);
     const updatedAt = isoNow(this.clock);
-    this.db.transaction((tx) => {
-      tx.insert(schema.appSettings)
-        .values({ key, value: parsed, updatedAt })
-        .onConflictDoUpdate({ target: schema.appSettings.key, set: { value: parsed, updatedAt } })
-        .run();
-      if (opts.emit ?? true) {
-        this.publish(tx, {
-          type: "settings.changed",
-          aggregateType: "settings",
-          aggregateId: key,
-          correlationId: newId(),
-          payload: { key },
-        });
-      }
-    });
+    this.db.transaction(
+      (tx) => {
+        tx.insert(schema.appSettings)
+          .values({ key, value: parsed, updatedAt })
+          .onConflictDoUpdate({ target: schema.appSettings.key, set: { value: parsed, updatedAt } })
+          .run();
+        if (opts.emit ?? true) {
+          this.publish(tx, {
+            type: "settings.changed",
+            aggregateType: "settings",
+            aggregateId: key,
+            correlationId: newId(),
+            payload: { key },
+          });
+        }
+      },
+      { behavior: "immediate" },
+    );
   }
 }

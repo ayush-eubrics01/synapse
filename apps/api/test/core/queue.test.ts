@@ -1,8 +1,11 @@
 import { beforeEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
 import { eq } from "drizzle-orm";
-import { JobQueue } from "../../src/core/jobs/queue.ts";
+import { JobQueue } from "../../src/core/jobs/queue";
 
 let db: ReturnType<typeof openDatabase>["db"];
 let clock: FakeClock;
@@ -104,7 +107,7 @@ test("quota_exhausted defers without consuming an attempt", () => {
     message: "x",
     retryAfter: "2026-11-05T15:00:00.000Z",
   });
-  const after = q.get(j.id);
+  const after = must(q.get(j.id));
   expect(after.status).toBe("PENDING");
   expect(after.attempts).toBe(0);
   expect(after.runAfter).toBe("2026-11-05T15:00:00.000Z");
@@ -173,4 +176,28 @@ test("checkpoint round-trips", () => {
   q.checkpoint(id, { step: 1 });
   q.checkpoint(id, { step: 2 });
   expect(q.getCheckpoint<{ step: number }>(id)).toEqual({ step: 2 });
+});
+
+test("fail waits for another connection's commit instead of throwing SQLITE_BUSY_SNAPSHOT", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "synapse-busy-"));
+  try {
+    const dbPath = join(dir, "test.db");
+    const a = openDatabase(dbPath);
+    runMigrations(a.db);
+    const qa = new JobQueue(a.db, clock);
+    const { id } = qa.enqueue(a.db, { type: "t", idempotencyKey: "k" });
+    qa.claim("w", 60_000, ["t"]);
+    const proc = Bun.spawn(["bun", "apps/api/test/fixtures/hold-lock.ts", dbPath], {
+      cwd: resolve(import.meta.dir, "../../../.."),
+      stdout: "pipe",
+      stderr: "inherit",
+    });
+    const reader = proc.stdout.getReader();
+    await reader.read(); // "locked": the other connection now holds the write lock
+    expect(qa.fail(id, "w", { kind: "invalid_input", message: "x" })).toBe("FAILED");
+    await proc.exited;
+    a.sqlite.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
