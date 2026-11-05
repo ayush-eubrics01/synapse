@@ -71,6 +71,8 @@ What is built. Phase 6 is Slack only: Jira sources, the engineering-task hold on
 - Counts are returned and nothing else: `messages`, `candidates`, `dropped`, `created`, `source_added`, `unchanged`, `proposed`, `no_match`. Flags follow the people rule: never attributed to the user's own message.
 - Batch bookkeeping: the batch's messages get `commitments_extracted_at` in the same transaction as the writes, including messages without a candidate. After a failed run they stay unmarked and the next batch is queued while eligible messages remain. A terminal failure (attempts exhausted, or a needs-attention or fail kind) marks that batch extracted and writes audit `commitments.batch_skipped` `{count, runId}`, so a poison batch never blocks newer messages.
 
+
+- **DM participants (refined by the smoke run).** In a 1:1 DM the user is always the other participant: they may be the counterparty without writing a cited message, but they are an owner only when they wrote one. When a commitment in one DM names only an owner who is one of the two participants, the counterparty is the other participant.
 ### Dedup
 
 `commitments.dedup_key` = sha256(owner|counterparty|normalized description). A repeated extraction only adds a `commitment_sources` row (`source_added`) or changes nothing. The base-key row is reused only while it is non-terminal (status not completed or cancelled and review not rejected); otherwise a new commitment is created with the key `<base>:<sha256(first source ref)[0..16]>`. Paraphrases of one promise can still create two rows. New commitments are `open` and `pending_review` (`accepted` when `commitments.requireReviewForDetected` is false); `direction` is `mine` when the owner is the user. Emits `commitment.detected`.

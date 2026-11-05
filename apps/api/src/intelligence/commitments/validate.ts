@@ -76,16 +76,31 @@ export function validateCandidates(
     if (evidence.length === 0 || c.confidence === "low") continue;
     const cited = evidence.map((id) => byId.get(id) as BatchMessage);
     const people = new Set<string>();
+    // An `im` has exactly two participants. The user is always the other one, so they may be the
+    // counterparty without writing a cited message; as owner they still need a message of their own.
+    const counterparties = new Set<string>();
     for (const m of cited) {
       people.add(m.authorRef);
-      if (m.dmPartner) people.add(m.dmPartner);
+      if (m.dmPartner) {
+        people.add(m.dmPartner);
+        counterparties.add(selfUserId);
+      }
       for (const id of mentionedIds(m.text)) people.add(id);
     }
+    for (const p of people) counterparties.add(p);
     if (!people.has(c.owner)) continue;
-    if (c.counterparty !== null && (!people.has(c.counterparty) || c.counterparty === c.owner)) {
+    // In one 1:1 DM, a commitment between the two participants is owed to the other one.
+    let counterparty = c.counterparty;
+    const partners = new Set(cited.map((m) => m.dmPartner ?? null));
+    if (counterparty === null && partners.size === 1 && !partners.has(null)) {
+      const partner = [...partners][0] as string;
+      if (c.owner === partner) counterparty = selfUserId;
+      else if (c.owner === selfUserId) counterparty = partner;
+    }
+    if (counterparty !== null && (!counterparties.has(counterparty) || counterparty === c.owner)) {
       continue;
     }
-    if (c.owner !== selfUserId && c.counterparty !== selfUserId) continue;
+    if (c.owner !== selfUserId && counterparty !== selfUserId) continue;
     const description = c.description.trim();
     if (description === "") continue;
     const latest = cited
@@ -94,7 +109,7 @@ export function validateCandidates(
     valid.push({
       description,
       owner: c.owner,
-      counterparty: c.counterparty,
+      counterparty,
       dueAt: sanitizeDueAt(c.dueAt, latest),
       kind: c.kind,
       evidence,
