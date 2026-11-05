@@ -369,7 +369,7 @@ describe("people.assess_unknown", () => {
     const a = slackId(1);
     const b = slackId(2);
     const idsA = contact(a);
-    contact(b);
+    const idsB = contact(b);
     script.denials = ["mcp__claude_ai_Slack__slack_send_message"];
     script.output = {
       assessments: [verdict(a, false), verdict(b, false)],
@@ -381,12 +381,17 @@ describe("people.assess_unknown", () => {
       },
     };
     await runAssess();
+    // the batch order of equal first-seen times is arbitrary: the first part names the first contact
+    const firstRef = (
+      (((requests[0] as ClaudeJobRequest).parts as PromptPart[])[1] as PromptPart).source as string
+    ).replace("slack contact ", "");
+    const firstIds = firstRef === a ? idsA : idsB;
     const flags = db.select().from(schema.securityFlags).all();
     const runtime = flags.filter((f) => f.detector === "runtime");
-    expect(runtime.map((f) => f.messageId)).toEqual([idsA[2] as string]);
+    expect(runtime.map((f) => f.messageId)).toEqual([firstIds[2] as string]);
     // no message holds the quote -> the same newest message
     expect(flags.filter((f) => f.detector === "ai").map((f) => f.messageId)).toEqual([
-      idsA[2] as string,
+      firstIds[2] as string,
     ]);
   });
 
@@ -405,5 +410,18 @@ describe("people.assess_unknown", () => {
         .map((f) => f.messageId),
     ).toEqual([idsA[2] as string]);
     expect(tc(a)?.assessedAt).toBeNull();
+  });
+
+  test("a priority key in the output -> incomplete_ai_output, nothing written", async () => {
+    const a = slackId(1);
+    contact(a);
+    script.output = {
+      assessments: [{ ...verdict(a, true), priority: "critical" }],
+      suspectedInjection: noInj,
+    };
+    const err = await runAssess().catch((e) => e);
+    expect((err as JobError).classified.kind).toBe("incomplete_ai_output");
+    expect(tc(a)?.assessedAt).toBeNull();
+    expect(suggestions()).toHaveLength(0);
   });
 });

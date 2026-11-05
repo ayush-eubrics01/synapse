@@ -459,4 +459,23 @@ describe("people.update_profile", () => {
     const err = await runUpdate().catch((e) => e);
     expect((err as JobError).classified.kind).toBe("incomplete_ai_output");
   });
+
+  test("an overfull section drops the last adds until it fits", async () => {
+    const m1 = add(60);
+    const full = Array.from({ length: 18 }, (_, i) => o(`k${i}`, `text ${i}`));
+    const content = { ...CURRENT, communication: [...CURRENT.communication, ...full] };
+    db.update(schema.peopleProfiles).set({ content }).run();
+    script.output = {
+      add: [addOut("n1", "one", [m1]), addOut("n2", "two", [m1]), addOut("n3", "three", [m1])],
+      remove: [],
+      suspectedInjection: noInj,
+    };
+    await runUpdate();
+    const diff = pending()[0]?.content as { add: { key: string }[] };
+    expect(diff.add.map((a) => a.key)).toEqual(["n1"]);
+    const ev = db.select().from(schema.peopleProfileEvidence).all();
+    expect(ev.filter((e) => e.recommendationId).map((e) => e.observationKey)).toEqual([
+      "communication.n1",
+    ]);
+  });
 });

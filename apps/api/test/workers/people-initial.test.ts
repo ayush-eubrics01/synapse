@@ -639,4 +639,24 @@ describe("review fixes", () => {
       reason: "already_run_today",
     });
   });
+
+  test("generateInitial maps a same-as-rejected result to a skip and stores nothing", async () => {
+    const [m1] = seed();
+    const content = profile({ communication: [obs("async", [m1 as string])] });
+    script.output = { profile: content, suspectedInjection: noInj };
+    const pid = personId();
+    db.insert(schema.peopleProfileRecommendations)
+      .values({
+        id: "rej-1",
+        personId: pid,
+        kind: "initial",
+        status: "rejected",
+        observationHash: observationHash(content),
+        createdAt: NOW,
+      })
+      .run();
+    expect(await runJob(pid)).toEqual({ skipped: "same_as_rejected" });
+    expect(recs()).toHaveLength(1);
+    expect(db.select().from(schema.approvals).all()).toHaveLength(0);
+  });
 });

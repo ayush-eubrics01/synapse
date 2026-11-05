@@ -62,6 +62,7 @@ const EXPIRY_TIMEOUT_MS = 60_000;
 const INITIAL_TIMEOUT_MS = 420_000;
 const UPDATE_TIMEOUT_MS = 300_000;
 const UNKNOWN_TIMEOUT_MS = 300_000;
+const SECTION_NAMES = ["professionalContext", "communication", "responseGuidelines"] as const;
 const UNKNOWN_BATCH = 10;
 const UNKNOWN_MESSAGES = 5;
 const HOUR_MS = 3_600_000;
@@ -294,11 +295,46 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       );
       const runId = latestRunId(job.id);
       const flagged = flaggedMessage(used, suspectedInjection, newest);
-      const diff = { add: valid.add, remove: valid.remove, suspectedInjection };
-      const resultContent = applyDiff(current.data, diff, new Set());
+      let adds = valid.add;
+      const build = () => {
+        const d = { add: adds, remove: valid.remove, suspectedInjection };
+        return { diff: d, resultContent: applyDiff(current.data, d, new Set()) };
+      };
+      let { diff, resultContent } = build();
+      // The executor parses the result with profileContentSchema (max 20 per section): drop the
+      // last-added observations of an overfull section until it fits, else propose nothing.
+      let full = false;
+      for (;;) {
+        const over = SECTION_NAMES.find((n) => resultContent[n].length > 20);
+        if (!over) break;
+        const at = adds.map((a) => a.section).lastIndexOf(over);
+        if (at < 0) {
+          full = true;
+          break;
+        }
+        adds = adds.filter((_, i) => i !== at);
+        ({ diff, resultContent } = build());
+      }
+      if (full || !profileContentSchema.safeParse(resultContent).success) {
+        return db.transaction(
+          (tx) => {
+            if (suspectedInjection.detected) {
+              deps.securityFlags.recordAiFlag(tx, flagged, runId, suspectedInjection);
+            }
+            return { skipped: "section_full" };
+          },
+          { behavior: "immediate" },
+        );
+      }
+      const added = {
+        professionalContext: [],
+        communication: [],
+        responseGuidelines: [],
+      } as ProfileContent;
+      for (const { section, ...ob } of adds) added[section].push(ob);
       // A diff that changes nothing (or only re-states the current text) proposes nothing.
       const empty =
-        valid.add.length + valid.remove.length === 0 ||
+        adds.length + valid.remove.length === 0 ||
         observationHash(resultContent) === observationHash(current.data);
 
       return db.transaction(
@@ -313,7 +349,7 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
             baseVersion: profile.currentVersion,
             diff,
             resultContent,
-            evidence: evidenceRows(valid.added, byId),
+            evidence: evidenceRows(added, byId),
           });
           return "skipped" in stored
             ? { skipped: stored.skipped }
