@@ -1,5 +1,5 @@
-import { beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AIProvider } from "@synapse/contracts";
@@ -44,6 +44,10 @@ const warnings = () =>
     .from(schema.domainEvents)
     .where(eq(schema.domainEvents.type, "auth.expiry_warning"))
     .all();
+
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+});
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "auth-test-"));

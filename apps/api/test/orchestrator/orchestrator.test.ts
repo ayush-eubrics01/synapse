@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   type AIExecutionRequest,
   type AIExecutionResult,
@@ -93,6 +93,10 @@ function writeCreds(refreshExpiresAt: number) {
     }),
   );
 }
+
+afterEach(() => {
+  rmSync(dirname(credsPath), { recursive: true, force: true });
+});
 
 beforeEach(() => {
   credsPath = join(mkdtempSync(join(tmpdir(), "synapse-creds-")), "creds.json");
