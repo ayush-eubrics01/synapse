@@ -110,6 +110,7 @@ bun test                       # run all tests
 bun run --cwd apps/api dev     # API on 127.0.0.1:7400
 bun run --cwd apps/web dev     # web on 127.0.0.1:7401
 bun scripts/setup/check-env.ts # read-only env check (bun >= 1.4.4, claude on service PATH, linger)
+bun scripts/dev/claude-smoke.ts [--no-tools|--deny-check]  # real Claude run on a temp DB; spends a tiny amount of Claude quota — run deliberately
 ```
 
 Setup commands that change the system. **Ask the user for approval before running any of these:**

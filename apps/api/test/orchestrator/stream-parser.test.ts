@@ -101,3 +101,11 @@ test("missing numeric fields default to 0", () => {
   p.push('{"type":"result","subtype":"success"}');
   expect(p.end(NOW).result?.usage.costUsdEquivalent).toBe(0);
 });
+
+test("init tool names are captured; absent tools default to []", () => {
+  expect(parse("success").availableTools).toEqual(["ToolSearch"]);
+  const p = new StreamParser();
+  p.push('{"type":"system","subtype":"init","tools":["A",3,{"name":"B"}]}\n');
+  expect(p.end(NOW).availableTools).toEqual(["A"]);
+  expect(new StreamParser().end(NOW).availableTools).toEqual([]);
+});

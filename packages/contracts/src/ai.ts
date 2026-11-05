@@ -87,6 +87,8 @@ export interface AIExecutionResult {
   quota?: QuotaSnapshot;
   permissionDenials: string[];
   connectors: ConnectorStatus[];
+  /** Tool names from the system/init event; names only, present on every status. */
+  availableTools: string[];
   exitCode: number | null;
   error?: ClassifiedError;
 }

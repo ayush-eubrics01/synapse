@@ -70,6 +70,7 @@ interface AIExecutionResult {
   quota?: QuotaSnapshot;         // from rate_limit_event
   permissionDenials: string[];
   connectors: ConnectorStatus[]; // from the system/init event
+  availableTools: string[];      // tool NAMES from the system/init event (default []); never content
   exitCode: number | null;       // null when killed or never started
   error?: ClassifiedError;
 }

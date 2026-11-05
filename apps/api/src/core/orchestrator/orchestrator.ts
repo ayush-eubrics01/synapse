@@ -201,6 +201,7 @@ export class ClaudeOrchestrator {
           },
           permissionDenials: [],
           connectors: [],
+          availableTools: [],
           exitCode: null,
           error: { kind: "provider_error", message: "provider execution failed" },
         };

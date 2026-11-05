@@ -8,6 +8,8 @@ import type {
 
 export interface ParsedRun {
   connectors: ConnectorStatus[];
+  /** Tool names from the system/init event (names only, never content). */
+  availableTools: string[];
   toolUses: Map<string, { name: string; input: unknown }>;
   toolResults: RawToolResult[];
   finalText: string;
@@ -45,6 +47,7 @@ function parseWindow(v: unknown): QuotaWindow | undefined {
 export class StreamParser {
   private buffer = "";
   private connectors: ConnectorStatus[] = [];
+  private availableTools: string[] = [];
   private toolUses = new Map<string, { name: string; input: unknown }>();
   private toolResults: RawToolResult[] = [];
   private finalText = "";
@@ -68,6 +71,7 @@ export class StreamParser {
     }
     return {
       connectors: this.connectors,
+      availableTools: this.availableTools,
       toolUses: this.toolUses,
       toolResults: this.toolResults,
       finalText: this.finalText,
@@ -111,11 +115,16 @@ export class StreamParser {
   }
 
   private onSystem(ev: Obj): void {
-    if (ev.subtype !== "init" || !Array.isArray(ev.mcp_servers)) return;
-    this.connectors = ev.mcp_servers.filter(isObj).map((s) => ({
-      name: str(s.name),
-      status: str(s.status),
-    }));
+    if (ev.subtype !== "init") return;
+    if (Array.isArray(ev.tools)) {
+      this.availableTools = ev.tools.filter((t): t is string => typeof t === "string");
+    }
+    if (Array.isArray(ev.mcp_servers)) {
+      this.connectors = ev.mcp_servers.filter(isObj).map((s) => ({
+        name: str(s.name),
+        status: str(s.status),
+      }));
+    }
   }
 
   private onAssistant(ev: Obj): void {

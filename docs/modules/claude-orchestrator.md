@@ -213,6 +213,15 @@ Threshold and timeout defaults are proposals to tune with real usage.
 - Refresh token < 48 h → `auth.expiry_warning`.
 - stream-json parser fixtures: init (pending/connected), tool_use/tool_result pairing, rate_limit_event, result.
 
+## Implementation notes (Phase 2)
+
+- **Per-claim owner token (G1).** A job claim stores a unique owner token (worker id plus a fresh id per claim), so a reaper requeue followed by a re-claim from the same worker id cannot let the stale run complete or release the job.
+- **Narrowed `AIProvider`.** The interface is `execute` and `getHealth` only; `getCapabilities()` is deferred until a consumer needs it. `AIExecutionResult` also carries `availableTools` (tool names from the `system/init` event, never content).
+- **`knownServers` learning.** The orchestrator learns connector names from the init event's `mcp_servers` and adds them to the known-server set used for the server-level denylist. Names are validated before being learned, so a hostile or malformed name cannot inject a denylist entry or tool pattern.
+- **Strict tool-name grammar (R26/R27).** Allowed and expected tool names must match the strict grammar (built-ins, or `mcp__<server>__<tool>` with normalized segments); anything else is rejected before spawning.
+- **Per-window quota status (R30).** The quota gate evaluates the five-hour and seven-day windows separately from the `rate_limit_event`; a `rejected` status on either window blocks runs until that window's `resetsAt`.
+- **Smoke script.** `bun scripts/dev/claude-smoke.ts [--no-tools|--deny-check]` runs one real request on a temp DB and prints only ids, statuses and counts. `--deny-check` prints PASS only if no `mcp__claude_ai_Gmail` tool is listed and a Slack tool is; INCONCLUSIVE if no Slack tool is listed yet (connector may be pending at init); FAIL if a Gmail tool is listed.
+
 ## Open questions
 
 - OQ-3 resolved: push the parent branch to `origin`; PR from `origin/<parent>` into `upstream/<parent>` (ADR-030).

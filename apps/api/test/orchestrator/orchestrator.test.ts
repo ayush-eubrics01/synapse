@@ -36,6 +36,7 @@ function result(over: Partial<AIExecutionResult> = {}): AIExecutionResult {
     },
     permissionDenials: [],
     connectors: [],
+    availableTools: [],
     exitCode: 0,
     ...over,
   };

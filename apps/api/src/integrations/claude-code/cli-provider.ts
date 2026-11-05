@@ -186,6 +186,7 @@ export class ClaudeCliProvider implements AIProvider {
       quota: parsed.quota,
       permissionDenials: result?.permissionDenials ?? [],
       connectors: parsed.connectors,
+      availableTools: parsed.availableTools,
       exitCode: out.exitCode,
     };
     const fail = (

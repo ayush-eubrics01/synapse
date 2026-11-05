@@ -48,6 +48,7 @@ describe("ClaudeCliProvider.execute", () => {
     expect(r.toolResults).toHaveLength(2);
     expect(r.quota).toBeDefined();
     expect(r.exitCode).toBe(0);
+    expect(r.availableTools).toEqual(["ToolSearch"]);
   });
 
   test("fabricated with expectedToolNames is incomplete", async () => {
