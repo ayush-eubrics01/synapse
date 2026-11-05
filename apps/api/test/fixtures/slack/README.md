@@ -16,7 +16,9 @@ Format facts these fixtures encode:
   `Text: ` then the message text (may span lines, may contain `---` or label-like text),
   optional `Full notes: …` (huddle notes), then a blank line, `---`, blank line.
 - Thread replies carry `thread_ts` only in the permalink query.
-- Last page: `pagination_info` with no cursor (assumed empty string; not yet observed).
+- Last page / empty: `pagination_info` is `End of results - No more pages available.\n` (observed 2026-11-05).
+- Empty search (observed): body is exactly `# Search Results for: <query>`, blank line, `No results found.` — there is NO `## Messages (0 results)` line.
+- Page 2+ (observed): numbering restarts at `### Result 1 of N` with a per-page N.
 - Thread envelope: `{"messages": "<text>", "pagination_info": "There are no more messages in this thread."}`;
   sections `=== THREAD PARENT MESSAGE ===` and `=== THREAD REPLIES (N total) ===`, replies introduced by
   `--- Reply i of N ---`; each message: `From: Name <email> (U…)`, `Time: …`, `Message TS: <ts>`, text lines,

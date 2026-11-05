@@ -113,6 +113,14 @@ export function parseSearchResult(content: string): MessagePage {
   if (!(lines[0] ?? "").startsWith("# Search Results for:")) {
     throw new SlackParseError("search body lacks its header");
   }
+  // Observed empty form: header, blank line, "No results found.", optional final newline.
+  if (
+    lines[1] === "" &&
+    lines[2] === "No results found." &&
+    (lines.length === 3 || (lines.length === 4 && lines[3] === ""))
+  ) {
+    return { messages: [], rejected: 0 };
+  }
   const countIdx = lines.findIndex((l) => /^## Messages \(\d+ results?\)$/.test(l));
   const firstBlockIdx = lines.findIndex((l) => BLOCK_START.test(l));
   if (countIdx < 0 || (firstBlockIdx >= 0 && firstBlockIdx < countIdx)) {

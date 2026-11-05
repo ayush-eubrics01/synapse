@@ -175,3 +175,29 @@ describe("search injection (R41)", () => {
     expect(page.messages[0]?.text).toBe("\nleading blank");
   });
 });
+
+describe("empty search (R43)", () => {
+  test("search-empty fixture", () => {
+    const page = parseSearchResult(fixture("search-empty"));
+    expect(page).toEqual({ messages: [], rejected: 0 });
+    expect(page.nextCursor).toBeUndefined();
+  });
+
+  test("No results found plus an extra line throws", () => {
+    const body = "# Search Results for: x\n\nNo results found.\nextra\n";
+    expect(() => parseSearchResult(JSON.stringify({ results: body }))).toThrow(SlackParseError);
+  });
+
+  test("No results found without trailing newline is accepted", () => {
+    const body = "# Search Results for: x\n\nNo results found.";
+    expect(parseSearchResult(JSON.stringify({ results: body })).messages).toEqual([]);
+  });
+
+  test("No results found inside message text does not change parsing", () => {
+    const results = JSON.parse(fixture("search-group-dm")).results as string;
+    const body = results.replace("synthetic group message one", "No results found.");
+    const page = parseSearchResult(JSON.stringify({ results: body }));
+    expect(page.messages).toHaveLength(2);
+    expect(page.messages[0]?.text).toBe("No results found.");
+  });
+});
