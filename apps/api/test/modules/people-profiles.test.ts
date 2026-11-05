@@ -443,3 +443,225 @@ describe("retryApply", () => {
     expect(() => recs.retryApply(r.id)).toThrow(RetryNotAllowed);
   });
 });
+
+const versionEvidence = (version: number) => {
+  const v = db
+    .select()
+    .from(schema.peopleProfileVersions)
+    .all()
+    .find((x) => x.version === version);
+  return db
+    .select()
+    .from(schema.peopleProfileEvidence)
+    .where(eq(schema.peopleProfileEvidence.versionId, v?.id ?? "none"))
+    .all()
+    .map((e) => `${e.observationKey}:${e.messageId}`)
+    .sort();
+};
+
+describe("evidence carry-over", () => {
+  test("a modified key takes the recommendation's evidence, not the old; no duplicates", async () => {
+    const [m1, m2, m3] = [message(), message(), message()];
+    await approveAndRun(
+      store("initial", content({ communication: [obs("a"), obs("k")] }), [
+        { key: "communication.a", messageId: m1 },
+        { key: "communication.k", messageId: m2 },
+      ]).approvalId,
+    );
+    const u = store(
+      "update",
+      diff({
+        remove: [{ section: "communication", key: "k", evidence: ["m"] }],
+        add: [addDiff("communication", "k")],
+      }),
+      [{ key: "communication.k", messageId: m3 }],
+      1,
+    );
+    await approveAndRun(u.approvalId);
+    expect(versionEvidence(2)).toEqual([`communication.a:${m1}`, `communication.k:${m3}`]);
+    expect(versionEvidence(1)).toEqual([`communication.a:${m1}`, `communication.k:${m2}`]);
+  });
+
+  test("v1 -> v2 -> v3 carries untouched evidence through both steps", async () => {
+    const [m1, m2, m3] = [message(), message(), message()];
+    await approveAndRun(
+      store("initial", content({ communication: [obs("a")] }), [
+        { key: "communication.a", messageId: m1 },
+      ]).approvalId,
+    );
+    await approveAndRun(
+      store(
+        "update",
+        diff({ add: [addDiff("communication", "b")] }),
+        [{ key: "communication.b", messageId: m2 }],
+        1,
+      ).approvalId,
+    );
+    await approveAndRun(
+      store(
+        "update",
+        diff({ add: [addDiff("communication", "c")] }),
+        [{ key: "communication.c", messageId: m3 }],
+        2,
+      ).approvalId,
+    );
+    expect(versionEvidence(3)).toEqual([
+      `communication.a:${m1}`,
+      `communication.b:${m2}`,
+      `communication.c:${m3}`,
+    ]);
+    expect(service.getProfile(personId)?.evidence).toHaveLength(3);
+  });
+
+  test("an update copies recommendation evidence only for changed keys", async () => {
+    const [m1, m2] = [message(), message()];
+    await approveAndRun(
+      store("initial", content({ communication: [obs("a")] }), [
+        { key: "communication.a", messageId: m1 },
+      ]).approvalId,
+    );
+    // stray evidence on the update for an untouched key must not duplicate the carried row
+    const u = store(
+      "update",
+      diff({ add: [addDiff("communication", "b")] }),
+      [
+        { key: "communication.b", messageId: m2 },
+        { key: "communication.a", messageId: m2 },
+      ],
+      1,
+    );
+    await approveAndRun(u.approvalId);
+    expect(versionEvidence(2)).toEqual([`communication.a:${m1}`, `communication.b:${m2}`]);
+  });
+});
+
+describe("atomicity after writes", () => {
+  const counts = () => ({
+    versions: db.select().from(schema.peopleProfileVersions).all().length,
+    evidence: db.select().from(schema.peopleProfileEvidence).all().length,
+    profile: JSON.stringify(service.getProfile(personId)),
+  });
+
+  test("a failure after the profile write rolls everything back; retry works once fixed", async () => {
+    const m = message();
+    const first = store("initial", content({ communication: [obs("a")] }), [
+      { key: "communication.a", messageId: m },
+    ]);
+    await approveAndRun(first.approvalId);
+    const u = store(
+      "update",
+      diff({ add: [addDiff("communication", "b")] }),
+      [{ key: "communication.b", messageId: m }],
+      1,
+    );
+    const profileId = db.select().from(schema.peopleProfiles).get()?.id ?? "";
+    // a conflicting version 2 makes the version insert fail after the profile row was updated
+    db.insert(schema.peopleProfileVersions)
+      .values({
+        id: "blocker",
+        profileId,
+        version: 2,
+        content: content(),
+        recommendationId: first.id,
+        createdAt: NOW,
+      })
+      .run();
+    const before = counts();
+    const out = await approveAndRun(u.approvalId);
+    expect(out).toEqual({ status: "failed", result: { error: "profile write failed" } });
+    expect(counts()).toEqual(before);
+    expect(db.select().from(schema.peopleProfiles).get()?.currentVersion).toBe(1);
+    expect(recRow(u.id)?.status).toBe("pending");
+    expect(
+      db
+        .select()
+        .from(schema.domainEvents)
+        .where(eq(schema.domainEvents.type, "person.profile_approved"))
+        .all(),
+    ).toHaveLength(1);
+
+    // retry path: still blocked -> fails again with nothing written
+    const r1 = recs.retryApply(u.id);
+    expect((await approveAndRun(r1.approvalId)).status).toBe("failed");
+    expect(counts()).toEqual(before);
+    expect(recRow(u.id)?.status).toBe("pending");
+
+    db.delete(schema.peopleProfileVersions)
+      .where(eq(schema.peopleProfileVersions.id, "blocker"))
+      .run();
+    const r2 = recs.retryApply(u.id);
+    expect((await approveAndRun(r2.approvalId)).status).toBe("executed");
+    expect(service.getProfile(personId)?.version).toBe(2);
+    expect(recRow(u.id)?.status).toBe("applied");
+  });
+});
+
+describe("decisions and kinds", () => {
+  test("suggest_evaluation is superseded and skipped, never failed", async () => {
+    const id = "rec-se";
+    db.insert(schema.peopleProfileRecommendations)
+      .values({ id, personId, kind: "suggest_evaluation", status: "pending", createdAt: NOW })
+      .run();
+    const a = engine.request(db, {
+      action: "records.update",
+      targetIntegration: "people",
+      targetRef: personId,
+      payload: { recommendationId: id },
+      riskLevel: "low",
+      idempotencyKey: "se",
+      requestedByModule: "people",
+    });
+    const out = await approveAndRun(a.id);
+    expect(out.status).toBe("executed");
+    expect(out.result).toEqual({ status: "skipped", reason: "unsupported_kind" });
+    expect(recRow(id)?.status).toBe("superseded");
+  });
+
+  test("re-delivered reject is a no-op; reject never touches an applied recommendation", async () => {
+    const r = store("initial", content({ communication: [obs("a")] }));
+    engine.reject(r.approvalId, "no");
+    dispatcher.dispatchOnce();
+    const decidedAt = recRow(r.id)?.decidedAt;
+    const count = () =>
+      db
+        .select()
+        .from(schema.domainEvents)
+        .where(eq(schema.domainEvents.type, "person.recommendation_decided"))
+        .all();
+    expect(count()).toHaveLength(1);
+    expect(count()[0]?.aggregateId).toBe(personId);
+    // simulate redelivery of the same event
+    db.update(schema.domainEvents)
+      .set({ dispatchedAt: null })
+      .where(eq(schema.domainEvents.type, "approval.rejected"))
+      .run();
+    db.delete(schema.eventConsumptions).run();
+    dispatcher.dispatchOnce();
+    expect(count()).toHaveLength(1);
+    expect(recRow(r.id)?.decidedAt).toBe(decidedAt ?? null);
+
+    const ok = store("initial", content({ communication: [obs("z")] }));
+    // personId has no profile yet, so this applies
+    await approveAndRun(ok.approvalId);
+    expect(recRow(ok.id)?.status).toBe("applied");
+    db.update(schema.approvals)
+      .set({ status: "approved" })
+      .where(eq(schema.approvals.id, ok.approvalId))
+      .run();
+    // force a rejected event for the applied recommendation's approval
+    db.insert(schema.domainEvents)
+      .values({
+        id: "forced",
+        type: "approval.rejected",
+        version: 1,
+        aggregateType: "approval",
+        aggregateId: ok.approvalId,
+        correlationId: "c",
+        payload: { approvalId: ok.approvalId },
+        occurredAt: NOW,
+      })
+      .run();
+    dispatcher.dispatchOnce();
+    expect(recRow(ok.id)?.status).toBe("applied");
+  });
+});

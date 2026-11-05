@@ -49,7 +49,20 @@ export interface ProfileView {
 
 export type ApplyResult =
   | { status: "applied"; version: number }
-  | { status: "skipped"; reason: "recommendation_not_pending" | "stale_base" | "profile_exists" };
+  | {
+      status: "skipped";
+      reason: "recommendation_not_pending" | "stale_base" | "profile_exists" | "unsupported_kind";
+    };
+
+/** Content-free by construction: the engine stores `message` in the approval and audit row. */
+export class ProfileApplyError extends Error {
+  constructor(
+    message: "invalid approval payload" | "recommendation not found" | "profile write failed",
+  ) {
+    super(message);
+    this.name = "ProfileApplyError";
+  }
+}
 
 const keyOf = (section: ProfileSection, key: string) => `${section}.${key}`;
 
@@ -82,7 +95,7 @@ export class ProfileService {
   /** Runs in one immediate transaction. Throws only content-free messages (the engine stores them). */
   apply(approval: Approval): ApplyResult {
     const payload = payloadSchema.safeParse(approval.payload);
-    if (!payload.success) throw new Error("invalid approval payload");
+    if (!payload.success) throw new ProfileApplyError("invalid approval payload");
     try {
       return this.deps.db.transaction(
         (tx) => this.applyIn(tx, approval, payload.data.recommendationId),
@@ -91,19 +104,17 @@ export class ProfileService {
         },
       );
     } catch (e) {
-      if (e instanceof Error && e.message === "recommendation not found") throw e;
-      if (e instanceof Error && e.message === "unsupported recommendation kind") throw e;
-      throw new Error("profile write failed");
+      if (e instanceof ProfileApplyError) throw e;
+      throw new ProfileApplyError("profile write failed");
     }
   }
 
   private applyIn(tx: DbOrTx, approval: Approval, recommendationId: string): ApplyResult {
     const { clock, events, audit } = this.deps;
     const rec = tx.select().from(recs).where(eq(recs.id, recommendationId)).get();
-    if (!rec) throw new Error("recommendation not found");
+    if (!rec) throw new ProfileApplyError("recommendation not found");
     if (rec.status !== "pending")
       return { status: "skipped", reason: "recommendation_not_pending" };
-    if (rec.kind === "suggest_evaluation") throw new Error("unsupported recommendation kind");
     const now = isoNow(clock);
     const profile = tx
       .select()
@@ -111,7 +122,9 @@ export class ProfileService {
       .where(eq(peopleProfiles.personId, rec.personId))
       .get();
 
-    const supersede = (reason: "stale_base" | "profile_exists"): ApplyResult => {
+    const supersede = (
+      reason: "stale_base" | "profile_exists" | "unsupported_kind",
+    ): ApplyResult => {
       tx.update(recs)
         .set({ status: "superseded", reason, decidedAt: now })
         .where(eq(recs.id, rec.id))
@@ -126,18 +139,20 @@ export class ProfileService {
       return { status: "skipped", reason };
     };
 
+    if (rec.kind === "suggest_evaluation") return supersede("unsupported_kind");
+
     let content: ProfileContent;
     let touched: Set<string> | null = null; // update only: keys changed by the diff
     if (rec.kind === "initial") {
       if (profile) return supersede("profile_exists");
       const parsed = profileContentSchema.safeParse(rec.content);
-      if (!parsed.success) throw new Error("profile write failed");
+      if (!parsed.success) throw new ProfileApplyError("profile write failed");
       content = parsed.data;
     } else {
       if (!profile || rec.baseVersion !== profile.currentVersion) return supersede("stale_base");
       const diff = profileUpdateOutputSchema.safeParse(rec.content);
       const base = profileContentSchema.safeParse(profile.content);
-      if (!diff.success || !base.success) throw new Error("profile write failed");
+      if (!diff.success || !base.success) throw new ProfileApplyError("profile write failed");
       touched = new Set();
       content = applyDiff(base.data, diff.data, touched);
     }
@@ -213,7 +228,8 @@ export class ProfileService {
       .from(evidenceTable)
       .where(eq(evidenceTable.recommendationId, rec.id))
       .all()) {
-      if (present.has(e.observationKey)) copy(e);
+      // initial: all rows; update: only changed keys, the rest were carried from the previous version
+      if (present.has(e.observationKey) && (!touched || touched.has(e.observationKey))) copy(e);
     }
 
     tx.update(recs).set({ status: "applied", decidedAt: now }).where(eq(recs.id, rec.id)).run();
@@ -246,7 +262,7 @@ export class ProfileService {
       .get();
     if (approval?.target !== "people") return;
     const rec = tx
-      .select({ id: recs.id })
+      .select({ id: recs.id, personId: recs.personId })
       .from(recs)
       .where(and(eq(recs.approvalId, approvalId), eq(recs.status, "pending")))
       .get();
@@ -258,7 +274,7 @@ export class ProfileService {
     this.deps.events.publish(tx, {
       type: "person.recommendation_decided",
       aggregateType: "person",
-      aggregateId: rec.id,
+      aggregateId: rec.personId,
       correlationId: newId(),
       payload: { recommendationId: rec.id, status },
     });
