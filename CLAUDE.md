@@ -109,4 +109,13 @@ bun run check                  # typecheck (tsc -b) + lint (biome) + tests
 bun test                       # run all tests
 bun run --cwd apps/api dev     # API on 127.0.0.1:7400
 bun run --cwd apps/web dev     # web on 127.0.0.1:7401
+bun scripts/setup/check-env.ts # read-only env check (bun >= 1.4.4, claude on service PATH, linger)
+```
+
+Setup commands that change the system. **Ask the user for approval before running any of these:**
+
+```bash
+bun scripts/setup/install-services.ts   # writes ~/.config/systemd/user/synapse-{api,web}.service, prints the next commands
+loginctl enable-linger "$USER"          # keep user services running after logout
+systemctl --user daemon-reload && systemctl --user enable --now synapse-api synapse-web
 ```

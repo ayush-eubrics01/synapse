@@ -1,0 +1,15 @@
+[Unit]
+Description=Synapse API
+
+[Service]
+Type=simple
+ExecStart={{BUN}} run --cwd {{REPO}}/apps/api start
+Environment=PATH={{PATH}}
+Environment=SYNAPSE_DB_PATH={{DB_PATH}}
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

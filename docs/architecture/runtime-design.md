@@ -12,7 +12,7 @@ Both are **systemd user services**. The API runs independently of the web servic
 ### systemd requirements (from Phase 0)
 
 - Lingering must be on (`loginctl enable-linger <user>`), or services stop at logout. Setup checks this and tells the user.
-- The service environment doesn't inherit the shell's PATH. The unit sets `PATH` explicitly to include `~/.bun/bin` (Bun) and `~/.local/bin` (`claude`). Node isn't required. `ExecStart=%h/.bun/bin/bun run …`.
+- The service environment doesn't inherit the shell's PATH. The unit sets `PATH` explicitly to include `~/.bun/bin` (Bun) and `~/.local/bin` (`claude`). Node isn't required. The installer writes absolute paths (`ExecStart=<home>/.bun/bin/bun run --cwd <repo>/apps/api start`, plus `SYNAPSE_DB_PATH`) into `~/.config/systemd/user/`; the web unit adds `After=synapse-api.service`. Templates: `scripts/setup/systemd/`; check with `bun scripts/setup/check-env.ts`.
 - `claude` runs with stdin from `/dev/null`.
 - Graceful shutdown on `SIGTERM`: stop claiming jobs, let running non-engineering Claude runs finish within a grace period or abort them, keep the engineering lock lease (recovery decides), flush logs.
 - Logs go to journald (structured JSON lines).
