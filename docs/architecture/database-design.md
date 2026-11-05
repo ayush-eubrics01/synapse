@@ -23,11 +23,11 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 | Table | Purpose | Key columns / constraints |
 |---|---|---|
 | `app_settings` | Key/value settings | `key` PK, `value` JSON, `updated_at` |
-| `integrations` | Configured integrations | `id`, `kind` (slack/jira/claude/repository), `adapter`, `config` JSON (e.g. Jira `cloud_id`), `enabled` |
-| `integration_capabilities` | Discovered capabilities | `integration_id` FK, `name`, `available`, unique(`integration_id`,`name`) |
-| `integration_sync_states` | Checkpoints | `integration_id` FK, `stream` (e.g. `slack.messages`, `slack.backfill`, `jira.issues`), `checkpoint` (Slack ts / Jira updated), `cursor`, `status`, `last_success_at`, `last_error` JSON, unique(`integration_id`,`stream`) |
+| `integrations` | Configured integrations | `id`, `kind` (slack/jira/claude/repository), `adapter`, `config` JSON (e.g. Jira `cloud_id`; nullable), `enabled` (default true), `created_at`. Unique(`kind`,`adapter`) |
+| `integration_capabilities` | Discovered capabilities | `integration_id` FK → `integrations.id`, `name`, `available`, unique(`integration_id`,`name`) |
+| `integration_sync_states` | Checkpoints | `integration_id` FK → `integrations.id`, `stream` (e.g. `slack.messages`, `slack.backfill`, `jira.issues`), `checkpoint` (text, nullable; Slack ts / Jira updated), `cursor` (nullable), `status` (idle/running/paused/complete/error, default idle), `last_success_at`, `last_error` JSON, `upper_bound` (text, nullable; the backfill's `before`), `pages_done` int default 0, `search_count_date` (text YYYY-MM-DD, nullable), `search_count` int default 0, `next_run_after` (text, nullable), `backoff_minutes` int default 0, `stall_count` int default 0 (consecutive backfill runs that left the checkpoint unchanged), `generation` (text, nullable; ISO time of the backfill start or resume, part of its job idempotency key). Unique(`integration_id`,`stream`) |
 | `modules`, `module_dependencies` | Module registry | name, enabled, version; dependency edges |
-| `scheduled_tasks` | Recurring schedules | `name` unique, `job_type`, `interval_seconds` (nullable), `cron` (nullable), `input` JSON, `priority` (default 100), `enabled`, `next_run_at`, `last_run_at` |
+| `scheduled_tasks` | Recurring schedules | `name` unique, `job_type`, `interval_seconds` (nullable), `cron` (nullable), `input` JSON, `priority` (default 100), `enabled`, `next_run_at`, `last_run_at`. The opt-in `coalesce` flag (R58) is set in code at registration, not stored |
 | `jobs` | Durable queue | `id`, `type`, `priority`, `status` (PENDING/RUNNING/RETRY/COMPLETED/FAILED/NEEDS_ATTENTION/CANCELLED), `input` JSON, `output` JSON (nullable), `attempts`, `max_attempts` (3), `idempotency_key` unique, `concurrency_group` (e.g. `engineering`), `external_write` (boolean, default false; set at enqueue for jobs that write to an external system — an uncertain outcome after a timeout, forced stop or crash goes to NEEDS_ATTENTION instead of RETRY), `run_after`, `lease_owner`, `lease_expires_at`, timestamps, `last_error` JSON. Index (`status`,`priority`,`run_after`) |
 | `job_attempts` | Per-attempt history | `job_id` FK, `attempt`, `started_at`, `finished_at`, `status`, `error` JSON, `claude_run_id` FK nullable |
 | `job_checkpoints` | Resumable progress | `job_id` FK, `checkpoint` JSON, `updated_at` |
@@ -46,11 +46,11 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 
 | Table | Key columns / constraints |
 |---|---|
-| `slack_conversations` | `external_id` unique (channel/DM ID), `type` (im/mpim/private_channel/public_channel, from result labels), `name`, `accessible`, `last_seen_ts` |
-| `slack_users` | `external_id` unique (U…), `name`, `email`, `is_bot` (nullable; not exposed by connector) |
-| `slack_messages` | `conversation_id` FK, `ts` (verbatim), unique(`conversation_id`,`ts`), `thread_ts` nullable, `sender_user_id` FK, `text` (nullable after retention), `permalink`, `reply_count`, `sent_at`, `collected_at`, `content_expired_at`, `screening` JSON, `urgency_level`, `urgency_reason`, `urgency_status`. Index (`sent_at`), (`thread_ts`), (`urgency_level`,`urgency_status`) |
-| `slack_attachments` | `message_id` FK, `external_file_id`, `name`, `local_path` nullable |
-| `slack_message_references` | Links messages to other entities: `message_id` FK, `ref_type` (commitment/project/jira_issue/person), `ref_id` |
+| `slack_conversations` | `external_id` unique (channel/DM ID), `type` (im/mpim/channel), `name` (nullable), `accessible` (default true), `last_seen_ts` (nullable) |
+| `slack_users` | `external_id` unique (U…), `name` (nullable), `email` (nullable), `is_bot` (nullable; not exposed by connector) |
+| `slack_messages` | `conversation_id` FK → `slack_conversations.id`, `ts` (verbatim), unique(`conversation_id`,`ts`), `thread_ts` nullable, `sender_user_id` FK → `slack_users.id`, `text` (nullable after retention), `full_notes` (nullable), `permalink` (nullable), `reply_count` (default 0), `sent_at`, `collected_at`, `content_expired_at` (nullable), `screening` JSON, `urgency_level`, `urgency_reason`, `urgency_status` (all nullable). Index (`sent_at`), (`conversation_id`,`thread_ts`), (`urgency_level`,`urgency_status`) |
+| `slack_attachments` | `message_id` FK → `slack_messages.id`, `external_file_id`, `name` (nullable), `local_path` nullable |
+| `slack_message_references` | Links messages to other entities: `message_id` FK → `slack_messages.id`, `ref_type` (commitment/project/jira_issue/person), `ref_id` |
 
 ## People tables (owned by `people`)
 

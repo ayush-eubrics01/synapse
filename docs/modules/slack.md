@@ -42,8 +42,8 @@ Tool: `mcp__claude_ai_Slack__slack_search_public_and_private`. Arguments for eve
 
 | Param | Value |
 |---|---|
-| `query` | `after:<checkpoint date YYYY-MM-DD>` (day-level hint only) |
-| `after` | checkpoint as a Unix timestamp string (inclusive; the real filter) |
+| `query` | `after:<UTC date of the after value minus 2 days>` (wide day hint only; see Implementation notes) |
+| `after` | `floor(checkpoint)` as a Unix seconds string (inclusive; the real filter). The incremental checkpoint is stored at most now − `slack.collection.indexLagSeconds` (R61); the first run uses now − 1 day |
 | `sort` / `sort_dir` | `timestamp` / `asc` |
 | `limit` | `20` (maximum) |
 | `include_bots` | `false` (ADR-027) |
@@ -69,15 +69,20 @@ The result is JSON `{ results: "<markdown>", pagination_info: "...cursor `X`..."
 
 ## Jobs
 
-| Job type | Trigger | Profile / model | Idempotency key | Retry |
-|---|---|---|---|---|
-| `slack.collect_incremental` | `scheduled_tasks`, every 10 min | collector / haiku | `slack.collect:<scheduled slot>` | 3 attempts, exponential backoff; skipped if previous run still active |
-| `slack.backfill_page_batch` | setup step, then self-enqueues until done | collector / haiku | `slack.backfill:<checkpoint ts>` | 3 attempts; resumes from checkpoint |
-| `slack.fetch_thread` | `message.thread_updated` for an unknown parent, or on demand | collector / haiku | `slack.thread:<conversation>:<parent ts>` | 3 attempts |
-| `slack.retention_cleanup` | daily | none (no Claude) | `slack.retention:<date>` | 3 attempts |
-| `slack.send_message` | `approval.approved` for a send | collector / haiku, send tool only | approval's `idempotency_key` | verify via `findSentMessage` before any retry |
+As implemented in `apps/api/src/workers/slack.ts` (handlers and schedules) and `InboxStore.persistPage` (thread enqueue). All jobs use the queue default of 3 attempts with the queue's retry policy per error kind.
 
-Each collector run fetches at most ~5 pages (`maxPages`), with `--max-turns` = pages + 3. The checkpoint (`integration_sync_states.checkpoint` = newest stored `ts`) is committed after each page's messages are persisted, in the same transaction.
+| Job type | Trigger | Claude | Idempotency key | Notes |
+|---|---|---|---|---|
+| `slack.collect_incremental` | schedule `slack.collect_incremental`, every `slack.collection.intervalSeconds` (600 s), `coalesce: true` (R58) | collector / haiku, search tool only | `sched:slack.collect_incremental:<nextRunAt>` (scheduler) | Handler timeout 300 s (R36). Skips without Claude when `slack.collection.enabled` is false, when the last success is newer than half the interval, or when another incremental job is RUNNING (R52) |
+| `slack.backfill` | `POST /api/slack/backfill` (start or resume), then self-enqueues after each run until complete | collector / haiku, search tool only | `slack.backfill:<generation>:<checkpoint>:<pagesDone>:<runAfter>` (R51) | Priority 10, group `slack.backfill`, handler timeout 300 s. Never starts by itself |
+| `slack.fetch_thread` | enqueued by `InboxStore.persistPage` for every reply whose parent is not stored (R47) | collector / haiku, `slack_read_thread` only | `slack.thread:<conversationId>:<parentTs>` | Priority 50, group `slack.threads` (one at a time), handler timeout 300 s; input validated with Zod |
+| `slack.retention_cleanup` | schedule `slack.retention_cleanup`, every 86 400 s, `coalesce: true` (R58) | none | `sched:slack.retention_cleanup:<nextRunAt>` (scheduler) | Handler timeout 60 s; calls `expireContent(retention.slackContentDays)` |
+
+A coalescing schedule enqueues nothing while a PENDING, RETRY or RUNNING job of its type exists, and still advances `nextRunAt` (R58), so a long auth or quota pause leaves at most one waiting job per schedule.
+
+Not implemented in Phase 3: `slack.send_message` (approval-gated send through `MessageSink`, verify via `findSentMessage` before any retry).
+
+Each collector run fetches at most `slack.collector.pagesPerRun` (5) pages, with `--max-turns` = pages + 3. The checkpoint (`integration_sync_states.checkpoint` = newest stored `ts`) is committed after each page's messages are persisted, in the same transaction.
 
 Cost note: every poll is a Claude run, even when nothing is new (~$0.005 API-equivalent on Haiku, ≈ $0.70/day at 10 minutes). Polling frequency is the main steady-state cost lever. The 90-day backfill is estimated at 115–270 pages, about 25–55 runs.
 
@@ -104,10 +109,51 @@ The May 2025 throttle for non-Marketplace apps (`conversations.history`/`replies
 |---|---|---|
 | Incremental poll (every 10 min) | 1 search, plus 1 more per extra 20 new messages | About 6 searches/hour. Far below limits |
 | Backfill (90 days ≈ 115–270 pages) | 1 search per page | At most 5 pages per run (a burst), at least 3 minutes between runs: about 100 pages/hour, done in roughly 1.5–3 hours. On `rate_limited`, double the gap (up to 30 min) and resume from the checkpoint |
-| Thread fetches | 1 `slack_read_thread` per unknown parent | Batched per run, at most 20 per run |
+| Thread fetches | 1 `slack_read_thread` per unknown parent | One job per missing parent, uncapped; jobs run one at a time (group `slack.threads`, R47) |
 | Daily per-user search limit | unknown | Count searches per day in `integration_sync_states`. If a daily-limit error appears, pause the backfill until the next day, keep incremental polling, and record the count it happened at |
 
 The backfill also yields to quota and to the user's own Claude Code activity (ADR-029, ADR-036).
+
+## Implementation notes (Phase 3)
+
+Where the Phase 3 code differs from, or is stricter than, the sections above. Rulings are in `docs/superpowers/plans/2026-11-05-phase-3-followups.md` (R35-R62).
+
+### Collection and parsing
+
+- **Search tool and filter (R44).** Collection uses `slack_search_public_and_private`. The exact filter is the Unix `after` (and, for backfill, `before`) argument. The `query` text carries only a wide day hint (`after:` two days earlier, `before:` two days later), because Slack's day modifiers are exclusive and timezone-dependent and could silently drop a day.
+- **Page-chain verification (R35).** The model's text is never trusted. A page is accepted only if the tool input of that `tool_result` equals the requested arguments (first page) or the requested arguments plus the previous page's cursor. Primitive values compare as strings, key order is ignored, and extra or missing keys mismatch. The first mismatch ends the chain; later pages are discarded. `complete` means no next cursor after the last accepted page.
+- **Fail-closed parsing (R41, R43).** The search parser takes the result count from the `## Messages (N results)` line and requires block headers `### Result 1 of N` ... `### Result N of N` consecutively. The thread parser requires exactly one parent marker, one replies marker and consecutive `--- Reply i of M ---` markers. Any extra, missing or out-of-order marker fails the whole page with `parse_failed` (`NEEDS_ATTENTION`), so message text cannot forge structure. The only accepted empty result is the exact observed "No results found." form. A message that fails Zod validation is rejected and counted. A thread reply with no parsable sender (bot or app) is rejected and counted (R45).
+- **ts window (R42).** A message is kept only if its `ts` is within `[floor(afterTs), beforeTs or now + 5 min]`. Others are rejected and counted. This bounds a forged or garbled `ts`.
+- **ADR-026 in the source (R57).** Slack requests do not set `expectedToolNames`: the provider would turn a run whose only expected-tool results are errors into `incomplete_ai_output` and drop the results, which hid Slack rate limits. `SlackConnectorSource` classifies instead. Search: any error result matching the rate pattern → `rate_limited` (with `Retry-After`, capped at 24 h; a daily limit waits until the next UTC midnight); no search tool result → `incomplete_ai_output`; no accepted page and only non-rate error results → `provider_error`; no accepted page otherwise → `incomplete_ai_output`. Thread: a rate-pattern error → `rate_limited`; no thread tool result at all → `incomplete_ai_output`; a non-rate error result for the requested pair leaves it unavailable (R46). A pair is marked unavailable only when some thread tool result's input matches it (error, parse drop or parent mismatch); a requested pair with no matching result → `incomplete_ai_output` (R62). Covered end to end through the real provider and orchestrator with the fake binary (`apps/api/test/integration/slack-provider-e2e.test.ts`).
+- **Index lag (R61, supersedes R59).** There is no query offset: `after` and the R42 lower bound are `floor(checkpoint)`. Instead, the incremental stream's stored checkpoint is capped at now − `slack.collection.indexLagSeconds` (default 300): checkpoint = max(current, min(page max, now − lag)), via `persistPage(..., { checkpointLagSeconds })`. Messages from the last `lag` seconds are re-read on the next poll, so a message the search index returns late is still collected, and dedup absorbs the repeats. Every run reads from the checkpoint onwards, so any result past the checkpoint advances it. The R59 offset could stall forever when 100 or more stored messages lay in the re-read window. The backfill stream keeps plain R48. The real latency is unmeasured (OQ-8).
+- **Run attribution (R60 M3).** `CollectRequest.jobId` and `ThreadFetchRequest.jobId` carry the queue job id to the orchestrator, so `claude_runs.job_id` links each Claude run to its job.
+- **Conversation types.** `im` (D ids), `mpim` (group DMs, recognised by the connector's "Group DM" label) and `channel` (public and private channels). The type is derived by the parser and stored on `slack_conversations`.
+
+### Storage and checkpoint
+
+- **`InboxStore.persistPage`** runs in one immediate transaction: upserts conversations and users, inserts messages, publishes `message.received` for each new message, and decides the thread handling for replies. The dedupe key is unique(`conversation_id`, `ts`); the inclusive boundary message and repeated pages count as duplicates.
+- **Checkpoint rules (R48).** After a page the checkpoint becomes max(current, min(newest ts of the page, now)). It never moves backwards and never beyond now, and only pages from a verified chain are persisted. For the incremental stream `now` is replaced by now − `slack.collection.indexLagSeconds` (R61).
+- **`SyncStateService`** owns `integration_sync_states` rows for the streams `slack.messages` and `slack.backfill`: status, checkpoint, pages done, per-day search count, stall count, generation, last success and last error.
+- **Thread fetch jobs (R45, R47).** A reply whose parent is not stored enqueues one `slack.fetch_thread` job per missing parent, with no cap. The idempotency key `slack.thread:<conversation>:<parentTs>` prevents duplicates. Jobs run one at a time (group `slack.threads`) at lower priority than collection. The parent `ts` must equal the requested one. An unanswered request completes and writes the audit row `slack.thread_unavailable` (R46). Thread parse errors drop only that thread.
+- **Retention.** After `retention.slackContentDays` (default 180) days, `expireContent` clears `slack_messages.text` and `fullNotes` and sets `contentExpiredAt` for messages older than the cutoff. `slack_users` names and emails are kept as the people directory. Ids, permalinks and derived records stay. `text` is `null` in the API afterwards.
+
+### Jobs
+
+- **Incremental (R52).** `slack.collect_incremental` completes without calling Claude when the last success is newer than half the interval, or when another incremental job is running. Quota and auth deferrals are pauses, not failures: they write no `lastError` and emit no `collection.failed`.
+- **Backfill (R49-R51).** It starts only on request (`POST /api/slack/backfill`), never automatically. The upper bound is the incremental checkpoint, or now if there is none (R37). Runs are paced by `slack.backfill.minMinutesBetweenRuns`, in group `slack.backfill`, and a new run is enqueued only if no PENDING or RETRY backfill job exists. Each start or resume gets a new generation, which is part of the idempotency key (`slack.backfill:<generation>:<checkpoint>:<pagesDone>:<runAfter>`), so crashes and resumes cannot create duplicate chains. Backfill is complete only when the last accepted page has no cursor. Three consecutive runs that leave the checkpoint unchanged (stall) set status `error` and stop. A terminal job failure also sets `error`, except `auth_failed`: the job still parks in `NEEDS_ATTENTION`, but the backfill stays `running` (R60 M5). Starting again from `error` (or from `running` with no live job, reported as `resumable` by the status route) resumes from the current checkpoint. A `paused` backfill is not reset by a start request.
+- **Scheduling (R58).** Both Slack schedules coalesce: a tick enqueues nothing while a job of the same type is PENDING, RETRY or RUNNING, so deferrals during an auth or quota pause never pile up. The flag lives in code at registration (schedules are re-registered on every start), so it needs no column.
+
+### HTTP routes (localhost, no auth beyond the bind)
+
+| Route | Result |
+|---|---|
+| `GET /api/inbox/messages?limit&before&conversationId` | Newest-first messages. `limit` 1..200 (default 50); `before` is an ISO datetime with offset; `conversationId` matches `/^[CDG][A-Z0-9]+$/`. Items hold conversation (id, name, type), sender, `sentAt`, `text` (null once expired), permalink, `threadTs`, `replyCount`. Invalid params return 400 |
+| `GET /api/slack/status` | `{ incremental, backfill, searchesToday }`; each state has status, checkpoint, pages done, last success, last error and stall count. `backfill.resumable` is true when the status is `running` and no PENDING, RETRY or RUNNING `slack.backfill` job exists; the dashboard then offers "Resume backfill" (R60 M4) |
+| `POST /api/slack/backfill` | Starts or resumes the backfill. Returns `{ started, state, reason? }`; `started: false` with a reason if already running, paused or complete |
+
+### Dev smoke
+
+`bun scripts/dev/slack-smoke.ts [--pages N]` runs one real incremental collection through the orchestrator on a temporary database and prints counts only. See `CLAUDE.md`.
 
 ## Events
 
@@ -126,7 +172,7 @@ scheduler → slack.collect_incremental
   → validate → upsert users/conversations → insert messages (dedup)
   → commit checkpoint + outbox events per page
   → message.received / message.thread_updated
-  → collection.completed {pages, new, duplicates, rejected, newCheckpoint}
+  → collection.completed {stream, pages, inserted, duplicates, rejected}
 ```
 
 Thread handling: a reply (`threadTs` set) whose parent is already stored emits `message.thread_updated`. If the parent is unknown, a `slack.fetch_thread` job is enqueued, and the reply is still stored with `thread_ts`.
@@ -151,27 +197,32 @@ Read Slack: allowed. Send, schedule or draft a message, react, create a conversa
 | Situation | Handling |
 |---|---|
 | Connector `pending` / not connected | `connector_not_ready` → retry with backoff |
-| No real tool_result from the search tool | `incomplete_ai_output` → retry; the run's text reply is ignored |
+| No real tool_result from the search or thread tool | `incomplete_ai_output` → retry; the run's text reply is ignored (R57) |
+| Only non-rate error results from the search tool | `provider_error` → retry (R57) |
+| Non-rate error result for a requested thread | thread is unavailable: the job completes with audit `slack.thread_unavailable` (R46, R57) |
 | Format change | `parse_failed` → `NEEDS_ATTENTION`, checkpoint not advanced |
 | Slack rate limit | `rate_limited` → honour `Retry-After` if given, else exponential backoff (backfill gap doubles up to 30 min); a daily-limit error pauses the backfill until the next day |
 | Quota above threshold | job deferred until `resetsAt` (orchestrator) |
-| Auth failure | `auth_failed` → `NEEDS_ATTENTION`, notification |
+| Auth failure | `auth_failed` → `NEEDS_ATTENTION`, notification. A backfill stays `running` (not `error`) and shows as resumable (R60 M5) |
 | Interrupted run | next run resumes from the last committed checkpoint; dedup handles overlap |
 | Uncertain send | verify via `findSentMessage`; never blind-retry |
 
 ## Configuration
 
-| Key | Default |
-|---|---|
-| `slack.collection.intervalMinutes` | `10` |
-| `slack.collection.maxPagesPerRun` | `5` |
-| `slack.backfill.minMinutesBetweenRuns` | `3` |
-| `slack.backfill.maxBackoffMinutes` | `30` |
-| `slack.threads.maxFetchesPerRun` | `20` |
-| `slack.backfill.days` | `90` |
-| `slack.retention.days` | `180` |
-| `slack.collection.conversationTypes` | `im,mpim,private_channel,public_channel` |
-| `slack.collection.onlyMyChannels` | `false` |
+Every key the Slack code reads (`settings.get`), from the settings registry in `apps/api/src/core/config/settings.ts`:
+
+| Key | Default | Read |
+|---|---|---|
+| `slack.collection.intervalSeconds` | `600` | At schedule registration (startup): a change needs a restart to change the poll interval. Also read on each incremental run for the R52 half-interval skip |
+| `slack.collection.enabled` | `true` | Each incremental run; `false` skips without calling Claude |
+| `slack.collection.indexLagSeconds` | `300` | Each incremental run: the stored checkpoint trails now by this many seconds (R61, OQ-8) |
+| `slack.collector.pagesPerRun` | `5` | Each incremental and backfill run (`maxPages`) |
+| `slack.backfill.minMinutesBetweenRuns` | `3` | Each backfill run (gap and minimum backoff) |
+| `slack.backfill.maxBackoffMinutes` | `30` | Each backfill run (backoff cap on `rate_limited`) |
+| `slack.backfill.days` | `90` | Backfill start (not on resume) |
+| `retention.slackContentDays` | `180` | Each retention run |
+
+Not implemented: per-conversation-type filters and an "only my channels" switch. Collection covers everything the search returns.
 
 ## Tests
 

@@ -35,6 +35,10 @@ import { SchedulerService } from "./core/scheduler/scheduler";
 import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
+import { SlackConnectorSource } from "./integrations/slack/connector-source";
+import { InboxStore } from "./modules/inbox/store";
+import { SyncStateService } from "./modules/inbox/sync-state";
+import { registerSlackJobs } from "./workers/slack";
 
 export interface Container {
   config: AppConfig;
@@ -58,6 +62,9 @@ export interface Container {
   auth: AuthMonitor;
   orchestrator: ClaudeOrchestrator;
   health: HealthService;
+  inbox: InboxStore;
+  sync: SyncStateService;
+  slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
 export interface ContainerDeps {
@@ -149,7 +156,24 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     events,
     audit,
     auth,
+    notifications,
     scratchDir,
+  });
+
+  const sync = new SyncStateService(db, clock);
+  const inbox = new InboxStore({ db, clock, events, queue, sync });
+  const slack = registerSlackJobs({
+    db,
+    clock,
+    source: new SlackConnectorSource({ orchestrator, clock }),
+    store: inbox,
+    sync,
+    queue,
+    settings,
+    events,
+    audit,
+    scheduler,
+    handlers,
   });
 
   const health = new HealthService({
@@ -160,7 +184,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     linger: lingerCheck(run),
     bun: bunVersionCheck(),
     auth: authCheck(auth, clock),
-    claude: claudeCheck(provider),
+    claude: claudeCheck(provider, clock),
   });
 
   return {
@@ -185,5 +209,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     auth,
     orchestrator,
     health,
+    inbox,
+    sync,
+    slack: { startBackfill: slack.startBackfill, backfillResumable: slack.backfillResumable },
   };
 }

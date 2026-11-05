@@ -78,6 +78,11 @@ describe("ClaudeCliProvider.execute", () => {
     expect(r.error?.retryAfter).toBe(new Date(1793893800 * 1000).toISOString());
   });
 
+  test("R39: 'the login page returned 500' is provider_error", async () => {
+    const r = await provider({ FAKE_CLAUDE_MODE: "login_page_500" }).execute(req(), sig());
+    expect(r.error?.kind).toBe("provider_error");
+  });
+
   test("auth_error is auth_failed", async () => {
     const r = await provider({ FAKE_CLAUDE_MODE: "auth_error" }).execute(req(), sig());
     expect(r.error?.kind).toBe("auth_failed");
@@ -254,6 +259,11 @@ describe("final-review fixes", () => {
     expect(r.error?.kind).toBe("quota_exhausted");
     expect(r.error?.retryAfter).toBe(NOW_PLUS_15);
     expect(r.error?.message).toBe("Claude usage quota exhausted");
+  });
+
+  test("P3: 'the quota was refreshed' is not quota_exhausted", async () => {
+    const r = await provider({ FAKE_CLAUDE_MODE: "quota_refreshed" }).execute(req(), sig());
+    expect(r.error?.kind).not.toBe("quota_exhausted");
   });
 
   test("I2: resetsAt 1e20 neither throws nor kills the process", async () => {

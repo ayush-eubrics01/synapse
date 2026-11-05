@@ -14,6 +14,10 @@ const DOMAIN_EVENTS = [
   "claude.job_failed",
   "quota.threshold_reached",
   "auth.expiry_warning",
+  "message.received",
+  "message.thread_updated",
+  "collection.completed",
+  "collection.failed",
 ] as const satisfies readonly EventType[];
 
 // LiveBus-only messages: job settles (worker) and notifications (NotificationService).

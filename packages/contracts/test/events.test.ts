@@ -23,8 +23,39 @@ test("catalog covers the Phase 1 and 2 events", () => {
       "claude.job_failed",
       "quota.threshold_reached",
       "auth.expiry_warning",
+      "message.received",
+      "message.thread_updated",
+      "collection.completed",
+      "collection.failed",
     ].sort(),
   );
   expect(parseEventPayload("settings.changed", { key: "k" })).toEqual({ key: "k" });
   expect(() => parseEventPayload("system.heartbeat", { at: 1 })).toThrow();
+});
+
+test("message and collection events", () => {
+  expect(parseEventPayload("message.received", { messageId: "m" })).toEqual({ messageId: "m" });
+  expect(parseEventPayload("message.thread_updated", { messageId: "m" })).toEqual({
+    messageId: "m",
+  });
+  expect(
+    parseEventPayload("collection.completed", {
+      stream: "slack",
+      pages: 1,
+      inserted: 2,
+      duplicates: 0,
+      rejected: 0,
+    }),
+  ).toBeDefined();
+  expect(
+    parseEventPayload("collection.failed", { stream: "slack", kind: "rate_limited" }),
+  ).toBeDefined();
+  for (const t of [
+    "message.received",
+    "message.thread_updated",
+    "collection.completed",
+    "collection.failed",
+  ]) {
+    expect(() => parseEventPayload(t, {})).toThrow();
+  }
 });

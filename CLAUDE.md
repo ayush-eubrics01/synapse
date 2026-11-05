@@ -85,7 +85,7 @@ claude -p "<prompt naming exact tools and arguments>" \
   --no-session-persistence --output-format stream-json --verbose < /dev/null
 ```
 
-- `$OVERRIDE` is `{"enabledPlugins":{"<each plugin name from ~/.claude/settings.json>":false},"hooks":{}}`: plugin names only, read once at startup; `{"enabledPlugins":{},"hooks":{}}` if the file can't be read. Since CLI 2.1.318, `--setting-sources ""` loads no claude.ai connectors; `user` loads them, and the override drops the user's plugins and hooks (R34, 2026-11-05).
+- `$OVERRIDE` is `{"enabledPlugins":{"<each plugin name from ~/.claude/settings.json>":false},"hooks":{}}`: plugin names only, read once at startup; `{"enabledPlugins":{},"hooks":{}}` if the file can't be read. Since CLI 2.1.318, `--setting-sources ""` loads no claude.ai connectors; `user` loads them, and the override drops the user's plugins and hooks (R34, 2026-11-05). Restart the API after installing or removing Claude Code plugins, because the plugin override is read once at startup (P8).
 - `--bare` is unusable (API key only; connectors need claude.ai OAuth).
 - Never use `--tools`; it hides MCP connector tools. Use `--allowedTools`/`--disallowedTools`.
 - Always allow `ToolSearch`; connector tools are deferred.
@@ -112,6 +112,7 @@ bun run --cwd apps/api dev     # API on 127.0.0.1:7400
 bun run --cwd apps/web dev     # web on 127.0.0.1:7401
 bun scripts/setup/check-env.ts # read-only env check (bun >= 1.4.4, claude on service PATH, linger)
 bun scripts/dev/claude-smoke.ts [--no-tools|--deny-check]  # real Claude run on a temp DB; spends a tiny amount of Claude quota — run deliberately
+bun scripts/dev/slack-smoke.ts [--pages N]  # reads real Slack via Claude on a temp DB, spends a little quota, prints counts only (never message text); run deliberately. N is 1..3, default 1
 ```
 
 Setup commands that change the system. **Ask the user for approval before running any of these:**

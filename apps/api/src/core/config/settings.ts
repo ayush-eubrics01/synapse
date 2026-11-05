@@ -7,6 +7,11 @@ import { DEFAULT_KNOWN_SERVERS, SERVER_NAME_RE } from "../orchestrator/tool-cata
 
 const settingSchemas = {
   "slack.collection.intervalSeconds": z.number().int().positive().default(600),
+  "slack.collection.enabled": z.boolean().default(true),
+  // R61: the incremental checkpoint is stored at most now - this, so the last N seconds are re-read (index latency).
+  "slack.collection.indexLagSeconds": z.number().int().nonnegative().default(300),
+  "slack.backfill.minMinutesBetweenRuns": z.number().int().positive().default(3),
+  "slack.backfill.maxBackoffMinutes": z.number().int().positive().default(30),
   "slack.backfill.days": z.number().int().positive().default(90),
   "slack.collector.pagesPerRun": z.number().int().positive().default(5),
   "retention.slackContentDays": z.number().int().positive().default(180),
@@ -30,6 +35,8 @@ const settingSchemas = {
     .array(z.string().regex(SERVER_NAME_RE))
     .default(() => [...DEFAULT_KNOWN_SERVERS]),
   "auth.lastExpiryWarningAt": z.string().nullable().default(null),
+  "auth.pausedAt": z.string().nullable().default(null),
+  "auth.pausedRefreshExpiresAt": z.string().nullable().default(null),
 };
 
 export type SettingKey = keyof typeof settingSchemas;
@@ -51,6 +58,11 @@ export class SettingsService {
       .where(eq(schema.appSettings.key, key))
       .get();
     return settingSchemas[key].parse(row?.value) as SettingValue<K>;
+  }
+
+  /** Removes a stored value so the key reads as its default (a JSON null cannot be stored). */
+  clear(key: SettingKey): void {
+    this.db.delete(schema.appSettings).where(eq(schema.appSettings.key, key)).run();
   }
 
   set<K extends SettingKey>(key: K, value: SettingValue<K>, opts: { emit?: boolean } = {}): void {

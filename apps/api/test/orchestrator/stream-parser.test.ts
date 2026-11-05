@@ -153,3 +153,29 @@ test("I2: a huge resetsAt does not throw and is treated as absent", () => {
   expect(r?.quota?.fiveHour?.resetsAt).toBeUndefined();
   expect(r?.result?.text).toBe("DONE");
 });
+
+test("P2: a 20-day resetsAt is capped at observedAt + 8 days", () => {
+  const p = new StreamParser();
+  const far = Math.floor(NOW.getTime() / 1000) + 20 * 86400;
+  p.push(rateLine({ five_hour: { utilization: 0.2, status: "allowed", resetsAt: far } }));
+  expect(p.end(NOW).quota?.fiveHour?.resetsAt).toBe(
+    new Date(NOW.getTime() + 8 * 86_400_000).toISOString(),
+  );
+});
+
+test("P4: top-level-only rate_limit_info maps onto the window named by rateLimitType", () => {
+  const top = (info: Record<string, unknown>) => {
+    const p = new StreamParser();
+    p.push(`${JSON.stringify({ type: "rate_limit_event", rate_limit_info: info })}\n`);
+    return p.end(NOW).quota;
+  };
+  const resetsAt = Math.floor(NOW.getTime() / 1000) + 3600;
+  const seven = top({ status: "rejected", resetsAt, rateLimitType: "seven_day" });
+  expect(seven?.sevenDay?.status).toBe("rejected");
+  expect(seven?.fiveHour).toBeUndefined();
+  const five = top({ status: "rejected", resetsAt, rateLimitType: "five_hour" });
+  expect(five?.fiveHour?.status).toBe("rejected");
+  expect(top({ status: "rejected", resetsAt, rateLimitType: "weird" })?.fiveHour?.status).toBe(
+    "rejected",
+  );
+});

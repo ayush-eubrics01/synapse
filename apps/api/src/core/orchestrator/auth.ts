@@ -67,6 +67,11 @@ export class AuthMonitor {
     private readonly credentialsPath: string,
   ) {}
 
+  /** Current credentials expiry (the two expiry fields only), or a generic error. */
+  currentExpiry(): AuthExpiry | { error: string } {
+    return readAuthExpiry(this.credentialsPath);
+  }
+
   record(claudeRunId?: string): void {
     const exp = readAuthExpiry(this.credentialsPath);
     if ("error" in exp) {

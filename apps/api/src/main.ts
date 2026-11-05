@@ -1,11 +1,22 @@
 import { createApp } from "./app";
 import { createContainer } from "./container";
 import { loadConfig } from "./core/config/config";
-import { REAP_INTERVAL_MS, reapExpiredJobs, recoverOnStartup } from "./core/recovery/recovery";
+import {
+  REAP_INTERVAL_MS,
+  reapExpiredJobs,
+  recoverOnStartup,
+  recoverOrphanRuns,
+} from "./core/recovery/recovery";
 
 const config = loadConfig(process.env);
 const c = createContainer(config, { testHandlers: process.env.SYNAPSE_TEST_HANDLERS === "1" });
 recoverOnStartup({ db: c.db, clock: c.clock, leases: c.leases, audit: c.audit });
+recoverOrphanRuns(c.db, c.clock);
+try {
+  c.auth.record();
+} catch (e) {
+  console.error("auth record failed:", e instanceof Error ? e.name : "non-error value thrown");
+}
 
 let server: ReturnType<typeof Bun.serve>;
 try {

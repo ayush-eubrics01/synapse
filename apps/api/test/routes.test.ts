@@ -302,3 +302,143 @@ test("/api/claude/status is null quota on an empty db, computed level after a sn
   expect(body.quota.window).toBe("five_hour");
   expect(body.quota.fiveHour.utilization).toBe(0.7);
 });
+
+// --- inbox and slack routes ---
+
+function seed(ts: string, conv = "C1", text = "hello") {
+  c.inbox.persistPage("slack.messages", {
+    messages: [
+      {
+        externalId: `${conv}:${ts}`,
+        conversationId: conv,
+        conversationType: "channel",
+        conversationName: `name-${conv}`,
+        ts,
+        senderId: "U1",
+        senderName: "Ada",
+        text,
+        sentAt: new Date(Number(ts) * 1000).toISOString(),
+      },
+    ],
+    rejected: 0,
+  });
+}
+
+type Msg = {
+  conversation: { id: string; name: string | null; type: string };
+  sender: { id: string; name: string | null };
+  sentAt: string;
+  text: string | null;
+};
+
+test("inbox messages: newest first, conversation filter, before, limit 0 is 400", async () => {
+  seed("1700000100.000100", "C1");
+  seed("1700000200.000100", "C2");
+  seed("1700000300.000100", "C1");
+  const all = (await (await req("/api/inbox/messages")).json()) as Msg[];
+  expect(all.map((m) => m.sentAt)).toEqual([
+    new Date(1700000300_000).toISOString(),
+    new Date(1700000200_000).toISOString(),
+    new Date(1700000100_000).toISOString(),
+  ]);
+  expect(all[0]?.conversation).toEqual({ id: "C1", name: "name-C1", type: "channel" });
+  expect(all[0]?.sender).toEqual({ id: "U1", name: "Ada" });
+  const c1 = (await (await req("/api/inbox/messages?conversationId=C1")).json()) as Msg[];
+  expect(c1).toHaveLength(2);
+  const before = (await (
+    await req(`/api/inbox/messages?before=${new Date(1700000300_000).toISOString()}`)
+  ).json()) as Msg[];
+  expect(before).toHaveLength(2);
+  const one = (await (await req("/api/inbox/messages?limit=1")).json()) as Msg[];
+  expect(one).toHaveLength(1);
+  expect((await req("/api/inbox/messages?limit=0")).status).toBe(400);
+  expect((await req("/api/inbox/messages?limit=201")).status).toBe(400);
+  expect((await req("/api/inbox/messages?before=yesterday")).status).toBe(400);
+});
+
+test("inbox messages: expired content has null text", async () => {
+  seed("1700000100.000100");
+  c.inbox.expireContent(0);
+  const [m] = (await (await req("/api/inbox/messages")).json()) as Msg[];
+  expect(m?.text).toBeNull();
+});
+
+test("slack status returns both streams and searchesToday for today (UTC) only", async () => {
+  const today = c.clock.now().toISOString().slice(0, 10);
+  c.sync.update(c.db, "slack.messages", { searchCount: 2, searchCountDate: today });
+  c.sync.update(c.db, "slack.backfill", { searchCount: 3, searchCountDate: "2000-01-01" });
+  const body = (await (await req("/api/slack/status")).json()) as {
+    incremental: { stream: string };
+    backfill: { stream: string; status: string };
+    searchesToday: number;
+  };
+  expect(body.incremental.stream).toBe("slack.messages");
+  expect(body.backfill.stream).toBe("slack.backfill");
+  expect(body.backfill.status).toBe("idle");
+  expect(body.searchesToday).toBe(2);
+});
+
+test("POST /api/slack/backfill starts once; a second call reports already running", async () => {
+  const first = await post("/api/slack/backfill");
+  expect(first.status).toBe(200);
+  expect(((await first.json()) as { started: boolean }).started).toBe(true);
+  const second = await post("/api/slack/backfill");
+  expect(second.status).toBe(200);
+  const body = (await second.json()) as { started: boolean; state: { status: string } };
+  expect(body.started).toBe(false);
+  expect(body.state.status).toBe("running");
+});
+
+test("R60 M4: backfill.resumable is true only when running with no live backfill job", async () => {
+  type S = { backfill: { status: string; resumable: boolean } };
+  const status = async () => ((await (await req("/api/slack/status")).json()) as S).backfill;
+  expect((await status()).resumable).toBe(false); // idle
+  await post("/api/slack/backfill");
+  expect(await status()).toMatchObject({ status: "running", resumable: false }); // job PENDING
+  c.db.update(schema.jobs).set({ status: "NEEDS_ATTENTION" }).run();
+  expect(await status()).toMatchObject({ status: "running", resumable: true });
+  const resumed = (await (await post("/api/slack/backfill")).json()) as { started: boolean };
+  expect(resumed.started).toBe(true);
+  expect((await status()).resumable).toBe(false);
+});
+
+test("health ready caches the claude provider health for 60 s", async () => {
+  let calls = 0;
+  const counting: AIProvider = {
+    execute: fakeProvider.execute,
+    getHealth: async () => {
+      calls++;
+      return { status: "ok", version: "fake" };
+    },
+  };
+  c.sqlite.close();
+  c = createContainer(loadConfig({ SYNAPSE_DB_PATH: ":memory:" }), {
+    run: async () => "Linger=yes",
+    provider: counting,
+  });
+  app = createApp(c);
+  await req("/health/ready");
+  const before = calls;
+  await req("/health/ready");
+  expect(calls).toBe(before);
+  expect(calls).toBe(1);
+});
+
+test("inbox before: a row exactly at the boundary is excluded (offset form normalized)", async () => {
+  seed("1700000100.000100");
+  seed("1700000200.000100");
+  const boundary = new Date(1700000200_000).toISOString();
+  const offset = boundary.replace("Z", "+00:00");
+  for (const b of [boundary, offset]) {
+    const rows = (await (
+      await req(`/api/inbox/messages?before=${encodeURIComponent(b)}`)
+    ).json()) as Msg[];
+    expect(rows.map((m) => m.sentAt)).toEqual([new Date(1700000100_000).toISOString()]);
+  }
+});
+
+test("inbox conversationId must look like a Slack id", async () => {
+  expect((await req("/api/inbox/messages?conversationId=bad%20id")).status).toBe(400);
+  expect((await req("/api/inbox/messages?conversationId=c1")).status).toBe(400);
+  expect((await req("/api/inbox/messages?conversationId=C1")).status).toBe(200);
+});

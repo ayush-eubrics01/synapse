@@ -41,6 +41,15 @@ function resetIso(v: unknown): string | undefined {
   return Number.isFinite(d.getTime()) ? d.toISOString() : undefined;
 }
 
+const MAX_RESET_AHEAD_MS = 8 * 24 * 3_600_000;
+
+/** A window never counts beyond observedAt + 8 days (a bad far-future resetsAt must not block for weeks). */
+function capReset(w: QuotaWindow | undefined, observedMs: number): QuotaWindow | undefined {
+  if (!w || w.resetsAt === undefined) return w;
+  const cap = observedMs + MAX_RESET_AHEAD_MS;
+  return Date.parse(w.resetsAt) > cap ? { ...w, resetsAt: new Date(cap).toISOString() } : w;
+}
+
 function parseWindow(v: unknown): QuotaWindow | undefined {
   if (!isObj(v)) return undefined;
   const resetsAt = resetIso(v.resetsAt);
@@ -78,6 +87,8 @@ export class StreamParser {
       this.handleLine(this.buffer);
       this.buffer = "";
     }
+    const fiveHour = capReset(this.fiveHour, now.getTime());
+    const sevenDay = capReset(this.sevenDay, now.getTime());
     return {
       connectors: this.connectors,
       availableTools: this.availableTools,
@@ -85,11 +96,11 @@ export class StreamParser {
       toolResults: this.toolResults,
       finalText: this.finalText,
       quota:
-        this.fiveHour || this.sevenDay
+        fiveHour || sevenDay
           ? {
               observedAt: now.toISOString(),
-              ...(this.fiveHour ? { fiveHour: this.fiveHour } : {}),
-              ...(this.sevenDay ? { sevenDay: this.sevenDay } : {}),
+              ...(fiveHour ? { fiveHour } : {}),
+              ...(sevenDay ? { sevenDay } : {}),
             }
           : undefined,
       result: this.result,
@@ -180,7 +191,15 @@ export class StreamParser {
 
   private onRateLimit(ev: Obj): void {
     const info = ev.rate_limit_info;
-    if (!isObj(info) || !isObj(info.unifiedWindows)) return;
+    if (!isObj(info)) return;
+    if (!isObj(info.unifiedWindows)) {
+      // Top-level form: one window, named by rateLimitType (anything unknown is the five-hour window).
+      if (typeof info.status !== "string") return;
+      const w = parseWindow(info);
+      if (info.rateLimitType === "seven_day") this.sevenDay = w ?? this.sevenDay;
+      else this.fiveHour = w ?? this.fiveHour;
+      return;
+    }
     // Each window is kept independently; the latest event carrying a window wins for it.
     this.fiveHour = parseWindow(info.unifiedWindows.five_hour) ?? this.fiveHour;
     this.sevenDay = parseWindow(info.unifiedWindows.seven_day) ?? this.sevenDay;

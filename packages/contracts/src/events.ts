@@ -21,6 +21,16 @@ export const eventCatalog = {
     resetsAt: z.string(),
   }),
   "auth.expiry_warning": z.object({ refreshExpiresAt: z.string() }),
+  "message.received": z.object({ messageId: z.string() }),
+  "message.thread_updated": z.object({ messageId: z.string() }),
+  "collection.completed": z.object({
+    stream: z.string(),
+    pages: z.number().int(),
+    inserted: z.number().int(),
+    duplicates: z.number().int(),
+    rejected: z.number().int(),
+  }),
+  "collection.failed": z.object({ stream: z.string(), kind: errorKindSchema }),
 };
 
 export type EventType = keyof typeof eventCatalog;

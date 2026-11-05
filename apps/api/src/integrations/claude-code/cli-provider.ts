@@ -15,8 +15,9 @@ import { DEFAULT_SETTINGS_OVERRIDE } from "./settings-override";
 const TESTED_VERSION = "2.1.318";
 const HEALTH_TIMEOUT_MS = 5000;
 const CLOSE_CAP_MS = 500;
-const AUTH_RE = /login|oauth token|authentication|unauthori[sz]ed/i;
-const QUOTA_TEXT_RE = /usage limit|rate limit|quota/i;
+const AUTH_RE =
+  /oauth token|please run \/login|not logged in|authentication (failed|error|required)|unauthori[sz]ed|invalid api key/i;
+const QUOTA_TEXT_RE = /usage limit|rate limit|quota (exceeded|exhausted|reached)/i;
 
 /** A spawn failure message by errno code; never includes paths or arguments. */
 export function spawnErrorMessage(code: string | undefined): string {
