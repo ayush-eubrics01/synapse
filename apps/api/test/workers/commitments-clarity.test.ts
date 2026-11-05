@@ -145,7 +145,7 @@ function msg(
       threadTs: o.thread ?? null,
       senderUserId: o.from === "self" ? "su-self" : "su-priya",
       text: o.text === undefined ? `${SECRET} ${seq}` : o.text,
-      sentAt: o.sentAt ?? ago(25),
+      sentAt: o.sentAt ?? ago(1),
       contentExpiredAt: o.expired ? NOW : null,
       collectedAt: NOW,
     })
@@ -184,7 +184,7 @@ const specJobs = () =>
     .select()
     .from(schema.jobs)
     .all()
-    .filter((j) => j.type === JOB);
+    .filter((j) => j.type === JOB && j.idempotencyKey.startsWith("commitments.spec:"));
 const followups = () => db.select().from(schema.followups).all();
 const history = () => db.select().from(schema.followupHistory).all();
 const evs = (type: string) =>
@@ -257,6 +257,26 @@ describe("commitments.check_spec_clarity handler", () => {
     expect(await spec(id)).toEqual({ skipped: "followup_exists" });
     expect(requests).toHaveLength(1);
     expect(followups()).toHaveLength(1);
+  });
+
+  test("R13: the handler skips without a run when the user posted after the request", async () => {
+    const a = msg({ text: REQUEST, sentAt: ago(5) });
+    msg({ from: "self", text: "on it", sentAt: ago(4) });
+    expect(await spec(a)).toEqual({ skipped: "answered" });
+    expect(requests).toHaveLength(0);
+    // Threaded: a self reply in another thread does not count; one in this thread does.
+    const t = msg({ conv: "c-ch", text: REQUEST, thread: "50.0", sentAt: ago(5) });
+    msg({ conv: "c-ch", from: "self", text: "elsewhere", thread: "60.0", sentAt: ago(4) });
+    expect(await spec(t)).toMatchObject({ drafted: true });
+    const t2 = msg({ conv: "c-ch", text: REQUEST, thread: "51.0", sentAt: ago(5) });
+    msg({ conv: "c-ch", from: "self", text: "here", thread: "51.0", sentAt: ago(4) });
+    expect(await spec(t2)).toEqual({ skipped: "answered" });
+    // A self message before the request does not count.
+    const b = msg({ conv: "c-mp", from: "self", text: "earlier", sentAt: ago(9) });
+    expect(b).toBeTruthy();
+    expect(await spec(msg({ conv: "c-mp", text: REQUEST, sentAt: ago(8) }))).toMatchObject({
+      drafted: true,
+    });
   });
 
   test("context: up to 5 earlier conversation messages, oldest first, untrusted, target last", async () => {
@@ -363,7 +383,7 @@ describe("commitments.queue consumer: spec clarity trigger", () => {
       priority: 45,
       concurrencyGroup: "commitments.intelligence",
     });
-    expect(jobs[0]?.input).toEqual({ messageId: id });
+    expect(jobs[0]?.input).toEqual({ messageId: id, senderRef: PRIYA });
     expect(handlers.get(JOB)?.timeoutMs).toBe(300_000);
   });
 
@@ -399,6 +419,71 @@ describe("commitments.queue consumer: spec clarity trigger", () => {
     settings.clear("slack.selfUserId");
     considered(msg({ text: REQUEST }));
     expect(specJobs()).toHaveLength(0);
+  });
+
+  test("R13: older than maxAgeHours does not trigger; the setting widens it", () => {
+    considered(msg({ text: REQUEST, sentAt: ago(30) }));
+    expect(specJobs()).toHaveLength(0);
+    settings.set("commitments.spec.maxAgeHours", 48);
+    considered(msg({ text: REQUEST, sentAt: ago(30) }));
+    expect(specJobs()).toHaveLength(1);
+  });
+
+  test("R13: a bot sender does not trigger", () => {
+    db.update(schema.slackUsers)
+      .set({ isBot: true })
+      .where(eq(schema.slackUsers.id, "su-priya"))
+      .run();
+    considered(msg({ text: REQUEST }));
+    expect(specJobs()).toHaveLength(0);
+  });
+
+  test("R13: an open spec followup in the same thread blocks; discarded or other thread does not", async () => {
+    const first = msg({ conv: "c-ch", text: `<@${SELF}> ${REQUEST}` });
+    await spec(first); // thread = its ts
+    const root = followups()[0]?.threadTs as string;
+    considered(msg({ conv: "c-ch", text: `<@${SELF}> ${REQUEST}`, thread: root, sentAt: ago(2) }));
+    expect(specJobs()).toHaveLength(0);
+    considered(
+      msg({ conv: "c-ch", text: `<@${SELF}> ${REQUEST}`, thread: "77.0", sentAt: ago(2) }),
+    );
+    expect(specJobs()).toHaveLength(1);
+    db.update(schema.followups).set({ status: "discarded" }).run();
+    considered(msg({ conv: "c-ch", text: `<@${SELF}> ${REQUEST}`, thread: root, sentAt: ago(1) }));
+    expect(specJobs()).toHaveLength(2);
+  });
+
+  test("R13: an unthreaded message is blocked by any open spec followup in its conversation", async () => {
+    await spec(msg({ text: REQUEST }));
+    considered(msg({ text: REQUEST }));
+    expect(specJobs()).toHaveLength(0);
+    for (const status of ["awaiting_approval", "sending", "needs_attention"] as const) {
+      db.update(schema.followups).set({ status }).run();
+      considered(msg({ text: REQUEST }));
+      expect(specJobs()).toHaveLength(0);
+    }
+    db.update(schema.followups).set({ status: "sent" }).run();
+    considered(msg({ text: REQUEST }));
+    expect(specJobs()).toHaveLength(1);
+  });
+
+  test("R13: per-sender daily cap counts spec jobs enqueued today", () => {
+    settings.set("commitments.spec.maxPerSenderPerDay", 2);
+    for (let i = 0; i < 3; i++) considered(msg({ text: REQUEST }));
+    expect(specJobs()).toHaveLength(2);
+    // Another sender is unaffected.
+    db.insert(schema.slackUsers).values({ id: "su-o", externalId: "UOTHER0001", name: "O" }).run();
+    const id = msg({ conv: "c-ch", text: `<@${SELF}> ${REQUEST}` });
+    db.update(schema.slackMessages)
+      .set({ senderUserId: "su-o" })
+      .where(eq(schema.slackMessages.id, id))
+      .run();
+    considered(id);
+    expect(specJobs()).toHaveLength(3);
+    // Yesterday's jobs do not count.
+    db.update(schema.jobs).set({ createdAt: "2026-11-04T10:00:00.000Z" }).run();
+    considered(msg({ text: REQUEST }));
+    expect(specJobs()).toHaveLength(4);
   });
 
   test("an already-extracted message still gets its clarity check, and extraction is still queued otherwise", () => {

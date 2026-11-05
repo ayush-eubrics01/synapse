@@ -96,6 +96,10 @@ test("phase 6 settings defaults and bounds", () => {
   expect(settings.get("commitments.extract.debounceMinutes")).toBe(30);
   expect(settings.get("commitments.extract.batchMax")).toBe(40);
   expect(settings.get("commitments.stall.waitHours")).toBe(24);
+  expect(settings.get("commitments.spec.maxAgeHours")).toBe(24);
+  expect(settings.get("commitments.spec.maxPerSenderPerDay")).toBe(5);
+  expect(() => settings.set("commitments.spec.maxAgeHours", 169)).toThrow();
+  expect(() => settings.set("commitments.spec.maxAgeHours", 0)).toThrow();
   expect(settings.get("commitments.reminder.dueSoonHours")).toBe(24);
   expect(settings.get("commitments.requireReviewForDetected")).toBe(true);
   expect(settings.get("commitments.models.extract")).toBe("haiku");

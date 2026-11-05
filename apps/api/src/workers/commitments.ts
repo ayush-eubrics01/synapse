@@ -8,7 +8,21 @@ import {
 } from "@synapse/contracts";
 import { type Db, schema, type Tx } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { AuditLogger } from "../core/audit/audit";
 import type { SettingsService } from "../core/config/settings";
 import type { EventPublisher } from "../core/events/publisher";
@@ -31,6 +45,7 @@ import {
   type StallService,
 } from "../modules/commitments/stall";
 import { COMMITMENTS_CONCURRENCY_GROUP, type CommitmentStore } from "../modules/commitments/store";
+import { followupThreadTs } from "../modules/commitments/thread";
 import { interactsWithUser } from "../modules/people/interaction";
 import { renderExcerpt } from "../modules/security-flags/detector";
 import type { SecurityFlagsService } from "../modules/security-flags/service";
@@ -435,11 +450,10 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
           .limit(1)
           .get() !== undefined;
       // R11: a DM nudge is top-level unless the source was itself in a thread.
-      const threadTs = !newest
-        ? null
-        : sourceConv?.type === "im"
-          ? newest.threadTs
-          : (newest.threadTs ?? newest.ts);
+      const threadTs =
+        !newest || !sourceConv
+          ? null
+          : followupThreadTs(sourceConv.type, newest.threadTs, newest.ts as string);
       const convIds = [...new Set(sources.map((s) => s.conversationId))];
       const threads = new Set(
         sources.flatMap((s) => [s.threadTs, s.ts].filter((t): t is string => t != null)),
@@ -608,6 +622,7 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
         name: slackConversations.name,
         convRef: slackConversations.externalId,
         senderRef: slackUsers.externalId,
+        expiredAt: slackMessages.contentExpiredAt,
       };
       const target = tx
         .select(base)
@@ -619,12 +634,28 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
       if (!target || target.text === null || target.senderRef === selfId) {
         return { skipped: "ineligible" as const };
       }
-      const full = tx
-        .select({ expiredAt: slackMessages.contentExpiredAt })
+      if (target.expiredAt !== null) return { skipped: "ineligible" as const };
+      // Already handled: the user posted in the conversation (or thread) after the request.
+      const answered = tx
+        .select({ id: slackMessages.id })
         .from(slackMessages)
-        .where(eq(slackMessages.id, messageId))
+        .innerJoin(slackUsers, eq(slackUsers.id, slackMessages.senderUserId))
+        .where(
+          and(
+            eq(slackMessages.conversationId, target.conversationId),
+            eq(slackUsers.externalId, selfId),
+            gt(slackMessages.sentAt, target.sentAt),
+            target.threadTs
+              ? or(
+                  eq(slackMessages.threadTs, target.threadTs),
+                  eq(slackMessages.ts, target.threadTs),
+                )
+              : undefined,
+          ),
+        )
+        .limit(1)
         .get();
-      if (full?.expiredAt) return { skipped: "ineligible" as const };
+      if (answered) return { skipped: "answered" as const };
 
       // Earlier messages only: same instant means an earlier row.
       const before = or(
@@ -670,7 +701,7 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
       return {
         conversationId: target.conversationId,
         // R11: top-level in a DM unless the request was itself a thread reply; else under the request.
-        threadTs: target.type === "im" ? target.threadTs : (target.threadTs ?? target.ts),
+        threadTs: followupThreadTs(target.type, target.threadTs, target.ts),
         sender: target.senderRef,
         items: [...earlier, target].map(asItem),
       };

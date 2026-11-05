@@ -1,7 +1,7 @@
 import type { DomainEvent, EventType } from "@synapse/contracts";
 import { type Db, schema, type Tx } from "@synapse/database";
 import type { Clock } from "@synapse/shared";
-import { eq } from "drizzle-orm";
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { SettingsService } from "../../core/config/settings";
 import type { JobQueue } from "../../core/jobs/queue";
 import { looksLikeTaskRequest } from "../../intelligence/commitments/clarity-prompt";
@@ -16,7 +16,9 @@ export const SPEC_PRIORITY = 45;
 
 const DAY_MS = 86_400_000;
 const MINUTE_MS = 60_000;
-const { slackMessages, slackUsers, slackConversations } = schema;
+const { slackMessages, slackUsers, slackConversations, followups, jobs } = schema;
+const HOUR_MS = 3_600_000;
+const OPEN_SPEC = ["draft", "awaiting_approval", "sending", "needs_attention"] as const;
 
 export interface ExtractionQueueDeps {
   db: Db;
@@ -59,6 +61,7 @@ export class ExtractionQueue {
         conversationType: slackConversations.type,
         ts: slackMessages.ts,
         threadTs: slackMessages.threadTs,
+        isBot: slackUsers.isBot,
       })
       .from(slackMessages)
       .innerJoin(slackUsers, eq(slackUsers.id, slackMessages.senderUserId))
@@ -71,16 +74,11 @@ export class ExtractionQueue {
     // Old backfill messages are never extracted or checked.
     if (Number.isNaN(sentMs) || sentMs < now - settings.get("people.history.days") * DAY_MS) return;
 
-    // Spec clarity: a task-like request from someone else, addressed to the user.
-    if (
-      m.senderRef !== selfId &&
-      looksLikeTaskRequest(m.text) &&
-      (m.conversationType === "im" || selfMentionNeedles(selfId).some((n) => m.text?.includes(n)))
-    ) {
+    if (this.specWanted(tx, messageId, m, selfId, now, sentMs)) {
       queue.enqueue(tx, {
         type: SPEC_JOB,
         idempotencyKey: `commitments.spec:${messageId}`,
-        input: { messageId },
+        input: { messageId, senderRef: m.senderRef },
         concurrencyGroup: COMMITMENTS_CONCURRENCY_GROUP,
         priority: SPEC_PRIORITY,
       });
@@ -99,5 +97,60 @@ export class ExtractionQueue {
       concurrencyGroup: COMMITMENTS_CONCURRENCY_GROUP,
       priority: EXTRACT_PRIORITY,
     });
+  }
+
+  /** Spec clarity: a fresh task-like request from a non-bot someone, addressed to the user (R13). */
+  private specWanted(
+    tx: Tx,
+    messageId: string,
+    m: {
+      text: string | null;
+      senderRef: string;
+      isBot: boolean | null;
+      conversationId: string;
+      conversationType: string;
+      threadTs: string | null;
+    },
+    selfId: string,
+    now: number,
+    sentMs: number,
+  ): boolean {
+    const { settings } = this.deps;
+    const text = m.text ?? "";
+    if (m.senderRef === selfId || m.isBot === true) return false;
+    if (sentMs < now - settings.get("commitments.spec.maxAgeHours") * HOUR_MS) return false;
+    if (!looksLikeTaskRequest(text)) return false;
+    if (m.conversationType !== "im" && !selfMentionNeedles(selfId).some((n) => text.includes(n))) {
+      return false;
+    }
+    // One open draft per thread (per conversation when unthreaded); also stops clarify-reply loops.
+    const open = tx
+      .select({ id: followups.id })
+      .from(followups)
+      .where(
+        and(
+          eq(followups.origin, "spec_clarity"),
+          eq(followups.conversationId, m.conversationId),
+          inArray(followups.status, [...OPEN_SPEC]),
+          m.threadTs ? eq(followups.threadTs, m.threadTs) : undefined,
+        ),
+      )
+      .limit(1)
+      .get();
+    if (open) return false;
+    // Per-sender daily cap, counted from the spec jobs queued today (UTC) for that sender.
+    const dayStart = new Date(now).toISOString().slice(0, 10);
+    const row = tx
+      .select({ n: sql<number>`count(*)` })
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.type, SPEC_JOB),
+          gte(jobs.createdAt, dayStart),
+          sql`json_extract(${jobs.input}, '$.senderRef') = ${m.senderRef}`,
+        ),
+      )
+      .get();
+    return (row?.n ?? 0) < settings.get("commitments.spec.maxPerSenderPerDay");
   }
 }

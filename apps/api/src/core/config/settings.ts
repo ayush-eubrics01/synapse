@@ -75,6 +75,8 @@ const settingSchemas = {
   "commitments.extract.batchMax": z.number().int().positive().max(40).default(40),
   "commitments.stall.waitHours": z.number().positive().default(24),
   "commitments.reminder.dueSoonHours": z.number().positive().default(24),
+  "commitments.spec.maxAgeHours": z.number().int().min(1).max(168).default(24),
+  "commitments.spec.maxPerSenderPerDay": z.number().int().positive().default(5),
   "commitments.requireReviewForDetected": z.boolean().default(true),
   "commitments.models.extract": z.string().min(1).default("haiku"),
   "commitments.models.draft": z.string().min(1).default("haiku"),
