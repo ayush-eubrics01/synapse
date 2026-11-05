@@ -121,64 +121,66 @@ interface QuotaWindow {
 
 ```typescript
 interface MessageSource {
-  getCapabilities(): Promise<IntegrationCapability[]>;
-  getHealth(): Promise<IntegrationHealth>;
-
-  /** Incremental or backfill page, oldest first. */
-  fetchMessages(query: MessageQuery): Promise<MessagePage>;
-
-  /** Full thread: parent + replies. */
-  fetchThread(conversationId: string, parentTs: string): Promise<SourceMessage[]>;
-
-  listConversations(query: ConversationQuery): Promise<Conversation[]>;
-  getUser(externalUserId: string): Promise<SourceUser>;
+  /** Search pages, oldest first, up to req.maxPages. */
+  collect(req: CollectRequest, signal: AbortSignal): Promise<CollectResult>;
+  /** Full threads: parent + replies per request. */
+  fetchThreads(
+    requests: { conversationId: string; parentTs: string }[],
+    signal: AbortSignal,
+  ): Promise<{ conversationId: string; parentTs: string; messages: SourceMessage[] }[]>;
 }
 
-interface MessageQuery {
-  afterTs: string;               // checkpoint: Slack ts, inclusive
-  beforeTs?: string;
-  conversationTypes?: ConversationType[];  // default: all
-  includeBots: false;            // always false (ADR-027)
-  cursor?: string;
+interface CollectRequest {
+  afterTs: string;               // checkpoint: Slack ts
+  beforeTs?: string;             // backfill only
   maxPages: number;              // pages per collector run (~5)
+}
+
+interface CollectResult {
+  pages: MessagePage[];
+  searches: number;
+  complete: boolean;             // no next cursor after the last accepted page
 }
 
 interface MessagePage {
   messages: SourceMessage[];
+  rejected: number;              // results dropped by validation, counted
   nextCursor?: string;
-  pagesFetched: number;
-  newestTs?: string;             // becomes the next checkpoint once persisted
 }
 
-type ConversationType = 'im' | 'mpim' | 'private_channel' | 'public_channel';
+// Public and private channels cannot be told apart from the result label.
+type ConversationType = 'im' | 'mpim' | 'channel';
 
 interface SourceMessage {
-  externalId: string;            // `${conversationId}:${ts}` (dedup key)
-  conversationId: string;
-  conversationType?: ConversationType;  // from result labels, not ID prefix
+  externalId: string;            // `${conversationId}:${ts}` (dedup key); computed by producers, checked by the schema
+  conversationId: string;        // /^[CDG][A-Z0-9]+$/
+  conversationType: ConversationType;  // from result labels, not ID prefix
   conversationName?: string;
-  ts: string;                    // Slack Message_ts
+  ts: string;                    // Slack Message_ts, /^\d{10}\.\d{6}$/
   threadTs?: string;             // parsed from permalink ?thread_ts=
-  senderId: string;              // U… user ID
+  senderId: string;              // /^U[A-Z0-9]+$/
   senderName?: string;
   senderEmail?: string;
   text: string;
-  permalink: string;
+  fullNotes?: string;
+  permalink?: string;
   replyCount?: number;
-  sentAt: string;                // derived from ts, UTC
+  sentAt: string;                // ISO UTC derived from ts
 }
 ```
 
 ### Slack connector adapter rules (`integrations/slack/claude-connector`)
 
 - Collection uses only `slack_search_public_and_private` with: `after` (Unix ts), `sort: "timestamp"`, `sort_dir: "asc"`, `limit: 20`, `include_bots: false`, `include_context: false`, `response_format: "detailed"` (ADR-025).
-- `fetchThread` uses `slack_read_thread` (returns `Message TS` per reply).
+- `fetchThreads` uses `slack_read_thread` (returns `Message TS` per reply).
 - Never use `slack_read_channel` for collection (no per-message ts). Never use `response_format: "concise"` (drops IDs).
 - Parses the markdown inside the JSON `results` field. The parser has contract tests against recorded, anonymized fixtures. If the format changes, the parser fails loudly; it never guesses.
 - Results are validated with Zod. A result missing `Message_ts`, channel ID or sender ID is rejected and counted, not stored.
 - Uses the `collector` worker profile and Haiku.
 
 ### Message sink (`MessageSink`)
+
+`MessageSink` is deferred to the sending phase; the shape below is indicative only.
 
 ```typescript
 interface MessageSink {
