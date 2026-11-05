@@ -93,17 +93,97 @@ describe("ClaudeCliProvider.execute", () => {
       sig(),
     );
     expect(r.status).toBe("timed_out");
+    expect(r.exitCode).toBeNull();
     expect(Date.now() - t0).toBeLessThan(1000);
     const pid = Number(readFileSync(pidFile, "utf8"));
     expect(pid).toBeGreaterThan(0);
     expect(() => process.kill(-pid, 0)).toThrow();
   });
 
-  test("abort signal cancels", async () => {
+  test("abort signal cancels and the group is gone", async () => {
+    const pidFile = join(tmp, "abort.pid");
     const ac = new AbortController();
     setTimeout(() => ac.abort(), 200);
-    const r = await provider({ FAKE_CLAUDE_MODE: "hang" }).execute(req(), ac.signal);
+    const t0 = Date.now();
+    const r = await provider({ FAKE_CLAUDE_MODE: "hang", FAKE_CLAUDE_PID_FILE: pidFile }).execute(
+      req(),
+      ac.signal,
+    );
     expect(r.status).toBe("cancelled");
+    expect(r.exitCode).toBeNull();
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(() => process.kill(-Number(readFileSync(pidFile, "utf8")), 0)).toThrow();
+  });
+
+  test("already-aborted signal cancels without running", async () => {
+    const pidFile = join(tmp, "pre.pid");
+    const ac = new AbortController();
+    ac.abort();
+    const r = await provider({ FAKE_CLAUDE_MODE: "hang", FAKE_CLAUDE_PID_FILE: pidFile }).execute(
+      req(),
+      ac.signal,
+    );
+    expect(r.status).toBe("cancelled");
+    expect(r.exitCode).toBeNull();
+  });
+
+  test("abort then timeout: first cause (abort) wins", async () => {
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 50);
+    const r = await provider({ FAKE_CLAUDE_MODE: "hang" }).execute(
+      req({ timeoutMs: 150 }),
+      ac.signal,
+    );
+    expect(r.status).toBe("cancelled");
+  });
+
+  test("SIGTERM-ignoring child is SIGKILLed after the grace period", async () => {
+    const pidFile = join(tmp, "ign.pid");
+    const t0 = Date.now();
+    const r = await provider({
+      FAKE_CLAUDE_MODE: "hang_ignore_term",
+      FAKE_CLAUDE_PID_FILE: pidFile,
+    }).execute(req({ timeoutMs: 300 }), sig());
+    const elapsed = Date.now() - t0;
+    expect(r.status).toBe("timed_out");
+    expect(elapsed).toBeGreaterThanOrEqual(450);
+    expect(elapsed).toBeLessThan(1500);
+    expect(() => process.kill(-Number(readFileSync(pidFile, "utf8")), 0)).toThrow();
+  });
+
+  test("grandchild holding stdio does not stall a finished run", async () => {
+    const t0 = Date.now();
+    const r = await provider({ FAKE_CLAUDE_MODE: "grandchild" }).execute(
+      req({ timeoutMs: 3000 }),
+      sig(),
+    );
+    expect(r.status).toBe("succeeded");
+    expect(r.exitCode).toBe(0);
+    expect(Date.now() - t0).toBeLessThan(1500);
+  });
+
+  test("setsid grandchild still resolves by the hard deadline", async () => {
+    const t0 = Date.now();
+    const r = await provider({ FAKE_CLAUDE_MODE: "grandchild_setsid" }).execute(
+      req({ timeoutMs: 300 }),
+      sig(),
+    );
+    expect(r.status).toBe("succeeded");
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+
+  test("success result with non-zero exit is provider_error", async () => {
+    const r = await provider({ FAKE_CLAUDE_MODE: "success_exit1" }).execute(req(), sig());
+    expect(r.status).toBe("failed");
+    expect(r.error?.kind).toBe("provider_error");
+    expect(r.toolResults).toEqual([]);
+  });
+
+  test("connector_not_ready beats provider_error", async () => {
+    const r = await provider({ FAKE_CLAUDE_MODE: "connector_not_ready" }).execute(req(), sig());
+    expect(r.status).toBe("failed");
+    expect(r.error?.kind).toBe("connector_not_ready");
+    expect(r.toolResults).toEqual([]);
   });
 
   test("missing binary is provider_error without throwing", async () => {

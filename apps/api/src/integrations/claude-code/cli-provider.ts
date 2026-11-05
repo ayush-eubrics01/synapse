@@ -12,6 +12,7 @@ import { StreamParser } from "../../core/orchestrator/stream-parser";
 
 const TESTED_VERSION = "2.1.318";
 const HEALTH_TIMEOUT_MS = 5000;
+const CLOSE_CAP_MS = 500;
 const AUTH_RE = /login|oauth token|authentication|unauthori[sz]ed/i;
 
 export interface ClaudeCliProviderOptions {
@@ -66,6 +67,11 @@ export class ClaudeCliProvider implements AIProvider {
         timedOut: false,
         aborted: false,
       };
+      if (o.signal?.aborted) {
+        out.aborted = true;
+        resolve(out);
+        return;
+      }
       let child: ReturnType<typeof spawn>;
       try {
         child = spawn(this.opts.binary, [...(this.opts.prefixArgs ?? []), ...o.args], {
@@ -82,7 +88,12 @@ export class ClaudeCliProvider implements AIProvider {
 
       let killTimer: ReturnType<typeof setTimeout> | undefined;
       let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+      let closeCapTimer: ReturnType<typeof setTimeout> | undefined;
+      let hardTimer: ReturnType<typeof setTimeout> | undefined;
       let done = false;
+      let exited = false;
+      let rawCode: number | null = null;
+      let rawSignal: NodeJS.Signals | null = null;
 
       const killGroup = (sig: "SIGTERM" | "SIGKILL"): void => {
         if (child.pid === undefined) return;
@@ -98,7 +109,9 @@ export class ClaudeCliProvider implements AIProvider {
         killTimer = setTimeout(() => killGroup("SIGKILL"), this.killGraceMs);
       };
       const onAbort = (): void => {
+        if (exited || out.timedOut || out.aborted) return;
         out.aborted = true;
+        clearTimeout(timeoutTimer);
         terminate();
       };
       const finish = (): void => {
@@ -106,33 +119,46 @@ export class ClaudeCliProvider implements AIProvider {
         done = true;
         clearTimeout(timeoutTimer);
         clearTimeout(killTimer);
+        clearTimeout(closeCapTimer);
+        clearTimeout(hardTimer);
         o.signal?.removeEventListener("abort", onAbort);
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        const clean = !out.spawnError && !out.timedOut && !out.aborted && rawSignal === null;
+        out.exitCode = clean ? rawCode : null;
         resolve(out);
       };
 
       child.stdout?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string) => {
+        if (done) return;
         out.stdout += o.onStdout ? "" : chunk;
         o.onStdout?.(chunk);
       });
       child.stderr?.on("data", (chunk: Buffer) => {
-        out.stderrBytes += chunk.length;
+        if (!done) out.stderrBytes += chunk.length;
       });
       child.on("error", () => {
         out.spawnError = true;
         finish();
       });
-      child.on("close", (code) => {
-        if (!out.spawnError) out.exitCode = code;
-        // make sure no stragglers from the group survive
+      // The leader's exit ends the run; pipe holders (grandchildren) must not stall it.
+      child.on("exit", (code, signal) => {
+        exited = true;
+        clearTimeout(timeoutTimer);
+        rawCode = code;
+        rawSignal = signal;
         killGroup("SIGKILL");
-        finish();
+        closeCapTimer = setTimeout(finish, CLOSE_CAP_MS);
       });
+      child.on("close", () => finish());
 
       timeoutTimer = setTimeout(() => {
+        if (exited || out.aborted) return;
         out.timedOut = true;
         terminate();
       }, o.timeoutMs);
+      hardTimer = setTimeout(finish, o.timeoutMs + this.killGraceMs + 1000);
       if (o.signal?.aborted) onAbort();
       else o.signal?.addEventListener("abort", onAbort, { once: true });
     });
@@ -227,6 +253,13 @@ export class ClaudeCliProvider implements AIProvider {
       return fail("failed", {
         kind: "provider_error",
         message: "claude reported an error result",
+        details: { stderrBytes: out.stderrBytes },
+      });
+    }
+    if (out.exitCode !== 0) {
+      return fail("failed", {
+        kind: "provider_error",
+        message: "claude exited abnormally despite a result event",
         details: { stderrBytes: out.stderrBytes },
       });
     }
