@@ -8,7 +8,7 @@ import { DEFAULT_KNOWN_SERVERS, SERVER_NAME_RE } from "../orchestrator/tool-cata
 const settingSchemas = {
   "slack.collection.intervalSeconds": z.number().int().positive().default(600),
   "slack.collection.enabled": z.boolean().default(true),
-  // R59: incremental searches re-read this many seconds before the checkpoint (index latency).
+  // R61: the incremental checkpoint is stored at most now - this, so the last N seconds are re-read (index latency).
   "slack.collection.indexLagSeconds": z.number().int().nonnegative().default(300),
   "slack.backfill.minMinutesBetweenRuns": z.number().int().positive().default(3),
   "slack.backfill.maxBackoffMinutes": z.number().int().positive().default(30),

@@ -11,7 +11,7 @@ Unresolved product and technical questions. Don't implement behaviour that depen
 | OQ-5 | Does UR-7 include monitoring the user's interactive Claude Code sessions? | Orchestrator scope | **Resolved** (ADR-036) |
 | OQ-6 | What are the sustained Slack rate limits through the connector? | Backfill pacing | **Mostly resolved**: official limits and pacing in `slack.md`; daily per-user search cap unknown |
 | OQ-7 | Should a local bot filter back up Slack's `include_bots: false`? | Inbox quality | Deferred (ADR-027) |
-| OQ-8 | How long does Slack's search index take to return a new message? | Incremental collection completeness | Open: unmeasured; 300 s overlap by default (R59) |
+| OQ-8 | How long does Slack's search index take to return a new message? | Incremental collection completeness | Open: unmeasured; checkpoint trails now by 300 s by default (R61) |
 
 ## OQ-1 — Away-mode replies vs. the approval rule
 
@@ -74,7 +74,7 @@ Phase 0 couldn't prove `include_bots: false` works, because no bot messages appe
 
 **Open (2026-11-05).** Incremental collection uses search, and Slack's search index may return a message some time after it was posted. If a poll's newest result moves the checkpoint past a message that is not indexed yet, a search that starts exactly at the checkpoint would never see that message. The latency has not been measured.
 
-Mitigation in place (R59): each incremental run starts its search `slack.collection.indexLagSeconds` (default 300) before the checkpoint, and the R42 lower bound moves with it. Duplicates in the overlap are absorbed by the `(conversation_id, ts)` dedup, and the checkpoint never moves backwards. The first run and the backfill are not affected. Measure the real latency (for example, compare `Message_ts` with the first poll that returned it) and tune the setting.
+Mitigation in place (R61): the incremental checkpoint is stored at most `slack.collection.indexLagSeconds` (default 300) before now, so each poll re-reads the last 300 s and picks up messages indexed late. Searches start at the checkpoint itself, so collection cannot stall. Repeats are absorbed by the `(conversation_id, ts)` dedup, and the checkpoint never moves backwards. The backfill is not affected. Measure the real latency (for example, compare `Message_ts` with the first poll that returned it) and tune the setting.
 
 ## Resolved decisions (for reference)
 

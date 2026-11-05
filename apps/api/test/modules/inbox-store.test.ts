@@ -207,3 +207,19 @@ test("listMessages: newest first, filter, limit clamp, shape", () => {
   store.expireContent(0);
   expect(store.listMessages({ limit: 1 })[0]?.text).toBeNull();
 });
+
+test("R61: checkpointLagSeconds caps the checkpoint at now - lag; never moves it back", () => {
+  const now = Date.parse("2026-11-05T12:00:00.000Z") / 1000;
+  const recent = `${now - 30}.000100`;
+  store.persistPage("slack.messages", page(msg(recent)), { checkpointLagSeconds: 300 });
+  expect(sync.get("slack.messages").checkpoint).toBe((now - 300).toFixed(6));
+  // Already above the cap: unchanged.
+  sync.update(db, "slack.messages", { checkpoint: `${now - 10}.000000` });
+  store.persistPage("slack.messages", page(msg(`${now - 5}.000100`)), {
+    checkpointLagSeconds: 300,
+  });
+  expect(sync.get("slack.messages").checkpoint).toBe(`${now - 10}.000000`);
+  // Without the option (backfill), plain R48: the page max.
+  store.persistPage("slack.backfill", page(msg(recent, { conversationId: "C9" })));
+  expect(sync.get("slack.backfill").checkpoint).toBe(recent);
+});

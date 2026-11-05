@@ -132,7 +132,7 @@ interface MessageSource {
 }
 
 interface CollectRequest {
-  afterTs: string;               // Slack ts; incremental: floor(checkpoint) - indexLagSeconds (R59)
+  afterTs: string;               // Slack ts: the stream's checkpoint (incremental checkpoint trails now by indexLagSeconds, R61)
   beforeTs?: string;             // backfill only
   maxPages: number;              // pages per collector run (~5)
   jobId?: string;                // queue job id, recorded as claude_runs.job_id (R60 M3)

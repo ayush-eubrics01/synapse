@@ -35,9 +35,15 @@ interface Inserted {
 export class InboxStore {
   constructor(private readonly deps: InboxStoreDeps) {}
 
+  /**
+   * `checkpointLagSeconds` (R61): cap the stored checkpoint at now - lag instead of now, so the
+   * next run re-reads the last `lag` seconds (late search indexing). Used for the incremental
+   * stream only; omitted, the plain R48 rule applies.
+   */
   persistPage(
     stream: SyncStream,
     page: MessagePage,
+    opts: { checkpointLagSeconds?: number } = {},
   ): { inserted: number; duplicates: number; threadFetches: number } {
     const { db, sync } = this.deps;
     return db.transaction(
@@ -85,7 +91,8 @@ export class InboxStore {
           const state = sync.get(stream, tx);
           let pageMax = page.messages[0]?.ts as string;
           for (const m of page.messages) if (Number(m.ts) > Number(pageMax)) pageMax = m.ts;
-          const nowTs = (this.deps.clock.now().getTime() / 1000).toFixed(6);
+          const lagMs = (opts.checkpointLagSeconds ?? 0) * 1000;
+          const nowTs = ((this.deps.clock.now().getTime() - lagMs) / 1000).toFixed(6);
           const capped = Number(pageMax) > Number(nowTs) ? nowTs : pageMax;
           const next =
             state.checkpoint !== null && Number(state.checkpoint) >= Number(capped)

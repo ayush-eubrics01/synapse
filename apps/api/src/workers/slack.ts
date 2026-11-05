@@ -104,8 +104,13 @@ export function registerSlackJobs(deps: SlackJobDeps): {
     let inserted = 0;
     let duplicates = 0;
     let rejected = 0;
+    // R61: the incremental checkpoint trails now by the index lag; backfill keeps plain R48.
+    const opts =
+      stream === "slack.messages"
+        ? { checkpointLagSeconds: settings.get("slack.collection.indexLagSeconds") }
+        : {};
     for (const page of result.pages) {
-      const r = store.persistPage(stream, page);
+      const r = store.persistPage(stream, page, opts);
       inserted += r.inserted;
       duplicates += r.duplicates;
       rejected += page.rejected;
@@ -137,12 +142,8 @@ export function registerSlackJobs(deps: SlackJobDeps): {
     const afterTs = db.transaction(
       (tx) => {
         const cur = sync.get(stream, tx).checkpoint;
-        if (cur !== null) {
-          // R59: overlap by the index lag (dedup absorbs it); the checkpoint itself is unchanged.
-          const lag = settings.get("slack.collection.indexLagSeconds");
-          return tsFromMs(Math.max(0, Math.floor(Number(cur)) - lag) * 1000);
-        }
-        // First run: the init floor is used as is, never extended by the lag.
+        // R61: read from the checkpoint itself (no offset); the lag is applied when storing it.
+        if (cur !== null) return cur;
         const init = tsFromMs(nowMs() - DAY_MS);
         sync.update(tx, stream, { checkpoint: init });
         return init;
