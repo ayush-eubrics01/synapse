@@ -34,6 +34,14 @@ export interface EvidenceRow {
   observedAt: string;
 }
 
+/** Thrown when a retry is not allowed; the API maps it to 409. */
+export class RetryNotAllowed extends Error {
+  constructor(readonly recommendationId: string) {
+    super("apply retry not allowed");
+    this.name = "RetryNotAllowed";
+  }
+}
+
 export const INITIAL_PROFILE_JOB = "people.generate_initial_profile";
 export const PEOPLE_CONCURRENCY_GROUP = "people.intelligence";
 export const INITIAL_PROFILE_PRIORITY = 120;
@@ -137,5 +145,54 @@ export class ProfileRecommendations {
       payload: { recommendationId, personId: input.personId, kind: "initial" },
     });
     return { recommendationId, approvalId: approval.id };
+  }
+
+  /**
+   * A failed approval is terminal, so a failed apply gets a fresh approval for the same pending
+   * recommendation (key `people.rec:<id>:<n>`, n >= 2). Only for a pending recommendation whose
+   * current approval is `failed`; anything else throws RetryNotAllowed.
+   */
+  retryApply(recommendationId: string): { approvalId: string } {
+    const { db, approvals, events } = this.deps;
+    return db.transaction(
+      (tx) => {
+        const rec = tx
+          .select()
+          .from(peopleProfileRecommendations)
+          .where(eq(peopleProfileRecommendations.id, recommendationId))
+          .get();
+        const current = rec?.approvalId
+          ? tx.select().from(schema.approvals).where(eq(schema.approvals.id, rec.approvalId)).get()
+          : undefined;
+        if (!rec || rec.status !== "pending" || current?.status !== "failed") {
+          throw new RetryNotAllowed(recommendationId);
+        }
+        let n = 2;
+        while (
+          tx
+            .select({ id: schema.approvals.id })
+            .from(schema.approvals)
+            .where(eq(schema.approvals.idempotencyKey, `people.rec:${recommendationId}:${n}`))
+            .get()
+        ) {
+          n += 1;
+        }
+        const approval = approvals.request(tx, {
+          action: "records.update",
+          targetIntegration: "people",
+          targetRef: rec.personId,
+          payload: { recommendationId },
+          riskLevel: "low",
+          idempotencyKey: `people.rec:${recommendationId}:${n}`,
+          requestedByModule: "people",
+        });
+        tx.update(peopleProfileRecommendations)
+          .set({ approvalId: approval.id })
+          .where(eq(peopleProfileRecommendations.id, recommendationId))
+          .run();
+        return { approvalId: approval.id };
+      },
+      { behavior: "immediate" },
+    );
   }
 }

@@ -47,6 +47,7 @@ import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
 import { UrgentInbox } from "./modules/inbox/urgent";
 import { ContactDiscovery } from "./modules/people/discovery";
+import { ProfileService } from "./modules/people/profiles";
 import { ProfileRecommendations } from "./modules/people/recommendations";
 import { PeopleService } from "./modules/people/service";
 import { TemporaryContacts } from "./modules/people/temporary";
@@ -84,6 +85,7 @@ export interface Container {
   /** Ranked contact candidates (Task 8 adds the route). */
   discovery: ContactDiscovery;
   profiles: ProfileRecommendations;
+  profileStore: ProfileService;
   securityFlags: SecurityFlagsService;
   /** Run by startup recovery and the reaper (main.ts), so core never imports workers. */
   recoverySweeps: RecoverySweep[];
@@ -243,6 +245,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     approvals,
     people,
   });
+  const profileStore = new ProfileService({ db, clock, events, audit });
+  profileStore.register(approvals, dispatcher);
   registerPeopleJobs({
     db,
     clock,
@@ -308,6 +312,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     people,
     discovery,
     profiles,
+    profileStore,
     securityFlags,
     handlers,
     recoverySweeps: [{ name: "urgency.assess", run: urgency.recoverySweep }],
