@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { Container } from "./container";
 import { InvalidApprovalTransition } from "./core/approvals/approvals";
+import { localOnly } from "./middleware/local-only";
 import { approvalRoutes } from "./routes/approvals";
 import { healthRoutes } from "./routes/health";
 import { jobRoutes } from "./routes/jobs";
@@ -10,6 +11,7 @@ import { streamRoutes } from "./routes/stream";
 
 export function createApp(c: Container): Hono {
   const app = new Hono();
+  app.use("*", localOnly({ api: c.config.api.port, web: c.config.web.port }));
   app.route("/", healthRoutes(c));
   app.route("/", approvalRoutes(c));
   app.route("/", jobRoutes(c));

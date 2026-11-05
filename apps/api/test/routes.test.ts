@@ -14,6 +14,10 @@ beforeEach(() => {
 });
 afterEach(() => c.sqlite.close());
 
+// Requests carry a loopback Host for the configured API port, as a real client's would.
+const API = "http://127.0.0.1:7400";
+const req = (path: string, init?: RequestInit) => app.request(`${API}${path}`, init);
+
 let n = 0;
 function pending() {
   n++;
@@ -29,20 +33,20 @@ function pending() {
 }
 
 const post = (path: string, body?: unknown) =>
-  app.request(path, {
+  req(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
 test("health live is 200", async () => {
-  const res = await app.request("/health/live");
+  const res = await req("/health/live");
   expect(res.status).toBe(200);
   expect(await res.json()).toEqual({ ok: true });
 });
 
 test("health ready is 200 with a report", async () => {
-  const res = await app.request("/health/ready");
+  const res = await req("/health/ready");
   expect(res.status).toBe(200);
   const body = (await res.json()) as { status: string; checks: Record<string, unknown> };
   expect(Object.keys(body.checks).sort()).toEqual([
@@ -57,7 +61,7 @@ test("health ready is 200 with a report", async () => {
 
 test("approve a pending approval, then approving again is 409", async () => {
   const a = pending();
-  const list = await app.request("/api/approvals?status=pending");
+  const list = await req("/api/approvals?status=pending");
   expect(((await list.json()) as { id: string }[]).map((x) => x.id)).toContain(a.id);
   const res = await post(`/api/approvals/${a.id}/approve`, {});
   expect(res.status).toBe(200);
@@ -78,9 +82,9 @@ test("reject with an empty body is 400; with a reason is 200", async () => {
 });
 
 test("jobs limit over 200 is 400, valid limit is 200", async () => {
-  expect((await app.request("/api/jobs?limit=500")).status).toBe(400);
-  expect((await app.request("/api/jobs?status=BOGUS")).status).toBe(400);
-  const res = await app.request("/api/jobs?limit=5");
+  expect((await req("/api/jobs?limit=500")).status).toBe(400);
+  expect((await req("/api/jobs?status=BOGUS")).status).toBe(400);
+  const res = await req("/api/jobs?limit=5");
   expect(res.status).toBe(200);
   expect(Array.isArray(await res.json())).toBe(true);
 });
@@ -91,7 +95,7 @@ test("jobs are listed newest first", async () => {
     ids.push(c.queue.enqueue(c.db, { type: "t", idempotencyKey: `order-${i}`, priority }).id);
     await Bun.sleep(2);
   }
-  const res = await app.request("/api/jobs?limit=200");
+  const res = await req("/api/jobs?limit=200");
   const listed = ((await res.json()) as { id: string }[]).map((j) => j.id);
   expect(listed.filter((id) => ids.includes(id))).toEqual([...ids].reverse());
 });
@@ -114,12 +118,12 @@ test("worker pushes job.updated with id and status after a job settles", async (
 
 test("notifications list unread and mark read", async () => {
   const id = c.notifications.notify(c.db, { kind: "k", severity: "info", title: "t" });
-  const unread = (await (await app.request("/api/notifications?unread=true")).json()) as {
+  const unread = (await (await req("/api/notifications?unread=true")).json()) as {
     id: string;
   }[];
   expect(unread.map((x) => x.id)).toEqual([id]);
   expect((await post(`/api/notifications/${id}/read`)).status).toBe(200);
-  expect(await (await app.request("/api/notifications?unread=true")).json()).toEqual([]);
+  expect(await (await req("/api/notifications?unread=true")).json()).toEqual([]);
 });
 
 test("unexpected errors are 500 with a generic body", async () => {
@@ -127,7 +131,7 @@ test("unexpected errors are 500 with a generic body", async () => {
   c.sqlite.close();
   let res: Response;
   try {
-    res = await app.request("/api/jobs");
+    res = await req("/api/jobs");
     expect(spy).toHaveBeenCalledTimes(1);
     const args = spy.mock.calls[0] ?? [];
     expect(args[0]).toBe("request failed:");
@@ -143,7 +147,7 @@ test("unexpected errors are 500 with a generic body", async () => {
 });
 
 test("SSE stream forwards notification events", async () => {
-  const res = await app.request("/api/stream");
+  const res = await req("/api/stream");
   expect(res.headers.get("content-type")).toContain("text/event-stream");
   const reader = res.body?.getReader();
   if (!reader) throw new Error("no body");
@@ -160,4 +164,54 @@ test("SSE stream forwards notification events", async () => {
   await reader.cancel();
   expect(text).toContain("event: notification");
   expect(text).toContain('"title":"hello"');
+});
+
+test("a foreign Host is 403 with a generic body", async () => {
+  for (const host of ["evil.example:7400", "127.0.0.1:9999", "localhost", "evil.example"]) {
+    const res = await req("/health/live", { headers: { host } });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "forbidden" });
+  }
+  expect((await app.request("http://rebound.example:7400/api/jobs")).status).toBe(403);
+});
+
+test("loopback Hosts for the API port are allowed", async () => {
+  for (const host of ["127.0.0.1:7400", "localhost:7400", "[::1]:7400", "LOCALHOST:7400"]) {
+    expect((await req("/health/live", { headers: { host } })).status).toBe(200);
+  }
+});
+
+test("requests proxied by the Next rewrite are checked by X-Forwarded-Host", async () => {
+  const via = (forwarded: string) =>
+    req("/api/jobs", { headers: { host: "127.0.0.1:7400", "x-forwarded-host": forwarded } });
+  expect((await via("127.0.0.1:7401")).status).toBe(200);
+  expect((await via("localhost:7401")).status).toBe(200);
+  expect((await via("evil.example:7401")).status).toBe(403);
+  expect((await via("")).status).toBe(403);
+});
+
+test("a foreign Origin on POST is 403; loopback web and API origins are allowed", async () => {
+  const a = pending();
+  const postFrom = (origin: string) =>
+    req(`/api/approvals/${a.id}/reject`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin },
+      body: "{}",
+    });
+  for (const origin of ["http://evil.example", "null", "http://127.0.0.1:9999"]) {
+    const res = await postFrom(origin);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "forbidden" });
+  }
+  expect(c.approvals.listPending().map((x) => x.id)).toContain(a.id);
+  expect((await postFrom("http://127.0.0.1:7401")).status).toBe(200);
+  const b = pending();
+  const fromApi = await req(`/api/approvals/${b.id}/approve`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "http://localhost:7400" },
+    body: "{}",
+  });
+  expect(fromApi.status).toBe(200);
+  // GET is not origin-checked (a cross-origin page cannot read the response without CORS).
+  expect((await req("/api/jobs", { headers: { origin: "http://evil.example" } })).status).toBe(200);
 });

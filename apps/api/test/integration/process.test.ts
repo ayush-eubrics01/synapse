@@ -79,12 +79,16 @@ function readSetting(dbPath: string, key: string): string | undefined {
 const live = async (port: number) =>
   (await fetch(`http://127.0.0.1:${port}/health/live`)).status === 200 ? true : undefined;
 
-test("runs without the web app: heartbeat is recorded", async () => {
+test("runs without the web app: heartbeat is recorded; foreign Host is refused", async () => {
   const dbPath = tempDb();
   const port = freePort();
   start(dbPath, port);
   await waitFor(() => live(port), 8000);
   await waitFor(() => readSetting(dbPath, "system.lastHeartbeatAt"), 8000);
+  const rebound = await fetch(`http://127.0.0.1:${port}/api/jobs`, {
+    headers: { host: `rebound.example:${port}` },
+  });
+  expect(rebound.status).toBe(403);
 }, 20_000);
 
 test("SIGTERM exits cleanly with code 0", async () => {
