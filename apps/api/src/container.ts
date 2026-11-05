@@ -6,6 +6,7 @@ import type { AIProvider, DesktopNotifier } from "@synapse/contracts";
 import { type Db, openDatabase, runMigrations } from "@synapse/database";
 import { type Clock, newId, systemClock } from "@synapse/shared";
 import { ApprovalEngine } from "./core/approvals/approvals";
+import { registerApprovalExecution } from "./core/approvals/execution";
 import { AuditLogger } from "./core/audit/audit";
 import { type AppConfig, resolveHome } from "./core/config/config";
 import { SettingsService } from "./core/config/settings";
@@ -220,6 +221,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     scheduler,
     handlers,
   });
+  registerApprovalExecution({ dispatcher, queue, engine: approvals, handlers });
   const urgency = registerUrgencyJobs({
     db,
     clock,

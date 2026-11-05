@@ -78,3 +78,11 @@ Both are **systemd user services**. The API runs independently of the web servic
 | `server.host` | 127.0.0.1 |
 
 The quota thresholds are starting values, to be tuned once real usage data exists. What each level allows is defined in `docs/modules/claude-orchestrator.md`.
+
+## Approval execution path
+
+`approval.approved` (outbox) -> consumer `approvals.execute` -> job `approval.execute` (key `approval.execute:<approvalId>`, priority 180, `externalWrite`) -> `ApprovalEngine.execute` -> executor. Wired by `registerApprovalExecution` (`core/approvals/execution.ts`).
+
+- Executors are registered per `(action, targetIntegration)` with `registerIntegrationExecutor`; one routing executor per action dispatches on `approval.targetIntegration`. An unknown integration fails the approval with `"no executor"`.
+- The engine's claim (`execution_started_at`) guarantees at-most-once execution, so a re-delivered event or re-run job never executes twice. An executor error is terminal: the approval becomes `failed` and the job completes without retry, because the side effect may have happened. Only bookkeeping failures surface as a job error, and they never carry the payload or result.
+- `approval.rejected` / `approval.expired` / `approval.revoked` get no generic consumer; modules subscribe through `dispatcher.subscribe`.
