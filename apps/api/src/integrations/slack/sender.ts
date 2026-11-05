@@ -18,6 +18,17 @@ export const SEND = "mcp__claude_ai_Slack__slack_send_message";
 const DEFINITIVE_REJECTION_RE =
   /\b(channel_not_found|not_in_channel|is_archived|channel_is_archived|msg_too_long|no_text|invalid_auth|not_authed|restricted_action|cant_post|cannot_post|user_not_found)\b/;
 
+/**
+ * R18: search failures that say nothing about delivery and must not spend a verify attempt; findSent
+ * rethrows them so the `outgoing.verify` job is deferred (auth_paused, quota_exhausted) or retried at
+ * Slack's time (rate_limited) by the queue.
+ */
+const DEFERRAL_KINDS: ReadonlySet<string> = new Set([
+  "auth_paused",
+  "quota_exhausted",
+  "rate_limited",
+]);
+
 /** Search pages read when confirming delivery (R2). */
 const FIND_MAX_PAGES = 2;
 
@@ -152,7 +163,8 @@ export class SlackSender implements MessageSink {
    * R2: one incremental search (afterTs floor(sinceTs) - 1, at most 2 pages) through the verified
    * collector; a match is a message in the conversation, from self, at or after sinceTs, whose
    * whitespace-normalised text equals the command's. Null when it cannot tell: no self id, a
-   * failed search, or no match in an incomplete search. Never sends.
+   * failed search, or no match in an incomplete search. R18: an auth pause, quota stop or Slack
+   * rate limit is rethrown instead (the JobError, never content). Never sends.
    */
   async findSent(cmd: SendMessageCommand, sinceTs: string): Promise<boolean | null> {
     const self = this.deps.selfUserId();
@@ -165,7 +177,8 @@ export class SlackSender implements MessageSink {
         { afterTs: String(Math.floor(since) - 1), maxPages: FIND_MAX_PAGES },
         new AbortController().signal,
       );
-    } catch {
+    } catch (e) {
+      if (e instanceof JobError && DEFERRAL_KINDS.has(e.classified.kind)) throw e;
       return null;
     }
     const want = normalise(cmd.text);

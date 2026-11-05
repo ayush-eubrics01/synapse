@@ -465,6 +465,28 @@ describe("SlackSender.findSent", () => {
     expect(await sender.findSent(cmd(), SINCE)).toBeNull();
   });
 
+  for (const kind of ["auth_paused", "quota_exhausted", "rate_limited"] as const) {
+    test(`R18: a ${kind} search failure propagates (the verify job defers)`, async () => {
+      const { sender } = setup({
+        collect: async () => {
+          throw new JobError({ kind, message: "deferred", retryAfter: "2026-11-06T13:00:00.000Z" });
+        },
+      });
+      const err = await sender.findSent(cmd(), SINCE).catch((e) => e);
+      expect(err).toBeInstanceOf(JobError);
+      expect((err as JobError).classified.kind).toBe(kind);
+    });
+  }
+
+  test("null on a non-JobError search failure", async () => {
+    const { sender } = setup({
+      collect: async () => {
+        throw new Error("boom");
+      },
+    });
+    expect(await sender.findSent(cmd(), SINCE)).toBeNull();
+  });
+
   test("null without searching when the self id is unset", async () => {
     const { sender, collects } = setup({ self: null, collect: async () => pages([msg()]) });
     expect(await sender.findSent(cmd(), SINCE)).toBeNull();

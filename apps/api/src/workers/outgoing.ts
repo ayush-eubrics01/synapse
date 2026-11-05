@@ -25,7 +25,9 @@ export function registerOutgoingJobs(deps: OutgoingJobDeps): void {
       if (!parsed.success) {
         throw new JobError({ kind: "invalid_input", message: "invalid outgoing verify input" });
       }
-      return deps.outgoing.verify(parsed.data.outgoingId);
+      return deps.outgoing.verify(parsed.data.outgoingId, {
+        lastJobAttempt: job.attempts >= job.maxAttempts,
+      });
     },
   });
 }

@@ -53,7 +53,8 @@ class FakeSink implements MessageSink {
   sendImpl: (cmd: SendMessageCommand, signal: AbortSignal) => Promise<SendResult> = async () => ({
     status: "sent_unverified",
   });
-  findResults: (boolean | null)[] = [];
+  /** An Error entry is thrown by findSent (R18). */
+  findResults: (boolean | null | Error)[] = [];
 
   async send(cmd: SendMessageCommand, signal: AbortSignal): Promise<SendResult> {
     this.sends.push(cmd);
@@ -63,7 +64,9 @@ class FakeSink implements MessageSink {
 
   async findSent(cmd: SendMessageCommand, sinceTs: string): Promise<boolean | null> {
     this.finds.push({ cmd, sinceTs });
-    return this.findResults.length > 0 ? (this.findResults.shift() ?? null) : false;
+    const next = this.findResults.length > 0 ? (this.findResults.shift() ?? null) : false;
+    if (next instanceof Error) throw next;
+    return next;
   }
 }
 
@@ -461,6 +464,93 @@ describe("slack.send executor", () => {
     expect(s.sink.sends).toHaveLength(1);
     expect(s.eventsOf("followup.sent")).toHaveLength(1);
     s.expectNoContent();
+  });
+
+  for (const kind of ["auth_paused", "quota_exhausted"] as const) {
+    test(`R18: ${kind} during verify defers the job without spending a verify attempt`, async () => {
+      const { outgoingId, approvalId } = s.request();
+      await s.approveAndRun(approvalId);
+      const runAfter = new Date(Date.parse(NOW) + 3_600_000).toISOString();
+      s.sink.findResults = [
+        new JobError({ kind, message: "paused", retryAfter: runAfter }),
+        new JobError({ kind, message: "paused", retryAfter: runAfter }),
+        true,
+      ];
+      expect(await s.runVerify()).toBe(true);
+      const [job] = s.verifyJobs();
+      expect(job).toMatchObject({ status: "PENDING", attempts: 0, runAfter });
+      expect(s.out(outgoingId)?.verifyAttempts).toBe(0);
+      expect(s.verifyJobs()).toHaveLength(1);
+      // Deferred again: still no verify attempt, no notification, no new verify job.
+      s.clock.set(new Date(runAfter));
+      expect(await s.worker.runOnce()).toBe(true);
+      expect(s.out(outgoingId)?.verifyAttempts).toBe(0);
+      expect(s.notes()).toHaveLength(0);
+      s.clock.set(new Date(runAfter));
+      expect(await s.worker.runOnce()).toBe(true);
+      expect(s.out(outgoingId)).toMatchObject({ status: "sent", verifyAttempts: 0 });
+      expect(s.sink.sends).toHaveLength(1);
+      s.expectNoContent();
+    });
+  }
+
+  test("R18: through the real SlackSender, an auth pause during the search spends no verify attempt", async () => {
+    let paused = true;
+    const sender = new SlackSender({
+      orchestrator: {
+        run: async () => {
+          throw new Error("no send run in this test");
+        },
+      },
+      searchSource: {
+        collect: async () => {
+          if (paused) throw new JobError({ kind: "auth_paused", message: "auth paused" });
+          return { pages: [{ messages: [], rejected: 0 }], searches: 1, complete: true };
+        },
+      },
+      selfUserId: () => "U0SYNTHSELF",
+    });
+    const t = setup({
+      sink: {
+        send: async () => ({ status: "sent_unverified" }),
+        findSent: (cmd, since) => sender.findSent(cmd, since),
+      },
+    });
+    const { outgoingId, approvalId } = t.request();
+    await t.approveAndRun(approvalId);
+    expect(await t.runVerify()).toBe(true);
+    expect(t.out(outgoingId)?.verifyAttempts).toBe(0);
+    expect(t.verifyJobs()[0]).toMatchObject({ status: "PENDING", attempts: 0 });
+    paused = false;
+    t.clock.advance(15 * 60_000);
+    expect(await t.worker.runOnce()).toBe(true);
+    expect(t.out(outgoingId)?.verifyAttempts).toBe(1);
+  });
+
+  test("R18: rate_limited during verify retries at Slack's time without a verify attempt; the last job attempt counts one", async () => {
+    const { outgoingId, approvalId } = s.request();
+    await s.approveAndRun(approvalId);
+    const rl = () =>
+      new JobError({
+        kind: "rate_limited",
+        message: "slack rate limited",
+        retryAfter: new Date(s.clock.now().getTime() + 60_000).toISOString(),
+      });
+    s.sink.findResults = [rl(), rl(), rl()];
+    expect(await s.runVerify()).toBe(true);
+    expect(s.verifyJobs()[0]).toMatchObject({ status: "RETRY", attempts: 1 });
+    expect(s.out(outgoingId)?.verifyAttempts).toBe(0);
+    s.clock.advance(60_000);
+    s.sink.findResults = [rl()];
+    expect(await s.worker.runOnce()).toBe(true);
+    expect(s.out(outgoingId)?.verifyAttempts).toBe(0);
+    // The job's last attempt never strands the row: it counts as an unknown verify attempt.
+    s.clock.advance(60_000);
+    s.sink.findResults = [rl()];
+    expect(await s.worker.runOnce()).toBe(true);
+    expect(s.verifyJobs()[0]?.status).toBe("COMPLETED");
+    expect(s.out(outgoingId)?.verifyAttempts).toBe(1);
+    expect(s.verifyJobs()).toHaveLength(2);
   });
 
   test("verify false until max attempts: needs_attention stays needs_attention, with a notification", async () => {

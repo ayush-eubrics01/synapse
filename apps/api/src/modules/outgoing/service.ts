@@ -1,4 +1,10 @@
-import type { Approval, MessageSink, SendMessageCommand, SendResult } from "@synapse/contracts";
+import {
+  type Approval,
+  JobError,
+  type MessageSink,
+  type SendMessageCommand,
+  type SendResult,
+} from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { and, eq, inArray, isNotNull, lt, or } from "drizzle-orm";
@@ -242,7 +248,7 @@ export class OutgoingService {
    * slot) makes the sink throw, which is the safe `not_started` outcome.
    */
   async #execute(approval: Approval, signal?: AbortSignal): Promise<SendOutcome> {
-    const { db, sink } = this.deps;
+    const { db } = this.deps;
     const payload = payloadSchema.safeParse(approval.payload);
     if (!payload.success) throw new OutgoingSendError("invalid_payload");
     const { outgoingId } = payload.data;
@@ -302,15 +308,27 @@ export class OutgoingService {
   /**
    * One `outgoing.verify` attempt: searches Slack for the message and never sends. Not found or
    * not checkable counts an attempt; the next one is queued until `outgoing.verify.maxAttempts`.
+   * R18: an auth pause, quota stop or Slack rate limit from the search is rethrown before anything
+   * is written, so the queue defers (or, for rate_limited, retries at Slack's time) the job and no
+   * verify attempt is spent. rate_limited is a `retry` decision that spends job attempts, so on the
+   * job's last attempt (`lastJobAttempt`) it counts as "could not tell" instead: the row then keeps
+   * being verified, or is exhausted for the user, and is never stranded by a parked job.
    */
-  async verify(outgoingId: string): Promise<SendOutcome> {
+  async verify(outgoingId: string, opts: { lastJobAttempt?: boolean } = {}): Promise<SendOutcome> {
     const { db, sink, settings, clock } = this.deps;
     const row = db.select().from(outgoingMessages).where(eq(outgoingMessages.id, outgoingId)).get();
     if (!row || !verifiable(row))
       return { outgoingId, status: "skipped", reason: "not_verifiable" };
     const startedMs = Date.parse(row.sendingAt ?? row.createdAt);
     const sinceTs = ((startedMs - VERIFY_LOOKBACK_MS) / 1000).toFixed(6);
-    const found = await sink.findSent(this.command(row), sinceTs);
+    let found: boolean | null;
+    try {
+      found = await sink.findSent(this.command(row), sinceTs);
+    } catch (e) {
+      const rateLimited = e instanceof JobError && e.classified.kind === "rate_limited";
+      if (!(rateLimited && opts.lastJobAttempt)) throw e;
+      found = null;
+    }
 
     return db.transaction(
       (tx): SendOutcome => {

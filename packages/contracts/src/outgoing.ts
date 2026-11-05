@@ -21,6 +21,10 @@ export interface SendResult {
 /** The port a send executor uses to post an approved message. */
 export interface MessageSink {
   send(cmd: SendMessageCommand, signal: AbortSignal): Promise<SendResult>;
-  /** true/false when the message was or was not found after `sinceTs`; null when it could not be checked. */
+  /**
+   * true/false when the message was or was not found after `sinceTs`; null when it could not be
+   * checked. R18: throws the `auth_paused`, `quota_exhausted` or `rate_limited` JobError so the
+   * caller's job is deferred without counting a verification attempt.
+   */
   findSent(cmd: SendMessageCommand, sinceTs: string): Promise<boolean | null>;
 }
