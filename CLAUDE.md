@@ -116,6 +116,7 @@ bun scripts/dev/slack-smoke.ts [--pages N]  # reads real Slack via Claude on a t
 bun scripts/dev/urgency-smoke.ts [--pages N]  # collects real Slack via Claude on a temp DB, screens, runs one urgency.assess; spends a little quota, reads real Slack, prints counts only (never message text); run deliberately. N is 1..3, default 1
 bun scripts/dev/people-smoke.ts [--pages N] [--self Uxxxx]  # collects real Slack on a temp DB, ranks contacts, runs one haiku people.generate_initial_profile for the top candidate; spends a little quota (one haiku run), reads real Slack, prints counts only (never names, ids or text); with no --self and no identity suggestion it prints `identity: none` and exits 0; run deliberately
 bun scripts/dev/commitments-smoke.ts [--pages N] [--self Uxxxx]  # collects real Slack on a temp DB and runs exactly one haiku commitments.extract batch; the container's message sink throws if called, so it can never send; spends a little quota (one haiku run), reads real Slack, prints counts only (never names, ids or text); with no --self and no identity suggestion it prints `identity: none` and exits 0; run deliberately
+bun scripts/dev/send-smoke.ts --self Uxxxx  # REAL SEND: one approved message to your own Slack DM through the full approval -> execute -> SlackSender path, then delivery verification with the real findSent (link + "&" in the text); temp DB; prints statuses only; run deliberately, by the user
 ```
 
 Setup commands that change the system. **Ask the user for approval before running any of these:**

@@ -4,7 +4,21 @@ Phase 6 (commitments, follow-ups and approved sending) passed per-task reviews, 
 
 ## Smoke result
 
-_Filled in after the controller smoke run._
+Runs on 2026-11-06 used the real CLI and Slack connector on a temp DB, which was deleted afterwards. The message sink throws if called, extraction ran on haiku, and output was counts only.
+
+| Run | Messages | Batch | Candidates | Dropped | Created |
+|---|---|---|---|---|---|
+| 1 | 60 | 40 | 10 | 10 | 0 |
+| 2 (after fix 1) | 60 | 40 | 8 | 7 | 1 (theirs) |
+| 3 (after fix 2, with drop reasons) | 60 | 40 | 9 | 8 (low_confidence=3, not_involving_user=5) | 1 (theirs) |
+
+The real run found two bugs that fixture tests had missed, both fixed before the PR:
+1. The model was never told the user's own Slack id. Owner and counterparty must be Slack ids, so every commitment involving the user failed validation. The confirmed `slack.selfUserId` now goes into the trusted system part.
+2. In a 1:1 DM, a commitment with only an owner had no counterparty. The user is now an implicit DM counterparty, though not an implicit owner, and the counterparty is inferred.
+
+Content-free drop-reason counts were added to the job result and the smoke output. The remaining drops are by design: low confidence, and commitments between other people.
+
+**Real test send: not done.** The permission classifier blocked the controller from posting, even to the user's own DM. The user can run it with `bun scripts/dev/send-smoke.ts --self <their Slack id>`. This is still the open J3 item, and 6b must not rely on delivery verification until it passes.
 
 ## Product decisions made during the phase (the user may revisit)
 
