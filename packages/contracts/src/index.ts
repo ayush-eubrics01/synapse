@@ -6,3 +6,4 @@ export * from "./health";
 export * from "./jobs";
 export * from "./messages";
 export * from "./permissions";
+export * from "./urgency";

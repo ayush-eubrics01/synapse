@@ -27,6 +27,11 @@ test("catalog covers the Phase 1 and 2 events", () => {
       "message.thread_updated",
       "collection.completed",
       "collection.failed",
+      "message.screened",
+      "message.urgent_detected",
+      "security.injection_suspected",
+      "security.flag_reviewed",
+      "urgency.status_changed",
     ].sort(),
   );
   expect(parseEventPayload("settings.changed", { key: "k" })).toEqual({ key: "k" });

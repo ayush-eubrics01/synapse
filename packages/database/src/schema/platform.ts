@@ -361,3 +361,83 @@ export const slackMessageReferences = sqliteTable("slack_message_references", {
   refType: text("ref_type").notNull(),
   refId: text("ref_id").notNull(),
 });
+
+export const people = sqliteTable("people", {
+  id: id(),
+  slackUserId: text("slack_user_id").notNull().unique(),
+  name: text("name"),
+  email: text("email"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const peoplePrioritySettings = sqliteTable("people_priority_settings", {
+  id: id(),
+  personId: text("person_id")
+    .notNull()
+    .unique()
+    .references(() => people.id),
+  priority: text("priority", { enum: ["normal", "high", "critical"] }).notNull(),
+  rationale: text("rationale"),
+  extraAttention: bool("extra_attention").notNull().default(false),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const securityFlags = sqliteTable(
+  "security_flags",
+  {
+    id: id(),
+    messageId: text("message_id").references(() => slackMessages.id),
+    sourceExternalRef: text("source_external_ref").notNull(),
+    slackUserId: text("slack_user_id").notNull(),
+    personId: text("person_id").references(() => people.id),
+    conversationId: text("conversation_id"),
+    detector: text("detector", { enum: ["rules", "ai", "runtime"] }).notNull(),
+    ruleId: text("rule_id").notNull(),
+    claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
+    severity: text("severity", { enum: ["info", "warning", "high"] }).notNull(),
+    excerpt: text("excerpt").notNull(),
+    reason: text("reason").notNull(),
+    status: text("status", { enum: ["open", "acknowledged", "contacted", "dismissed"] })
+      .notNull()
+      .default("open"),
+    rulesVersion: integer("rules_version"),
+    createdAt: text("created_at").notNull(),
+    reviewedAt: text("reviewed_at"),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("security_flags_message_id_detector_rule_id_uq").on(
+      t.messageId,
+      t.detector,
+      t.ruleId,
+    ),
+    index("security_flags_status_severity_idx").on(t.status, t.severity),
+    index("security_flags_slack_user_id_idx").on(t.slackUserId),
+  ],
+);
+
+export const securityFlagRules = sqliteTable("security_flag_rules", {
+  id: id(),
+  version: integer("version").notNull().unique(),
+  rules: json("rules").notNull(),
+  active: bool("active").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+export const messageDrafts = sqliteTable(
+  "message_drafts",
+  {
+    id: id(),
+    messageId: text("message_id")
+      .notNull()
+      .references(() => slackMessages.id),
+    kind: text("kind", { enum: ["suggested_response"] }).notNull(),
+    text: text("text"),
+    confidence: real("confidence").notNull(),
+    status: text("status", { enum: ["proposed", "discarded"] }).notNull(),
+    claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
+    createdAt: text("created_at").notNull(),
+    contentExpiredAt: text("content_expired_at"),
+  },
+  (t) => [uniqueIndex("message_drafts_message_id_kind_uq").on(t.messageId, t.kind)],
+);

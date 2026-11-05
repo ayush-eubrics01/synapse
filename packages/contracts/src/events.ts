@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { errorKindSchema } from "./errors";
+import { flagSeveritySchema, urgencyStatusSchema } from "./urgency";
 
 const approvalPayload = z.object({ approvalId: z.string() });
 
@@ -31,6 +32,24 @@ export const eventCatalog = {
     rejected: z.number().int(),
   }),
   "collection.failed": z.object({ stream: z.string(), kind: errorKindSchema }),
+  "message.screened": z.object({
+    messageId: z.string(),
+    candidate: z.boolean(),
+    score: z.number(),
+    securityFlag: z.boolean(),
+  }),
+  "message.urgent_detected": z.object({
+    messageId: z.string(),
+    level: z.enum(["critical", "high"]),
+    assessed: z.boolean(),
+  }),
+  "security.injection_suspected": z.object({
+    flagId: z.string(),
+    messageId: z.string().nullable(),
+    severity: flagSeveritySchema,
+  }),
+  "security.flag_reviewed": z.object({ flagId: z.string(), status: z.string() }),
+  "urgency.status_changed": z.object({ messageId: z.string(), status: urgencyStatusSchema }),
 };
 
 export type EventType = keyof typeof eventCatalog;

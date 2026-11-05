@@ -122,3 +122,35 @@ test("knownServers entries must match the R31 server-name rule", () => {
   settings.set("orchestrator.knownServers", ["mcp__claude_ai_Slack", "mcp__a_1"]);
   expect(settings.get("orchestrator.knownServers")).toEqual(["mcp__claude_ai_Slack", "mcp__a_1"]);
 });
+
+test("slack.selfUserId validates the Slack user id shape", () => {
+  const { settings } = setup();
+  expect(settings.get("slack.selfUserId")).toBeNull();
+  expect(() => settings.set("slack.selfUserId", "bob")).toThrow();
+  settings.set("slack.selfUserId", "U012ABCDEF");
+  expect(settings.get("slack.selfUserId")).toBe("U012ABCDEF");
+});
+
+test("urgency settings have the documented defaults", () => {
+  const { settings } = setup();
+  expect(settings.get("urgency.assess.batchWindowSeconds")).toBe(120);
+  expect(settings.get("urgency.assess.batchMax")).toBe(10);
+  expect(settings.get("urgency.notify.levels")).toEqual(["critical", "high"]);
+  expect(settings.get("urgency.model")).toBe("haiku");
+  expect(settings.get("urgency.suggest.model")).toBe("haiku");
+  expect(settings.get("urgency.maxAgeHours")).toBe(24);
+  expect(settings.get("urgency.candidateThreshold")).toBe(2);
+  expect(settings.get("security.flags.notifyOnSeverity")).toBe("high");
+  expect(settings.get("security.flags.widgetMinSeverity")).toBe("warning");
+  expect(settings.get("security.flags.excerptMaxChars")).toBe(300);
+  const kw = settings.get("urgency.rules.keywords");
+  expect(kw.map((k) => k.id)).toEqual([
+    "incident",
+    "blocker",
+    "urgent",
+    "deadline",
+    "today",
+    "question",
+  ]);
+  expect(() => settings.set("urgency.rules.keywords", [{ id: "x" } as never])).toThrow();
+});
