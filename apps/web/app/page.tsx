@@ -15,6 +15,7 @@ import {
   type ClaudeStatus,
   confirmSlackIdentity,
   decideApproval,
+  dismissSuggestion,
   evaluatePerson,
   type FlagReviewStatus,
   type GroupedFlagsDto,
@@ -51,6 +52,7 @@ import {
 import { trailingDebounce } from "../lib/debounce";
 import { decideThenRefresh } from "../lib/decide";
 import { LIVE_EVENT_TYPES } from "../lib/live-events";
+import type { Decision } from "../lib/people-decision";
 import { ApprovalsList } from "./components/ApprovalsList";
 import { ClaudePanel } from "./components/ClaudePanel";
 import { HealthBadge } from "./components/HealthBadge";
@@ -88,7 +90,8 @@ export default function Dashboard() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const [h, a, j, cs, cr, ss, im, ug, sf, pp, id, cd, rc] = await Promise.allSettled([
+    const openUser = personRef.current;
+    const [h, a, j, cs, cr, ss, im, ug, sf, pp, id, cd, rc, pd] = await Promise.allSettled([
       getHealth(),
       getApprovals(),
       getJobs(20),
@@ -102,6 +105,7 @@ export default function Dashboard() {
       getSlackIdentity(),
       getCandidates(50),
       getRecommendations(),
+      openUser ? getPersonProfile(openUser) : Promise.resolve(null),
     ]);
     if (h.status === "fulfilled") setHealth(h.value);
     else setHealth(null);
@@ -117,12 +121,12 @@ export default function Dashboard() {
     if (id.status === "fulfilled") setIdentity(id.value);
     if (cd.status === "fulfilled") setCandidates(cd.value);
     if (rc.status === "fulfilled") setRecommendations(rc.value);
-    // The open profile is refetched on every refresh; an unknown user closes it.
-    const openUser = personRef.current;
-    if (openUser) {
-      const detail = await Promise.allSettled([getPersonProfile(openUser)]);
-      if (personRef.current === openUser && detail[0]?.status === "fulfilled") {
-        setPerson(detail[0].value);
+    // The open profile is refetched with everything else; if that fails, the stale profile closes.
+    if (openUser && personRef.current === openUser) {
+      if (pd.status === "fulfilled") setPerson(pd.value);
+      else {
+        personRef.current = null;
+        setPerson(null);
       }
     }
     // Expanded histories are refetched on every refresh so review changes show at once.
@@ -250,8 +254,8 @@ export default function Dashboard() {
       <h2>Profile recommendations</h2>
       <ProfileRecommendations
         items={recommendations}
-        onApprove={(approvalId) => void decide(approvalId, "approve")}
-        onReject={(approvalId, reason) => void decide(approvalId, "reject", reason)}
+        onDecide={(d: Decision) => void decide(d.approvalId, d.decision, d.reason)}
+        onDismiss={(id) => void act(() => dismissSuggestion(id))}
         onRetry={(id) => void act(() => retryApply(id))}
         onEvaluate={(id) => void evaluate(() => acceptSuggestion(id))}
       />

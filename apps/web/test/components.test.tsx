@@ -160,10 +160,10 @@ const renderRecs = (items: RecommendationView[]) =>
   renderToString(
     <ProfileRecommendations
       items={items}
-      onApprove={() => {}}
-      onReject={() => {}}
+      onDecide={() => {}}
       onRetry={() => {}}
       onEvaluate={() => {}}
+      onDismiss={() => {}}
     />,
   );
 
@@ -368,4 +368,16 @@ test("PersonProfile shows version, versions list, evidence and priority controls
       />,
     ),
   ).toBe("");
+});
+
+test("ProfileRecommendations renders Dismiss only when the actions include dismiss", () => {
+  const sug = rec({
+    kind: "suggest_evaluation",
+    proposed: null,
+    approvalId: null,
+    approvalStatus: null,
+    reason: "r",
+  });
+  expect(renderRecs([{ ...sug, actions: ["evaluate", "dismiss"] }])).toContain("Dismiss");
+  expect(renderRecs([{ ...sug, actions: ["evaluate"] }])).not.toContain("Dismiss");
 });

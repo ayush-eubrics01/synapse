@@ -12,7 +12,11 @@ import { EventPublisher } from "../../src/core/events/publisher";
 import { JobQueue } from "../../src/core/jobs/queue";
 import { PermissionManager } from "../../src/core/permissions/permissions";
 import { ProfileService } from "../../src/modules/people/profiles";
-import { ProfileRecommendations, RetryNotAllowed } from "../../src/modules/people/recommendations";
+import {
+  ProfileRecommendations,
+  RecommendationNotFound,
+  RetryNotAllowed,
+} from "../../src/modules/people/recommendations";
 import { PeopleService } from "../../src/modules/people/service";
 
 const NOW = "2026-11-05T12:00:00.000Z";
@@ -438,7 +442,7 @@ describe("retryApply", () => {
   test("refused for a pending approval, an unknown or a non-pending recommendation", async () => {
     const r = store("initial", content({ communication: [obs("a")] }));
     expect(() => recs.retryApply(r.id)).toThrow(RetryNotAllowed);
-    expect(() => recs.retryApply("missing")).toThrow(RetryNotAllowed);
+    expect(() => recs.retryApply("missing")).toThrow(RecommendationNotFound);
     await approveAndRun(r.approvalId);
     expect(() => recs.retryApply(r.id)).toThrow(RetryNotAllowed);
   });

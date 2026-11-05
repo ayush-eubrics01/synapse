@@ -332,13 +332,43 @@ export class ProfileRecommendations {
     return { recommendationId, approvalId: approval.id };
   }
 
+  /** Dismisses a pending `suggest_evaluation`: status `rejected`, reason `dismissed`. */
+  dismissSuggestion(recommendationId: string): void {
+    const { db, clock, events } = this.deps;
+    db.transaction(
+      (tx) => {
+        const rec = tx
+          .select()
+          .from(peopleProfileRecommendations)
+          .where(eq(peopleProfileRecommendations.id, recommendationId))
+          .get();
+        if (!rec) throw new RecommendationNotFound(recommendationId);
+        if (rec.kind !== "suggest_evaluation" || rec.status !== "pending") {
+          throw new SuggestionNotAcceptable(recommendationId);
+        }
+        tx.update(peopleProfileRecommendations)
+          .set({ status: "rejected", reason: "dismissed", decidedAt: isoNow(clock) })
+          .where(eq(peopleProfileRecommendations.id, rec.id))
+          .run();
+        events.publish(tx, {
+          type: "person.recommendation_decided",
+          aggregateType: "person",
+          aggregateId: rec.personId,
+          correlationId: newId(),
+          payload: { recommendationId: rec.id, status: "rejected" },
+        });
+      },
+      { behavior: "immediate" },
+    );
+  }
+
   /**
    * A failed approval is terminal, so a failed apply gets a fresh approval for the same pending
    * recommendation (key `people.rec:<id>:<n>`, n >= 2). Only for a pending recommendation whose
    * current approval is `failed`; anything else throws RetryNotAllowed.
    */
   retryApply(recommendationId: string): { approvalId: string } {
-    const { db, approvals, events } = this.deps;
+    const { db, approvals } = this.deps;
     return db.transaction(
       (tx) => {
         const rec = tx
@@ -349,7 +379,8 @@ export class ProfileRecommendations {
         const current = rec?.approvalId
           ? tx.select().from(schema.approvals).where(eq(schema.approvals.id, rec.approvalId)).get()
           : undefined;
-        if (!rec || rec.status !== "pending" || current?.status !== "failed") {
+        if (!rec) throw new RecommendationNotFound(recommendationId);
+        if (rec.status !== "pending" || current?.status !== "failed") {
           throw new RetryNotAllowed(recommendationId);
         }
         let n = 2;

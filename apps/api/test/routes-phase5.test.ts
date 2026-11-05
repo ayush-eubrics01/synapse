@@ -25,10 +25,12 @@ const SECRET = "SECRET-PROFILE-TEXT";
 
 let c: Container;
 let app: ReturnType<typeof createApp>;
-let seq = 0;
+let seq = 0; // message ids
+let recSeq = 0; // recommendation and evidence ids
 
 beforeEach(() => {
   seq = 0;
+  recSeq = 0;
   c = createContainer(loadConfig({ SYNAPSE_DB_PATH: ":memory:" }), {
     run: async () => "Linger=yes",
     provider: fakeProvider,
@@ -88,7 +90,7 @@ function store(
   baseVersion?: number,
 ) {
   const pid = personId();
-  const id = `rec-${++seq}`;
+  const id = `rec-${++recSeq}`;
   const approval = c.db.transaction((tx) => {
     tx.insert(schema.peopleProfileRecommendations)
       .values({
@@ -104,7 +106,7 @@ function store(
     for (const e of evidence) {
       tx.insert(schema.peopleProfileEvidence)
         .values({
-          id: `ev-${++seq}`,
+          id: `ev-${++recSeq}`,
           recommendationId: id,
           observationKey: e.key,
           messageId: e.messageId,
@@ -284,7 +286,7 @@ test("recommendations: a failed approval offers retry only, and retry-apply issu
   const after = (await json<RecommendationView[]>("/api/people/recommendations"))[0];
   expect(after?.approvalId).toBe(next);
   expect(after?.actions).toEqual(["approve", "reject"]);
-  expect((await send("POST", "/api/people/recommendations/nope/retry-apply")).status).toBe(409);
+  expect((await send("POST", "/api/people/recommendations/nope/retry-apply")).status).toBe(404);
 });
 
 test("accept-suggestion: only a pending suggest_evaluation; marks applied and queues once", async () => {
@@ -295,7 +297,7 @@ test("accept-suggestion: only a pending suggest_evaluation; marks applied and qu
   expect(listed).toMatchObject({
     kind: "suggest_evaluation",
     reason: "talks a lot",
-    actions: ["evaluate"],
+    actions: ["evaluate", "dismiss"],
   });
 
   const res = await send("POST", `/api/people/recommendations/${sugId}/accept-suggestion`);
@@ -353,4 +355,49 @@ test("validation: limit, status, ids and reject reason length", async () => {
   expect(tooLong.status).toBe(400);
   const ok = await send("POST", `/api/approvals/${approvalId}/reject`, { reason: "x".repeat(500) });
   expect(ok.status).toBe(200);
+});
+
+test("accept-suggestion: already_run_today rolls back and the suggestion stays pending", async () => {
+  c.settings.set("slack.selfUserId", "USELF00001");
+  expect(await (await send("POST", `/api/people/${THEM}/evaluate`)).json()).toEqual({
+    queued: true,
+  });
+  const sugId = c.db.transaction((tx) => c.profiles.storeSuggestion(tx, THEM, "r"));
+  if (!sugId) throw new Error("no suggestion");
+  const res = await send("POST", `/api/people/recommendations/${sugId}/accept-suggestion`);
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ queued: false, reason: "already_run_today" });
+  expect(recRow(sugId)?.status).toBe("pending");
+  expect(recRow(sugId)?.decidedAt).toBeNull();
+});
+
+test("dismiss: pending suggestion becomes rejected/dismissed; 409 otherwise; 404 unknown", async () => {
+  const sugId = c.db.transaction((tx) => c.profiles.storeSuggestion(tx, THEM, "r"));
+  if (!sugId) throw new Error("no suggestion");
+  const listed = (await json<RecommendationView[]>("/api/people/recommendations"))[0];
+  expect(listed?.actions).toEqual(["evaluate", "dismiss"]);
+  const res = await send("POST", `/api/people/recommendations/${sugId}/dismiss`);
+  expect(res.status).toBe(200);
+  const row = recRow(sugId);
+  expect(row).toMatchObject({ status: "rejected", reason: "dismissed" });
+  expect(row?.decidedAt).not.toBeNull();
+  expect(await json<RecommendationView[]>("/api/people/recommendations")).toEqual([]);
+  const decided = c.db
+    .select()
+    .from(schema.domainEvents)
+    .all()
+    .filter((e) => e.type === "person.recommendation_decided");
+  expect(decided.length).toBeGreaterThan(0);
+  expect((await send("POST", `/api/people/recommendations/${sugId}/dismiss`)).status).toBe(409);
+  const init = store("initial", content());
+  expect((await send("POST", `/api/people/recommendations/${init.id}/dismiss`)).status).toBe(409);
+  expect((await send("POST", "/api/people/recommendations/nope/dismiss")).status).toBe(404);
+});
+
+test("recommendations: unparsable content drops approve but keeps reject", async () => {
+  const init = store("initial", { professionalContext: "garbage" } as unknown as ProfileContent);
+  const r = (await json<RecommendationView[]>("/api/people/recommendations"))[0];
+  expect(r?.id).toBe(init.id);
+  expect(r?.proposed).toBeNull();
+  expect(r?.actions).toEqual(["reject"]);
 });

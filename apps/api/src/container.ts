@@ -83,7 +83,7 @@ export interface Container {
   urgent: UrgentInbox;
   sync: SyncStateService;
   people: PeopleService;
-  /** Ranked contact candidates (Task 8 adds the route). */
+  /** Ranked contact candidates. */
   discovery: ContactDiscovery;
   profiles: ProfileRecommendations;
   profileStore: ProfileService;

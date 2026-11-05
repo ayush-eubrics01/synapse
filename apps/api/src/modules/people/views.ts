@@ -165,17 +165,21 @@ export class PeopleViews {
         diff: null,
         approvalId: r.rec.approvalId,
         approvalStatus: r.approvalStatus ?? null,
-        actions: actionsFor(r.rec.kind, r.rec.status, r.approvalStatus ?? null),
+        actions: [],
         reason: r.rec.reason,
         createdAt: r.rec.createdAt,
       };
+      let readable = true;
       if (r.rec.kind === "initial") {
         const parsed = profileContentSchema.safeParse(r.rec.content);
         if (parsed.success) view.proposed = observations(parsed.data, evidence);
+        readable = parsed.success;
       } else if (r.rec.kind === "update") {
         const parsed = profileUpdateOutputSchema.safeParse(r.rec.content);
         if (parsed.success) view.diff = this.diffView(r.rec.personId, parsed.data, evidence);
+        readable = parsed.success;
       }
+      view.actions = actionsFor(r.rec.kind, r.rec.status, r.approvalStatus ?? null, readable);
       return view;
     });
   }
@@ -258,10 +262,16 @@ function observations(
   );
 }
 
-function actionsFor(kind: string, status: string, approvalStatus: string | null): PeopleAction[] {
+function actionsFor(
+  kind: string,
+  status: string,
+  approvalStatus: string | null,
+  readable: boolean,
+): PeopleAction[] {
   if (status !== "pending") return [];
-  if (kind === "suggest_evaluation") return ["evaluate"];
-  if (approvalStatus === "pending") return ["approve", "reject"];
+  if (kind === "suggest_evaluation") return ["evaluate", "dismiss"];
+  // Unparsable content is never shown, so it must not be approvable; rejecting stays possible.
+  if (approvalStatus === "pending") return readable ? ["approve", "reject"] : ["reject"];
   if (approvalStatus === "failed") return ["retry"];
   return [];
 }

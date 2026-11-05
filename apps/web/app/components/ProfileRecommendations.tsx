@@ -7,6 +7,7 @@ import type {
   RemovedObservationView,
 } from "@synapse/contracts";
 import { useState } from "react";
+import { type Decision, decisionFor } from "../../lib/people-decision";
 
 export const EXPIRED_EVIDENCE_TEXT = "original message no longer available locally";
 
@@ -17,8 +18,9 @@ export function Evidence({ items }: { items: EvidenceView[] }) {
     <details>
       <summary>Evidence ({items.length})</summary>
       <ul>
-        {items.map((e) => (
-          <li key={`${e.observationKey}:${e.sourceExternalRef}`}>
+        {items.map((e, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: one message can back an observation twice
+          <li key={`${e.observationKey}:${e.sourceExternalRef}:${i}`}>
             {e.confidence}:{" "}
             {e.messageAvailable ? (
               e.permalink ? (
@@ -58,19 +60,22 @@ function Removed({ o }: { o: RemovedObservationView }) {
 
 function Item({
   r,
-  onApprove,
-  onReject,
+  onDecide,
   onRetry,
   onEvaluate,
+  onDismiss,
 }: {
   r: RecommendationView;
-  onApprove: (approvalId: string) => void;
-  onReject: (approvalId: string, reason: string) => void;
+  onDecide: (d: Decision) => void;
   onRetry: (recommendationId: string) => void;
   onEvaluate: (recommendationId: string) => void;
+  onDismiss: (recommendationId: string) => void;
 }) {
   const [reason, setReason] = useState("");
-  const approvalId = r.approvalId;
+  const decide = (d: "approve" | "reject", why?: string) => {
+    const out = decisionFor(r, d, why);
+    if (out) onDecide(out);
+  };
   const can = (a: RecommendationView["actions"][number]) => r.actions.includes(a);
   return (
     <li style={{ marginBottom: 16 }}>
@@ -97,12 +102,12 @@ function Item({
         </ul>
       )}
       <div>
-        {approvalId && can("approve") && (
-          <button type="button" onClick={() => onApprove(approvalId)}>
+        {r.approvalId && can("approve") && (
+          <button type="button" onClick={() => decide("approve")}>
             Approve
           </button>
         )}{" "}
-        {approvalId && can("reject") && (
+        {r.approvalId && can("reject") && (
           <>
             <input
               type="text"
@@ -112,7 +117,7 @@ function Item({
               value={reason}
               onChange={(e) => setReason(e.target.value)}
             />{" "}
-            <button type="button" onClick={() => onReject(approvalId, reason)}>
+            <button type="button" onClick={() => decide("reject", reason)}>
               Reject
             </button>
           </>
@@ -126,6 +131,11 @@ function Item({
           <button type="button" onClick={() => onEvaluate(r.id)}>
             Evaluate
           </button>
+        )}{" "}
+        {can("dismiss") && (
+          <button type="button" onClick={() => onDismiss(r.id)}>
+            Dismiss
+          </button>
         )}
       </div>
     </li>
@@ -134,16 +144,16 @@ function Item({
 
 export function ProfileRecommendations({
   items,
-  onApprove,
-  onReject,
+  onDecide,
   onRetry,
   onEvaluate,
+  onDismiss,
 }: {
   items: RecommendationView[];
-  onApprove: (approvalId: string) => void;
-  onReject: (approvalId: string, reason: string) => void;
+  onDecide: (d: Decision) => void;
   onRetry: (recommendationId: string) => void;
   onEvaluate: (recommendationId: string) => void;
+  onDismiss: (recommendationId: string) => void;
 }) {
   if (items.length === 0) return <p>No profile recommendations to review.</p>;
   return (
@@ -152,10 +162,10 @@ export function ProfileRecommendations({
         <Item
           key={r.id}
           r={r}
-          onApprove={onApprove}
-          onReject={onReject}
+          onDecide={onDecide}
           onRetry={onRetry}
           onEvaluate={onEvaluate}
+          onDismiss={onDismiss}
         />
       ))}
     </ul>

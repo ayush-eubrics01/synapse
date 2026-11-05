@@ -57,7 +57,24 @@ export function peopleRoutes(c: Container): Hono {
     try {
       return ctx.json(c.profiles.retryApply(ctx.req.valid("param").id));
     } catch (e) {
+      if (e instanceof RecommendationNotFound) {
+        return ctx.json({ error: "recommendation not found" }, 404);
+      }
       if (e instanceof RetryNotAllowed) return ctx.json({ error: "apply retry not allowed" }, 409);
+      throw e;
+    }
+  });
+  app.post("/api/people/recommendations/:id/dismiss", zValidator("param", recParam), (ctx) => {
+    try {
+      c.profiles.dismissSuggestion(ctx.req.valid("param").id);
+      return ctx.json({ dismissed: true });
+    } catch (e) {
+      if (e instanceof RecommendationNotFound) {
+        return ctx.json({ error: "recommendation not found" }, 404);
+      }
+      if (e instanceof SuggestionNotAcceptable) {
+        return ctx.json({ error: "not a pending suggestion" }, 409);
+      }
       throw e;
     }
   });

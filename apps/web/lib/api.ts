@@ -325,6 +325,17 @@ export function acceptSuggestion(
   );
 }
 
+export function dismissSuggestion(
+  recommendationId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ dismissed: boolean }> {
+  return request(
+    `/api/people/recommendations/${encodeURIComponent(recommendationId)}/dismiss`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
 export function retryApply(
   recommendationId: string,
   fetchImpl: typeof fetch = fetch,
