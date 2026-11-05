@@ -56,6 +56,9 @@ Commitment fields: ID, description, owner, owed-to, source conversation and mess
 - A `completion` never creates a commitment and never changes a status. It inserts a `commitment_updates` proposal (`actor: ai`, `field: status`, `to_value: completed`, `reason: proposed:<source ref>`) on an open, accepted commitment of the same owner with a source in the same conversation; otherwise it is dropped. Task 6 confirms proposals.
 - The batch's messages get `commitments_extracted_at` in the same transaction as the writes, including messages without a candidate. After a failed run they stay unmarked. The next batch is queued while eligible messages remain.
 - Flags follow Phase 5 R5: never attributed to the user's own message.
+- R8: in an `im` conversation the DM partner (the non-self author of any stored message there) is also an allowed owner or counterparty. R10 d: at least one of owner and counterparty must be the user.
+- R9: schedule `commitments.extract_sweep` (hourly, coalesced) queues one extract job when eligible unmarked messages wait and none is PENDING, RETRY or RUNNING.
+- R10: a terminal extract failure marks the batch extracted and writes audit `commitments.batch_skipped` `{count, runId}`; completion proposals also match `pending_review` commitments; a dedup match with a completed, cancelled or rejected commitment creates a new commitment keyed `<base>:<sha256(first source ref)[0..16]>`.
 
 ## Status lifecycle
 

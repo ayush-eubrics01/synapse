@@ -19,6 +19,7 @@ import type { HandlerRegistration } from "../../src/core/jobs/worker";
 import { NotificationService } from "../../src/core/notifications/notifications";
 import { AuthMonitor } from "../../src/core/orchestrator/auth";
 import { ClaudeOrchestrator } from "../../src/core/orchestrator/orchestrator";
+import { SchedulerService } from "../../src/core/scheduler/scheduler";
 import { ClaudeCliProvider } from "../../src/integrations/claude-code/cli-provider";
 import { CommitmentStore } from "../../src/modules/commitments/store";
 import { PeopleService } from "../../src/modules/people/service";
@@ -90,6 +91,8 @@ function build(mode: string, count = 2) {
     db,
     clock,
     settings,
+    scheduler: new SchedulerService(db, clock, queue),
+    audit,
     queue,
     orchestrator,
     securityFlags,

@@ -72,7 +72,7 @@ const settingSchemas = {
   "people.history.maxMessages": z.number().int().positive().max(200).default(150),
   "people.unknown.minMessages": z.number().int().positive().default(3),
   "commitments.extract.debounceMinutes": z.number().int().positive().default(30),
-  "commitments.extract.batchMax": z.number().int().positive().max(60).default(40),
+  "commitments.extract.batchMax": z.number().int().positive().max(40).default(40),
   "commitments.stall.waitHours": z.number().positive().default(24),
   "commitments.reminder.dueSoonHours": z.number().positive().default(24),
   "commitments.requireReviewForDetected": z.boolean().default(true),

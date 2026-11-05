@@ -1,12 +1,19 @@
-import { commitmentExtractionOutputSchema, type Job, JobError } from "@synapse/contracts";
+import {
+  commitmentExtractionOutputSchema,
+  type Job,
+  JobError,
+  retryDecision,
+} from "@synapse/contracts";
 import { type Db, schema, type Tx } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
-import { and, asc, eq, gte, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import type { AuditLogger } from "../core/audit/audit";
 import type { SettingsService } from "../core/config/settings";
 import type { JobQueue } from "../core/jobs/queue";
 import type { HandlerRegistration, JobContext } from "../core/jobs/worker";
 import type { ClaudeOrchestrator } from "../core/orchestrator/orchestrator";
 import { parseStructured } from "../core/orchestrator/structured";
+import type { SchedulerService } from "../core/scheduler/scheduler";
 import { buildExtractRequest } from "../intelligence/commitments/extract-prompt";
 import { type BatchMessage, validateCandidates } from "../intelligence/commitments/validate";
 import { conversationLabel, type HistoryItem } from "../intelligence/people/history";
@@ -22,12 +29,15 @@ import {
   wrapFailure,
 } from "./intelligence-shared";
 
-const { slackMessages, slackUsers, slackConversations } = schema;
+const { slackMessages, slackUsers, slackConversations, jobs } = schema;
+const SWEEP_JOB = "commitments.extract_sweep";
 
 export interface CommitmentJobDeps {
   db: Db;
   clock: Clock;
   settings: SettingsService;
+  scheduler: SchedulerService;
+  audit: AuditLogger;
   queue: JobQueue;
   orchestrator: Pick<ClaudeOrchestrator, "run">;
   securityFlags: SecurityFlagsService;
@@ -53,7 +63,7 @@ interface Row {
 }
 
 export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
-  const { db, settings, queue, orchestrator, securityFlags, store } = deps;
+  const { db, settings, queue, orchestrator, securityFlags, store, scheduler, audit } = deps;
   const { latestRunId, runIdBefore, runtimeFlags, failedRunFlags } = createRunHelpers(
     db,
     securityFlags,
@@ -130,6 +140,56 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
     });
   };
 
+  /** R9: a failed or lost batch must not wait for the next qualifying message. */
+  const sweep = async () => {
+    const selfId = settings.get("slack.selfUserId");
+    if (!selfId) return { skipped: "no_identity" };
+    return db.transaction(
+      (tx) => {
+        const active = tx
+          .select({ id: jobs.id })
+          .from(jobs)
+          .where(
+            and(eq(jobs.type, EXTRACT_JOB), inArray(jobs.status, ["PENDING", "RETRY", "RUNNING"])),
+          )
+          .limit(1)
+          .get();
+        if (active || eligible(tx, selfId, 1).length === 0) return { queued: false };
+        queue.enqueue(tx, {
+          type: EXTRACT_JOB,
+          idempotencyKey: `${EXTRACT_JOB}:sweep:${deps.clock.now().toISOString().slice(0, 13)}`,
+          concurrencyGroup: COMMITMENTS_CONCURRENCY_GROUP,
+          priority: EXTRACT_PRIORITY,
+        });
+        return { queued: true };
+      },
+      { behavior: "immediate" },
+    );
+  };
+
+  /** R10 a: a batch that can never succeed is marked done (audited, counts only). */
+  const skipBatch = (ids: string[], jobId: string) => {
+    if (ids.length === 0) return;
+    const runId = runIdBefore(jobId);
+    db.transaction(
+      (tx) => {
+        tx.update(slackMessages)
+          .set({ commitmentsExtractedAt: deps.clock.now().toISOString() })
+          .where(and(inArray(slackMessages.id, ids), isNull(slackMessages.commitmentsExtractedAt)))
+          .run();
+        audit.record(tx, {
+          actor: "system",
+          module: "commitments",
+          action: "commitments.batch_skipped",
+          result: "skipped",
+          details: { count: ids.length, runId },
+        });
+        enqueueNext(tx, jobId, settings.get("slack.selfUserId") ?? "");
+      },
+      { behavior: "immediate" },
+    );
+  };
+
   const extract = async (job: Job, ctx: JobContext) => {
     const selfId = settings.get("slack.selfUserId");
     if (!selfId) return { skipped: "no_identity" };
@@ -153,13 +213,35 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
 
     const before = runIdBefore(job.id);
     let ran = false;
+    let sentIds = rows.map((r) => r.id);
     try {
       const { request, used } = buildExtractRequest(
         items,
         job.id,
         settings.get("commitments.models.extract"),
       );
+      sentIds = used.map((i) => i.messageId);
       const rowById = new Map(rows.map((r) => [r.id, r]));
+      const partners = new Map<string, string | null>();
+      const partnerOf = (r: Row) => {
+        if (r.type !== "im") return null;
+        if (!partners.has(r.conversationId)) {
+          const p = db
+            .select({ ref: slackUsers.externalId })
+            .from(slackMessages)
+            .innerJoin(slackUsers, eq(slackUsers.id, slackMessages.senderUserId))
+            .where(
+              and(
+                eq(slackMessages.conversationId, r.conversationId),
+                ne(slackUsers.externalId, selfId),
+              ),
+            )
+            .limit(1)
+            .get();
+          partners.set(r.conversationId, p?.ref ?? null);
+        }
+        return partners.get(r.conversationId) ?? null;
+      };
       // Only what was really sent can be cited.
       const batch: BatchMessage[] = used.map((i) => ({
         messageId: i.messageId,
@@ -168,6 +250,7 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
         text: i.text,
         conversationId: (rowById.get(i.messageId) as Row).conversationId,
         sourceRef: i.sourceRef,
+        dmPartner: partnerOf(rowById.get(i.messageId) as Row),
       }));
       const batchById = new Map(batch.map((b) => [b.messageId, b]));
       const result = await orchestrator.run(request, ctx.signal);
@@ -176,7 +259,7 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
       const parsed = parseStructured(result.finalText, commitmentExtractionOutputSchema);
       if (!parsed.ok) throw new JobError({ kind: "incomplete_ai_output", message: parsed.reason });
       const { candidates, suspectedInjection } = parsed.value;
-      const { valid, dropped } = validateCandidates(candidates, batch);
+      const { valid, dropped } = validateCandidates(candidates, batch, selfId);
       const runId = latestRunId(job.id);
       const flagged = flaggedMessageOf(used, suspectedInjection, target);
 
@@ -221,9 +304,19 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
     } catch (err) {
       const { classified, rethrow } = wrapFailure(err);
       if (!ran) safely(() => failedRunFlags(job.id, targets, classified, before));
+      const decision = retryDecision(classified.kind);
+      if (
+        decision === "needs_attention" ||
+        decision === "fail" ||
+        job.attempts >= job.maxAttempts
+      ) {
+        safely(() => skipBatch(sentIds, job.id));
+      }
       throw rethrow;
     }
   };
 
+  deps.handlers.set(SWEEP_JOB, { handler: sweep, timeoutMs: 60_000 });
+  scheduler.upsert({ name: SWEEP_JOB, jobType: SWEEP_JOB, intervalSeconds: 3_600, coalesce: true });
   deps.handlers.set(EXTRACT_JOB, { handler: extract, timeoutMs: EXTRACT_TIMEOUT_MS });
 }

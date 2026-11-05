@@ -18,6 +18,7 @@ import { EventPublisher } from "../../src/core/events/publisher";
 import { JobQueue } from "../../src/core/jobs/queue";
 import type { HandlerRegistration } from "../../src/core/jobs/worker";
 import { NotificationService } from "../../src/core/notifications/notifications";
+import { SchedulerService } from "../../src/core/scheduler/scheduler";
 import { ExtractionQueue } from "../../src/modules/commitments/extraction-queue";
 import { CommitmentStore } from "../../src/modules/commitments/store";
 import { PeopleService } from "../../src/modules/people/service";
@@ -126,6 +127,8 @@ beforeEach(() => {
     db,
     clock,
     settings,
+    scheduler: new SchedulerService(db, clock, queue),
+    audit,
     queue,
     orchestrator: orchestrator as never,
     securityFlags,
@@ -171,13 +174,13 @@ function add(
   return id;
 }
 
-function run(id = "j") {
+function run(id = "j", attempts = 1) {
   const jobId = db.transaction(
     (tx) =>
       queue.enqueue(tx, { type: "commitments.extract", idempotencyKey: `${id}${Math.random()}` })
         .id,
   );
-  const job = { id: jobId, type: "commitments.extract", attempts: 1, maxAttempts: 3 } as Job;
+  const job = { id: jobId, type: "commitments.extract", attempts, maxAttempts: 3 } as Job;
   return handlers.get("commitments.extract")?.handler(job, ctx) as Promise<Record<string, unknown>>;
 }
 
@@ -278,11 +281,11 @@ describe("commitments.extract handler", () => {
     await run();
     expect(rows()).toHaveLength(0);
 
-    const m2 = add({ from: "priya", text: `<@${OTHER}> I will do it` });
-    const m3 = add({ from: "priya", text: `&lt;@${OTHER}&gt; I will do it too` });
+    const m2 = add({ from: "priya", text: `<@${OTHER}> <@${SELF}> I will do it` });
+    const m3 = add({ from: "priya", text: `&lt;@${OTHER}&gt; &lt;@${SELF}&gt; I will do it too` });
     script.candidates = [
-      { description: "mentioned owner", owner: OTHER, counterparty: PRIYA, evidence: [m2] },
-      { description: "escaped mention", owner: OTHER, counterparty: PRIYA, evidence: [m3] },
+      { description: "mentioned owner", owner: OTHER, counterparty: SELF, evidence: [m2] },
+      { description: "escaped mention", owner: OTHER, counterparty: SELF, evidence: [m3] },
     ];
     await run();
     expect(rows().map((c) => c.description)).toEqual(["mentioned owner", "escaped mention"]);
@@ -368,10 +371,11 @@ describe("commitments.extract handler", () => {
     expect(updates()).toHaveLength(1);
   });
 
-  test("a completion with no matching open accepted commitment is dropped", async () => {
+  test("a completion with no matching live commitment is dropped", async () => {
     const m1 = add({ text: "I'll check and let you know" });
     script.candidates = [{ evidence: [m1] }];
-    await run(); // pending_review: not a match
+    await run();
+    db.update(schema.commitments).set({ reviewStatus: "rejected" }).run(); // rejected: not a match
     const m2 = add({ text: "done" });
     script.candidates = [{ kind: "completion", evidence: [m2] }];
     await run();
@@ -511,6 +515,147 @@ describe("commitments.extract handler", () => {
     settings.clear("slack.selfUserId");
     expect(await run()).toEqual({ skipped: "no_identity" });
     expect(calls).toBe(0);
+  });
+});
+
+describe("fix round 1 (R8, R9, R10)", () => {
+  test("R8: the DM partner is a valid counterparty and owner in an im conversation, not in a channel", async () => {
+    // Priya's message is stored (already extracted) but not cited.
+    const old = add({ from: "priya", text: "earlier" });
+    db.update(schema.slackMessages)
+      .set({ commitmentsExtractedAt: NOW })
+      .where(eq(schema.slackMessages.id, old))
+      .run();
+    const m2 = add({ from: "self", text: "I'll check and let you know" });
+    script.candidates = [
+      { description: "dm counterparty", owner: SELF, counterparty: PRIYA, evidence: [m2] },
+      { description: "dm owner", owner: PRIYA, counterparty: SELF, evidence: [m2] },
+      { description: "stranger", owner: OTHER, counterparty: SELF, evidence: [m2] },
+    ];
+    await run();
+    expect(rows().map((c) => c.description)).toEqual(["dm counterparty", "dm owner"]);
+
+    const o2 = add({ conv: "c-ch", from: "priya", text: `earlier <@${SELF}>` });
+    db.update(schema.slackMessages)
+      .set({ commitmentsExtractedAt: NOW })
+      .where(eq(schema.slackMessages.id, o2))
+      .run();
+    const m3 = add({ conv: "c-ch", from: "self", text: "I'll look" });
+    script.candidates = [
+      { description: "channel partner", owner: SELF, counterparty: PRIYA, evidence: [m3] },
+    ];
+    await run();
+    expect(rows()).toHaveLength(2);
+  });
+
+  test("R10 d: a commitment between two other people is dropped", async () => {
+    const m1 = add({ from: "priya", text: `<@${OTHER}> will you do it?` });
+    script.candidates = [{ owner: PRIYA, counterparty: OTHER, evidence: [m1] }];
+    await run();
+    expect(rows()).toHaveLength(0);
+  });
+
+  test("R10 b: a completion matches a pending_review commitment but not a rejected one", async () => {
+    const m1 = add({ text: "I'll check and let you know" });
+    script.candidates = [{ evidence: [m1] }];
+    await run();
+    expect(rows()[0]?.reviewStatus).toBe("pending_review");
+    const m2 = add({ text: "done" });
+    script.candidates = [{ kind: "completion", evidence: [m2] }];
+    await run();
+    expect(updates()).toHaveLength(1);
+    db.update(schema.commitments).set({ reviewStatus: "rejected" }).run();
+    const m3 = add({ text: "done again" });
+    script.candidates = [{ kind: "completion", evidence: [m3] }];
+    await run();
+    expect(updates()).toHaveLength(1);
+  });
+
+  test("R10 c: a promise matching a terminal commitment becomes a new one, stable on re-extraction", async () => {
+    const m1 = add();
+    script.candidates = [{ evidence: [m1] }];
+    await run();
+    db.update(schema.commitments).set({ status: "completed" }).run();
+    const m2 = add();
+    script.candidates = [{ evidence: [m2] }];
+    await run();
+    expect(rows()).toHaveLength(2);
+    const fresh = rows().find((c) => c.status === "open");
+    expect(fresh?.dedupKey).toMatch(/^[0-9a-f]{64}:[0-9a-f]{16}$/);
+    expect(sources().filter((s) => s.commitmentId === fresh?.id)).toHaveLength(1);
+    // the same message extracted again finds the new row
+    db.update(schema.slackMessages)
+      .set({ commitmentsExtractedAt: null })
+      .where(eq(schema.slackMessages.id, m2))
+      .run();
+    await run();
+    expect(rows()).toHaveLength(2);
+    expect(sources()).toHaveLength(2);
+    // a rejected one is not reopened either
+    db.update(schema.commitments)
+      .set({ reviewStatus: "rejected" })
+      .where(eq(schema.commitments.id, fresh?.id as string))
+      .run();
+    const m3 = add();
+    script.candidates = [{ evidence: [m3] }];
+    await run();
+    expect(rows()).toHaveLength(3);
+  });
+
+  test("R10 a: a terminal failure marks the batch extracted and audits counts only", async () => {
+    const m1 = add();
+    const m2 = add();
+    script.raw = "no json here";
+    await run("j", 3).catch(() => {});
+    expect(extracted(m1)).not.toBeNull();
+    expect(extracted(m2)).not.toBeNull();
+    const a = db
+      .select()
+      .from(schema.auditEvents)
+      .all()
+      .filter((e) => e.action === "commitments.batch_skipped");
+    expect(a).toHaveLength(1);
+    expect(a[0]?.details).toMatchObject({ count: 2, runId: "run-1" });
+    expect(JSON.stringify(a)).not.toContain(SECRET);
+  });
+
+  test("R10 a: a retryable failure with attempts left leaves the batch unmarked", async () => {
+    const m1 = add();
+    script.raw = "no json here"; // incomplete_ai_output retries
+    await run("j", 1).catch(() => {});
+    expect(extracted(m1)).toBeNull();
+    expect(db.select().from(schema.auditEvents).all()).toHaveLength(0);
+  });
+
+  test("R10 a: a non-retryable failure marks at once and queues the next batch", async () => {
+    settings.set("commitments.extract.batchMax", 1);
+    const m1 = add();
+    const m2 = add();
+    script.throws = new JobError({ kind: "invalid_input", message: "x" });
+    await run("j", 1).catch(() => {});
+    expect(extracted(m1)).not.toBeNull();
+    expect(extracted(m2)).toBeNull();
+    expect(jobsOf("commitments.extract").some((j) => j.idempotencyKey.endsWith(":next"))).toBe(
+      true,
+    );
+  });
+
+  test("R9: the hourly sweep queues one extract job only when eligible messages wait and none is active", async () => {
+    const sweep = () =>
+      handlers
+        .get("commitments.extract_sweep")
+        ?.handler({ id: "s" } as Job, ctx) as Promise<unknown>;
+    expect(await sweep()).toEqual({ queued: false });
+    add();
+    expect(await sweep()).toEqual({ queued: true });
+    expect(jobsOf("commitments.extract")).toHaveLength(1);
+    expect(await sweep()).toEqual({ queued: false }); // one is PENDING
+    expect(jobsOf("commitments.extract")).toHaveLength(1);
+    const sched = db.select().from(schema.scheduledTasks).all();
+    expect(sched.find((x) => x.name === "commitments.extract_sweep")).toMatchObject({
+      jobType: "commitments.extract_sweep",
+      intervalSeconds: 3600,
+    });
   });
 });
 

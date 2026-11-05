@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { type Db, schema, type Tx } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -6,6 +7,7 @@ import type { EventPublisher } from "../../core/events/publisher";
 import { dedupKey, type ValidCandidate } from "../../intelligence/commitments/validate";
 
 const { commitments, commitmentSources, commitmentUpdates } = schema;
+const TERMINAL_STATUS: string[] = ["completed", "cancelled"];
 
 export const COMMITMENTS_CONCURRENCY_GROUP = "commitments.intelligence";
 /** Prefix of a status proposal's `reason`; Task 6 confirms or dismisses the proposal. */
@@ -57,12 +59,28 @@ export class CommitmentStore {
     const { clock, settings, events } = this.deps;
     const { candidate: c, sources, runId } = input;
     const now = clock.now().toISOString();
-    const key = dedupKey(c.owner, c.counterparty, c.description);
-    const existing = tx
-      .select({ id: commitments.id })
-      .from(commitments)
-      .where(eq(commitments.dedupKey, key))
-      .get();
+    const byKey = (k: string) =>
+      tx
+        .select({
+          id: commitments.id,
+          status: commitments.status,
+          reviewStatus: commitments.reviewStatus,
+        })
+        .from(commitments)
+        .where(eq(commitments.dedupKey, k))
+        .get();
+    let key = dedupKey(c.owner, c.counterparty, c.description);
+    let existing = byKey(key);
+    // R10 c: a finished or rejected commitment is not reopened by a new promise; that one gets its
+    // own row, keyed by its first source so a repeated extraction still finds it.
+    if (
+      existing &&
+      (TERMINAL_STATUS.includes(existing.status) || existing.reviewStatus === "rejected")
+    ) {
+      const first = sources[0]?.sourceRef ?? "";
+      key = `${key}:${createHash("sha256").update(first).digest("hex").slice(0, 16)}`;
+      existing = byKey(key);
+    }
     let id: string;
     let created = false;
     if (existing) {
@@ -123,7 +141,7 @@ export class CommitmentStore {
       .where(
         and(
           eq(commitments.ownerSlackUserId, input.candidate.owner),
-          eq(commitments.reviewStatus, "accepted"),
+          inArray(commitments.reviewStatus, ["accepted", "pending_review"]),
           inArray(commitments.status, ["open", "in_progress", "blocked"]),
           eq(commitmentSources.conversationId, first.conversationId),
         ),

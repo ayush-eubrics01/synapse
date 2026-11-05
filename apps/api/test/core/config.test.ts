@@ -102,7 +102,8 @@ test("phase 6 settings defaults and bounds", () => {
   expect(settings.get("commitments.models.draft")).toBe("haiku");
   expect(settings.get("outgoing.verify.delaySeconds")).toBe(120);
   expect(settings.get("outgoing.verify.maxAttempts")).toBe(5);
-  expect(() => settings.set("commitments.extract.batchMax", 61)).toThrow();
+  expect(() => settings.set("commitments.extract.batchMax", 41)).toThrow();
+  settings.set("commitments.extract.batchMax", 40);
 });
 
 test("set then get round-trips and emits one settings.changed", () => {

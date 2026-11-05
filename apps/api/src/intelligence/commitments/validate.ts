@@ -10,6 +10,8 @@ export interface BatchMessage {
   conversationId: string;
   /** `<conversation external id>:<ts>`; kept on the commitment after the message expires. */
   sourceRef: string;
+  /** R8: in an `im` conversation, the non-self participant; null elsewhere or when unknown. */
+  dmPartner?: string | null;
 }
 
 export interface ValidCandidate {
@@ -57,12 +59,15 @@ export function sanitizeDueAt(dueAt: string | null, sentAt: string): string | nu
 /**
  * Hallucination guard. A candidate survives only when it cites at least one batch message (other
  * ids are removed), is not low confidence, and its owner and counterparty are each the author of a
- * cited message or a Slack id mentioned in one (the user counts as an author when they wrote it).
+ * cited message, a Slack id mentioned in one (the user counts as an author when they wrote it), or
+ * the DM partner of a cited message's `im` conversation (R8). At least one of them must be the user
+ * (R10 d): other people's commitments to each other are not tracked.
  * The due date is kept only when plausible; the description is trimmed.
  */
 export function validateCandidates(
   candidates: CommitmentCandidate[],
   batch: BatchMessage[],
+  selfUserId: string,
 ): { valid: ValidCandidate[]; dropped: number } {
   const byId = new Map(batch.map((m) => [m.messageId, m]));
   const valid: ValidCandidate[] = [];
@@ -73,12 +78,14 @@ export function validateCandidates(
     const people = new Set<string>();
     for (const m of cited) {
       people.add(m.authorRef);
+      if (m.dmPartner) people.add(m.dmPartner);
       for (const id of mentionedIds(m.text)) people.add(id);
     }
     if (!people.has(c.owner)) continue;
     if (c.counterparty !== null && (!people.has(c.counterparty) || c.counterparty === c.owner)) {
       continue;
     }
+    if (c.owner !== selfUserId && c.counterparty !== selfUserId) continue;
     const description = c.description.trim();
     if (description === "") continue;
     const latest = cited

@@ -317,6 +317,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     db,
     clock,
     settings,
+    scheduler,
+    audit,
     queue,
     orchestrator,
     securityFlags,
