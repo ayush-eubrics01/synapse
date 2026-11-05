@@ -6,9 +6,11 @@ import { backfillAction } from "../../lib/backfill-action";
 export function SlackStatus({
   status,
   onBackfill,
+  onSkip,
 }: {
   status: SlackStatusDto | null;
   onBackfill: () => void;
+  onSkip: () => void;
 }) {
   if (!status) return <p>No Slack status yet.</p>;
   const { incremental, backfill, searchesToday } = status;
@@ -19,6 +21,14 @@ export function SlackStatus({
       <p>
         Incremental: checkpoint {incremental.checkpoint ?? "none"}, last success{" "}
         {incremental.lastSuccessAt ?? "never"}
+        {incremental.lastError?.kind === "parse_failed" && (
+          <>
+            {" "}
+            <button type="button" onClick={onSkip}>
+              Skip unreadable page
+            </button>
+          </>
+        )}
       </p>
       <p>
         Backfill: {backfill.status}

@@ -118,6 +118,79 @@ Assess and suggest: allowed. Send a suggested response: approval required. Start
 | `urgency.notify.levels` | `critical,high` |
 | `urgency.model` | `haiku` |
 
+## Implementation notes (Phase 4)
+
+Where the Phase 4 code differs from, or is stricter than, the sections above. Rulings are in the Phase 4 plan workspace (R1-R13).
+
+### Screening (no AI)
+
+- `ScreeningService` (`modules/inbox/screening-service.ts`) is an outbox consumer (`inbox.screening`) of `message.received` and `message.thread_updated`. It runs in the dispatcher's transaction, so a failure can never block message storage. An exception is logged as one content-free line and the message gets `screening.error = true`. The stored result is `slack_messages.screening` (`ScreeningRecord`); `message.screened` carries the raw `candidate` value.
+- **Scoring** (pure function `screenMessage`, only the first 8,000 characters are scanned; invalid user-edited keyword patterns are skipped and reported by the `screening-rules` health check as degraded):
+
+| Signal | Score |
+|---|---|
+| Each matched keyword rule | its weight (`incident` 3, `blocker` 2, `urgent` 2, `deadline` 2, `today` 1, `question` 0) |
+| Direct message (`im`) | +1 |
+| Group DM (`mpim`) | +0.5 |
+| Mentions the user | +1 |
+| In a thread the user took part in | +1 |
+| Sender priority is `high` or `critical` | +1 |
+| Sender has extra attention | +1 |
+
+- **Candidate rule.** A message is a candidate when at least one matched rule is an urgency signal (`incident`, `blocker`, `urgent`, `deadline`, `today`; `question` is not) and the score reaches `urgency.candidateThreshold` (default 2). A priority or extra-attention sender lowers the threshold by 1 (minimum 1). The rule level is the highest `level` among matched rules, or `low`.
+- **Skips, with no Claude run.** The user's own messages (sender equals `slack.selfUserId`; with no identity set nothing counts as own), messages whose content has expired (`text = null`) and non-candidates are never assessed. Non-candidates get route `batch` (stored, never sent to Claude).
+- **Age gate.** A candidate whose `sent_at` is older than `urgency.maxAgeHours` (default 24) gets route `skip` with reason `too_old`: it is screened and flagged but never assessed and never notified, so a 90-day backfill cannot cause a Claude run or a notification burst.
+- **Idempotency.** Re-screening (retry, replay, thread update) keeps `assessed`, `fallback` and `notified`, creates no second flag and enqueues no second assessment.
+
+### Batched assessment
+
+- A candidate with route `assess` enqueues `urgency.assess` (priority 200) with the bucket key `urgency.batch:<bucket>`, where bucket = floor(now / `urgency.assess.batchWindowSeconds`) x window, and `runAfter` = end of the bucket. Messages arriving in the same window share one job. The bucket key cannot strand messages: a bucket's job runs only after the bucket closes, and a handler that leaves messages over enqueues `urgency.batch:<jobId>:next`.
+- **Concurrency group (R11).** Every `urgency.assess` enqueue uses `concurrencyGroup: "urgency.assess"`, so a deferred job and a later bucket's job never run at once and never select the same messages (no double Claude spend).
+- The handler selects up to `urgency.assess.batchMax` unassessed `assess` messages with text, oldest first. The code caps `batchMax` at 10.
+- **R13 byte cap.** Each message's text is capped by UTF-8 bytes at floor((100 KiB - 8 KiB) / batch length) so the request passes the orchestrator's 100 KiB prompt validator. The cut is on a code-point boundary and ends with a truncation marker. A long message is assessed on its prefix.
+- **Batch validation.** The model's output is parsed by the handler itself (R12) with `urgencyAssessmentSchema`. An id outside the batch or a duplicate id fails the whole run with `incomplete_ai_output` (retried). A batch message the model omitted gets the rule level for that message only, flagged `fallback`. Invalid output also fails with `incomplete_ai_output`.
+- **Output handling.** Each result stores `urgency_level`, a rendered and capped `urgency_reason` and sets `assessed`. `urgency_status` is set to `new` only when unset. A `suspectedInjection` result is forwarded to security-flags as an AI flag. Priority is never read from or written by the model.
+- **Runtime flags (R12).** Because the handler calls the orchestrator and then parses, runtime flags are recorded from the run result even when the output is invalid: any permission denial or any tool result other than `ToolSearch` raises a runtime flag on every message of the batch (`high` if a write/send tool was involved, else `warning`). Reasons hold tool names only. Assessment and suggestion requests carry untrusted message text, so the orchestrator allows them no write, send or network tools (ADR-032).
+
+### Notifications and failure handling
+
+- **Notify once.** A message whose level is in `urgency.notify.levels` (default critical, high) creates one notification (title: level, sender name, conversation label; never message text), publishes `message.urgent_detected` and enqueues the suggestion job. `screening.notified` makes this once per message.
+- **Deferral ("not yet assessed").** When a run is deferred (quota or auth pause), no message is assessed, but each batch message whose rule level is `critical` still notifies once with "Likely incident (not yet assessed)". The Urgent Inbox shows such messages at their rule level, labelled not yet assessed. They are assessed after the pause. The suggestion job is enqueued after the later real assessment.
+- **Terminal fallback.** When a job fails terminally (attempts exhausted, `needs_attention` or `fail`), every message of the batch takes its rule level, marked `fallback` with a fixed reason, and the usual notification rule applies. The next batch is then enqueued.
+- A retryable failure just rethrows; the queue retries with backoff.
+
+### Suggested responses
+
+- `urgency.suggest_response` (priority 150, group `urgency.suggest`, key `urgency.suggest:<messageId>`) runs for each critical or high message, including after a deferral notification.
+- **Skips.** `expired_or_missing` (message gone or text expired), `not_urgent` (level not critical or high), `draft_exists` (one draft per message, so a discarded draft is not regenerated) and `raced` (a draft appeared, or the text expired, while the run was in flight).
+- Context is up to a fixed number of earlier messages of the same thread (or conversation if there is no thread). The draft is stored in `message_drafts` as `proposed`, rendered and capped at 2,000 characters, with the model's confidence. **Nothing is sent**; sending needs approval and is out of scope (below).
+- **Draft retention.** A draft quotes the conversation, so `expireContent` clears `message_drafts.text` and sets `content_expired_at` when its message expires. The row stays and the API shows no text.
+- A model run with a suspected injection records an AI flag; an empty draft fails with `incomplete_ai_output`.
+
+### Runtime and AI flags
+
+Both are recorded through `SecurityFlagsService` (see `security-flags.md`): AI flags from `suspectedInjection.detected` in assessment and suggestion output, runtime flags from denials or unexpected tools in the run result.
+
+### Routes (localhost)
+
+| Route | Result |
+|---|---|
+| `GET /api/urgent?status=open\|all` | Urgent Inbox items: critical/high assessed messages plus unassessed ones notified during a pause, with the proposed draft, level, reason, flags `assessed` and `fallback`, and allowed status transitions. Message and draft text appear only here |
+| `POST /api/urgent/:messageId/status` | Body `{ status }`. Allowed transitions only (resolved and dismissed are terminal); 409 on an invalid transition, 404 for an unknown or non-urgent message |
+| `GET /api/people`, `PUT /api/people/:slackUserId/priority` | People list and priority setting (`priority`, optional `rationale` up to 500 characters, `extraAttention`) |
+| `GET/PUT /api/slack/identity` | The user's own Slack identity (`slack.selfUserId`) with a suggestion |
+| `GET /api/security/flags`, `GET /api/security/flags/person/:slackUserId`, `POST /api/security/flags/:id/review` | See `security-flags.md` |
+
+### Out of scope for Phase 4
+
+- Sending a reply and away-mode auto-replies (ADR-033): moved to Phase 6. Phase 4 produces display-only drafts and sends nothing.
+- Jira and Engineering Brain urgency signals: Phases 7 and 8.
+- Desktop notifications: there is no desktop notifier yet; notifications are in-app rows.
+
+### Smoke
+
+`bun scripts/dev/urgency-smoke.ts [--pages N]` collects real pages on a temporary database, drains the outbox so screening runs, runs `urgency.assess` once and prints counts only. It never runs the suggestion job.
+
 ## Tests
 
 - Priority person + routine message → not urgent.

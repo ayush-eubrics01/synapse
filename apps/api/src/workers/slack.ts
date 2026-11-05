@@ -77,6 +77,11 @@ export function registerSlackJobs(deps: SlackJobDeps): {
   /** Records the failure (unless a pause) and rethrows; `terminal` parks the backfill in "error". */
   const fail = (stream: SyncStream, err: unknown, terminal = false): never => {
     if (err instanceof JobError) {
+      // Q2: searches spent by a failed run still count towards today's total.
+      const spent = err.classified.details?.searches;
+      if (typeof spent === "number" && spent > 0) {
+        db.transaction((tx) => sync.countSearches(tx, stream, spent), { behavior: "immediate" });
+      }
       if (!isPause(err.classified)) {
         db.transaction(
           (tx) => recordFailure(tx, stream, err.classified, terminal ? "error" : undefined),

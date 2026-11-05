@@ -150,6 +150,15 @@ Where the Phase 3 code differs from, or is stricter than, the sections above. Ru
 | `GET /api/inbox/messages?limit&before&conversationId` | Newest-first messages. `limit` 1..200 (default 50); `before` is an ISO datetime with offset; `conversationId` matches `/^[CDG][A-Z0-9]+$/`. Items hold conversation (id, name, type), sender, `sentAt`, `text` (null once expired), permalink, `threadTs`, `replyCount`. Invalid params return 400 |
 | `GET /api/slack/status` | `{ incremental, backfill, searchesToday }`; each state has status, checkpoint, pages done, last success, last error and stall count. `backfill.resumable` is true when the status is `running` and no PENDING, RETRY or RUNNING `slack.backfill` job exists; the dashboard then offers "Resume backfill" (R60 M4) |
 | `POST /api/slack/backfill` | Starts or resumes the backfill. Returns `{ started, state, reason? }`; `started: false` with a reason if already running, paused or complete |
+| `POST /api/slack/incremental/skip` | Q1 recovery for a fail-closed parse stall. Allowed only when the incremental `lastError.kind` is `parse_failed`, otherwise 409. Advances the checkpoint by exactly 1 s (the 6-digit fraction is kept), clears `lastError`, writes the audit row `slack.checkpoint_skipped` (old and new checkpoint only) and enqueues an incremental run (the R52 half-interval rule may skip it; the next scheduled run follows). Returns `{ checkpoint }`. The dashboard shows "Skip unreadable page" only in that state. Messages in the skipped second are lost |
+
+### Stored copy and edits (Q5)
+
+The stored copy of a message is the first one seen. Edits and deletes in Slack are not tracked: a later poll returns the changed text, but the dedupe key (conversation, `ts`) counts it as a duplicate and the stored text is not updated. Screening, urgency and the Engineering Brain therefore read the original text. Slack stays authoritative; the permalink opens the current message.
+
+### Search counting (Q2)
+
+`searchesToday` counts every search result the connector saw, including runs that failed: each `JobError` thrown by `SlackConnectorSource.collect` carries `details.searches`, and the worker adds it to the day's count on failure. A successful run is counted from `CollectResult.searches` as before.
 
 ### Dev smoke
 

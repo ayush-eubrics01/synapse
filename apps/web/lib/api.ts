@@ -142,6 +142,12 @@ export function startBackfill(
   return request("/api/slack/backfill", { method: "POST" }, fetchImpl);
 }
 
+export function skipUnreadablePage(
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ checkpoint: string }> {
+  return request("/api/slack/incremental/skip", { method: "POST" }, fetchImpl);
+}
+
 export type UrgencyStatusDto = "new" | "acknowledged" | "in_progress" | "resolved" | "dismissed";
 
 export interface UrgentItemDto {

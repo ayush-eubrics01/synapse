@@ -30,6 +30,7 @@ import {
   type SlackStatusDto,
   setPersonPriority,
   setUrgentStatus,
+  skipUnreadablePage,
   startBackfill,
   type UrgencyStatusDto,
   type UrgentItemDto,
@@ -138,6 +139,16 @@ export default function Dashboard() {
     await refresh();
   };
 
+  const skipPage = async () => {
+    setActionError(null);
+    try {
+      await skipUnreadablePage();
+    } catch (e) {
+      setActionError(String(e));
+    }
+    await refresh();
+  };
+
   const toggleHistory = (u: string) => {
     const next = expandedRef.current.includes(u)
       ? expandedRef.current.filter((x) => x !== u)
@@ -208,7 +219,11 @@ export default function Dashboard() {
       <h2>Claude</h2>
       <ClaudePanel status={claudeStatus} runs={claudeRuns} />
       <h2>Slack</h2>
-      <SlackStatus status={slackStatus} onBackfill={() => void backfill()} />
+      <SlackStatus
+        status={slackStatus}
+        onBackfill={() => void backfill()}
+        onSkip={() => void skipPage()}
+      />
       <h2>Inbox</h2>
       <InboxPanel messages={messages} />
     </main>

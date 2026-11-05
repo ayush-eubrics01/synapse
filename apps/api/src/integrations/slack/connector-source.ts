@@ -97,6 +97,28 @@ export class SlackConnectorSource implements MessageSource {
     );
 
     const searchResults = result.toolResults.filter((r) => r.toolName === SEARCH);
+    try {
+      return this.buildResult(req, base, searchResults);
+    } catch (e) {
+      // Q2: a failed run still spent searches; the worker counts them.
+      if (e instanceof JobError) {
+        throw new JobError({
+          ...e.classified,
+          details: { ...e.classified.details, searches: searchResults.length },
+        });
+      }
+      throw e;
+    }
+  }
+
+  private buildResult(
+    req: CollectRequest,
+    base: Args,
+    searchResults: RawToolResult[],
+  ): CollectResult {
+    const afterSec = Math.floor(Number(req.afterTs));
+    const beforeSec = req.beforeTs ? Math.floor(Number(req.beforeTs)) : undefined;
+    const n = req.maxPages;
     this.throwIfRateLimited(searchResults);
     if (searchResults.length === 0) {
       throw new JobError({ kind: "incomplete_ai_output", message: "no search tool result" });

@@ -74,6 +74,8 @@ export interface Container {
   sync: SyncStateService;
   people: PeopleService;
   securityFlags: SecurityFlagsService;
+  /** Job handler registry; the urgency smoke script runs one handler directly. */
+  handlers: ReadonlyMap<string, HandlerRegistration>;
   slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
@@ -261,6 +263,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     sync,
     people,
     securityFlags,
+    handlers,
     slack: { startBackfill: slack.startBackfill, backfillResumable: slack.backfillResumable },
   };
 }

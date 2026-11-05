@@ -486,3 +486,20 @@ test("R60 M5: backfill auth_failed rethrows (job parks) but keeps status running
   expect(r.state.checkpoint).toBe(s.checkpoint);
   expect(slack.backfillResumable()).toBe(false);
 });
+
+test("Q2: a failed run counts the searches it spent; a successful run's count is unchanged", async () => {
+  fake.next.push(
+    boom(
+      new JobError({
+        kind: "rate_limited",
+        message: "slow down",
+        details: { searches: 2 },
+      }),
+    ),
+  );
+  await expect(run("slack.collect_incremental")).rejects.toBeInstanceOf(JobError);
+  expect(sync.get("slack.messages").searchCount).toBe(2);
+  fake.next.push(ok([{ messages: [msg(T1)], rejected: 0 }], true, 1));
+  await run("slack.collect_incremental");
+  expect(sync.get("slack.messages").searchCount).toBe(3);
+});

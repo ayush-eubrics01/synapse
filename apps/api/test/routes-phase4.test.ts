@@ -286,3 +286,41 @@ test("grouped flags carry latest id and the latest open flag id", async () => {
   expect(g[0]?.latest.id).toBeTruthy();
   expect(g[0]?.latestOpenId).toBeTruthy();
 });
+
+test("Q1: skip is 409 unless the incremental last error is parse_failed", async () => {
+  c.sync.update(c.db, "slack.messages", { checkpoint: "1793872920.000500" });
+  expect((await send("POST", "/api/slack/incremental/skip")).status).toBe(409);
+  c.sync.update(c.db, "slack.messages", {
+    lastError: { kind: "rate_limited", message: "x" },
+  });
+  expect((await send("POST", "/api/slack/incremental/skip")).status).toBe(409);
+  expect(c.sync.get("slack.messages").checkpoint).toBe("1793872920.000500");
+});
+
+test("Q1: skip advances the checkpoint by exactly 1 s, clears the error, audits and re-enqueues", async () => {
+  c.sync.update(c.db, "slack.messages", {
+    checkpoint: "1793872920.000500",
+    lastError: { kind: "parse_failed", message: "slack output format not recognised" },
+  });
+  const res = await send("POST", "/api/slack/incremental/skip");
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ checkpoint: "1793872921.000500" });
+  const st = c.sync.get("slack.messages");
+  expect(st.checkpoint).toBe("1793872921.000500");
+  expect(st.lastError).toBeNull();
+  const audits = c.db
+    .select()
+    .from(schema.auditEvents)
+    .where(eq(schema.auditEvents.action, "slack.checkpoint_skipped"))
+    .all();
+  expect(audits).toHaveLength(1);
+  expect(JSON.stringify(audits[0]?.details)).toContain("1793872921.000500");
+  const jobs = c.db
+    .select()
+    .from(schema.jobs)
+    .where(eq(schema.jobs.type, "slack.collect_incremental"))
+    .all();
+  expect(jobs.some((j) => j.idempotencyKey.startsWith("skip:"))).toBe(true);
+  // A second call has nothing to skip.
+  expect((await send("POST", "/api/slack/incremental/skip")).status).toBe(409);
+});

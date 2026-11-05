@@ -223,6 +223,28 @@ describe("SlackConnectorSource.collect", () => {
     expect(r.complete).toBe(true);
   });
 
+  test("Q2: every thrown JobError carries details.searches (the SEARCH results seen)", async () => {
+    const limited = await failure(
+      setup([
+        tr(SEARCH, baseArgs, fixture("search-group-dm")),
+        tr(SEARCH, { ...baseArgs, cursor: CURSOR1 }, "Error 429 too many requests", true),
+      ]).source.collect(collectReq, signal),
+    );
+    expect(limited.classified.kind).toBe("rate_limited");
+    expect(limited.classified.details?.searches).toBe(2);
+    const bad = await failure(
+      setup([
+        tr(SEARCH, baseArgs, "Error: temporary failure", true),
+        tr(SEARCH, baseArgs, "Error: temporary failure", true),
+      ]).source.collect(collectReq, signal),
+    );
+    expect(bad.classified.kind).toBe("provider_error");
+    expect(bad.classified.details?.searches).toBe(2);
+    const none = await failure(setup([]).source.collect(collectReq, signal));
+    expect(none.classified.kind).toBe("incomplete_ai_output");
+    expect(none.classified.details?.searches).toBe(0);
+  });
+
   test("results beyond maxPages are ignored", async () => {
     const { source } = setup([
       tr(SEARCH, baseArgs, fixture("search-group-dm")),
