@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 import type { DesktopNotifier } from "@synapse/contracts";
 import { type Db, openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
@@ -29,7 +29,6 @@ beforeEach(() => {
   };
   svc = new NotificationService(db, clock, new LiveBus(), { notifier, settings });
 });
-afterEach(() => {});
 
 const note = (severity: "info" | "warning" | "high") =>
   svc.notify(db, { kind: "k", severity, title: `t-${severity}`, body: "SECRET BODY" });
@@ -117,17 +116,33 @@ test("exact argv: no shell, title only, urgency by severity, 5 s timeout", async
       "notify-send",
       "--app-name=Synapse",
       "--urgency=critical",
+      "--",
       "Critical: message from A in a DM",
     ],
     timeout: 5000,
   });
   expect(seen[1]?.argv[2]).toBe("--urgency=normal");
   expect(seen[2]?.argv[2]).toBe("--urgency=low");
-  expect(seen.every((s) => s.argv.length === 4)).toBe(true);
+  expect(seen.every((s) => s.argv.length === 5)).toBe(true);
 });
 
 test("nonzero exit is a failure", async () => {
   const n = new NotifySendNotifier({ spawn: async () => 1, which: () => "/x" });
   await expect(n.notify({ title: "t", severity: "high" })).rejects.toThrow();
   expect(n.health().ok).toBe(false);
+});
+
+test("a title that looks like an option is passed after --, never parsed as a flag", async () => {
+  const seen: string[][] = [];
+  const n = new NotifySendNotifier({
+    spawn: async (argv) => {
+      seen.push(argv);
+      return 0;
+    },
+    which: () => "/usr/bin/notify-send",
+  });
+  await n.notify({ title: "--hint=int:transient:1", severity: "high" });
+  const argv = seen[0] ?? [];
+  expect(argv.indexOf("--")).toBe(argv.length - 2);
+  expect(argv.at(-1)).toBe("--hint=int:transient:1");
 });

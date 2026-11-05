@@ -46,7 +46,8 @@ export class NotifySendNotifier implements DesktopNotifier, NotifierHealth {
   async notify(n: { title: string; severity: "info" | "warning" | "high" }): Promise<void> {
     try {
       const code = await this.spawn(
-        [BIN, "--app-name=Synapse", `--urgency=${URGENCY[n.severity]}`, n.title],
+        // "--" ends option parsing: titles carry Slack display names, which other people control.
+        [BIN, "--app-name=Synapse", `--urgency=${URGENCY[n.severity]}`, "--", n.title],
         TIMEOUT_MS,
       );
       if (code !== 0) throw new Error(`notify-send exited with ${code}`);

@@ -143,7 +143,7 @@ async function main(): Promise<number> {
   };
   try {
     const config = { ...loadConfig(process.env), dbPath: join(dir, "smoke.db") };
-    // A no-op desktop notifier: notifications are in-app rows in the temp database only.
+    // No-op desktop notifier: the smoke run must never pop real notifications naming senders.
     const c = createContainer(config, { notifier: new NoopDesktopNotifier() });
     sqlite = c.sqlite;
     c.settings.set("urgency.maxAgeHours", 24);
