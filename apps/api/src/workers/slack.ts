@@ -133,10 +133,15 @@ export function registerSlackJobs(deps: SlackJobDeps): {
       .all();
     if (otherRunning.length > 0) return { skipped: "running" };
 
-    const checkpoint = db.transaction(
+    const afterTs = db.transaction(
       (tx) => {
         const cur = sync.get(stream, tx).checkpoint;
-        if (cur !== null) return cur;
+        if (cur !== null) {
+          // R59: overlap by the index lag (dedup absorbs it); the checkpoint itself is unchanged.
+          const lag = settings.get("slack.collection.indexLagSeconds");
+          return tsFromMs(Math.max(0, Math.floor(Number(cur)) - lag) * 1000);
+        }
+        // First run: the init floor is used as is, never extended by the lag.
         const init = tsFromMs(nowMs() - DAY_MS);
         sync.update(tx, stream, { checkpoint: init });
         return init;
@@ -145,7 +150,11 @@ export function registerSlackJobs(deps: SlackJobDeps): {
     );
     try {
       const result = await source.collect(
-        { afterTs: checkpoint, maxPages: settings.get("slack.collector.pagesPerRun") },
+        {
+          afterTs,
+          maxPages: settings.get("slack.collector.pagesPerRun"),
+          ...(job.id ? { jobId: job.id } : {}),
+        },
         ctx.signal,
       );
       const totals = persistAll(stream, result);
