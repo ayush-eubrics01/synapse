@@ -1,5 +1,6 @@
 import { type ClassifiedError, type Job, JobError } from "@synapse/contracts";
 import type { JobQueue } from "./queue";
+import { isExternalWrite } from "./retry";
 
 export interface JobContext {
   signal: AbortSignal;
@@ -12,6 +13,12 @@ export type JobHandler = (job: Job, ctx: JobContext) => Promise<unknown>;
 export interface HandlerRegistration {
   handler: JobHandler;
   timeoutMs: number;
+  /**
+   * The handler writes to an external system. A timeout or forced stop leaves the outcome
+   * uncertain, so the job goes to NEEDS_ATTENTION instead of RETRY (security-model §2). Enqueue
+   * such jobs with `externalWrite: true` too, so recovery honours it without the handler loaded.
+   */
+  externalWrite?: boolean;
 }
 
 export interface JobWorkerOptions {
@@ -90,7 +97,8 @@ export class JobWorker {
   private claim(): Job | null {
     try {
       return this.queue.claim(this.workerId, this.leaseMs, [...this.handlers.keys()]);
-    } catch {
+    } catch (e) {
+      console.error("worker: claim failed", describe(e));
       return null;
     }
   }
@@ -140,8 +148,12 @@ export class JobWorker {
 
   private async execute(job: Job, stopped: Promise<Outcome>): Promise<void> {
     const reg = this.handlers.get(job.type);
+    const external = isExternalWrite(job) || reg?.externalWrite === true;
     const controller = new AbortController();
     let owned = true;
+    // Monotonic time of the last successful lease renewal (the claim counts as one).
+    let renewedAt = performance.now();
+    const leaseExpired = () => performance.now() - renewedAt >= this.leaseMs;
     let settled = false;
     let markLost: () => void = () => {};
     const lost = new Promise<Outcome>((resolve) => {
@@ -154,10 +166,14 @@ export class JobWorker {
     };
 
     const heartbeat = setInterval(() => {
+      // Past our own lease the reaper may have reclaimed the job, even for this same worker.
+      if (leaseExpired()) return loseLease();
+      const beatAt = performance.now();
       try {
-        if (!this.queue.heartbeat(job.id, this.workerId, this.leaseMs)) loseLease();
+        if (this.queue.heartbeat(job.id, this.workerId, this.leaseMs)) renewedAt = beatAt;
+        else loseLease();
       } catch {
-        // transient queue failure: keep going, the next beat will retry
+        // transient queue failure: keep going, the next beat will retry until the lease runs out
       }
     }, this.heartbeatMs);
 
@@ -205,13 +221,26 @@ export class JobWorker {
       controller.abort(new Error(outcome.error.message));
     }
     if (outcome.kind === "lost" || !owned) return;
+    if (leaseExpired()) {
+      controller.abort(new Error("lease expired"));
+      return;
+    }
+    const op = outcome.kind === "done" ? "complete" : "fail";
     try {
       if (outcome.kind === "done") this.queue.complete(job.id, this.workerId, outcome.output);
-      else if (outcome.kind === "error") this.queue.fail(job.id, this.workerId, outcome.error);
-    } catch {
-      // queue unavailable (e.g. shutting down); the lease will expire and the job be reclaimed
+      else if (external && outcome.error.kind === "timeout")
+        this.queue.failUncertain(job.id, this.workerId, outcome.error);
+      else this.queue.fail(job.id, this.workerId, outcome.error);
+    } catch (e) {
+      // The job stays RUNNING until its lease expires; the reaper then reclaims it.
+      console.error(`worker: ${op} failed`, job.id, describe(e));
     }
   }
+}
+
+/** Error name and message only: never job input, output or handler content. */
+function describe(e: unknown): string {
+  return e instanceof Error ? `${e.name}: ${e.message}` : "non-error value thrown";
 }
 
 function classify(e: unknown): ClassifiedError {

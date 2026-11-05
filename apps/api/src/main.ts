@@ -1,7 +1,7 @@
 import { createApp } from "./app";
 import { createContainer } from "./container";
 import { loadConfig } from "./core/config/config";
-import { recoverOnStartup } from "./core/recovery/recovery";
+import { REAP_INTERVAL_MS, reapExpiredJobs, recoverOnStartup } from "./core/recovery/recovery";
 
 const config = loadConfig(process.env);
 const c = createContainer(config, { testHandlers: process.env.SYNAPSE_TEST_HANDLERS === "1" });
@@ -36,12 +36,16 @@ const guarded = (name: string, fn: () => void) => () => {
 const tick = guarded("scheduler", () => c.scheduler.tick());
 const dispatch = guarded("dispatcher", () => c.dispatcher.dispatchOnce());
 const expire = guarded("approvals.expireDue", () => c.approvals.expireDue());
+const reap = guarded("recovery.reap", () =>
+  reapExpiredJobs({ db: c.db, clock: c.clock, audit: c.audit }),
+);
 
 tick();
 const intervals = [
   setInterval(tick, 5_000),
   setInterval(dispatch, 1_000),
   setInterval(expire, 60_000),
+  setInterval(reap, REAP_INTERVAL_MS),
 ];
 c.worker.start();
 
