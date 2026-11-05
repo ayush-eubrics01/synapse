@@ -171,7 +171,8 @@ describe("commitments.extract through the real provider and validator", () => {
     expect(at("--model")).toBe("haiku");
     const prompt = at("-p") as string;
     expect(prompt).toContain("UNTRUSTED");
-    expect(prompt).toContain("slack message m-c-1 by you in a DM");
+    expect(prompt).toContain("slack message m-c-1 by you:USELF00001 in a DM");
+    expect(prompt).toContain("The engineering lead's Slack id is USELF00001.");
     expect(prompt).toContain("slack message m-c-2 by them:UPRIYA0001 in a DM");
     const deny = (at("--disallowedTools") ?? "").split(",");
     for (const t of ["mcp__claude_ai_Slack", "WebFetch", "Bash", "Write"]) {

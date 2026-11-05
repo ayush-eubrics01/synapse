@@ -453,7 +453,7 @@ describe("commitments.extract handler", () => {
     const untrusted = (req.parts ?? []).filter((p) => p.provenance === "untrusted");
     expect(untrusted).toHaveLength(2);
     expect(untrusted[0]?.source).toBe(
-      `slack message ${m1} by you in a DM at ${new Date(Date.parse(NOW) - 59_000).toISOString()}`,
+      `slack message ${m1} by you:${SELF} in a DM at ${new Date(Date.parse(NOW) - 59_000).toISOString()}`,
     );
     expect(untrusted[1]?.source).toContain(`by them:${PRIYA} in a DM`);
     const trusted = [
@@ -462,7 +462,9 @@ describe("commitments.extract handler", () => {
     ].join("\n");
     expect(trusted).not.toContain(SECRET);
     expect(trusted).not.toContain(PRIYA);
-    expect(trusted).not.toContain(SELF);
+    // The user's own confirmed Slack id is trusted settings data: the model needs it to name the
+    // user as owner or counterparty (otherwise every commitment involving the user is dropped).
+    expect(trusted).toContain(`The engineering lead's Slack id is ${SELF}.`);
     expect(trusted).toContain("A promise is not completion");
   });
 

@@ -176,6 +176,7 @@ export function registerExtract(deps: CommitmentJobDeps, c: CommitmentContext): 
         items,
         job.id,
         settings.get("commitments.models.extract"),
+        selfId,
       );
       sentIds = used.map((i) => i.messageId);
       const rowById = new Map(rows.map((r) => [r.id, r]));
