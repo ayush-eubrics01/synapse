@@ -16,8 +16,10 @@ import type { JobQueue } from "../core/jobs/queue";
 import type { HandlerRegistration, JobContext } from "../core/jobs/worker";
 import type { NotificationService } from "../core/notifications/notifications";
 import type { ClaudeOrchestrator } from "../core/orchestrator/orchestrator";
+import { parseStructured } from "../core/orchestrator/structured";
 import { classifyTool } from "../core/orchestrator/tool-catalog";
 import { type AssessBatchItem, buildAssessRequest } from "../intelligence/urgency/assess-prompt";
+import { renderExcerpt } from "../modules/security-flags/detector";
 import type { SecurityFlagsService } from "../modules/security-flags/service";
 
 const { slackMessages, slackConversations, slackUsers, claudeRuns } = schema;
@@ -29,7 +31,7 @@ export interface UrgencyJobDeps {
   events: EventPublisher;
   queue: JobQueue;
   notifications: NotificationService;
-  orchestrator: Pick<ClaudeOrchestrator, "runStructured">;
+  orchestrator: Pick<ClaudeOrchestrator, "run">;
   securityFlags: SecurityFlagsService;
   handlers: Map<string, HandlerRegistration>;
 }
@@ -192,11 +194,12 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
       { behavior: "immediate" },
     );
 
-  const enqueueNext = (tx: Tx, jobId: string | undefined) => {
+  const enqueueNext = (tx: Tx, jobId: string) => {
     if (!hasMore(tx)) return;
     queue.enqueue(tx, {
       type: "urgency.assess",
-      idempotencyKey: `urgency.batch:${jobId ?? newId()}:next`,
+      idempotencyKey: `urgency.batch:${jobId}:next`,
+      concurrencyGroup: "urgency.assess",
       priority: 200,
     });
   };
@@ -274,7 +277,7 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
   };
 
   /** Terminal failure: rule level stands, flagged as fallback. */
-  const onTerminal = (batch: BatchRow[], jobId: string | undefined) => {
+  const onTerminal = (batch: BatchRow[], jobId: string) => {
     for (const m of batch) writeLevel(m, m.ruleLevel, FALLBACK_REASON, true);
     db.transaction((tx) => enqueueNext(tx, jobId), { behavior: "immediate" });
   };
@@ -286,12 +289,13 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
 
     try {
       const req = buildAssessRequest(batch, job.id, settings.get("urgency.model"));
-      const { value, result } = await orchestrator.runStructured(
-        req,
-        urgencyAssessmentSchema,
-        ctx.signal,
-      );
+      const result = await orchestrator.run(req, ctx.signal);
       runtimeFlags(job.id, batch, result);
+      const parsed = parseStructured(result.finalText, urgencyAssessmentSchema);
+      if (!parsed.ok) {
+        throw new JobError({ kind: "incomplete_ai_output", message: parsed.reason });
+      }
+      const value = parsed.value;
 
       const seen = new Set<string>();
       for (const a of value.assessments) {
@@ -308,7 +312,7 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
       let fallbacks = 0;
       for (const a of value.assessments) {
         const m = byId.get(a.messageId) as BatchRow;
-        writeLevel(m, a.level, a.reason, false, (tx) => {
+        writeLevel(m, a.level, renderExcerpt(a.reason, 300) || "Assessed", false, (tx) => {
           if (a.suspectedInjection.detected) {
             securityFlags.recordAiFlag(tx, m.messageId, runId, a.suspectedInjection);
           }
@@ -326,6 +330,7 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
         err instanceof JobError
           ? err.classified
           : { kind: "unknown", message: "unexpected urgency assessment failure" };
+      const rethrow = err instanceof JobError ? err : new JobError(classified);
       const decision = retryDecision(classified.kind);
       if (decision === "defer") onDeferral(batch);
       else if (
@@ -335,7 +340,7 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
       ) {
         onTerminal(batch, job.id);
       }
-      throw err;
+      throw rethrow;
     }
   };
 

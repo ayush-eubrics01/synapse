@@ -197,6 +197,7 @@ export class ScreeningService {
         this.deps.queue.enqueue(t, {
           type: "urgency.assess",
           idempotencyKey: `urgency.batch:${bucket}`,
+          concurrencyGroup: "urgency.assess",
           runAfter: new Date((bucket + window) * 1000).toISOString(),
           priority: 200,
         });

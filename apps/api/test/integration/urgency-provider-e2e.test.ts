@@ -32,7 +32,7 @@ const NOW = "2026-11-05T10:05:00.000Z";
 const signal = new AbortController().signal;
 const BODY = "BODY-SECRET-abc";
 
-function build(mode: string) {
+function build(mode: string, texts: string[] = [`${BODY} 1`, `${BODY} 2`]) {
   const credsPath = join(tmp, `creds-${mode}.json`);
   writeFileSync(
     credsPath,
@@ -99,14 +99,14 @@ function build(mode: string) {
   db.insert(schema.slackConversations)
     .values({ id: "c1", externalId: "C1", type: "channel", name: "payments" })
     .run();
-  for (const n of [1, 2]) {
+  for (const n of texts.map((_, i) => i + 1)) {
     db.insert(schema.slackMessages)
       .values({
         id: `m-urg-${n}`,
         conversationId: "c1",
         ts: `${1000 + n}.000000`,
         senderUserId: "su1",
-        text: `${BODY} ${n}`,
+        text: texts[n - 1] as string,
         sentAt: new Date(Date.parse(NOW) - 60_000 + n * 1000).toISOString(),
         collectedAt: NOW,
         screening: {
@@ -159,6 +159,11 @@ describe("urgency.assess through the real provider", () => {
     expect(prompt).toContain("UNTRUSTED");
     expect(prompt).toContain(`${BODY} 1`);
     expect(at("--model")).toBe("haiku");
+    expect(at("--max-turns")).toBe("3");
+    const deny = (at("--disallowedTools") ?? "").split(",");
+    for (const t of ["mcp__claude_ai_Slack", "WebFetch", "WebSearch", "Bash", "Write"]) {
+      expect(deny).toContain(t);
+    }
     // message text appears only inside an UNTRUSTED block
     const outside = prompt.replace(/<<<UNTRUSTED[\s\S]*?<<<END \w+>>>/g, "");
     expect(outside).not.toContain(BODY);
@@ -176,5 +181,14 @@ describe("urgency.assess through the real provider", () => {
     expect((err as JobError).classified.kind).toBe("incomplete_ai_output");
     expect(msg(db, "m-urg-1")?.urgencyLevel).toBeNull();
     expect(db.select().from(schema.notifications).all()).toHaveLength(0);
+  });
+
+  test("10 messages of 8000 CJK chars pass the real validator", async () => {
+    const texts = Array.from({ length: 10 }, () => "漢".repeat(8000));
+    const { db, run } = build("urgency_ok", texts);
+    // the fixture answers for m-urg-1 and m-urg-2 only; the other eight fall back
+    await run();
+    expect(db.select().from(schema.claudeRuns).all()[0]?.status).toBe("succeeded");
+    expect(msg(db, "m-urg-1")?.urgencyLevel).toBe("critical");
   });
 });

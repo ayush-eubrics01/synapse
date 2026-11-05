@@ -5,7 +5,6 @@ import {
   type Job,
   JobError,
   type ScreeningRecord,
-  type UrgencyAssessment,
   type UrgencyLevel,
 } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
@@ -33,12 +32,23 @@ let settings: SettingsService;
 let handlers: Map<string, HandlerRegistration>;
 let seq = 0;
 
-type Entry = Partial<UrgencyAssessment["assessments"][number]> & { messageId: string };
+type Entry = {
+  messageId: string;
+  level?: UrgencyLevel;
+  reason?: string;
+  suspectedInjection?: {
+    detected: boolean;
+    severity: "info" | "warning" | "high";
+    quote: string;
+    reason: string;
+  };
+};
 interface Script {
   entries?: Entry[];
   denials?: string[];
   tools?: string[];
-  throws?: JobError;
+  throws?: Error;
+  raw?: string;
 }
 let script: Script;
 let requests: ClaudeJobRequest[];
@@ -70,7 +80,7 @@ beforeEach(() => {
   calls = 0;
   handlers = new Map();
   const orchestrator = {
-    async runStructured(req: ClaudeJobRequest, schemaT: { parse(v: unknown): unknown }) {
+    async run(req: ClaudeJobRequest): Promise<AIExecutionResult> {
       calls++;
       requests.push(req);
       db.insert(schema.claudeRuns)
@@ -83,19 +93,21 @@ beforeEach(() => {
         })
         .run();
       if (script.throws) throw script.throws;
-      const value = schemaT.parse({
-        assessments: (script.entries ?? []).map((e) => ({
-          level: "low",
-          reason: "r",
-          suspectedInjection: inj,
-          ...e,
-        })),
-      }) as UrgencyAssessment;
-      const result = {
+      const finalText =
+        script.raw ??
+        `\`\`\`json\n${JSON.stringify({
+          assessments: (script.entries ?? []).map((e) => ({
+            level: "low",
+            reason: "r",
+            suspectedInjection: inj,
+            ...e,
+          })),
+        })}\n\`\`\``;
+      return {
+        finalText,
         permissionDenials: script.denials ?? [],
         toolResults: (script.tools ?? []).map((toolName) => ({ toolName })),
       } as unknown as AIExecutionResult;
-      return { value, result };
     },
   };
   registerUrgencyJobs({
@@ -463,4 +475,68 @@ test("12 eligible with batchMax 10: 10 oldest assessed, follow-up job enqueued",
   script.entries = ids.slice(10).map((messageId) => ({ messageId }));
   await run();
   expect(msg(ids[11] as string).screening.assessed).toBe(true);
+});
+
+test("denied send tool plus invalid output: high runtime flags and incomplete_ai_output", async () => {
+  const a = add();
+  script.raw = "not json";
+  script.denials = ["mcp__claude_ai_Slack__slack_send_message"];
+  await expect(run()).rejects.toMatchObject({ classified: { kind: "incomplete_ai_output" } });
+  const f = flags().filter((x) => x.detector === "runtime");
+  expect(f).toHaveLength(1);
+  expect(f[0]).toMatchObject({ messageId: a, severity: "high" });
+});
+
+test("a denied read tool is a warning flag", async () => {
+  const a = add();
+  script.entries = [{ messageId: a }];
+  script.denials = ["mcp__claude_ai_Slack__slack_read_channel"];
+  await run();
+  expect(flags().filter((x) => x.detector === "runtime")[0]?.severity).toBe("warning");
+});
+
+test("urgency.assess jobs share a concurrency group: the second claim waits", async () => {
+  const a = add();
+  const b = add();
+  void a;
+  void b;
+  db.transaction((tx) => {
+    queue.enqueue(tx, {
+      type: "urgency.assess",
+      idempotencyKey: "k1",
+      concurrencyGroup: "urgency.assess",
+    });
+    queue.enqueue(tx, {
+      type: "urgency.assess",
+      idempotencyKey: "k2",
+      concurrencyGroup: "urgency.assess",
+    });
+  });
+  expect(queue.claim("w", 60_000, ["urgency.assess"])).not.toBeNull();
+  expect(queue.claim("w", 60_000, ["urgency.assess"])).toBeNull();
+});
+
+test("next-batch job carries the concurrency group", async () => {
+  const ids = Array.from({ length: 11 }, () => add());
+  script.entries = ids.slice(0, 10).map((messageId) => ({ messageId }));
+  await run();
+  const next = jobsOf("urgency.assess").find((j) => j.idempotencyKey.endsWith(":next"));
+  expect(next?.concurrencyGroup).toBe("urgency.assess");
+});
+
+test("a non-JobError failure is rethrown as a content-free JobError", async () => {
+  add();
+  script.throws = new Error(`boom ${SECRET}`);
+  const e = await run().catch((x) => x);
+  expect(e).toBeInstanceOf(JobError);
+  expect(JSON.stringify((e as JobError).classified)).not.toContain(SECRET);
+});
+
+test("the stored reason is sanitised and capped", async () => {
+  const a = add();
+  script.entries = [{ messageId: a, reason: `bad\u202e${"x".repeat(290)}` }];
+  await run();
+  const r = msg(a).urgencyReason as string;
+  expect(r).not.toContain("\u202e");
+  expect(r.length).toBeLessThanOrEqual(300);
 });

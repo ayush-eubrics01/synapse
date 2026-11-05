@@ -79,7 +79,7 @@ message.received
 
 | Job type | Trigger | Profile / model | Idempotency key | Retry |
 |---|---|---|---|---|
-| `urgency.assess` | candidates from screening, micro-batched (e.g. 2 min window or 10 messages) | intelligence / haiku | `urgency:<sorted message ids hash>` | 3; on final failure, fall back to rule level |
+| `urgency.assess` | candidates from screening, micro-batched (e.g. 2 min window or 10 messages) | intelligence / haiku | `urgency.batch:<bucket>` (follow-ups: `urgency.batch:<jobId>:next`); concurrency group `urgency.assess` | 3; on final failure, fall back to rule level |
 | `urgency.suggest_response` | Critical/High result | intelligence / haiku or sonnet | `urgency.suggest:<messageId>` | 3 |
 
 Urgent assessment jobs get high queue priority. The quota gate (ADR-029) may still defer them when the five-hour window is exhausted. In that case the rule-based level is shown with "not yet assessed."
