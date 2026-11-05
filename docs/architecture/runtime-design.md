@@ -54,6 +54,7 @@ Both are **systemd user services**. The API runs independently of the web servic
 - Each run is a child process in its own process group. Timeout or cancel kills the group.
 - Stdout `stream-json` is parsed incrementally. Stderr is captured for diagnostics; it's noisy (plugin hooks), so don't treat it as failure on its own.
 - Each run is recorded in `claude_runs`. The quota from each `rate_limit_event` is saved to `quota_snapshots`.
+- Config: `SYNAPSE_CLAUDE_BIN` (default `~/.local/bin/claude`) and `SYNAPSE_CLAUDE_CREDENTIALS` (default `~/.claude/.credentials.json`; only the two expiry fields are read). Runs use `<data dir>/scratch` (next to the database) as the working directory.
 - Credentials are shared with the user's interactive Claude Code sessions. Watch for auth failures that might come from a refresh-token rotation race (not observed yet).
 
 ## Backups and retention

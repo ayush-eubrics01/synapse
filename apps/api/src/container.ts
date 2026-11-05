@@ -1,5 +1,8 @@
 import type { Database } from "bun:sqlite";
-import { hostname } from "node:os";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import type { AIProvider } from "@synapse/contracts";
 import { type Db, openDatabase, runMigrations } from "@synapse/database";
 import { type Clock, newId, systemClock } from "@synapse/shared";
 import { ApprovalEngine } from "./core/approvals/approvals";
@@ -10,7 +13,9 @@ import { OutboxDispatcher } from "./core/events/dispatcher";
 import { LiveBus } from "./core/events/live-bus";
 import { EventPublisher } from "./core/events/publisher";
 import {
+  authCheck,
   bunVersionCheck,
+  claudeCheck,
   databaseCheck,
   eventsCheck,
   heartbeatCheck,
@@ -23,9 +28,12 @@ import { type HandlerRegistration, JobWorker } from "./core/jobs/worker";
 import { LeaseService } from "./core/leases/leases";
 import { ModuleRegistry } from "./core/module-registry/registry";
 import { NotificationService } from "./core/notifications/notifications";
+import { AuthMonitor } from "./core/orchestrator/auth";
+import { ClaudeOrchestrator } from "./core/orchestrator/orchestrator";
 import { PermissionManager } from "./core/permissions/permissions";
 import { SchedulerService } from "./core/scheduler/scheduler";
 import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
+import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 
 export interface Container {
   config: AppConfig;
@@ -45,11 +53,16 @@ export interface Container {
   approvals: ApprovalEngine;
   notifications: NotificationService;
   registry: ModuleRegistry;
+  provider: AIProvider;
+  auth: AuthMonitor;
+  orchestrator: ClaudeOrchestrator;
   health: HealthService;
 }
 
 export interface ContainerDeps {
   clock?: Clock;
+  /** Replaces the real ClaudeCliProvider (tests inject a fake). */
+  provider?: AIProvider;
   run?: (cmd: string[]) => Promise<string>;
   /** Registers the `test.noop` job handler (set from SYNAPSE_TEST_HANDLERS by main.ts). */
   testHandlers?: boolean;
@@ -111,6 +124,31 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     onSettled: (job) => live.publish({ type: "job.updated", data: job }),
   });
 
+  const home = process.env.HOME ?? "";
+  const provider =
+    deps.provider ??
+    new ClaudeCliProvider({
+      binary: config.claudeBinary,
+      env: { PATH: `${home}/.bun/bin:${home}/.local/bin:/usr/bin:/bin`, HOME: home },
+      clock,
+    });
+  const auth = new AuthMonitor(db, clock, settings, events, config.credentialsPath);
+  const scratchDir =
+    config.dbPath === ":memory:"
+      ? mkdtempSync(join(tmpdir(), "synapse-scratch-"))
+      : join(dirname(config.dbPath), "scratch");
+  mkdirSync(scratchDir, { recursive: true });
+  const orchestrator = new ClaudeOrchestrator({
+    db,
+    clock,
+    provider,
+    settings,
+    events,
+    audit,
+    auth,
+    scratchDir,
+  });
+
   const health = new HealthService({
     database: databaseCheck(sqlite),
     jobs: jobsCheck(db, clock),
@@ -118,6 +156,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     heartbeat: heartbeatCheck(settings, clock),
     linger: lingerCheck(run),
     bun: bunVersionCheck(),
+    auth: authCheck(auth, clock),
+    claude: claudeCheck(provider),
   });
 
   return {
@@ -138,6 +178,9 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     approvals,
     notifications,
     registry,
+    provider,
+    auth,
+    orchestrator,
     health,
   };
 }

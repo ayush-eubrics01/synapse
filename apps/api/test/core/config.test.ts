@@ -41,6 +41,18 @@ test("loadConfig defaults", () => {
   expect(c.api).toEqual({ host: "127.0.0.1", port: 7400 });
   expect(c.web).toEqual({ host: "127.0.0.1", port: 7401 });
   expect(c.workerConcurrency).toBe(2);
+  expect(c.claudeBinary).toBe("/h/.local/bin/claude");
+  expect(c.credentialsPath).toBe("/h/.claude/.credentials.json");
+});
+
+test("loadConfig claude overrides", () => {
+  const c = loadConfig({
+    SYNAPSE_DB_PATH: "/d.db",
+    SYNAPSE_CLAUDE_BIN: "/bin/c",
+    SYNAPSE_CLAUDE_CREDENTIALS: "/cred.json",
+  });
+  expect(c.claudeBinary).toBe("/bin/c");
+  expect(c.credentialsPath).toBe("/cred.json");
 });
 
 test("loadConfig honours XDG_DATA_HOME and overrides", () => {

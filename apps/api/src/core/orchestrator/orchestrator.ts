@@ -285,7 +285,7 @@ export class ClaudeOrchestrator {
     };
   }
 
-  private latestSnapshot(): QuotaSnapshot | null {
+  latestSnapshot(): QuotaSnapshot | null {
     const row = this.deps.db
       .select()
       .from(schema.quotaSnapshots)

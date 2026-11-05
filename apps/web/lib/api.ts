@@ -49,3 +49,49 @@ export function decideApproval(
 export function getJobs(limit = 20, fetchImpl: typeof fetch = fetch): Promise<Job[]> {
   return request(`/api/jobs?limit=${limit}`, undefined, fetchImpl);
 }
+
+export interface ClaudeRun {
+  id: string;
+  jobId: string | null;
+  workerProfile: string;
+  model: string | null;
+  status: string;
+  numTurns: number | null;
+  durationMs: number | null;
+  tokens: {
+    input: number | null;
+    output: number | null;
+    cacheRead: number | null;
+    cacheCreation: number | null;
+  };
+  costUsdEquivalent: number | null;
+  permissionDenialCount: number;
+  errorKind: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface ClaudeQuotaWindow {
+  utilization: number;
+  status: string;
+  resetsAt: string;
+}
+
+export interface ClaudeStatus {
+  quota: {
+    level: "ok" | "soft" | "hard" | "stop";
+    window: "five_hour" | "seven_day" | null;
+    resetsAt: string | null;
+    fiveHour: ClaudeQuotaWindow;
+    sevenDay: ClaudeQuotaWindow;
+  } | null;
+  auth: { refreshExpiresAt: string | null; slides: boolean | null };
+}
+
+export function getClaudeRuns(limit = 10, fetchImpl: typeof fetch = fetch): Promise<ClaudeRun[]> {
+  return request(`/api/claude/runs?limit=${limit}`, undefined, fetchImpl);
+}
+
+export function getClaudeStatus(fetchImpl: typeof fetch = fetch): Promise<ClaudeStatus> {
+  return request("/api/claude/status", undefined, fetchImpl);
+}

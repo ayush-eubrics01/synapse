@@ -36,6 +36,7 @@ function start(dbPath: string, port: number, extra: Record<string, string> = {})
     env: {
       SYNAPSE_DB_PATH: dbPath,
       SYNAPSE_API_PORT: String(port),
+      SYNAPSE_CLAUDE_BIN: "/nonexistent/claude",
       HOME: process.env.HOME ?? "",
       PATH: process.env.PATH ?? "",
       ...extra,
