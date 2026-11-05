@@ -22,7 +22,7 @@ import { ClaudeOrchestrator } from "../../src/core/orchestrator/orchestrator";
 import { ClaudeCliProvider } from "../../src/integrations/claude-code/cli-provider";
 import { PeopleService } from "../../src/modules/people/service";
 import { SecurityFlagsService } from "../../src/modules/security-flags/service";
-import { registerUrgencyJobs } from "../../src/workers/urgency";
+import { registerUrgencyJobs, responseGuidelinesLookup } from "../../src/workers/urgency";
 
 const fakeClaude = resolve(import.meta.dir, "../fixtures/fake-claude.ts");
 const tmp = mkdtempSync(join(tmpdir(), "urgency-e2e-"));
@@ -31,6 +31,7 @@ afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 const NOW = "2026-11-05T10:05:00.000Z";
 const signal = new AbortController().signal;
 const BODY = "BODY-SECRET-abc";
+const GUIDE = "GUIDELINE-approved-xyz";
 
 function build(mode: string, texts: string[] = [`${BODY} 1`, `${BODY} 2`]) {
   const credsPath = join(tmp, `creds-${mode}.json`);
@@ -95,6 +96,7 @@ function build(mode: string, texts: string[] = [`${BODY} 1`, `${BODY} 2`]) {
     orchestrator,
     securityFlags,
     handlers,
+    guidelinesFor: responseGuidelinesLookup(db, () => [{ text: GUIDE }]),
   });
   db.insert(schema.slackUsers).values({ id: "su1", externalId: "UPRIYA0001", name: "Priya" }).run();
   db.insert(schema.slackConversations)
@@ -270,6 +272,25 @@ describe("urgency.suggest_response through the real provider", () => {
     for (const t of ["mcp__claude_ai_Slack", "WebFetch", "Bash", "Write"]) {
       expect(deny).toContain(t);
     }
+  });
+
+  test("approved guidelines are sent outside the UNTRUSTED markers and pass the real validator", async () => {
+    const { db, runSuggest, argvFile } = build("suggest_ok");
+    db.update(schema.slackMessages).set({ urgencyLevel: "high" }).run();
+    db.insert(schema.people)
+      .values({ id: "p1", slackUserId: "UPRIYA0001", name: "Priya", createdAt: NOW })
+      .run();
+    await runSuggest("m-urg-2");
+    expect(db.select().from(schema.claudeRuns).all()[0]?.status).toBe("succeeded");
+    expect(db.select().from(schema.messageDrafts).all()).toHaveLength(1);
+    const argv = JSON.parse(readFileSync(argvFile, "utf8")) as string[];
+    const prompt = argv[argv.indexOf("-p") + 1] as string;
+    const inside = (prompt.match(/<<<UNTRUSTED[\s\S]*?<<<END \w+>>>/g) ?? []).join("\n");
+    const outside = prompt.replace(/<<<UNTRUSTED[\s\S]*?<<<END \w+>>>/g, "");
+    expect(outside).toContain(`- ${GUIDE}`);
+    expect(inside).not.toContain(GUIDE);
+    expect(inside).toContain(`${BODY} 2`);
+    expect(outside).not.toContain(BODY);
   });
 
   test("target plus 10 long CJK context messages pass the real validator", async () => {

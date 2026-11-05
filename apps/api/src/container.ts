@@ -54,7 +54,7 @@ import { TemporaryContacts } from "./modules/people/temporary";
 import { SecurityFlagsService } from "./modules/security-flags/service";
 import { registerPeopleJobs } from "./workers/people";
 import { registerSlackJobs } from "./workers/slack";
-import { registerUrgencyJobs } from "./workers/urgency";
+import { registerUrgencyJobs, responseGuidelinesLookup } from "./workers/urgency";
 
 export interface Container {
   config: AppConfig;
@@ -269,6 +269,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     orchestrator,
     securityFlags,
     handlers,
+    guidelinesFor: responseGuidelinesLookup(db, (id) => profileStore.getResponseGuidelines(id)),
   });
 
   const health = new HealthService({
