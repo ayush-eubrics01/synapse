@@ -80,3 +80,44 @@ test("upsert keeps next_run_at unless timing changes", () => {
   sched.upsert({ name: "s", jobType: "t2", intervalSeconds: 300 });
   expect(task("s").nextRunAt).toBe("2026-11-05T10:20:01.000Z");
 });
+
+test("R58: coalesce skips enqueue while a PENDING/RETRY/RUNNING job exists, still advances", () => {
+  sched.upsert({ name: "s", jobType: "t", intervalSeconds: 600, coalesce: true });
+  expect(sched.tick()).toBe(1);
+  // Simulate a deferral: the job sits PENDING far in the future (e.g. auth pause).
+  db.update(schema.jobs).set({ runAfter: "2026-11-06T00:00:00.000Z" }).run();
+  for (let i = 1; i <= 3; i++) {
+    clock.advance(600_000);
+    expect(sched.tick()).toBe(0);
+    expect(task("s").nextRunAt).toBe(new Date(clock.now().getTime() + 600_000).toISOString());
+  }
+  expect(jobs()).toHaveLength(1);
+  for (const status of ["RETRY", "RUNNING"] as const) {
+    db.update(schema.jobs).set({ status }).run();
+    clock.advance(600_000);
+    expect(sched.tick()).toBe(0);
+    expect(jobs()).toHaveLength(1);
+  }
+  db.update(schema.jobs).set({ status: "COMPLETED" }).run();
+  clock.advance(600_000);
+  expect(sched.tick()).toBe(1);
+  expect(jobs()).toHaveLength(2);
+});
+
+test("R58: without coalesce a waiting job does not block the next enqueue", () => {
+  sched.upsert({ name: "s", jobType: "t", intervalSeconds: 600 });
+  sched.tick();
+  clock.advance(600_000);
+  expect(sched.tick()).toBe(1);
+  expect(jobs()).toHaveLength(2);
+});
+
+test("R58: coalesce only looks at jobs of the schedule's own type", () => {
+  sched.upsert({ name: "a", jobType: "ta", intervalSeconds: 600, coalesce: true });
+  sched.upsert({ name: "b", jobType: "tb", intervalSeconds: 600, coalesce: true });
+  expect(sched.tick()).toBe(2);
+  db.update(schema.jobs).set({ status: "COMPLETED" }).where(eq(schema.jobs.type, "tb")).run();
+  clock.advance(600_000);
+  expect(sched.tick()).toBe(1);
+  expect(jobs().filter((j) => j.type === "tb")).toHaveLength(2);
+});

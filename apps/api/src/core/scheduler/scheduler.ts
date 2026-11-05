@@ -1,7 +1,7 @@
 import { type Db, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { Cron } from "croner";
-import { and, eq, isNotNull, lte } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lte } from "drizzle-orm";
 import type { JobQueue } from "../jobs/queue";
 
 export interface ScheduleInput {
@@ -12,11 +12,20 @@ export interface ScheduleInput {
   input?: unknown;
   enabled?: boolean;
   priority?: number;
+  /**
+   * R58: when true, a tick enqueues nothing while a PENDING/RETRY/RUNNING job of the same type
+   * exists (nextRunAt still advances), so deferrals never build a backlog. Held in memory: every
+   * schedule is re-registered at startup, so no column is needed.
+   */
+  coalesce?: boolean;
 }
 
-const { scheduledTasks } = schema;
+const { scheduledTasks, jobs } = schema;
+const LIVE_STATUSES = ["PENDING", "RETRY", "RUNNING"] as const;
 
 export class SchedulerService {
+  private readonly coalesced = new Set<string>();
+
   constructor(
     private readonly db: Db,
     private readonly clock: Clock,
@@ -36,6 +45,8 @@ export class SchedulerService {
     const intervalSeconds = s.intervalSeconds ?? null;
     const cron = s.cron ?? null;
     const now = isoNow(this.clock);
+    if (s.coalesce) this.coalesced.add(s.name);
+    else this.coalesced.delete(s.name);
 
     this.db.transaction(
       (tx) => {
@@ -94,12 +105,22 @@ export class SchedulerService {
             .where(eq(scheduledTasks.id, task.id))
             .get();
           if (!fresh?.enabled || !fresh.nextRunAt || fresh.nextRunAt > now) return false;
-          this.queue.enqueue(tx, {
-            type: fresh.jobType,
-            input: fresh.input,
-            priority: fresh.priority,
-            idempotencyKey: `sched:${fresh.name}:${fresh.nextRunAt}`,
-          });
+          const skip =
+            this.coalesced.has(fresh.name) &&
+            tx
+              .select({ id: jobs.id })
+              .from(jobs)
+              .where(and(eq(jobs.type, fresh.jobType), inArray(jobs.status, [...LIVE_STATUSES])))
+              .limit(1)
+              .all().length > 0;
+          if (!skip) {
+            this.queue.enqueue(tx, {
+              type: fresh.jobType,
+              input: fresh.input,
+              priority: fresh.priority,
+              idempotencyKey: `sched:${fresh.name}:${fresh.nextRunAt}`,
+            });
+          }
           let next: Date | null;
           if (fresh.cron) {
             next = new Cron(fresh.cron, { timezone: "UTC" }).nextRun(nowDate);
@@ -107,10 +128,13 @@ export class SchedulerService {
             next = new Date(nowDate.getTime() + (fresh.intervalSeconds ?? 0) * 1000);
           }
           tx.update(scheduledTasks)
-            .set({ nextRunAt: next ? next.toISOString() : null, lastRunAt: now })
+            .set({
+              nextRunAt: next ? next.toISOString() : null,
+              ...(skip ? {} : { lastRunAt: now }),
+            })
             .where(eq(scheduledTasks.id, fresh.id))
             .run();
-          return true;
+          return !skip;
         },
         { behavior: "immediate" },
       );

@@ -36,6 +36,7 @@ let fake: Fake;
 let handlers: Map<string, HandlerRegistration>;
 let slack: ReturnType<typeof registerSlackJobs>;
 let expired: number[];
+let scheduler: SchedulerService;
 
 const T1 = "1793870000.000100";
 const msg = (ts: string, over: Partial<SourceMessage> = {}): SourceMessage => ({
@@ -87,6 +88,7 @@ beforeEach(() => {
     return realExpire(d);
   };
   handlers = new Map();
+  scheduler = new SchedulerService(db, clock, queue);
   slack = registerSlackJobs({
     db,
     clock,
@@ -97,7 +99,7 @@ beforeEach(() => {
     settings,
     events,
     audit: new AuditLogger(clock),
-    scheduler: new SchedulerService(db, clock, queue),
+    scheduler,
     handlers,
   });
 });
@@ -457,4 +459,14 @@ test("startBackfill refuses when paused, with a reason, and leaves state untouch
   expect(r.reason).toBeTruthy();
   expect(sync.get("slack.backfill")).toEqual(before);
   expect(jobs("slack.backfill")).toHaveLength(1);
+});
+
+test("R58: Slack schedules coalesce while a job of their type is waiting", () => {
+  expect(scheduler.tick()).toBe(2);
+  // Both jobs deferred (e.g. auth pause): later ticks add nothing.
+  db.update(schema.jobs).set({ runAfter: "2026-11-07T00:00:00.000Z" }).run();
+  clock.advance(86_400_000);
+  expect(scheduler.tick()).toBe(0);
+  expect(jobs("slack.collect_incremental")).toHaveLength(1);
+  expect(jobs("slack.retention_cleanup")).toHaveLength(1);
 });

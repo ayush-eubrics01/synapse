@@ -331,11 +331,13 @@ export function registerSlackJobs(deps: SlackJobDeps): {
     name: "slack.collect_incremental",
     jobType: "slack.collect_incremental",
     intervalSeconds: settings.get("slack.collection.intervalSeconds"),
+    coalesce: true, // R58
   });
   scheduler.upsert({
     name: "slack.retention_cleanup",
     jobType: "slack.retention_cleanup",
     intervalSeconds: 86_400,
+    coalesce: true, // R58
   });
 
   const startBackfill = (): { started: boolean; state: SyncState; reason?: string } => {
