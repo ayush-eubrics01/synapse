@@ -5,10 +5,10 @@ import type { Container } from "../container";
 import { UnknownSlackUserError } from "../modules/people/service";
 
 const param = z.object({ slackUserId: z.string().regex(/^[UW][A-Z0-9]+$/) });
-// PeopleService.setPriority replaces: omitted rationale/extraAttention reset.
+// PeopleService.setPriority patches: omitted fields keep their value; rationale null clears it.
 const body = z.object({
   priority: z.enum(["normal", "high", "critical"]),
-  rationale: z.string().max(500).optional(),
+  rationale: z.string().max(500).nullable().optional(),
   extraAttention: z.boolean().optional(),
 });
 

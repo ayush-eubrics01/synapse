@@ -46,8 +46,11 @@ import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
 import { UrgentInbox } from "./modules/inbox/urgent";
+import { ContactDiscovery } from "./modules/people/discovery";
 import { PeopleService } from "./modules/people/service";
+import { TemporaryContacts } from "./modules/people/temporary";
 import { SecurityFlagsService } from "./modules/security-flags/service";
+import { registerPeopleJobs } from "./workers/people";
 import { registerSlackJobs } from "./workers/slack";
 import { registerUrgencyJobs } from "./workers/urgency";
 
@@ -77,6 +80,8 @@ export interface Container {
   urgent: UrgentInbox;
   sync: SyncStateService;
   people: PeopleService;
+  /** Ranked contact candidates (Task 8 adds the route). */
+  discovery: ContactDiscovery;
   securityFlags: SecurityFlagsService;
   /** Run by startup recovery and the reaper (main.ts), so core never imports workers. */
   recoverySweeps: RecoverySweep[];
@@ -208,6 +213,11 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   dispatcher.subscribe("message.received", "inbox.screening", (event, tx) =>
     screening.handle(event, tx),
   );
+  const discovery = new ContactDiscovery({ db, clock, settings });
+  const temporary = new TemporaryContacts({ db, clock, settings, events });
+  dispatcher.subscribe("message.received", "people.temporary", (event, tx) =>
+    temporary.handle(event, tx),
+  );
   const slack = registerSlackJobs({
     db,
     clock,
@@ -222,6 +232,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     handlers,
   });
   registerApprovalExecution({ dispatcher, queue, engine: approvals, handlers });
+  registerPeopleJobs({ clock, scheduler, temporary, handlers });
   const urgency = registerUrgencyJobs({
     db,
     clock,
@@ -274,6 +285,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     urgent,
     sync,
     people,
+    discovery,
     securityFlags,
     handlers,
     recoverySweeps: [{ name: "urgency.assess", run: urgency.recoverySweep }],

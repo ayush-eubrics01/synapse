@@ -16,7 +16,7 @@ export interface PriorityInfo {
 export interface PersonListItem extends PriorityInfo {
   slackUserId: string;
   name: string | null;
-  /** Echoed so a PUT (replace semantics) can resend it unchanged. */
+  /** Echoed so the current rationale can be shown and edited. */
   rationale: string | null;
 }
 
@@ -55,16 +55,23 @@ export class PeopleService {
       .from(slackUsers)
       .where(eq(slackUsers.externalId, slackUserId))
       .get();
-    tx.insert(people)
-      .values({
-        id: newId(),
-        slackUserId,
-        name: user?.name ?? null,
-        email: user?.email ?? null,
-        createdAt: isoNow(this.deps.clock),
-      })
-      .onConflictDoNothing({ target: people.slackUserId })
-      .run();
+    const insert = tx.insert(people).values({
+      id: newId(),
+      slackUserId,
+      name: user?.name ?? null,
+      email: user?.email ?? null,
+      createdAt: isoNow(this.deps.clock),
+    });
+    // G2: refresh name/email when Slack has a (changed) value; never blank a stored one.
+    const refresh = {
+      ...(user?.name ? { name: user.name } : {}),
+      ...(user?.email ? { email: user.email } : {}),
+    };
+    if (Object.keys(refresh).length > 0) {
+      insert.onConflictDoUpdate({ target: people.slackUserId, set: refresh }).run();
+    } else {
+      insert.onConflictDoNothing({ target: people.slackUserId }).run();
+    }
     const row = tx
       .select({ id: people.id })
       .from(people)
@@ -87,9 +94,13 @@ export class PeopleService {
     return row ?? { priority: "normal", extraAttention: false };
   }
 
+  /**
+   * Patch semantics: omitted `rationale` / `extraAttention` keep their stored value;
+   * `rationale: null` clears it. A first write defaults to no rationale, no extra attention.
+   */
   setPriority(
     slackUserId: string,
-    input: { priority: PersonPriority; rationale?: string; extraAttention?: boolean },
+    input: { priority: PersonPriority; rationale?: string | null; extraAttention?: boolean },
   ): void {
     const priority = prioritySchema.parse(input.priority);
     const { db, clock } = this.deps;
@@ -102,8 +113,17 @@ export class PeopleService {
           .get();
         if (!known) throw new UnknownSlackUserError();
         const personId = this.ensurePerson(tx, slackUserId);
-        const extraAttention = input.extraAttention ?? false;
-        const rationale = input.rationale ?? null;
+        const stored = tx
+          .select({
+            rationale: peoplePrioritySettings.rationale,
+            extraAttention: peoplePrioritySettings.extraAttention,
+          })
+          .from(peoplePrioritySettings)
+          .where(eq(peoplePrioritySettings.personId, personId))
+          .get();
+        const extraAttention = input.extraAttention ?? stored?.extraAttention ?? false;
+        const rationale =
+          input.rationale === undefined ? (stored?.rationale ?? null) : input.rationale;
         const updatedAt = isoNow(clock);
         tx.insert(peoplePrioritySettings)
           .values({ id: newId(), personId, priority, rationale, extraAttention, updatedAt })
