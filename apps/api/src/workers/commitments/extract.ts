@@ -217,7 +217,7 @@ export function registerExtract(deps: CommitmentJobDeps, c: CommitmentContext): 
       const parsed = parseStructured(result.finalText, commitmentExtractionOutputSchema);
       if (!parsed.ok) throw new JobError({ kind: "incomplete_ai_output", message: parsed.reason });
       const { candidates, suspectedInjection } = parsed.value;
-      const { valid, dropped } = validateCandidates(candidates, batch, selfId);
+      const { valid, dropped, dropReasons } = validateCandidates(candidates, batch, selfId);
       const runId = latestRunId(job.id);
       const flagged = flaggedMessageOf(used, suspectedInjection, target);
 
@@ -258,7 +258,13 @@ export function registerExtract(deps: CommitmentJobDeps, c: CommitmentContext): 
         { behavior: "immediate" },
       );
       // Counts only.
-      return { messages: batch.length, candidates: candidates.length, dropped, ...counts };
+      return {
+        messages: batch.length,
+        candidates: candidates.length,
+        dropped,
+        dropReasons,
+        ...counts,
+      };
     } catch (err) {
       const { classified, rethrow } = wrapFailure(err);
       if (!ran) safely(() => failedRunFlags(job.id, targets, classified, before));

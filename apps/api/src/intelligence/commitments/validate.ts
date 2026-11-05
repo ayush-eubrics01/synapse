@@ -2,6 +2,15 @@ import { createHash } from "node:crypto";
 import type { CommitmentCandidate } from "@synapse/contracts";
 
 /** A batch message as the validator needs it. `authorRef` is the author's Slack user id. */
+/** Content-free counts of why candidates were dropped (job result and smoke output only). */
+export type DropReason =
+  | "no_evidence"
+  | "low_confidence"
+  | "owner_not_participant"
+  | "counterparty_invalid"
+  | "not_involving_user"
+  | "empty_description";
+
 export interface BatchMessage {
   messageId: string;
   authorRef: string;
@@ -68,12 +77,30 @@ export function validateCandidates(
   candidates: CommitmentCandidate[],
   batch: BatchMessage[],
   selfUserId: string,
-): { valid: ValidCandidate[]; dropped: number } {
+): { valid: ValidCandidate[]; dropped: number; dropReasons: Record<DropReason, number> } {
   const byId = new Map(batch.map((m) => [m.messageId, m]));
   const valid: ValidCandidate[] = [];
+  const dropReasons: Record<DropReason, number> = {
+    no_evidence: 0,
+    low_confidence: 0,
+    owner_not_participant: 0,
+    counterparty_invalid: 0,
+    not_involving_user: 0,
+    empty_description: 0,
+  };
+  const drop = (r: DropReason) => {
+    dropReasons[r] += 1;
+  };
   for (const c of candidates) {
     const evidence = [...new Set(c.evidence.filter((id) => byId.has(id)))];
-    if (evidence.length === 0 || c.confidence === "low") continue;
+    if (evidence.length === 0) {
+      drop("no_evidence");
+      continue;
+    }
+    if (c.confidence === "low") {
+      drop("low_confidence");
+      continue;
+    }
     const cited = evidence.map((id) => byId.get(id) as BatchMessage);
     const people = new Set<string>();
     // An `im` has exactly two participants. The user is always the other one, so they may be the
@@ -88,7 +115,10 @@ export function validateCandidates(
       for (const id of mentionedIds(m.text)) people.add(id);
     }
     for (const p of people) counterparties.add(p);
-    if (!people.has(c.owner)) continue;
+    if (!people.has(c.owner)) {
+      drop("owner_not_participant");
+      continue;
+    }
     // In one 1:1 DM, a commitment between the two participants is owed to the other one.
     let counterparty = c.counterparty;
     const partners = new Set(cited.map((m) => m.dmPartner ?? null));
@@ -98,11 +128,18 @@ export function validateCandidates(
       else if (c.owner === selfUserId) counterparty = partner;
     }
     if (counterparty !== null && (!counterparties.has(counterparty) || counterparty === c.owner)) {
+      drop("counterparty_invalid");
       continue;
     }
-    if (c.owner !== selfUserId && counterparty !== selfUserId) continue;
+    if (c.owner !== selfUserId && counterparty !== selfUserId) {
+      drop("not_involving_user");
+      continue;
+    }
     const description = c.description.trim();
-    if (description === "") continue;
+    if (description === "") {
+      drop("empty_description");
+      continue;
+    }
     const latest = cited
       .map((m) => m.sentAt)
       .reduce((a, b) => (Date.parse(a) >= Date.parse(b) ? a : b));
@@ -116,5 +153,5 @@ export function validateCandidates(
       confidence: c.confidence,
     });
   }
-  return { valid, dropped: candidates.length - valid.length };
+  return { valid, dropped: candidates.length - valid.length, dropReasons };
 }

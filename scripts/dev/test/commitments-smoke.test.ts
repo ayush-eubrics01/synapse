@@ -98,3 +98,22 @@ test("cleanupDir removes the temp dir and its contents", () => {
   cleanupDir(d);
   expect(existsSync(d)).toBe(false);
 });
+
+test("summarize prints only known drop-reason enum keys", () => {
+  const lines = summarize({
+    messages: 1,
+    eligible: 1,
+    candidates: 3,
+    dropped: 2,
+    dropReasons: { low_confidence: 1, owner_not_participant: 1, "SECRET reason text": 9 },
+    created: 1,
+    mine: 1,
+    theirs: 0,
+    proposed: 0,
+    identity: "set",
+    collect: "ok",
+    run: "ok",
+  });
+  expect(lines).toContain("dropped: 2 (low_confidence=1 owner_not_participant=1)");
+  expect(lines.join("\n")).not.toContain("SECRET");
+});

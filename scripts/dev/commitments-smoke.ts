@@ -87,6 +87,8 @@ export interface SmokeInput {
   eligible: number;
   candidates: number;
   dropped: number;
+  /** Counts per drop reason; reason keys are fixed enums, never content. */
+  dropReasons?: Record<string, number>;
   created: number;
   mine: number;
   theirs: number;
@@ -98,6 +100,24 @@ export interface SmokeInput {
   run: string;
   errorKind?: string;
   [extra: string]: unknown;
+}
+
+const REASON_KEYS = [
+  "no_evidence",
+  "low_confidence",
+  "owner_not_participant",
+  "counterparty_invalid",
+  "not_involving_user",
+  "empty_description",
+] as const;
+
+/** Only the known enum keys with numeric values are printed. */
+function formatReasons(r: Record<string, number> | undefined): string {
+  if (!r) return "";
+  const parts = REASON_KEYS.filter((k) => typeof r[k] === "number" && r[k] > 0).map(
+    (k) => `${k}=${r[k]}`,
+  );
+  return parts.length ? ` (${parts.join(" ")})` : "";
 }
 
 /** Counts only. Names, ids, text, descriptions and reasons never reach the output. */
@@ -112,7 +132,7 @@ export function summarize(o: SmokeInput): string[] {
   lines.push(
     `eligible: ${o.eligible}`,
     `candidates: ${o.candidates}`,
-    `dropped: ${o.dropped}`,
+    `dropped: ${o.dropped}${formatReasons(o.dropReasons)}`,
     `commitments created: ${o.created} (mine=${o.mine} theirs=${o.theirs})`,
     `completion proposals: ${o.proposed}`,
     status(` extract=${o.run}`),
@@ -206,6 +226,7 @@ async function main(): Promise<number> {
               messages?: number;
               candidates?: number;
               dropped?: number;
+              dropReasons?: Record<string, number>;
               created?: number;
               proposed?: number;
             }
@@ -214,6 +235,7 @@ async function main(): Promise<number> {
         out.eligible = result?.messages ?? 0;
         out.candidates = result?.candidates ?? 0;
         out.dropped = result?.dropped ?? 0;
+        if (result?.dropReasons) out.dropReasons = result.dropReasons;
         out.created = result?.created ?? 0;
         out.proposed = result?.proposed ?? 0;
       } catch (e) {
