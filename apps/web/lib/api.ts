@@ -1,11 +1,13 @@
 import type {
   Approval,
+  ApprovalView,
   CandidatesResponse,
   EvaluateResult,
   FlagStatus,
   GroupedFlags,
   HealthReport,
   Job,
+  OutgoingResolveAction,
   PersonDetail,
   PersonFlag,
   RecommendationView,
@@ -38,7 +40,7 @@ export function getHealth(fetchImpl: typeof fetch = fetch): Promise<HealthReport
   return request("/health/ready", undefined, fetchImpl, [503]);
 }
 
-export function getApprovals(fetchImpl: typeof fetch = fetch): Promise<Approval[]> {
+export function getApprovals(fetchImpl: typeof fetch = fetch): Promise<ApprovalView[]> {
   return request("/api/approvals?status=pending", undefined, fetchImpl);
 }
 
@@ -183,6 +185,41 @@ export function setUrgentStatus(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ status }),
+    },
+    fetchImpl,
+  );
+}
+
+export type ResolveDecisionDto = OutgoingResolveAction;
+
+/** Requests approval to send the (edited) reply in the message's thread. */
+export function requestUrgentReply(
+  messageId: string,
+  text: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ followupId: string; approvalId: string }> {
+  return request(
+    `/api/urgent/${encodeURIComponent(messageId)}/reply`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    },
+    fetchImpl,
+  );
+}
+
+export function resolveOutgoing(
+  outgoingId: string,
+  decision: ResolveDecisionDto,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ outgoingId: string; status: string }> {
+  return request(
+    `/api/outgoing/${encodeURIComponent(outgoingId)}/resolve`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision }),
     },
     fetchImpl,
   );

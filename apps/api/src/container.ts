@@ -48,6 +48,7 @@ import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
 import { UrgentInbox } from "./modules/inbox/urgent";
 import { OutgoingService } from "./modules/outgoing/service";
+import { replyStates, UrgentReplies } from "./modules/outgoing/urgent-reply";
 import { ContactDiscovery } from "./modules/people/discovery";
 import { ProfileService } from "./modules/people/profiles";
 import { ProfileRecommendations } from "./modules/people/recommendations";
@@ -95,6 +96,8 @@ export interface Container {
   securityFlags: SecurityFlagsService;
   /** Approved Slack sends: requests, the `slack.send` executor, verification and resolution. */
   outgoing: OutgoingService;
+  /** Urgent-reply drafts sent through approval. */
+  urgentReplies: UrgentReplies;
   /** Run by startup recovery and the reaper (main.ts), so core never imports workers. */
   recoverySweeps: RecoverySweep[];
   /** Job handler registry; the urgency smoke script runs one handler directly. */
@@ -202,7 +205,13 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
 
   const sync = new SyncStateService(db, clock);
   const inbox = new InboxStore({ db, clock, events, queue, sync });
-  const urgent = new UrgentInbox({ db, clock, events, audit });
+  const urgent = new UrgentInbox({
+    db,
+    clock,
+    events,
+    audit,
+    replyStates: (ids) => replyStates(db, ids),
+  });
   const people = new PeopleService({ db, clock, events, audit, settings });
   const securityFlags = new SecurityFlagsService({
     db,
@@ -268,6 +277,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     sink: messageSink,
   });
   outgoing.register(approvals, dispatcher);
+  const urgentReplies = new UrgentReplies({ db, clock, audit, outgoing });
   registerOutgoingJobs({ handlers, outgoing });
   const profiles = new ProfileRecommendations({
     db,
@@ -352,6 +362,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     peopleViews,
     securityFlags,
     outgoing,
+    urgentReplies,
     handlers,
     recoverySweeps: [
       { name: "urgency.assess", run: urgency.recoverySweep },

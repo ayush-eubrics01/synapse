@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 import type {
+  ApprovalView,
   CandidatesResponse,
   EvidenceView,
   PersonDetail,
   RecommendationView,
 } from "@synapse/contracts";
 import { renderToString } from "react-dom/server";
+import { ApprovalsList } from "../app/components/ApprovalsList";
 import { IdentitySetup } from "../app/components/IdentitySetup";
 import { PeopleCandidates } from "../app/components/PeopleCandidates";
 import { PersonProfile } from "../app/components/PersonProfile";
@@ -28,6 +30,7 @@ const item = (o: Partial<UrgentItemDto> = {}): UrgentItemDto => ({
   text: "hello",
   permalink: null,
   draft: null,
+  reply: null,
   ...o,
 });
 const render = (items: UrgentItemDto[]) =>
@@ -53,7 +56,81 @@ test("UrgentInbox shows expired content, the draft label and Copy", () => {
   expect(html).not.toContain("Copy");
   const live = render([item({ draft: { text: "thanks", confidence: 0.9 } })]);
   expect(live).toContain("Copy");
-  expect(live).not.toContain("Send");
+});
+
+const reply = (o: Partial<NonNullable<UrgentItemDto["reply"]>> = {}) => ({
+  followupId: "f1",
+  status: "awaiting_approval",
+  approvalId: "a1",
+  outgoingId: "o1",
+  outgoingStatus: "pending",
+  canRequest: false,
+  actions: [],
+  ...o,
+});
+const withDraft = (o: Partial<UrgentItemDto> = {}) =>
+  item({ draft: { text: "thanks <b>x</b>", confidence: 0.9 }, ...o });
+
+test("UrgentInbox shows an editable draft and the approval button only when no reply is pending", () => {
+  const html = render([withDraft()]);
+  expect(html).toContain("<textarea");
+  expect(html).toContain('maxLength="4000"');
+  expect(html).toContain("Send for approval");
+  expect(html).toContain("Requires your approval");
+  expect(html).toContain("thanks &lt;b&gt;x&lt;/b&gt;"); // text, never markup
+  const pending = render([withDraft({ reply: reply() })]);
+  expect(pending).toContain("Awaiting approval");
+  expect(pending).not.toContain("Send for approval");
+  expect(pending).not.toContain("<textarea");
+  // After a revoke the draft is editable again.
+  const revoked = render([
+    withDraft({ reply: reply({ status: "draft", outgoingStatus: "failed", canRequest: true }) }),
+  ]);
+  expect(revoked).toContain("Send for approval");
+});
+
+test("UrgentInbox status line and resolve buttons come from the server", () => {
+  const status = (outgoingStatus: string, actions: ("mark_sent" | "resend" | "discard")[] = []) =>
+    render([withDraft({ reply: reply({ outgoingStatus, actions }) })]);
+  expect(status("sending")).toContain("Sending");
+  expect(status("sent")).toContain("Sent");
+  expect(status("sent_unverified")).toContain("Sent (unverified)");
+  const na = status("needs_attention", ["mark_sent", "resend", "discard"]);
+  expect(na).toContain("Needs attention — check Slack");
+  for (const l of ["Mark sent", "Resend", "Discard"]) expect(na).toContain(l);
+  const exhausted = status("sent_unverified", ["mark_sent", "discard"]);
+  expect(exhausted).not.toContain("Resend");
+  expect(status("sent")).not.toContain("Mark sent");
+});
+
+test("ApprovalsList shows the exact text, recipient and conversation of a send (H4)", () => {
+  const a = {
+    id: "a1",
+    action: "slack.send",
+    targetIntegration: "slack",
+    targetRef: "C1",
+    payload: {},
+    riskLevel: "medium",
+    status: "pending",
+    requestedByModule: "inbox",
+    requestedByWorker: null,
+    expiresAt: null,
+    decidedAt: null,
+    executionResult: null,
+    idempotencyKey: "k",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    outgoing: {
+      text: "ship <i>it</i>",
+      recipientName: "Ada",
+      conversationLabel: "a DM",
+      threadReply: true,
+    },
+  } as unknown as ApprovalView;
+  const html = renderToString(<ApprovalsList approvals={[a]} onDecide={() => {}} />);
+  expect(html).toContain("ship &lt;i&gt;it&lt;/i&gt;");
+  expect(html).toContain("Ada");
+  expect(html).toContain("a DM");
+  expect(html).toContain("thread reply");
 });
 
 test("UrgentInbox status buttons match allowedTransitions only", () => {

@@ -1,7 +1,7 @@
 "use client";
 
 import type {
-  Approval,
+  ApprovalView,
   CandidatesResponse,
   HealthReport,
   Job,
@@ -38,6 +38,9 @@ import {
   type InboxMessageDto,
   type PersonDto,
   type PersonPriorityDto,
+  type ResolveDecisionDto,
+  requestUrgentReply,
+  resolveOutgoing,
   retryApply,
   reviewFlag,
   type SecurityFlagDto,
@@ -70,7 +73,7 @@ import { UrgentInbox } from "./components/UrgentInbox";
 
 export default function Dashboard() {
   const [health, setHealth] = useState<HealthReport | null>(null);
-  const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalView[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [claudeStatus, setClaudeStatus] = useState<ClaudeStatus | null>(null);
   const [claudeRuns, setClaudeRuns] = useState<ClaudeRun[]>([]);
@@ -243,6 +246,8 @@ export default function Dashboard() {
       <UrgentInbox
         items={urgent}
         onStatus={(id: string, s: UrgencyStatusDto) => void act(() => setUrgentStatus(id, s))}
+        onReply={(id: string, text: string) => void act(() => requestUrgentReply(id, text))}
+        onResolve={(id: string, d: ResolveDecisionDto) => void act(() => resolveOutgoing(id, d))}
       />
       <h2>Red flags</h2>
       <RedFlags
