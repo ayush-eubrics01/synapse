@@ -1,0 +1,28 @@
+{
+  "name": "synapse",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.4",
+  "engines": {
+    "bun": ">=1.4.4"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "typecheck": "bunx --bun tsc -b",
+    "lint": "bunx --bun biome check .",
+    "test": "bun test",
+    "check": "bun run typecheck && bun run lint && bun test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.5",
+    "@synapse/api": "workspace:*",
+    "@synapse/contracts": "workspace:*",
+    "@synapse/database": "workspace:*",
+    "@synapse/shared": "workspace:*",
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}

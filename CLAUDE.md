@@ -103,4 +103,10 @@ Produce a short plan naming: relevant modules, contracts used or changed, databa
 
 ## Commands
 
-No code exists yet. Add build, test, lint and run commands here when the monorepo is scaffolded (Phase 1).
+```bash
+bun install                    # install all workspaces
+bun run check                  # typecheck (tsc -b) + lint (biome) + tests
+bun test                       # run all tests
+bun run --cwd apps/api dev     # API on 127.0.0.1:7400
+bun run --cwd apps/web dev     # web on 127.0.0.1:7401
+```
