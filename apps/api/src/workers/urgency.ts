@@ -9,7 +9,7 @@ import {
 } from "@synapse/contracts";
 import { type Db, schema, type Tx } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
-import { and, asc, desc, eq, isNotNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, lt, ne, or, sql } from "drizzle-orm";
 import type { SettingsService } from "../core/config/settings";
 import type { EventPublisher } from "../core/events/publisher";
 import type { JobQueue } from "../core/jobs/queue";
@@ -132,13 +132,65 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
       .run();
   };
 
-  const alreadyNotified = (tx: Tx, messageId: string): boolean => {
+  const screeningOf = (tx: Tx, messageId: string): Partial<ScreeningRecord> => {
     const row = tx
       .select({ screening: slackMessages.screening })
       .from(slackMessages)
       .where(eq(slackMessages.id, messageId))
       .get();
-    return (row?.screening as Partial<ScreeningRecord> | null)?.notified === true;
+    return (row?.screening ?? {}) as Partial<ScreeningRecord>;
+  };
+
+  const alreadyNotified = (tx: Tx, messageId: string): boolean =>
+    screeningOf(tx, messageId).notified === true;
+
+  /**
+   * R17: another message of the same thread root (conversation + (thread_ts ?? ts)) was notified
+   * as urgent (critical/high, or unassessed after a deferral) and is still open.
+   */
+  const hasOpenUrgentAnchor = (tx: Tx, messageId: string): boolean => {
+    const m = tx
+      .select({
+        conversationId: slackMessages.conversationId,
+        ts: slackMessages.ts,
+        threadTs: slackMessages.threadTs,
+      })
+      .from(slackMessages)
+      .where(eq(slackMessages.id, messageId))
+      .get();
+    if (!m) return false;
+    const root = m.threadTs ?? m.ts;
+    const hit = tx
+      .select({ id: slackMessages.id })
+      .from(slackMessages)
+      .where(
+        and(
+          eq(slackMessages.conversationId, m.conversationId),
+          or(eq(slackMessages.threadTs, root), eq(slackMessages.ts, root)),
+          ne(slackMessages.id, messageId),
+          sql`json_extract(${slackMessages.screening}, '$.notified') = 1`,
+          sql`(${slackMessages.urgencyLevel} is null or ${slackMessages.urgencyLevel} in ('critical','high'))`,
+          sql`coalesce(${slackMessages.urgencyStatus}, 'new') in ('new','acknowledged','in_progress')`,
+        ),
+      )
+      .limit(1)
+      .get();
+    return hit !== undefined;
+  };
+
+  /**
+   * R17 (product rule, revisitable): an urgent follow-up in a thread whose earlier urgent message
+   * is notified and still open gets no notification and no draft; it is listed as `coalesced`.
+   * Decided once and stored: a message that notified itself is never coalesced, and a coalesced
+   * one stays coalesced.
+   */
+  const coalesced = (tx: Tx, messageId: string): boolean => {
+    const s = screeningOf(tx, messageId);
+    if (s.notified === true) return false;
+    if (s.coalesced === true) return true;
+    if (!hasOpenUrgentAnchor(tx, messageId)) return false;
+    mergeScreening(tx, messageId, { coalesced: true });
+    return true;
   };
 
   /** Notification, event, suggest job and `notified` flag, once per message. Never carries text. */
@@ -209,6 +261,8 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
           .where(eq(slackMessages.id, m.messageId))
           .run();
         after?.(tx);
+        const acts = isUrgent(level) || settings.get("urgency.notify.levels").includes(level);
+        if (acts && coalesced(tx, m.messageId)) return;
         notifyOnce(tx, m, level, !fallback);
         enqueueSuggest(tx, m.messageId, level);
       },
@@ -232,6 +286,7 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
       db.transaction(
         (tx) => {
           if (alreadyNotified(tx, m.messageId)) return;
+          if (coalesced(tx, m.messageId)) return;
           notifications.notify(tx, {
             kind: "urgency.urgent",
             severity: "high",

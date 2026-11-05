@@ -69,6 +69,7 @@ type Item = {
   status: string;
   assessed: boolean;
   fallback: boolean;
+  coalesced: boolean;
   text: string | null;
   allowedTransitions: string[];
   draft: { text: string | null; confidence: number } | null;
@@ -119,6 +120,23 @@ test("unassessed notified messages appear with the rule level; fallback is flagg
     200,
   );
   expect((await urgent())[0]?.status).toBe("acknowledged");
+});
+
+test("R17: coalesced follow-ups are listed with coalesced true, including unassessed ones", async () => {
+  const lead = seed("1700000100.000100");
+  const follow = seed("1700000200.000100");
+  const pending = seed("1700000300.000100");
+  mark(lead, { urgencyLevel: "critical", screening: { ruleLevel: "critical", notified: true } });
+  mark(follow, { urgencyLevel: "critical", screening: { ruleLevel: "critical", coalesced: true } });
+  mark(pending, { screening: { ruleLevel: "critical", matchedRules: [], coalesced: true } });
+  const items = await urgent();
+  const byId = new Map(items.map((i) => [i.messageId, i]));
+  expect(byId.get(lead)?.coalesced).toBe(false);
+  expect(byId.get(follow)?.coalesced).toBe(true);
+  expect(byId.get(pending)).toMatchObject({ coalesced: true, assessed: false, level: "critical" });
+  expect((await send("POST", `/api/urgent/${pending}/status`, { status: "resolved" })).status).toBe(
+    200,
+  );
 });
 
 test("status transitions: valid emits event and audits; resolved -> acknowledged is 409", async () => {

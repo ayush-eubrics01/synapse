@@ -35,6 +35,8 @@ export interface UrgentItem {
   assessed: boolean;
   /** True when the level came from the rules because the model gave none. */
   fallback: boolean;
+  /** R17: a follow-up in a thread that was already notified (no popup, no draft of its own). */
+  coalesced: boolean;
   sender: { id: string; name: string | null };
   conversation: { id: string; name: string | null; type: ConversationType };
   sentAt: string;
@@ -59,8 +61,9 @@ export interface UrgentInboxDeps {
   audit: AuditLogger;
 }
 
-// Critical/high assessed messages, plus unassessed ones notified during a quota or auth pause.
-const URGENT = sql`(${slackMessages.urgencyLevel} in ('critical','high') or (${slackMessages.urgencyLevel} is null and json_extract(${slackMessages.screening}, '$.notified') = 1))`;
+// Critical/high assessed messages, plus unassessed ones notified (or coalesced, R17) during a
+// quota or auth pause.
+const URGENT = sql`(${slackMessages.urgencyLevel} in ('critical','high') or (${slackMessages.urgencyLevel} is null and (json_extract(${slackMessages.screening}, '$.notified') = 1 or json_extract(${slackMessages.screening}, '$.coalesced') = 1)))`;
 
 export class UrgentInbox {
   constructor(private readonly deps: UrgentInboxDeps) {}
@@ -113,6 +116,7 @@ export class UrgentInbox {
         allowedTransitions: TRANSITIONS[status],
         assessed,
         fallback: screening?.fallback === true,
+        coalesced: screening?.coalesced === true,
         sender: { id: r.senderId, name: r.senderName },
         conversation: {
           id: r.convId,

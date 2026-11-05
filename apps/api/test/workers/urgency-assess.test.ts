@@ -143,6 +143,9 @@ function add(
     conv?: string;
     extra?: Partial<ScreeningRecord>;
     status?: string;
+    /** thread_ts: replies share their root's ts. */
+    thread?: string;
+    sentAt?: string;
   } = {},
 ) {
   seq += 1;
@@ -152,9 +155,10 @@ function add(
       id,
       conversationId: o.conv ?? "c-ch",
       ts: `${1000 + seq}.000000`,
+      threadTs: o.thread ?? null,
       senderUserId: "su1",
       text: o.text === undefined ? `${SECRET} ${seq}` : o.text,
-      sentAt: new Date(Date.parse(NOW) - 60_000 + seq * 1000).toISOString(),
+      sentAt: o.sentAt ?? new Date(Date.parse(NOW) - 60_000 + seq * 1000).toISOString(),
       collectedAt: NOW,
       urgencyStatus: o.status ?? null,
       screening: {
@@ -612,4 +616,112 @@ test("R16: a failure before this attempt's run row exists reuses no earlier run'
   script.throws = new JobError({ kind: "quota_exhausted", message: "q" });
   await expect(h(job(2), ctx)).rejects.toBeInstanceOf(JobError);
   expect(flags().filter((x) => x.detector === "runtime" && x.messageId === a)).toHaveLength(0);
+});
+
+// ---- R17: thread coalescing ----
+
+const ROOT = "999.000000";
+const suggestJobs = () => jobsOf("urgency.suggest_response");
+
+test("R17: 5 urgent replies in one thread -> 1 notification, 1 suggest; the rest coalesced", async () => {
+  const ids = Array.from({ length: 5 }, () => add({ thread: ROOT }));
+  script.entries = ids.map((messageId) => ({ messageId, level: "critical" as const }));
+  await run();
+  expect(notifs()).toHaveLength(1);
+  expect(notifs()[0]?.ref).toBe(ids[0]);
+  expect(urgentEvents()).toHaveLength(1);
+  expect(suggestJobs().map((j) => j.idempotencyKey)).toEqual([`urgency.suggest:${ids[0]}`]);
+  for (const id of ids.slice(1)) {
+    expect(msg(id)).toMatchObject({ urgencyLevel: "critical", urgencyStatus: "new" });
+    expect(msg(id).screening).toMatchObject({ assessed: true, coalesced: true });
+    expect(msg(id).screening.notified).toBeUndefined();
+  }
+  expect(msg(ids[0] as string).screening.coalesced).toBeUndefined();
+
+  // The thread root itself, arriving later as urgent, is coalesced too.
+  db.update(schema.slackMessages).set({ ts: ROOT }).where(eq(schema.slackMessages.id, add())).run();
+  const rootId = `m${seq}`;
+  script.entries = [{ messageId: rootId, level: "high" }];
+  await run();
+  expect(notifs()).toHaveLength(1);
+  expect(msg(rootId).screening.coalesced).toBe(true);
+
+  // After the notified message is resolved, a new urgent reply notifies again.
+  db.update(schema.slackMessages)
+    .set({ urgencyStatus: "resolved" })
+    .where(eq(schema.slackMessages.id, ids[0] as string))
+    .run();
+  const later = add({ thread: ROOT });
+  script.entries = [{ messageId: later, level: "high" }];
+  await run();
+  expect(notifs()).toHaveLength(2);
+  expect(notifs().at(-1)?.ref).toBe(later);
+  expect(suggestJobs()).toHaveLength(2);
+  expect(msg(later).screening.coalesced).toBeUndefined();
+});
+
+test("R17: acknowledged and in_progress anchors still coalesce; dismissed does not", async () => {
+  const first = add({ thread: ROOT });
+  script.entries = [{ messageId: first, level: "critical" }];
+  await run();
+  for (const [status, expected] of [
+    ["acknowledged", 1],
+    ["in_progress", 1],
+    ["dismissed", 2],
+  ] as const) {
+    db.update(schema.slackMessages)
+      .set({ urgencyStatus: status })
+      .where(eq(schema.slackMessages.id, first))
+      .run();
+    const reply = add({ thread: ROOT });
+    script.entries = [{ messageId: reply, level: "critical" }];
+    await run();
+    expect(notifs()).toHaveLength(expected);
+  }
+});
+
+test("R17: separate threads and top-level messages in one channel are not coalesced", async () => {
+  const a = add();
+  const b = add();
+  const c = add({ thread: "1001.000000" }); // reply to a
+  script.entries = [
+    { messageId: a, level: "critical" },
+    { messageId: b, level: "critical" },
+    { messageId: c, level: "critical" },
+  ];
+  await run();
+  expect(notifs().map((n) => n.ref)).toEqual([a, b]);
+  expect(msg(c).screening.coalesced).toBe(true);
+  expect(suggestJobs()).toHaveLength(2);
+});
+
+test("R17: medium replies never coalesce or notify; a later urgent reply still coalesces", async () => {
+  const first = add({ thread: ROOT });
+  const med = add({ thread: ROOT });
+  script.entries = [
+    { messageId: first, level: "critical" },
+    { messageId: med, level: "medium" },
+  ];
+  await run();
+  expect(msg(med).screening.coalesced).toBeUndefined();
+  expect(notifs()).toHaveLength(1);
+});
+
+test("R17: deferral coalesces too; the later real assessment adds no popup and no draft", async () => {
+  const ids = Array.from({ length: 3 }, () => add({ thread: ROOT, ruleLevel: "critical" }));
+  script.throws = new JobError({ kind: "quota_exhausted", message: "q" });
+  await expect(run()).rejects.toBeInstanceOf(JobError);
+  expect(notifs()).toHaveLength(1);
+  expect(msg(ids[0] as string).screening.notified).toBe(true);
+  for (const id of ids.slice(1)) {
+    expect(msg(id).screening).toMatchObject({ assessed: false, coalesced: true });
+  }
+
+  script.throws = undefined;
+  script.entries = ids.map((messageId) => ({ messageId, level: "critical" as const }));
+  await run();
+  expect(notifs()).toHaveLength(1);
+  expect(urgentEvents()).toHaveLength(1);
+  expect(suggestJobs().map((j) => j.idempotencyKey)).toEqual([`urgency.suggest:${ids[0]}`]);
+  for (const id of ids.slice(1)) expect(msg(id).screening.coalesced).toBe(true);
 });

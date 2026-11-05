@@ -12,6 +12,7 @@ const item = (o: Partial<UrgentItemDto> = {}): UrgentItemDto => ({
   allowedTransitions: ["resolved", "dismissed"],
   assessed: true,
   fallback: false,
+  coalesced: false,
   sender: { id: "U1", name: "Ada" },
   conversation: { id: "C1", name: "ops", type: "channel" },
   sentAt: "2026-01-01T00:00:00.000Z",
@@ -29,6 +30,11 @@ test("UrgentInbox tags unassessed and rule-based items", () => {
   const plain = render([item()]);
   expect(plain).not.toContain("not yet assessed");
   expect(plain).not.toContain("rule-based");
+});
+
+test("UrgentInbox tags coalesced thread follow-ups (R17)", () => {
+  expect(render([item({ coalesced: true })])).toContain("follow-up in thread");
+  expect(render([item()])).not.toContain("follow-up in thread");
 });
 
 test("UrgentInbox shows expired content, the draft label and Copy", () => {

@@ -28,6 +28,11 @@ export interface ScreeningRecord {
   assessed: boolean;
   fallback?: boolean;
   notified?: boolean;
+  /**
+   * R17: an urgent follow-up in a thread that already has an open notified urgent message. Listed
+   * in the Urgent Inbox, but no notification and no suggested response. Stable once set.
+   */
+  coalesced?: boolean;
   error?: true;
 }
 

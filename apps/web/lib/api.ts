@@ -159,6 +159,8 @@ export interface UrgentItemDto {
   allowedTransitions: UrgencyStatusDto[];
   assessed: boolean;
   fallback: boolean;
+  /** A follow-up in a thread that was already notified: no popup and no draft of its own. */
+  coalesced: boolean;
   sender: { id: string; name: string | null };
   conversation: { id: string; name: string | null; type: string };
   sentAt: string;

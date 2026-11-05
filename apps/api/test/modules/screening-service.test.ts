@@ -195,16 +195,29 @@ test("recent candidates share one batch job per window bucket", () => {
   expect(assessJobs()).toHaveLength(2);
 });
 
-test("re-screening keeps assessed, fallback and notified and does not enqueue again", () => {
+test("re-screening keeps assessed, fallback, notified and coalesced and does not enqueue again", () => {
   const id = add("prod is down");
   handle(id);
   db.update(schema.slackMessages)
-    .set({ screening: { ...screening(id), assessed: true, fallback: true, notified: true } })
+    .set({
+      screening: {
+        ...screening(id),
+        assessed: true,
+        fallback: true,
+        notified: true,
+        coalesced: true,
+      },
+    })
     .where(eq(schema.slackMessages.id, id))
     .run();
   clock.advance(500_000);
-  handle(id, "message.thread_updated");
-  expect(screening(id)).toMatchObject({ assessed: true, fallback: true, notified: true });
+  handle(id);
+  expect(screening(id)).toMatchObject({
+    assessed: true,
+    fallback: true,
+    notified: true,
+    coalesced: true,
+  });
   expect(assessJobs()).toHaveLength(1);
 });
 

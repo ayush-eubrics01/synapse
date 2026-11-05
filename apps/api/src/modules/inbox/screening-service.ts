@@ -81,6 +81,7 @@ export class ScreeningService {
       assessed: existing?.assessed === true,
       ...(existing?.fallback !== undefined ? { fallback: existing.fallback } : {}),
       ...(existing?.notified !== undefined ? { notified: existing.notified } : {}),
+      ...(existing?.coalesced !== undefined ? { coalesced: existing.coalesced } : {}),
     };
   }
 
@@ -109,7 +110,7 @@ export class ScreeningService {
     const keep = this.preserved(existing);
     const selfId = settings.get("slack.selfUserId");
     const writeRec = (
-      rec: Omit<ScreeningRecord, "version" | "assessed" | "fallback" | "notified">,
+      rec: Omit<ScreeningRecord, "version" | "assessed" | "fallback" | "notified" | "coalesced">,
       on: DbOrTx = tx,
     ) => {
       const record: ScreeningRecord = { version: 1, ...rec, ...keep };

@@ -33,7 +33,7 @@ export function UrgentInbox({
           <strong>[{i.level}]</strong> {i.sender.name ?? i.sender.id} in{" "}
           {i.conversation.name ?? i.conversation.id} at {new Date(i.sentAt).toLocaleString()}{" "}
           {!i.assessed && <em>(not yet assessed)</em>} {i.fallback && <em>(rule-based)</em>}{" "}
-          <span>[{i.status}]</span>
+          {i.coalesced && <em>(follow-up in thread)</em>} <span>[{i.status}]</span>
           {i.permalink && (
             <>
               {" "}
