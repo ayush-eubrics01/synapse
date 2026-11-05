@@ -1,5 +1,6 @@
 import { type Approval, JobError, type Operation } from "@synapse/contracts";
 import { z } from "zod";
+import type { SettingsService } from "../config/settings";
 import type { OutboxDispatcher } from "../events/dispatcher";
 import type { JobQueue } from "../jobs/queue";
 import type { HandlerRegistration } from "../jobs/worker";
@@ -10,6 +11,20 @@ export const APPROVAL_EXECUTE_PRIORITY = 180;
 const CONSUMER = "approvals.execute";
 // Executors may write to external systems; a timeout must not blindly re-run them.
 const EXECUTE_TIMEOUT_MS = 120_000;
+/** Headroom over the collector run timeout (a Slack send is a collector run). */
+const SEND_RUN_HEADROOM_MS = 90_000;
+
+/**
+ * R7 (c): the job outlives the send run it drives, so the run's own timeout fires first and the
+ * executor records a real outcome: max(120 s, orchestrator.timeouts.collector + 90 s).
+ */
+export function approvalExecuteTimeoutMs(settings?: Pick<SettingsService, "get">): number {
+  if (!settings) return EXECUTE_TIMEOUT_MS;
+  return Math.max(
+    EXECUTE_TIMEOUT_MS,
+    settings.get("orchestrator.timeouts.collector") * 1000 + SEND_RUN_HEADROOM_MS,
+  );
+}
 
 const inputSchema = z.object({ approvalId: z.string().min(1) });
 
@@ -26,6 +41,8 @@ export interface ApprovalExecutionDeps {
   queue: Pick<JobQueue, "enqueue">;
   engine: Pick<ApprovalEngine, "execute">;
   handlers: Map<string, HandlerRegistration>;
+  /** Read once here for the handler timeout (R7 c); without it the timeout is 120 s. */
+  settings?: Pick<SettingsService, "get">;
 }
 
 /**
@@ -36,6 +53,7 @@ export interface ApprovalExecutionDeps {
  */
 export function registerApprovalExecution(deps: ApprovalExecutionDeps): void {
   const { dispatcher, queue, engine, handlers } = deps;
+  const timeoutMs = approvalExecuteTimeoutMs(deps.settings);
 
   dispatcher.subscribe("approval.approved", CONSUMER, (event, tx) => {
     const { approvalId } = parseInput(event.payload);
@@ -49,12 +67,13 @@ export function registerApprovalExecution(deps: ApprovalExecutionDeps): void {
   });
 
   handlers.set(APPROVAL_EXECUTE_JOB, {
-    timeoutMs: EXECUTE_TIMEOUT_MS,
+    timeoutMs,
     externalWrite: true,
-    handler: async (job) => {
+    handler: async (job, ctx) => {
       const { approvalId } = parseInput(job.input);
       try {
-        const outcome = await engine.execute(approvalId);
+        // The job's signal reaches the executor: a timeout cancels a send still waiting for a slot.
+        const outcome = await engine.execute(approvalId, ctx.signal);
         // The result is deliberately not returned: it may carry payload-derived content.
         return { approvalId, status: outcome.status };
       } catch (e) {
@@ -100,10 +119,10 @@ export function registerIntegrationExecutor(
     byAction.set(action, table);
     const pick = (a: Approval) => table.get(a.targetIntegration);
     engine.registerExecutor(action, {
-      execute: async (a) => {
+      execute: async (a, signal) => {
         const target = pick(a);
         if (!target) throw new Error("no executor");
-        return target.execute(a);
+        return target.execute(a, signal);
       },
       // An unknown integration must reach execute() so it is recorded as failed, not skipped.
       revalidate: async (a) => {

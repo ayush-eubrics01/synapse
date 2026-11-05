@@ -7,7 +7,8 @@ import type { EventPublisher } from "../events/publisher";
 import type { PermissionManager } from "../permissions/permissions";
 
 export type Executor = {
-  execute(a: Approval): Promise<unknown>;
+  /** `signal` is the driving job's signal when there is one (aborted on job timeout or stop). */
+  execute(a: Approval, signal?: AbortSignal): Promise<unknown>;
   revalidate?(a: Approval): Promise<boolean>;
 };
 
@@ -199,7 +200,8 @@ export class ApprovalEngine {
       .map(toApproval);
   }
 
-  async execute(id: string): Promise<ExecuteOutcome> {
+  /** `signal` (optional) is passed to the executor so a job timeout can cancel its work. */
+  async execute(id: string, signal?: AbortSignal): Promise<ExecuteOutcome> {
     const first = this.load(id);
     if (first.status === "executed") return { status: "executed", result: first.executionResult };
     const executor = this.executors.get(first.action as Operation);
@@ -241,7 +243,7 @@ export class ApprovalEngine {
     const approval = toApproval(claimed.row);
     let result: unknown;
     try {
-      result = (await executor.execute(approval)) ?? null;
+      result = (await executor.execute(approval, signal)) ?? null;
     } catch (e) {
       const error = { error: e instanceof Error ? e.message : String(e) };
       this.finish(id, "failed", error);

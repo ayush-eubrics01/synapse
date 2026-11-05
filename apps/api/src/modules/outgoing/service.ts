@@ -1,7 +1,7 @@
 import type { Approval, MessageSink, SendMessageCommand, SendResult } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
-import { and, eq, inArray, lt } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lt, or } from "drizzle-orm";
 import { z } from "zod";
 import type { ApprovalEngine } from "../../core/approvals/approvals";
 import { APPROVAL_EXECUTE_JOB, registerIntegrationExecutor } from "../../core/approvals/execution";
@@ -25,6 +25,7 @@ const APPROVAL_TTL_MS = 7 * 24 * 3_600_000;
 /** Verify searches from this long before the send started (clock skew against Slack's ts). */
 const VERIFY_LOOKBACK_MS = 5_000;
 const LIVE = ["pending", "sending", "sent_unverified", "needs_attention"] as const;
+const TERMINAL_APPROVAL = ["failed", "executed", "revoked", "rejected", "expired"] as const;
 const BLOCKED_TITLE = "Send blocked: arguments changed — check Slack";
 const MISMATCH_REASON = "send tool called with changed arguments";
 
@@ -139,12 +140,20 @@ const errorName = (e: unknown) => (e instanceof Error ? e.name : "unknown");
  * thrown messages and logs carry ids and fixed reasons only.
  */
 export class OutgoingService {
+  /**
+   * R7 (a): messages whose executor is running in this process. The sweep never touches them, so a
+   * send that outlived its job (timeout) can never be handed to the user for a resend while it may
+   * still post. A restart clears it, which is exactly when the executor is gone.
+   */
+  readonly #inFlight = new Set<string>();
+
   constructor(private readonly deps: OutgoingServiceDeps) {}
 
   /** Wires the `slack.send`/`slack` executor and the revoke/reject/expiry consumers. */
   register(engine: ApprovalEngine, dispatcher: Pick<OutboxDispatcher, "subscribe">): void {
+    // R7 (f): bound privately; only the engine (after its own claim) can run a send.
     registerIntegrationExecutor(engine, "slack.send", "slack", {
-      execute: async (a) => this.execute(a),
+      execute: async (a, signal) => this.#execute(a, signal),
     });
     const reasons = {
       "approval.revoked": "revoked",
@@ -229,8 +238,10 @@ export class OutgoingService {
   /**
    * The `slack.send` executor. Throws only `OutgoingSendError` (fixed messages), and only when
    * nothing was sent or the outcome could not be recorded; the engine then fails the approval.
+   * `signal` is the `approval.execute` job's: an abort before spawn (still waiting for a Claude
+   * slot) makes the sink throw, which is the safe `not_started` outcome.
    */
-  async execute(approval: Approval): Promise<SendOutcome> {
+  async #execute(approval: Approval, signal?: AbortSignal): Promise<SendOutcome> {
     const { db, sink } = this.deps;
     const payload = payloadSchema.safeParse(approval.payload);
     if (!payload.success) throw new OutgoingSendError("invalid_payload");
@@ -242,14 +253,23 @@ export class OutgoingService {
     });
     if ("skip" in claim) return { outgoingId, status: "skipped", reason: claim.skip };
     const { row, jobId } = claim;
+    this.#inFlight.add(outgoingId);
+    try {
+      return await this.#send(row, jobId, signal ?? new AbortController().signal);
+    } finally {
+      this.#inFlight.delete(outgoingId);
+    }
+  }
 
-    // 2. Send. The job's signal is not available to executors; the orchestrator's run timeout
-    // bounds the call.
+  async #send(row: Row, jobId: string | undefined, signal: AbortSignal): Promise<SendOutcome> {
+    const { db, sink } = this.deps;
+    const outgoingId = row.id;
+    // 2. Send.
     let result: SendResult;
     try {
       result = await sink.send(
         { ...this.command(row), ...(jobId !== undefined ? { jobId } : {}) },
-        new AbortController().signal,
+        signal,
       );
     } catch (e) {
       // The sink rethrows only failures before spawn: nothing was sent. The engine fails the
@@ -323,13 +343,10 @@ export class OutgoingService {
           this.enqueueVerify(tx, outgoingId, attempts + 1);
           return { outgoingId, status: cur.status };
         }
+        // Exhausted: failure `unverified` for both statuses, so neither is verified again.
         const unverified = cur.status === "sent_unverified";
         tx.update(outgoingMessages)
-          .set({
-            verifyAttempts: attempts,
-            failure: unverified ? "unverified" : cur.failure,
-            updatedAt: now,
-          })
+          .set({ verifyAttempts: attempts, failure: "unverified", updatedAt: now })
           .where(eq(outgoingMessages.id, outgoingId))
           .run();
         this.deps.notifications.notify(tx, {
@@ -349,7 +366,8 @@ export class OutgoingService {
 
   /**
    * The user's decision on a message whose delivery is unknown or was blocked. Allowed from
-   * `needs_attention`, or from `sent_unverified` once verification is exhausted.
+   * `needs_attention`, or from `sent_unverified` once verification is exhausted (mark_sent or
+   * discard only), and never while its executor is still running.
    */
   resolveNeedsAttention(outgoingId: string, decision: ResolveDecision): ResolveResult {
     const { db, clock, audit } = this.deps;
@@ -361,10 +379,13 @@ export class OutgoingService {
           .where(eq(outgoingMessages.id, outgoingId))
           .get();
         if (!row) throw new OutgoingNotFound(outgoingId);
+        const exhaustedSent = row.status === "sent_unverified" && row.failure === "unverified";
         const allowed =
-          row.status === "needs_attention" ||
-          (row.status === "sent_unverified" && row.failure === "unverified");
-        if (!allowed) throw new ResolveNotAllowed(outgoingId, row.status);
+          (row.status === "needs_attention" || exhaustedSent) && !this.#inFlight.has(outgoingId);
+        // The send tool reported success for an exhausted sent_unverified: resend is not offered.
+        if (!allowed || (exhaustedSent && decision === "resend")) {
+          throw new ResolveNotAllowed(outgoingId, row.status);
+        }
         const now = isoNow(clock);
         const set = (status: OutgoingStatus, failure: string | null) => {
           tx.update(outgoingMessages)
@@ -427,12 +448,13 @@ export class OutgoingService {
   recoverySweep(tx: DbOrTx): void {
     const { clock } = this.deps;
     const cutoff = new Date(clock.now().getTime() - SENDING_STALE_MS).toISOString();
+    const now = isoNow(clock);
     const stuck = tx
       .select()
       .from(outgoingMessages)
       .where(and(eq(outgoingMessages.status, "sending"), lt(outgoingMessages.sendingAt, cutoff)))
-      .all();
-    const now = isoNow(clock);
+      .all()
+      .filter((r) => !this.#inFlight.has(r.id));
     for (const row of stuck) {
       tx.update(outgoingMessages)
         .set({ status: "needs_attention", failure: "uncertain_outcome", updatedAt: now })
@@ -442,6 +464,37 @@ export class OutgoingService {
       this.moveFollowup(tx, row, "needs_attention", "send_recovered");
       this.enqueueVerify(tx, row.id, row.verifyAttempts + 1);
       this.auditSend(tx, row, "slack.send_recovered", "needs_attention");
+    }
+
+    // R7 (e): a `pending` row never reached the sink (the claim is what leaves `pending`). When its
+    // approval can no longer run it (terminal) or was claimed by an executor that is gone, nothing
+    // else will move it: return the draft so the user can request again.
+    const stranded = tx
+      .select({ row: outgoingMessages, approval: approvalsTable })
+      .from(outgoingMessages)
+      .innerJoin(approvalsTable, eq(approvalsTable.id, outgoingMessages.approvalId))
+      .where(
+        and(
+          eq(outgoingMessages.status, "pending"),
+          lt(outgoingMessages.createdAt, cutoff),
+          or(
+            inArray(approvalsTable.status, TERMINAL_APPROVAL),
+            isNotNull(approvalsTable.executionStartedAt),
+          ),
+        ),
+      )
+      .all()
+      .filter((r) => !this.#inFlight.has(r.row.id));
+    for (const { row, approval } of stranded) {
+      const decided = ["revoked", "rejected", "expired"].includes(approval.status);
+      const failure = decided ? approval.status : "not_started";
+      tx.update(outgoingMessages)
+        .set({ status: "failed", failure, updatedAt: now })
+        .where(and(eq(outgoingMessages.id, row.id), eq(outgoingMessages.status, "pending")))
+        .run();
+      this.statusChanged(tx, row.id, "failed");
+      this.moveFollowup(tx, row, "draft", "send_stranded");
+      this.auditSend(tx, row, "slack.send_stranded", "failed", { failure });
     }
   }
 
@@ -453,6 +506,15 @@ export class OutgoingService {
     const row = tx.select().from(outgoingMessages).where(eq(outgoingMessages.id, outgoingId)).get();
     if (!row) throw new OutgoingSendError("not_found");
     if (row.approvalId !== approvalId) return { skip: "approval_mismatch" };
+    // R7 (f): only an approved approval that the engine has claimed for execution.
+    const approval = tx
+      .select({ status: approvalsTable.status, startedAt: approvalsTable.executionStartedAt })
+      .from(approvalsTable)
+      .where(eq(approvalsTable.id, approvalId))
+      .get();
+    if (approval?.status !== "approved" || approval.startedAt === null) {
+      return { skip: "approval_not_claimed" };
+    }
     // Defence in depth on top of the engine's claim: only a pending message is ever sent.
     if (row.status !== "pending") return { skip: `status_${row.status}` };
     const now = isoNow(this.deps.clock);
@@ -477,22 +539,35 @@ export class OutgoingService {
   ): { status: OutgoingStatus; fail?: SendFailure } {
     const { clock, notifications, securityFlags } = this.deps;
     const cur = tx.select().from(outgoingMessages).where(eq(outgoingMessages.id, row.id)).get();
-    // The sweep already handed it to the user (the send outlived SENDING_STALE_MS); verify decides.
-    if (cur?.status !== "sending") return { status: cur?.status ?? "failed" };
+    if (!cur) return { status: "failed" };
     const now = isoNow(clock);
     const runId = result.runId ?? null;
+    // R7 (d): normally `sending`; a row the sweep already handed over (needs_attention /
+    // uncertain_outcome) still takes the real outcome. Anything else was decided by the user.
+    const open =
+      cur.status === "sending" ||
+      (cur.status === "needs_attention" && cur.failure === "uncertain_outcome");
+    if (runId !== null && cur.claudeRunId === null) {
+      tx.update(outgoingMessages)
+        .set({ claudeRunId: runId })
+        .where(eq(outgoingMessages.id, row.id))
+        .run();
+    }
     const set = (status: OutgoingStatus, failure: string | null, extra: Partial<Row> = {}) => {
       tx.update(outgoingMessages)
-        .set({ status, failure, claudeRunId: runId, updatedAt: now, ...extra })
+        .set({ status, failure, updatedAt: now, ...extra })
         .where(eq(outgoingMessages.id, row.id))
         .run();
       this.statusChanged(tx, row.id, status);
     };
 
-    // R5: changed arguments are never reported as sent and never returned for re-send.
+    // R5: changed arguments are never reported as sent and never returned for re-send. The flag
+    // and notification are raised whatever state the row reached meanwhile.
     if (result.mismatch === true || result.failure === "argument_mismatch") {
-      set("needs_attention", "argument_mismatch");
-      this.moveFollowup(tx, cur, "needs_attention", "send_blocked");
+      if (open) {
+        set("needs_attention", "argument_mismatch");
+        this.moveFollowup(tx, cur, "needs_attention", "send_blocked");
+      }
       // The flag is raised even when the follow-up has moved on to another message.
       const origin =
         cur.followupId === null
@@ -518,27 +593,35 @@ export class OutgoingService {
         ref: row.id,
       });
       this.auditSend(tx, cur, "slack.send_blocked", "needs_attention", { runId });
-      return { status: "needs_attention" };
+      return { status: open ? "needs_attention" : cur.status };
     }
+    if (!open) return { status: cur.status };
     if (result.status === "sent_unverified") {
       set("sent_unverified", null, { sentAt: now });
+      // Idempotent key: a verify the sweep already queued for this attempt is reused.
       this.enqueueVerify(tx, row.id, cur.verifyAttempts + 1);
       this.markFollowupSent(tx, cur, "sent");
       this.auditSend(tx, cur, "slack.sent", "sent_unverified", { runId });
       return { status: "sent_unverified" };
     }
-    if (result.status === "uncertain") {
+    // R7 (g): only an explicit definitive failure returns the draft; anything else may have posted.
+    if (
+      result.status === "failed" &&
+      (result.failure === "tool_error" || result.failure === "no_send")
+    ) {
+      const failure: SendFailure = result.failure;
+      set("failed", failure);
+      this.moveFollowup(tx, cur, "draft", "send_failed");
+      this.auditSend(tx, cur, "slack.send_failed", "failed", { runId, failure });
+      return { status: "failed", fail: failure };
+    }
+    if (cur.status === "sending") {
       set("needs_attention", "uncertain_outcome");
       this.enqueueVerify(tx, row.id, cur.verifyAttempts + 1);
       this.moveFollowup(tx, cur, "needs_attention", "send_uncertain");
-      this.auditSend(tx, cur, "slack.send_uncertain", "needs_attention", { runId });
-      return { status: "needs_attention" };
     }
-    const failure: SendFailure = result.failure === "no_send" ? "no_send" : "tool_error";
-    set("failed", failure);
-    this.moveFollowup(tx, cur, "draft", "send_failed");
-    this.auditSend(tx, cur, "slack.send_failed", "failed", { runId, failure });
-    return { status: "failed", fail: failure };
+    this.auditSend(tx, cur, "slack.send_uncertain", "needs_attention", { runId });
+    return { status: "needs_attention" };
   }
 
   private recordNotStarted(tx: DbOrTx, row: Row): void {
@@ -694,7 +777,10 @@ export class OutgoingService {
   }
 }
 
-/** A delivered-but-unconfirmed message, or an uncertain one; never a blocked (mismatch) one. */
+/**
+ * A delivered-but-unconfirmed message, or an uncertain one; never a blocked (mismatch) one, and never
+ * one whose verification is exhausted (failure `unverified`, either status).
+ */
 function verifiable(row: Row): boolean {
   if (row.status === "sent_unverified") return row.failure !== "unverified";
   return row.status === "needs_attention" && row.failure === "uncertain_outcome";

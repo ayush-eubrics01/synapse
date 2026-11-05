@@ -473,7 +473,7 @@ describe("SlackSender.findSent", () => {
 });
 
 describe("container wiring", () => {
-  test("Container.messageSink is the SlackSender over the orchestrator and the self id setting", async () => {
+  test("the container's outgoing sink is the SlackSender over the orchestrator and the self id setting", async () => {
     const c = createContainer(loadConfig({ SYNAPSE_DB_PATH: ":memory:" }), {
       run: async () => "Linger=yes",
       provider: {
@@ -484,9 +484,11 @@ describe("container wiring", () => {
       },
     });
     try {
-      expect(c.messageSink).toBeInstanceOf(SlackSender);
+      // The sink is internal to Container.outgoing (no other path can send).
+      const sink = (c.outgoing as unknown as { deps: { sink: SlackSender } }).deps.sink;
+      expect(sink).toBeInstanceOf(SlackSender);
       // no self id configured -> cannot check, and nothing runs
-      expect(await c.messageSink.findSent(cmd(), "1793873000.000000")).toBeNull();
+      expect(await sink.findSent(cmd(), "1793873000.000000")).toBeNull();
     } finally {
       c.sqlite.close();
     }

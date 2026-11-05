@@ -93,8 +93,6 @@ export interface Container {
   profileStore: ProfileService;
   peopleViews: PeopleViews;
   securityFlags: SecurityFlagsService;
-  /** The Slack send adapter; only the `slack.send` executor in `outgoing` calls it. */
-  messageSink: MessageSink;
   /** Approved Slack sends: requests, the `slack.send` executor, verification and resolution. */
   outgoing: OutgoingService;
   /** Run by startup recovery and the reaper (main.ts), so core never imports workers. */
@@ -111,6 +109,8 @@ export interface ContainerDeps {
   run?: (cmd: string[]) => Promise<string>;
   /** Registers the `test.noop` job handler (set from SYNAPSE_TEST_HANDLERS by main.ts). */
   testHandlers?: boolean;
+  /** Replaces the real SlackSender behind `outgoing` (tests and smoke scripts inject a fake). */
+  sink?: MessageSink;
   /** Desktop notification adapter. Defaults to a no-op; main.ts injects the real one. */
   notifier?: DesktopNotifier & NotifierHealth;
 }
@@ -233,12 +233,14 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     temporary.handle(event, tx),
   );
   const slackSource = new SlackConnectorSource({ orchestrator, clock });
-  const messageSink = new SlackSender({
-    orchestrator,
-    searchSource: slackSource,
-    selfUserId: () => settings.get("slack.selfUserId"),
-    runIdForJob: createRunHelpers(db, securityFlags).runIdBefore,
-  });
+  const messageSink =
+    deps.sink ??
+    new SlackSender({
+      orchestrator,
+      searchSource: slackSource,
+      selfUserId: () => settings.get("slack.selfUserId"),
+      runIdForJob: createRunHelpers(db, securityFlags).runIdBefore,
+    });
   const slack = registerSlackJobs({
     db,
     clock,
@@ -252,7 +254,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     scheduler,
     handlers,
   });
-  registerApprovalExecution({ dispatcher, queue, engine: approvals, handlers });
+  registerApprovalExecution({ dispatcher, queue, engine: approvals, handlers, settings });
   const outgoing = new OutgoingService({
     db,
     clock,
@@ -349,7 +351,6 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     profileStore,
     peopleViews,
     securityFlags,
-    messageSink,
     outgoing,
     handlers,
     recoverySweeps: [

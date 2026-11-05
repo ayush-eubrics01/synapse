@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 const id = () => text("id").primaryKey();
@@ -615,7 +616,13 @@ export const outgoingMessages = sqliteTable(
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
-  (t) => [index("outgoing_messages_status_idx").on(t.status)],
+  (t) => [
+    index("outgoing_messages_status_idx").on(t.status),
+    // At most one live send per follow-up (backstop for SendAlreadyPending).
+    uniqueIndex("outgoing_messages_followup_live_uq")
+      .on(t.followupId)
+      .where(sql`${t.status} in ('pending', 'sending', 'sent_unverified', 'needs_attention')`),
+  ],
 );
 
 export const followups = sqliteTable(

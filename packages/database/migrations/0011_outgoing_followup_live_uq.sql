@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `outgoing_messages_followup_live_uq` ON `outgoing_messages` (`followup_id`) WHERE "outgoing_messages"."status" in ('pending', 'sending', 'sent_unverified', 'needs_attention');

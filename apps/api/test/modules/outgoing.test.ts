@@ -10,8 +10,11 @@ import { openDatabase, runMigrations, schema, type Tx } from "@synapse/database"
 import { FakeClock } from "@synapse/shared";
 import { and, eq } from "drizzle-orm";
 import { createContainer } from "../../src/container";
-import { ApprovalEngine } from "../../src/core/approvals/approvals";
-import { registerApprovalExecution } from "../../src/core/approvals/execution";
+import { ApprovalEngine, type Executor } from "../../src/core/approvals/approvals";
+import {
+  approvalExecuteTimeoutMs,
+  registerApprovalExecution,
+} from "../../src/core/approvals/execution";
 import { AuditLogger } from "../../src/core/audit/audit";
 import { loadConfig } from "../../src/core/config/config";
 import { SettingsService } from "../../src/core/config/settings";
@@ -23,6 +26,7 @@ import { type HandlerRegistration, JobWorker } from "../../src/core/jobs/worker"
 import { NotificationService } from "../../src/core/notifications/notifications";
 import { PermissionManager } from "../../src/core/permissions/permissions";
 import { reapExpiredJobs } from "../../src/core/recovery/recovery";
+import { SlackSender } from "../../src/integrations/slack/sender";
 import {
   FollowupNotFound,
   InvalidOutgoingText,
@@ -44,15 +48,17 @@ const THREAD = "1793880000.000100";
 
 class FakeSink implements MessageSink {
   sends: SendMessageCommand[] = [];
+  signals: AbortSignal[] = [];
   finds: { cmd: SendMessageCommand; sinceTs: string }[] = [];
-  sendImpl: (cmd: SendMessageCommand) => Promise<SendResult> = async () => ({
+  sendImpl: (cmd: SendMessageCommand, signal: AbortSignal) => Promise<SendResult> = async () => ({
     status: "sent_unverified",
   });
   findResults: (boolean | null)[] = [];
 
-  async send(cmd: SendMessageCommand, _signal: AbortSignal): Promise<SendResult> {
+  async send(cmd: SendMessageCommand, signal: AbortSignal): Promise<SendResult> {
     this.sends.push(cmd);
-    return this.sendImpl(cmd);
+    this.signals.push(signal);
+    return this.sendImpl(cmd, signal);
   }
 
   async findSent(cmd: SendMessageCommand, sinceTs: string): Promise<boolean | null> {
@@ -63,7 +69,7 @@ class FakeSink implements MessageSink {
 
 type Setup = ReturnType<typeof setup>;
 
-function setup(opts: { failVerifyEnqueue?: { on: boolean } } = {}) {
+function setup(opts: { failVerifyEnqueue?: { on: boolean }; sink?: MessageSink } = {}) {
   const { db } = openDatabase(":memory:");
   runMigrations(db);
   const clock = new FakeClock(NOW);
@@ -96,7 +102,7 @@ function setup(opts: { failVerifyEnqueue?: { on: boolean } } = {}) {
   });
   securityFlags.init();
   const sink = new FakeSink();
-  const outgoing = new OutgoingService({
+  const serviceDeps = {
     db,
     clock,
     events,
@@ -106,8 +112,11 @@ function setup(opts: { failVerifyEnqueue?: { on: boolean } } = {}) {
     notifications,
     approvals: engine,
     securityFlags,
-    sink,
-  });
+    sink: opts.sink ?? sink,
+  };
+  const outgoing = new OutgoingService(serviceDeps);
+  /** The same service in a restarted process: nothing is in flight there. */
+  const restarted = () => new OutgoingService(serviceDeps);
   const handlers = new Map<string, HandlerRegistration>();
   outgoing.register(engine, dispatcher);
   registerApprovalExecution({ dispatcher, queue: realQueue, engine, handlers });
@@ -196,6 +205,8 @@ function setup(opts: { failVerifyEnqueue?: { on: boolean } } = {}) {
   return {
     db,
     clock,
+    handlers,
+    restarted,
     engine,
     dispatcher,
     realQueue,
@@ -240,6 +251,22 @@ const toApproval = (s: Setup, id: string): Approval => {
 };
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
+const ticks = async (n = 5) => {
+  for (let i = 0; i < n; i++) await tick();
+};
+
+/** The registered slack.send executor, called directly (it is not reachable from the service). */
+const runExecutor = (t: Setup, a: Approval, signal?: AbortSignal) =>
+  (t.engine as unknown as { executors: Map<string, Executor> }).executors
+    .get("slack.send")
+    ?.execute(a, signal);
+
+const claimApproval = (t: Setup, approvalId: string) =>
+  t.db
+    .update(schema.approvals)
+    .set({ executionStartedAt: NOW })
+    .where(eq(schema.approvals.id, approvalId))
+    .run();
 
 let s: Setup;
 beforeEach(() => {
@@ -361,13 +388,14 @@ describe("slack.send executor", () => {
   test("the executor skips without sending unless the outgoing message is pending with its approval", async () => {
     const { outgoingId, approvalId } = s.request();
     s.engine.approve(approvalId);
+    claimApproval(s, approvalId);
     for (const status of ["sending", "sent_unverified", "sent", "needs_attention", "failed"]) {
       s.db
         .update(schema.outgoingMessages)
         .set({ status: status as "sending" })
         .where(eq(schema.outgoingMessages.id, outgoingId))
         .run();
-      const r = await s.outgoing.execute(toApproval(s, approvalId));
+      const r = await runExecutor(s, toApproval(s, approvalId));
       expect(r).toMatchObject({ status: "skipped" });
     }
     s.db
@@ -376,7 +404,7 @@ describe("slack.send executor", () => {
       .where(eq(schema.outgoingMessages.id, outgoingId))
       .run();
     const other = { ...toApproval(s, approvalId), id: "another-approval" };
-    expect(await s.outgoing.execute(other)).toMatchObject({
+    expect(await runExecutor(s, other)).toMatchObject({
       status: "skipped",
       reason: "approval_mismatch",
     });
@@ -399,7 +427,7 @@ describe("slack.send executor", () => {
 
     // Nothing can send it again: the engine, a forced executor call, a new request.
     expect((await s.engine.execute(approvalId)).status).toBe("executed");
-    expect(await s.outgoing.execute(toApproval(s, approvalId))).toMatchObject({
+    expect(await runExecutor(s, toApproval(s, approvalId))).toMatchObject({
       status: "skipped",
     });
     expect(() => s.request()).toThrow(SendAlreadyPending);
@@ -445,11 +473,16 @@ describe("slack.send executor", () => {
     expect(await s.runVerify()).toBe(false);
     const o = s.out(outgoingId);
     expect(o?.status).toBe("needs_attention");
-    expect(o?.failure).toBe("uncertain_outcome");
+    // R7 (g): exhausted is marked the same way for both statuses and is never verified again.
+    expect(o?.failure).toBe("unverified");
     expect(o?.verifyAttempts).toBe(2);
     expect(s.notes()).toHaveLength(1);
     expect(s.fu()?.status).toBe("needs_attention");
+    expect(await s.outgoing.verify(outgoingId)).toMatchObject({ status: "skipped" });
+    expect(s.sink.finds).toHaveLength(2);
     expect(s.sink.sends).toHaveLength(1);
+    // the user may still resend an uncertain message
+    expect(s.outgoing.resolveNeedsAttention(outgoingId, "resend").resend).toBeDefined();
   });
 
   test("argument_mismatch (R5): needs_attention, high runtime flag, notification, never back to draft", async () => {
@@ -564,7 +597,9 @@ describe("slack.send executor", () => {
     expect(s.sink.sends).toHaveLength(1);
     expect(s.out(outgoingId)?.status).toBe("sending");
 
-    const sweeps = [{ name: "outgoing.sending", run: (tx: Tx) => s.outgoing.recoverySweep(tx) }];
+    // The executor's process died: recovery runs in a new process, where nothing is in flight.
+    const fresh = s.restarted();
+    const sweeps = [{ name: "outgoing.sending", run: (tx: Tx) => fresh.recoverySweep(tx) }];
     s.clock.advance(61_000);
     reapExpiredJobs({ db: s.db, clock: s.clock, audit: s.audit, sweeps });
     const parked = s.db
@@ -576,7 +611,7 @@ describe("slack.send executor", () => {
     expect(s.out(outgoingId)?.status).toBe("sending"); // under 10 minutes: left alone
     expect(await s.worker.runOnce()).toBe(false);
     expect((await s.engine.execute(approvalId)).status).toBe("skipped");
-    expect(await s.outgoing.execute(toApproval(s, approvalId))).toMatchObject({
+    expect(await runExecutor(s, toApproval(s, approvalId))).toMatchObject({
       status: "skipped",
     });
     expect(() => s.request()).toThrow(SendAlreadyPending);
@@ -762,8 +797,334 @@ describe("resolveNeedsAttention", () => {
   });
 });
 
+describe("R7: no duplicate send when a send outlives its job", () => {
+  const hanging = (t: Setup) => {
+    let release: (r: SendResult) => void = () => {};
+    t.sink.sendImpl = () =>
+      new Promise<SendResult>((r) => {
+        release = r;
+      });
+    return (r: SendResult) => release(r);
+  };
+  const shortExecuteTimeout = (t: Setup) => {
+    const reg = t.handlers.get("approval.execute");
+    if (!reg) throw new Error("approval.execute not registered");
+    reg.timeoutMs = 20;
+  };
+
+  test("PROBE A: a timed-out execute stays in flight, is never swept, and cannot be resent", async () => {
+    const release = hanging(s);
+    const { outgoingId, approvalId } = s.request();
+    s.engine.approve(approvalId);
+    s.dispatcher.dispatchOnce();
+    shortExecuteTimeout(s);
+    await s.worker.runOnce();
+    const job = s.db
+      .select()
+      .from(schema.jobs)
+      .where(eq(schema.jobs.type, "approval.execute"))
+      .get();
+    expect(job?.status).toBe("NEEDS_ATTENTION");
+    // (b) the job's signal reached the sink and was aborted by the timeout
+    expect(s.sink.signals[0]?.aborted).toBe(true);
+    expect(s.out(outgoingId)?.status).toBe("sending");
+
+    s.clock.advance(10 * 60_000 + 1);
+    const sweeps = [{ name: "outgoing.sending", run: (tx: Tx) => s.outgoing.recoverySweep(tx) }];
+    reapExpiredJobs({ db: s.db, clock: s.clock, audit: s.audit, sweeps });
+    expect(s.out(outgoingId)?.status).toBe("sending");
+    expect(() => s.outgoing.resolveNeedsAttention(outgoingId, "resend")).toThrow(ResolveNotAllowed);
+    expect(() => s.request()).toThrow(SendAlreadyPending);
+
+    release({ status: "sent_unverified" });
+    await ticks();
+    expect(s.out(outgoingId)?.status).toBe("sent_unverified");
+    expect(s.verifyJobs()).toHaveLength(1);
+    s.db.transaction((tx) => s.outgoing.recoverySweep(tx));
+    expect(s.out(outgoingId)?.status).toBe("sent_unverified");
+    expect(s.sink.sends).toHaveLength(1);
+    s.expectNoContent();
+  });
+
+  test("R7 (b): a job timeout while the send waits for a Claude slot fails before spawn -> not_started", async () => {
+    // The real SlackSender over an orchestrator that is waiting for a slot: an abort throws the
+    // orchestrator's pre-spawn "cancelled while waiting" error, which the sender rethrows.
+    const runs: AbortSignal[] = [];
+    const sender = new SlackSender({
+      orchestrator: {
+        run: (_req, signal) =>
+          new Promise((_, reject) => {
+            runs.push(signal);
+            signal.addEventListener("abort", () =>
+              reject(
+                new JobError({
+                  kind: "timeout",
+                  message: "cancelled while waiting for a Claude slot",
+                }),
+              ),
+            );
+          }),
+      },
+      searchSource: {
+        collect: async () => {
+          throw new Error("no search in this test");
+        },
+      },
+      selfUserId: () => null,
+    });
+    const t = setup({ sink: sender });
+    const { outgoingId, approvalId } = t.request();
+    t.engine.approve(approvalId);
+    t.dispatcher.dispatchOnce();
+    shortExecuteTimeout(t);
+    const logs: string[] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => void logs.push(a.join(" "));
+    try {
+      await t.worker.runOnce();
+      await ticks();
+    } finally {
+      console.error = orig;
+    }
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.aborted).toBe(true);
+    expect(t.out(outgoingId)).toMatchObject({ status: "failed", failure: "not_started" });
+    expect(t.approval(approvalId)?.status).toBe("failed");
+    expect(t.fu()?.status).toBe("draft");
+    expect(logs).toEqual([`outgoing send not started outgoing=${outgoingId} error=JobError`]);
+    expect(t.request().outgoingId).not.toBe(outgoingId);
+    t.expectNoContent();
+  });
+
+  test("PROBE B: a late argument_mismatch is flagged (in flight: the sweep leaves the row alone)", async () => {
+    const release = hanging(s);
+    const { outgoingId, approvalId } = s.request();
+    s.engine.approve(approvalId);
+    const p = s.engine.execute(approvalId);
+    await ticks(3);
+    s.clock.advance(10 * 60_000 + 1);
+    s.db.transaction((tx) => s.outgoing.recoverySweep(tx));
+    expect(s.out(outgoingId)?.status).toBe("sending");
+    release({ status: "failed", failure: "argument_mismatch", mismatch: true });
+    await p;
+    expect(s.out(outgoingId)).toMatchObject({
+      status: "needs_attention",
+      failure: "argument_mismatch",
+    });
+    expect(s.db.select().from(schema.securityFlags).all()).toHaveLength(1);
+    // one blocked-send notification (the security flag adds its own)
+    expect(
+      s.notes().filter((n) => n.title === "Send blocked: arguments changed — check Slack"),
+    ).toHaveLength(1);
+  });
+
+  test("R7 (d): an outcome after another process swept the row is still recorded", async () => {
+    s.db
+      .insert(schema.claudeRuns)
+      .values({ id: "run-late", workerProfile: "collector", status: "completed", startedAt: NOW })
+      .run();
+    const swept = (id: string) =>
+      s.db
+        .update(schema.outgoingMessages)
+        .set({ status: "needs_attention", failure: "uncertain_outcome" })
+        .where(eq(schema.outgoingMessages.id, id))
+        .run();
+
+    // late mismatch: flagged, run id kept, argument_mismatch
+    let release = hanging(s);
+    const a = s.request();
+    s.engine.approve(a.approvalId);
+    let p = s.engine.execute(a.approvalId);
+    await ticks(3);
+    swept(a.outgoingId);
+    release({
+      status: "failed",
+      failure: "argument_mismatch",
+      mismatch: true,
+      runId: "run-late",
+    });
+    await p;
+    expect(s.out(a.outgoingId)).toMatchObject({
+      status: "needs_attention",
+      failure: "argument_mismatch",
+      claudeRunId: "run-late",
+    });
+    expect(s.db.select().from(schema.securityFlags).all()).toHaveLength(1);
+    expect(
+      s.notes().filter((n) => n.title === "Send blocked: arguments changed — check Slack"),
+    ).toHaveLength(1);
+
+    // late sent_unverified: recorded, verify queued, followup sent
+    const t = setup();
+    t.db
+      .insert(schema.claudeRuns)
+      .values({ id: "run-late", workerProfile: "collector", status: "completed", startedAt: NOW })
+      .run();
+    release = hanging(t);
+    const b = t.request();
+    t.engine.approve(b.approvalId);
+    p = t.engine.execute(b.approvalId);
+    await ticks(3);
+    t.db
+      .update(schema.outgoingMessages)
+      .set({ status: "needs_attention", failure: "uncertain_outcome" })
+      .where(eq(schema.outgoingMessages.id, b.outgoingId))
+      .run();
+    release({ status: "sent_unverified", runId: "run-late" });
+    await p;
+    expect(t.out(b.outgoingId)).toMatchObject({
+      status: "sent_unverified",
+      claudeRunId: "run-late",
+    });
+    expect(t.verifyJobs().map((j) => j.idempotencyKey)).toEqual([
+      `outgoing.verify:${b.outgoingId}:1`,
+    ]);
+    expect(t.fu()?.status).toBe("sent");
+    expect(t.eventsOf("followup.sent")).toHaveLength(1);
+  });
+
+  test("PROBE C (R7 e): a stranded pending row is returned to draft by the sweep", async () => {
+    const { outgoingId, approvalId } = s.request();
+    s.engine.approve(approvalId);
+    // the engine claimed it, then the process died before the outgoing claim
+    claimApproval(s, approvalId);
+    s.clock.advance(8 * 24 * 3_600_000);
+    s.engine.expireDue(); // a claimed approval is never expired
+    s.dispatcher.dispatchOnce();
+    expect(s.out(outgoingId)?.status).toBe("pending");
+    s.db.transaction((tx) => s.outgoing.recoverySweep(tx));
+    expect(s.out(outgoingId)).toMatchObject({ status: "failed", failure: "not_started" });
+    expect(s.fu()?.status).toBe("draft");
+    expect(s.request().outgoingId).not.toBe(outgoingId);
+    expect(s.sink.sends).toHaveLength(0);
+    s.expectNoContent();
+  });
+
+  test("R7 (e): stranded only when the approval is terminal or claimed, the row is old, and not in flight", () => {
+    const rows = ["f2", "f3", "f4", "f5", "f6"].map((id) => {
+      s.followup(id);
+      return s.request({ followupId: id });
+    });
+    const [failedA, revokedA, approvedA, pendingA, young] = rows as [
+      { outgoingId: string; approvalId: string },
+      { outgoingId: string; approvalId: string },
+      { outgoingId: string; approvalId: string },
+      { outgoingId: string; approvalId: string },
+      { outgoingId: string; approvalId: string },
+    ];
+    const setApproval = (id: string, status: "failed" | "revoked" | "approved") =>
+      s.db.update(schema.approvals).set({ status }).where(eq(schema.approvals.id, id)).run();
+    setApproval(failedA.approvalId, "failed");
+    setApproval(revokedA.approvalId, "revoked"); // its decision consumer never ran
+    setApproval(approvedA.approvalId, "approved"); // approved, not claimed: its job will run it
+    s.clock.advance(10 * 60_000 + 1);
+    const youngNow = s.request({ followupId: "f1" });
+    setApproval(youngNow.approvalId, "failed");
+    s.db.transaction((tx) => s.outgoing.recoverySweep(tx));
+    expect(s.out(failedA.outgoingId)).toMatchObject({ status: "failed", failure: "not_started" });
+    expect(s.out(revokedA.outgoingId)).toMatchObject({ status: "failed", failure: "revoked" });
+    expect(s.out(approvedA.outgoingId)?.status).toBe("pending");
+    expect(s.out(pendingA.outgoingId)?.status).toBe("pending");
+    expect(s.out(young.outgoingId)?.status).toBe("pending");
+    expect(s.out(youngNow.outgoingId)?.status).toBe("pending");
+    expect(s.fu("f2")?.status).toBe("draft");
+    expect(s.fu("f3")?.status).toBe("draft");
+  });
+
+  test("PROBE D (R7 f): the executor never sends for an unapproved or unclaimed approval", async () => {
+    expect((s.outgoing as unknown as { execute?: unknown }).execute).toBeUndefined();
+    const { outgoingId, approvalId } = s.request();
+    expect(await runExecutor(s, toApproval(s, approvalId))).toMatchObject({
+      status: "skipped",
+      reason: "approval_not_claimed",
+    });
+    s.engine.approve(approvalId);
+    expect(await runExecutor(s, toApproval(s, approvalId))).toMatchObject({
+      status: "skipped",
+      reason: "approval_not_claimed",
+    });
+    expect(s.sink.sends).toHaveLength(0);
+    expect(s.out(outgoingId)?.status).toBe("pending");
+  });
+
+  test("R7 (g): a failure other than tool_error/no_send is uncertain, never back to draft", async () => {
+    for (const failure of [undefined, "something_else", "uncertain_outcome"]) {
+      const t = setup();
+      t.sink.sendImpl = async () => ({ status: "failed", ...(failure ? { failure } : {}) });
+      const { outgoingId, approvalId } = t.request();
+      await t.approveAndRun(approvalId);
+      expect(t.out(outgoingId)).toMatchObject({
+        status: "needs_attention",
+        failure: "uncertain_outcome",
+      });
+      expect(t.approval(approvalId)?.status).toBe("executed");
+      expect(t.fu()?.status).toBe("needs_attention");
+      expect(t.verifyJobs()).toHaveLength(1);
+    }
+  });
+
+  test("R7 (g): an exhausted sent_unverified offers mark_sent and discard, not resend", async () => {
+    s.settings.set("outgoing.verify.maxAttempts", 1);
+    const { outgoingId, approvalId } = s.request();
+    await s.approveAndRun(approvalId);
+    await s.runVerify();
+    expect(s.out(outgoingId)?.failure).toBe("unverified");
+    expect(() => s.outgoing.resolveNeedsAttention(outgoingId, "resend")).toThrow(ResolveNotAllowed);
+    s.outgoing.resolveNeedsAttention(outgoingId, "discard");
+    expect(s.out(outgoingId)).toMatchObject({ status: "failed", failure: "discarded" });
+    expect(s.sink.sends).toHaveLength(1);
+  });
+
+  test("R7 (g): the database allows one live outgoing message per followup", () => {
+    s.request(); // f1 now has a live (pending) outgoing message
+    // approval_id is unique too, so give each row its own approval
+    const approvalFor = (key: string) =>
+      s.engine.request(s.db, {
+        action: "slack.send",
+        targetIntegration: "slack",
+        targetRef: CHANNEL,
+        payload: {},
+        riskLevel: "medium",
+        idempotencyKey: key,
+        requestedByModule: "test",
+      }).id;
+    const live = approvalFor("k-live");
+    const dead = approvalFor("k-dead");
+    expect(() =>
+      s.db
+        .insert(schema.outgoingMessages)
+        .values({
+          id: "o-live",
+          approvalId: live,
+          followupId: "f1",
+          conversationExternalId: CHANNEL,
+          text: "x",
+          status: "pending",
+          createdAt: NOW,
+          updatedAt: NOW,
+        })
+        .run(),
+    ).toThrow();
+    s.db
+      .insert(schema.outgoingMessages)
+      .values({
+        id: "o-dead",
+        approvalId: dead,
+        followupId: "f1",
+        conversationExternalId: CHANNEL,
+        text: "x",
+        status: "failed",
+        createdAt: NOW,
+        updatedAt: NOW,
+      })
+      .run();
+    expect(s.out("o-dead")?.status).toBe("failed");
+  });
+});
+
 describe("container wiring", () => {
   test("Container.outgoing, the executor, the verify job and the sweep are registered", () => {
+    const sink = new FakeSink();
     const c = createContainer(loadConfig({ SYNAPSE_DB_PATH: ":memory:" }), {
       run: async () => "Linger=yes",
       provider: {
@@ -772,14 +1133,25 @@ describe("container wiring", () => {
         },
         getHealth: async () => ({ status: "ok", version: "fake" }),
       },
+      sink,
     });
     try {
       expect(c.outgoing).toBeInstanceOf(OutgoingService);
+      expect((c.outgoing as unknown as { deps: { sink: unknown } }).deps.sink).toBe(sink);
+      expect("messageSink" in c).toBe(false);
       expect(c.approvals.hasExecutor("slack.send")).toBe(true);
       expect(c.handlers.has(OUTGOING_VERIFY_JOB)).toBe(true);
       expect(c.recoverySweeps.map((x) => x.name)).toContain("outgoing.sending");
+      // R7 (c): max(120 s, collector 180 s + 90 s)
+      expect(c.handlers.get("approval.execute")?.timeoutMs).toBe(270_000);
     } finally {
       c.sqlite.close();
     }
+  });
+
+  test("R7 (c): the approval.execute timeout never drops below 120 s", () => {
+    expect(approvalExecuteTimeoutMs()).toBe(120_000);
+    expect(approvalExecuteTimeoutMs({ get: (() => 10) as never })).toBe(120_000);
+    expect(approvalExecuteTimeoutMs({ get: (() => 600) as never })).toBe(690_000);
   });
 });
