@@ -236,3 +236,126 @@ export const authSnapshots = sqliteTable("auth_snapshots", {
   refreshExpiresAt: text("refresh_expires_at"),
   claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
 });
+
+export const integrations = sqliteTable(
+  "integrations",
+  {
+    id: id(),
+    kind: text("kind").notNull(),
+    adapter: text("adapter").notNull(),
+    config: json("config"),
+    enabled: bool("enabled").notNull().default(true),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [uniqueIndex("integrations_kind_adapter_uq").on(t.kind, t.adapter)],
+);
+
+export const integrationCapabilities = sqliteTable(
+  "integration_capabilities",
+  {
+    id: id(),
+    integrationId: text("integration_id")
+      .notNull()
+      .references(() => integrations.id),
+    name: text("name").notNull(),
+    available: bool("available").notNull(),
+  },
+  (t) => [
+    uniqueIndex("integration_capabilities_integration_id_name_uq").on(t.integrationId, t.name),
+  ],
+);
+
+export const integrationSyncStates = sqliteTable(
+  "integration_sync_states",
+  {
+    id: id(),
+    integrationId: text("integration_id")
+      .notNull()
+      .references(() => integrations.id),
+    stream: text("stream").notNull(),
+    checkpoint: text("checkpoint"),
+    cursor: text("cursor"),
+    status: text("status", { enum: ["idle", "running", "paused", "complete", "error"] })
+      .notNull()
+      .default("idle"),
+    lastSuccessAt: text("last_success_at"),
+    lastError: json("last_error"),
+    upperBound: text("upper_bound"),
+    pagesDone: integer("pages_done").notNull().default(0),
+    searchCountDate: text("search_count_date"),
+    searchCount: integer("search_count").notNull().default(0),
+    nextRunAfter: text("next_run_after"),
+    backoffMinutes: integer("backoff_minutes").notNull().default(0),
+  },
+  (t) => [
+    uniqueIndex("integration_sync_states_integration_id_stream_uq").on(t.integrationId, t.stream),
+  ],
+);
+
+export const slackConversations = sqliteTable("slack_conversations", {
+  id: id(),
+  externalId: text("external_id").notNull().unique(),
+  type: text("type", { enum: ["im", "mpim", "channel"] }).notNull(),
+  name: text("name"),
+  accessible: bool("accessible").notNull().default(true),
+  lastSeenTs: text("last_seen_ts"),
+});
+
+export const slackUsers = sqliteTable("slack_users", {
+  id: id(),
+  externalId: text("external_id").notNull().unique(),
+  name: text("name"),
+  email: text("email"),
+  isBot: bool("is_bot"),
+});
+
+export const slackMessages = sqliteTable(
+  "slack_messages",
+  {
+    id: id(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => slackConversations.id),
+    ts: text("ts").notNull(),
+    threadTs: text("thread_ts"),
+    senderUserId: text("sender_user_id")
+      .notNull()
+      .references(() => slackUsers.id),
+    text: text("text"),
+    fullNotes: text("full_notes"),
+    permalink: text("permalink"),
+    replyCount: integer("reply_count").notNull().default(0),
+    sentAt: text("sent_at").notNull(),
+    collectedAt: text("collected_at").notNull(),
+    contentExpiredAt: text("content_expired_at"),
+    screening: json("screening"),
+    urgencyLevel: text("urgency_level"),
+    urgencyReason: text("urgency_reason"),
+    urgencyStatus: text("urgency_status"),
+  },
+  (t) => [
+    uniqueIndex("slack_messages_conversation_id_ts_uq").on(t.conversationId, t.ts),
+    index("slack_messages_sent_at_idx").on(t.sentAt),
+    index("slack_messages_conversation_id_thread_ts_idx").on(t.conversationId, t.threadTs),
+    index("slack_messages_urgency_level_urgency_status_idx").on(t.urgencyLevel, t.urgencyStatus),
+  ],
+);
+
+export const slackAttachments = sqliteTable("slack_attachments", {
+  id: id(),
+  messageId: text("message_id")
+    .notNull()
+    .references(() => slackMessages.id),
+  externalFileId: text("external_file_id").notNull(),
+  name: text("name"),
+  localPath: text("local_path"),
+});
+
+export const slackMessageReferences = sqliteTable("slack_message_references", {
+  id: id(),
+  messageId: text("message_id")
+    .notNull()
+    .references(() => slackMessages.id),
+  refType: text("ref_type").notNull(),
+  refId: text("ref_id").notNull(),
+});

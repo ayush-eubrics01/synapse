@@ -36,6 +36,13 @@
       "when": 1793889024265,
       "tag": "0004_quota_window_status",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1793893001797,
+      "tag": "0005_slack",
+      "breakpoints": true
     }
   ]
 }
