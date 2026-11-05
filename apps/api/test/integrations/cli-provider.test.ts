@@ -78,6 +78,11 @@ describe("ClaudeCliProvider.execute", () => {
     expect(r.error?.retryAfter).toBe(new Date(1793893800 * 1000).toISOString());
   });
 
+  test("R39: 'the login page returned 500' is provider_error", async () => {
+    const r = await provider({ FAKE_CLAUDE_MODE: "login_page_500" }).execute(req(), sig());
+    expect(r.error?.kind).toBe("provider_error");
+  });
+
   test("auth_error is auth_failed", async () => {
     const r = await provider({ FAKE_CLAUDE_MODE: "auth_error" }).execute(req(), sig());
     expect(r.error?.kind).toBe("auth_failed");

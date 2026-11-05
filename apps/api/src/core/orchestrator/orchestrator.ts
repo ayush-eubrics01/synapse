@@ -137,7 +137,18 @@ export class ClaudeOrchestrator {
       if (probe) this.clearAuthPause();
       return result;
     } catch (e) {
-      if (e instanceof JobError && e.classified.kind === "auth_failed") this.pauseAuth();
+      if (e instanceof JobError && e.classified.kind === "auth_failed") {
+        // Only the auth_failed that starts the pause parks a job (R38); later ones defer.
+        if (!this.pauseAuth()) {
+          throw new JobError({
+            kind: "auth_paused",
+            message: "Claude authentication is paused until re-login",
+            retryAfter: new Date(
+              this.deps.clock.now().getTime() + AUTH_PAUSE_RETRY_MS,
+            ).toISOString(),
+          });
+        }
+      }
       throw e;
     } finally {
       if (probe) this.probing = false;
@@ -175,16 +186,16 @@ export class ClaudeOrchestrator {
     });
   }
 
-  /** Sets the pause. The notification is raised once, when the pause starts; a failed probe re-arms the timer. */
-  private pauseAuth(): void {
+  /**
+   * Sets (or re-arms) the pause; returns true when this call started it. The notification is
+   * created before the pause keys are written, so a failed write cannot lose it (R40).
+   */
+  private pauseAuth(): boolean {
+    let started = false;
     this.bestEffort("auth pause", "-", () => {
       const { settings, clock, db, notifications, auth } = this.deps;
-      const wasPaused = settings.get("auth.pausedAt") !== null;
-      const exp = auth.currentExpiry();
-      settings.set("auth.pausedAt", isoNow(clock), { emit: false });
-      if ("error" in exp) settings.clear("auth.pausedRefreshExpiresAt");
-      else settings.set("auth.pausedRefreshExpiresAt", exp.refreshExpiresAt, { emit: false });
-      if (!wasPaused) {
+      started = settings.get("auth.pausedAt") === null;
+      if (started) {
         db.transaction((tx) => {
           notifications.notify(tx, {
             kind: "claude.auth_paused",
@@ -194,7 +205,12 @@ export class ClaudeOrchestrator {
           });
         });
       }
+      const exp = auth.currentExpiry();
+      settings.set("auth.pausedAt", isoNow(clock), { emit: false });
+      if ("error" in exp) settings.clear("auth.pausedRefreshExpiresAt");
+      else settings.set("auth.pausedRefreshExpiresAt", exp.refreshExpiresAt, { emit: false });
     });
+    return started;
   }
 
   private async runInner(req: ClaudeJobRequest, signal: AbortSignal): Promise<AIExecutionResult> {

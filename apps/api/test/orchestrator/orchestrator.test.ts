@@ -669,11 +669,13 @@ describe("auth pause (ADR-037 §4)", () => {
     await first;
   });
 
-  test("a failed probe keeps the pause and restarts the timer", async () => {
+  test("a failed probe throws auth_paused (not auth_failed), keeps the pause and restarts the timer", async () => {
     provider.next = authFailed;
     await fails(run(req()));
     clock.advance(31 * 60_000);
-    await fails(run(req()));
+    const e = await fails(run(req()));
+    expect(e.classified.kind).toBe("auth_paused");
+    expect(e.classified.retryAfter).toBe("2026-11-05T12:46:00.000Z");
     expect(settings.get("auth.pausedAt")).toBe("2026-11-05T12:31:00.000Z");
     expect(notes()).toHaveLength(1);
     expect((await fails(run(req()))).classified.kind).toBe("auth_paused");
