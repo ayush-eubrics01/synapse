@@ -14,12 +14,17 @@ export type ValidationResult = { ok: true } | { ok: false; reason: string };
 const BUILTIN_RE = /^[A-Za-z][A-Za-z0-9_]*(\([^(),\s]*\))?$/;
 const CONNECTOR_RE = /^mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+$/;
 
+const DENY_BUILTIN_RE = /^[A-Za-z][A-Za-z0-9_]*$/;
+const DENY_CONNECTOR_RE = /^mcp__[A-Za-z0-9_]+(__[A-Za-z0-9_]+)?$/;
+
 const fail = (reason: string): ValidationResult => ({ ok: false, reason });
 
 /**
  * Rule order (first failing rule wins):
  *  0. every allowedTools entry is a single well-formed tool name (R26); the CLI splits
  *     entries on commas/spaces, so anything else could smuggle extra tools
+ *  0b. allowedTools non-empty; every disallowedTools entry is a plain tool or server name (R27),
+ *     because one stray `(` would make the CLI swallow the rest of the denylist
  *  A. boundary non-empty; prompt === assemblePrompt(instructions, promptParts, boundary) (R24)
  *  B. built-in tools: unknown (R23), network in any profile (R22), write built-ins for
  *     collector/intelligence (rule 0)
@@ -40,6 +45,12 @@ export function validateRequest(
   assembly: { instructions: string; boundary: string },
 ): ValidationResult {
   const raw = req.allowedTools;
+  if (raw.length === 0) return fail("no tools allowed");
+  for (const t of req.disallowedTools) {
+    if (!(t.startsWith("mcp__") ? DENY_CONNECTOR_RE.test(t) : DENY_BUILTIN_RE.test(t))) {
+      return fail(`malformed denylist entry ${t}`);
+    }
+  }
   for (const t of raw) {
     const ok = t.startsWith("mcp__") ? CONNECTOR_RE.test(t) : BUILTIN_RE.test(t);
     if (!ok) return fail(`malformed tool name ${t}`);

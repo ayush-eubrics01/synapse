@@ -38,6 +38,7 @@ export const DEFAULT_KNOWN_SERVERS = [
   "mcp__claude_ai_n8n",
   "mcp__rea",
   "mcp__plugin_postman_postman",
+  "mcp__workspace",
 ];
 
 const SLACK_PREFIX = "mcp__claude_ai_Slack__";

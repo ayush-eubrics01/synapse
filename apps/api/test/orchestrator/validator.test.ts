@@ -158,6 +158,37 @@ describe("validateRequest", () => {
       "denylist missing Bash",
     );
   });
+  test("R27 malformed denylist entries rejected", () => {
+    const full = buildDenylist([SEARCH, "ToolSearch"], DEFAULT_KNOWN_SERVERS, "collector");
+    for (const bad of ["Agent(", "a,b", "a b", "Bash)", ""]) {
+      expect(reason(v(make({ disallowedTools: [bad, ...full] })))).toBe(
+        `malformed denylist entry ${bad}`,
+      );
+    }
+  });
+  test("R27 empty allowedTools rejected", () => {
+    expect(reason(v(make({ allowed: [], promptParts: [] })))).toBe("no tools allowed");
+  });
+  test("R27 buildDenylist output matches grammar", () => {
+    const re = /^([A-Za-z][A-Za-z0-9_]*|mcp__[A-Za-z0-9_]+(__[A-Za-z0-9_]+)?)$/;
+    for (const profile of ["collector", "intelligence", "engineering"] as const) {
+      for (const allowed of [
+        [],
+        [SEARCH, "ToolSearch"],
+        [SEND, "ToolSearch"],
+        ["Read", "Bash(git:*)"],
+      ]) {
+        for (const t of buildDenylist(allowed, DEFAULT_KNOWN_SERVERS, profile)) {
+          expect(re.test(t)).toBe(true);
+        }
+      }
+    }
+  });
+  test("R27 mcp__workspace denied for slack collector", () => {
+    expect(buildDenylist([SEARCH, "ToolSearch"], DEFAULT_KNOWN_SERVERS, "collector")).toContain(
+      "mcp__workspace",
+    );
+  });
   test("rule 6 boundary collision", () => {
     const parts: PromptPart[] = [{ provenance: "untrusted", source: "s", content: "xx BND yy" }];
     expect(
