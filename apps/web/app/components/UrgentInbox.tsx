@@ -34,9 +34,12 @@ function ReplyBox({
       {statusLine && <div>{statusLine}</div>}
       {reply?.outgoingId != null &&
         reply.actions.map((a) => (
-          <button key={a} type="button" onClick={() => onResolve(reply.outgoingId ?? "", a)}>
-            {RESOLVE_LABEL[a]}
-          </button>
+          <span key={a}>
+            <button type="button" onClick={() => onResolve(reply.outgoingId ?? "", a)}>
+              {RESOLVE_LABEL[a]}
+            </button>{" "}
+            {a === "resend" && <small>Requires your approval</small>}{" "}
+          </span>
         ))}
       {(reply === null || reply.canRequest) && (
         <div>

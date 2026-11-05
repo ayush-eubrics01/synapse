@@ -101,6 +101,11 @@ test("UrgentInbox status line and resolve buttons come from the server", () => {
   const na = status("needs_attention", ["mark_sent", "resend", "discard"]);
   expect(na).toContain("Needs attention — check Slack");
   for (const l of ["Mark sent", "Resend", "Discard"]) expect(na).toContain(l);
+  // R15: a resend needs a new approval, and the button says so.
+  expect(na).toContain("Requires your approval");
+  expect(status("needs_attention", ["mark_sent", "discard"])).not.toContain(
+    "Requires your approval",
+  );
   const exhausted = status("sent_unverified", ["mark_sent", "discard"]);
   expect(exhausted).not.toContain("Resend");
   expect(status("sent")).not.toContain("Mark sent");
