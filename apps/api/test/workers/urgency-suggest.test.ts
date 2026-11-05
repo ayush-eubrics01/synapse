@@ -15,6 +15,7 @@ import { EventPublisher } from "../../src/core/events/publisher";
 import { JobQueue } from "../../src/core/jobs/queue";
 import type { HandlerRegistration } from "../../src/core/jobs/worker";
 import { NotificationService } from "../../src/core/notifications/notifications";
+import { GUIDELINES_HEADING } from "../../src/intelligence/urgency/suggest-prompt";
 import { PeopleService } from "../../src/modules/people/service";
 import { SecurityFlagsService } from "../../src/modules/security-flags/service";
 import { registerUrgencyJobs, responseGuidelinesLookup } from "../../src/workers/urgency";
@@ -392,7 +393,8 @@ test("guidelines: one user_approved part after the system part, before the untru
     "untrusted",
   ]);
   expect(parts[1]?.source).toBe("approved response guidelines for Priya");
-  expect(parts[1]?.content).toBe(`- ${GUIDE} 1\n- ${GUIDE} 2`);
+  expect(parts[1]?.content).toBe(`${GUIDELINES_HEADING}\n- ${GUIDE} 1\n- ${GUIDE} 2`);
+  expect(parts[1]?.content).not.toContain("Priya");
   expect(requests[0]?.instructions).toContain("never override the system rules");
   expect(parts[0]?.content).not.toContain(GUIDE);
 });
@@ -413,7 +415,8 @@ test("guidelines are capped at 20 entries of 500 chars and stay under the 100 Ki
   for (let i = 0; i < 10; i++) add({ ts: `${20 + i}.000000`, text: "漢".repeat(40_000) });
   await run(add({ ts: "40.000000", text: "漢".repeat(40_000) }));
   const parts = partsOf(0);
-  const lines = (parts[1]?.content ?? "").split("\n");
+  const [heading, ...lines] = (parts[1]?.content ?? "").split("\n");
+  expect(heading).toBe(GUIDELINES_HEADING);
   expect(lines).toHaveLength(20);
   expect([...(lines[0] as string)].length).toBe(2 + 500);
   const total = parts.reduce((n, p) => n + Buffer.byteLength(p.content, "utf8"), 0);
