@@ -408,5 +408,24 @@ test("health ready caches the claude provider health for 60 s", async () => {
   const before = calls;
   await req("/health/ready");
   expect(calls).toBe(before);
-  expect(before).toBeLessThanOrEqual(1);
+  expect(calls).toBe(1);
+});
+
+test("inbox before: a row exactly at the boundary is excluded (offset form normalized)", async () => {
+  seed("1700000100.000100");
+  seed("1700000200.000100");
+  const boundary = new Date(1700000200_000).toISOString();
+  const offset = boundary.replace("Z", "+00:00");
+  for (const b of [boundary, offset]) {
+    const rows = (await (
+      await req(`/api/inbox/messages?before=${encodeURIComponent(b)}`)
+    ).json()) as Msg[];
+    expect(rows.map((m) => m.sentAt)).toEqual([new Date(1700000100_000).toISOString()]);
+  }
+});
+
+test("inbox conversationId must look like a Slack id", async () => {
+  expect((await req("/api/inbox/messages?conversationId=bad%20id")).status).toBe(400);
+  expect((await req("/api/inbox/messages?conversationId=c1")).status).toBe(400);
+  expect((await req("/api/inbox/messages?conversationId=C1")).status).toBe(200);
 });

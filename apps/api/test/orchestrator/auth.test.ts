@@ -225,3 +225,50 @@ test("claudeCheck caches health for the TTL, then refreshes", async () => {
   expect((await check()).detail).toBe("2");
   expect(calls).toBe(2);
 });
+
+test("claudeCheck: concurrent cold calls share one getHealth; errors are not cached", async () => {
+  let calls = 0;
+  let fail = true;
+  const provider: AIProvider = {
+    execute: async () => {
+      throw new Error("unused");
+    },
+    getHealth: async () => {
+      calls++;
+      await Promise.resolve();
+      if (fail) throw new Error("spawn failed");
+      return { status: "ok", version: "1" };
+    },
+  };
+  const clock = new FakeClock("2026-11-05T12:00:00.000Z");
+  const check = claudeCheck(provider, clock, 60_000);
+  const [a, b] = await Promise.all([check(), check()]);
+  expect(calls).toBe(1);
+  expect(a.status).toBe("down");
+  expect(b.status).toBe("down");
+  fail = false;
+  expect((await check()).status).toBe("ok");
+  expect(calls).toBe(2);
+});
+
+test("claudeCheck: non-ok results are cached for 10 s only", async () => {
+  let calls = 0;
+  const provider: AIProvider = {
+    execute: async () => {
+      throw new Error("unused");
+    },
+    getHealth: async () => {
+      calls++;
+      return { status: "down", detail: "no binary" };
+    },
+  };
+  const clock = new FakeClock("2026-11-05T12:00:00.000Z");
+  const check = claudeCheck(provider, clock, 60_000);
+  await check();
+  clock.advance(9_000);
+  await check();
+  expect(calls).toBe(1);
+  clock.advance(2_000);
+  await check();
+  expect(calls).toBe(2);
+});

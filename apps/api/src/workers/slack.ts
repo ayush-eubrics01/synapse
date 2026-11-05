@@ -43,7 +43,7 @@ const threadInput = z.object({ conversationId: z.string().min(1), parentTs: z.st
 export const tsFromMs = (ms: number): string => (ms / 1000).toFixed(6);
 
 export function registerSlackJobs(deps: SlackJobDeps): {
-  startBackfill(): { started: boolean; state: SyncState };
+  startBackfill(): { started: boolean; state: SyncState; reason?: string };
 } {
   const { db, clock, source, store, sync, queue, settings, events, audit, scheduler } = deps;
   const nowMs = () => clock.now().getTime();
@@ -334,13 +334,20 @@ export function registerSlackJobs(deps: SlackJobDeps): {
     intervalSeconds: 86_400,
   });
 
-  const startBackfill = (): { started: boolean; state: SyncState } => {
+  const startBackfill = (): { started: boolean; state: SyncState; reason?: string } => {
     return db.transaction(
       (tx) => {
         const cur = sync.get("slack.backfill", tx);
         const live = isLive(tx, "slack.backfill", ["PENDING", "RETRY", "RUNNING"]);
-        if (cur.status === "complete" || (cur.status === "running" && live)) {
-          return { started: false, state: cur };
+        if (cur.status === "complete") {
+          return { started: false, state: cur, reason: "backfill already complete" };
+        }
+        if (cur.status === "running" && live) {
+          return { started: false, state: cur, reason: "backfill already running" };
+        }
+        if (cur.status === "paused") {
+          // Paused (auth or quota) resumes by itself; resetting here would restart the window.
+          return { started: false, state: cur, reason: "backfill is paused" };
         }
         const now = nowMs();
         const generation = new Date(now).toISOString();

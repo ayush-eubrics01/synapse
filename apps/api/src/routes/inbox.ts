@@ -5,8 +5,15 @@ import type { Container } from "../container";
 
 const query = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
-  before: z.string().datetime().optional(),
-  conversationId: z.string().min(1).optional(),
+  before: z
+    .string()
+    .datetime({ offset: true })
+    .transform((v) => new Date(v).toISOString())
+    .optional(),
+  conversationId: z
+    .string()
+    .regex(/^[CDG][A-Z0-9]+$/)
+    .optional(),
 });
 
 export function inboxRoutes(c: Container): Hono {

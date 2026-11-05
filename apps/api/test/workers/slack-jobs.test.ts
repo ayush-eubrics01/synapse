@@ -446,3 +446,15 @@ test("R53: fetch_thread rejects invalid input", async () => {
     classified: { kind: "invalid_input" },
   });
 });
+
+test("startBackfill refuses when paused, with a reason, and leaves state untouched", () => {
+  slack.startBackfill();
+  sync.update(db, "slack.backfill", { status: "paused" });
+  finishBackfill();
+  const before = sync.get("slack.backfill");
+  const r = slack.startBackfill();
+  expect(r.started).toBe(false);
+  expect(r.reason).toBeTruthy();
+  expect(sync.get("slack.backfill")).toEqual(before);
+  expect(jobs("slack.backfill")).toHaveLength(1);
+});

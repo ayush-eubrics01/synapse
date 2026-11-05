@@ -141,21 +141,41 @@ export function authCheck(monitor: AuthMonitor, clock: Clock): HealthCheck {
 }
 
 const CLAUDE_HEALTH_TTL_MS = 60_000;
+const CLAUDE_UNHEALTHY_TTL_MS = 10_000;
 
-/** Caches the provider health (P5): `getHealth` spawns the CLI, so /health/ready must not on every call. */
+/**
+ * Caches the provider health (P5): `getHealth` spawns the CLI, so /health/ready must not on every
+ * call. The in-flight promise is shared, thrown errors are never cached, and non-ok results are
+ * cached only briefly so recovery shows up quickly.
+ */
 export function claudeCheck(
   provider: AIProvider,
   clock: Clock = systemClock,
   ttlMs: number = CLAUDE_HEALTH_TTL_MS,
 ): HealthCheck {
-  let cached: { at: number; result: Awaited<ReturnType<HealthCheck>> } | null = null;
+  type Result = Awaited<ReturnType<HealthCheck>>;
+  let cached: { at: number; ttl: number; result: Result } | null = null;
+  let inflight: Promise<Result> | null = null;
   return guarded(async () => {
     const now = clock.now().getTime();
-    if (cached && now - cached.at < ttlMs) return cached.result;
-    const h = await provider.getHealth();
-    const detail = [h.detail, h.version].filter((x) => x !== undefined).join(" ");
-    const result = detail ? { status: h.status, detail } : { status: h.status };
-    cached = { at: now, result };
-    return result;
+    if (cached && now - cached.at < cached.ttl) return cached.result;
+    if (!inflight) {
+      inflight = (async () => {
+        try {
+          const h = await provider.getHealth();
+          const detail = [h.detail, h.version].filter((x) => x !== undefined).join(" ");
+          const result: Result = detail ? { status: h.status, detail } : { status: h.status };
+          cached = {
+            at: now,
+            ttl: h.status === "ok" ? ttlMs : Math.min(ttlMs, CLAUDE_UNHEALTHY_TTL_MS),
+            result,
+          };
+          return result;
+        } finally {
+          inflight = null;
+        }
+      })();
+    }
+    return inflight;
   });
 }
