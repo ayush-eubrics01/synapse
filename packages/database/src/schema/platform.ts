@@ -606,6 +606,8 @@ export const outgoingMessages = sqliteTable(
       enum: ["pending", "sending", "sent_unverified", "sent", "failed", "needs_attention"],
     }).notNull(),
     claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
+    /** When the executor marked it `sending` (just before the send run): verify searches from here. */
+    sendingAt: text("sending_at"),
     sentAt: text("sent_at"),
     verifiedAt: text("verified_at"),
     verifyAttempts: integer("verify_attempts").notNull().default(0),

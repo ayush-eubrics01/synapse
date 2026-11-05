@@ -71,6 +71,13 @@
       "when": 1793913296606,
       "tag": "0009_commitments_outgoing",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1793914623456,
+      "tag": "0010_outgoing_sending_at",
+      "breakpoints": true
     }
   ]
 }

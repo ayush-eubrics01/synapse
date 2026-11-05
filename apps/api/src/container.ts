@@ -47,6 +47,7 @@ import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
 import { UrgentInbox } from "./modules/inbox/urgent";
+import { OutgoingService } from "./modules/outgoing/service";
 import { ContactDiscovery } from "./modules/people/discovery";
 import { ProfileService } from "./modules/people/profiles";
 import { ProfileRecommendations } from "./modules/people/recommendations";
@@ -55,6 +56,7 @@ import { TemporaryContacts } from "./modules/people/temporary";
 import { PeopleViews } from "./modules/people/views";
 import { SecurityFlagsService } from "./modules/security-flags/service";
 import { createRunHelpers } from "./workers/intelligence-shared";
+import { registerOutgoingJobs } from "./workers/outgoing";
 import { registerPeopleJobs } from "./workers/people";
 import { registerSlackJobs } from "./workers/slack";
 import { registerUrgencyJobs, responseGuidelinesLookup } from "./workers/urgency";
@@ -91,8 +93,10 @@ export interface Container {
   profileStore: ProfileService;
   peopleViews: PeopleViews;
   securityFlags: SecurityFlagsService;
-  /** The only Slack send path (approval executor, Task 3); no executor is registered yet. */
+  /** The Slack send adapter; only the `slack.send` executor in `outgoing` calls it. */
   messageSink: MessageSink;
+  /** Approved Slack sends: requests, the `slack.send` executor, verification and resolution. */
+  outgoing: OutgoingService;
   /** Run by startup recovery and the reaper (main.ts), so core never imports workers. */
   recoverySweeps: RecoverySweep[];
   /** Job handler registry; the urgency smoke script runs one handler directly. */
@@ -249,6 +253,20 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     handlers,
   });
   registerApprovalExecution({ dispatcher, queue, engine: approvals, handlers });
+  const outgoing = new OutgoingService({
+    db,
+    clock,
+    events,
+    audit,
+    queue,
+    settings,
+    notifications,
+    approvals,
+    securityFlags,
+    sink: messageSink,
+  });
+  outgoing.register(approvals, dispatcher);
+  registerOutgoingJobs({ handlers, outgoing });
   const profiles = new ProfileRecommendations({
     db,
     clock,
@@ -332,8 +350,12 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     peopleViews,
     securityFlags,
     messageSink,
+    outgoing,
     handlers,
-    recoverySweeps: [{ name: "urgency.assess", run: urgency.recoverySweep }],
+    recoverySweeps: [
+      { name: "urgency.assess", run: urgency.recoverySweep },
+      { name: "outgoing.sending", run: (tx) => outgoing.recoverySweep(tx) },
+    ],
     slack: { startBackfill: slack.startBackfill, backfillResumable: slack.backfillResumable },
   };
 }

@@ -73,7 +73,7 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 | `commitment_updates` | Change history: `actor` (user/system/ai), `field`, `from_value`, `to_value`, `reason` |
 | `followups` | Drafted follow-ups: `commitment_id` nullable, `origin` (stalled/spec_clarity/urgent_reply/manual), `origin_message_id` nullable, `conversation_id`, `thread_ts`, `recipient_slack_user_id`, `draft_text`, `confidence`, `status` (draft/awaiting_approval/sending/sent/needs_attention/discarded/failed), `approval_id`, `outgoing_id`, `claude_run_id`. Index (`status`) |
 | `followup_history` | What happened to each follow-up: `event`, `detail` (content-free) |
-| `outgoing_messages` | One approved Slack send: `approval_id` unique, `followup_id` nullable, `conversation_external_id`, `thread_ts`, `text` (exactly what the user approved), `status` (pending/sending/sent_unverified/sent/failed/needs_attention), `claude_run_id`, `sent_at`, `verified_at`, `verify_attempts` (default 0), `failure` (content-free). Index (`status`) |
+| `outgoing_messages` | One approved Slack send: `approval_id` unique, `followup_id` nullable, `conversation_external_id`, `thread_ts`, `text` (exactly what the user approved), `status` (pending/sending/sent_unverified/sent/failed/needs_attention), `claude_run_id`, `sending_at` (set when the executor marks it `sending`; verify searches from 5 s before it, and the recovery sweep hands a message still `sending` 10 min later to the user), `sent_at`, `verified_at`, `verify_attempts` (default 0), `failure` (content-free). Index (`status`) |
 
 `slack_messages.commitments_extracted_at` (nullable) marks messages already processed by commitment extraction.
 

@@ -1,0 +1,1 @@
+ALTER TABLE `outgoing_messages` ADD `sending_at` text;
