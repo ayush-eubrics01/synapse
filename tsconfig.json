@@ -1,6 +1,5 @@
 {
   "extends": "./packages/config/tsconfig.base.json",
-  "compilerOptions": { "jsx": "react-jsx", "lib": ["ESNext", "DOM"] },
   "include": ["scripts", "packages/*/src", "apps/*/src", "apps/*/test", "tests"],
-  "exclude": ["**/node_modules", "**/.next"]
+  "exclude": ["**/node_modules", "**/.next", "apps/web/**"]
 }
