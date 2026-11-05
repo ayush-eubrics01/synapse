@@ -59,7 +59,7 @@ claude -p "<prompt naming exact tools and arguments>" \
 
 - `RawToolResult`s are built only from `user` → `tool_result` events, matched to `tool_use` by `tool_use_id`.
 - `finalText` is returned for logging and drafting, never stored as source data.
-- If `expectedToolNames` is set and none produced a non-error tool_result, the run is `failed` with `incomplete_ai_output`. Phase 0 showed Haiku fabricating tool calls and data as text when tools were missing.
+- If `expectedToolNames` is set and none produced a non-error tool_result, the run is `failed` with `incomplete_ai_output`. Phase 0 showed Haiku fabricating tool calls and data as text when tools were missing. The failed result carries no tool results, so callers that need error results (Slack collection, R57) leave `expectedToolNames` unset and check for real tool results themselves.
 - Intelligence output (structured JSON in the final text) is validated against the task's Zod schema. Failing validation → `incomplete_ai_output`.
 
 ## Scheduling, priorities, concurrency

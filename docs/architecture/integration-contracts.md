@@ -113,7 +113,7 @@ interface QuotaWindow {
 
 - Builds the command from the invocation profile in `CLAUDE.md` / ADR-026 to ADR-029.
 - Reads `stream-json` line by line. Maps `system/init` → connector status, `assistant` tool_use → pending calls, `user` tool_result → `RawToolResult` (matched by `tool_use_id`), `rate_limit_event` → `QuotaSnapshot`, `result` → usage, turns, status.
-- If `expectedToolNames` is set and no non-error tool_result came from one of them, the result is `failed` with `kind: 'incomplete_ai_output'`, whatever `finalText` says.
+- If `expectedToolNames` is set and no non-error tool_result came from one of them, the result is `failed` with `kind: 'incomplete_ai_output'`, whatever `finalText` says, and the tool results are dropped. A caller that must see error tool_results (for example a Slack rate-limit error) leaves `expectedToolNames` unset and enforces ADR-026 itself, as `SlackConnectorSource` does (R57).
 - Kills the process group on timeout or abort.
 - Never logs tool result content at info level. Content is stored only by the module that owns it.
 
@@ -125,16 +125,17 @@ interface MessageSource {
   collect(req: CollectRequest, signal: AbortSignal): Promise<CollectResult>;
   /** Full threads: parent + replies per request. */
   fetchThreads(
-    requests: { conversationId: string; parentTs: string }[],
+    requests: { conversationId: string; parentTs: string; jobId?: string }[],
     signal: AbortSignal,
   ): Promise<{ conversationId: string; parentTs: string; messages: SourceMessage[]; rejected: number }[]>;
   // rejected = parser rejections + out-of-window (R42) replies; a thread that fails to parse is dropped (R45)
 }
 
 interface CollectRequest {
-  afterTs: string;               // checkpoint: Slack ts
+  afterTs: string;               // Slack ts; incremental: floor(checkpoint) - indexLagSeconds (R59)
   beforeTs?: string;             // backfill only
   maxPages: number;              // pages per collector run (~5)
+  jobId?: string;                // queue job id, recorded as claude_runs.job_id (R60 M3)
 }
 
 interface CollectResult {
