@@ -1,12 +1,12 @@
 import type { ConversationType, MessagePage, SourceMessage } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
-import { and, desc, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
 import type { SyncStateService, SyncStream } from "./sync-state";
 
-const { slackConversations, slackUsers, slackMessages } = schema;
+const { slackConversations, slackUsers, slackMessages, messageDrafts } = schema;
 
 export interface InboxStoreDeps {
   db: Db;
@@ -181,13 +181,35 @@ export class InboxStore {
   expireContent(olderThanDays: number): number {
     const nowMs = this.deps.clock.now().getTime();
     const cutoff = new Date(nowMs - olderThanDays * 86_400_000).toISOString();
-    const res = this.deps.db
-      .update(slackMessages)
-      .set({ text: null, fullNotes: null, contentExpiredAt: isoNow(this.deps.clock) })
-      .where(and(lt(slackMessages.sentAt, cutoff), isNull(slackMessages.contentExpiredAt)))
-      .returning({ id: slackMessages.id })
-      .all();
-    return res.length;
+    const at = isoNow(this.deps.clock);
+    return this.deps.db.transaction(
+      (tx) => {
+        const res = tx
+          .update(slackMessages)
+          .set({ text: null, fullNotes: null, contentExpiredAt: at })
+          .where(and(lt(slackMessages.sentAt, cutoff), isNull(slackMessages.contentExpiredAt)))
+          .returning({ id: slackMessages.id })
+          .all();
+        // Drafts quote the message, so they expire with it (the row and its metadata stay).
+        tx.update(messageDrafts)
+          .set({ text: null, contentExpiredAt: at })
+          .where(
+            and(
+              isNull(messageDrafts.contentExpiredAt),
+              inArray(
+                messageDrafts.messageId,
+                tx
+                  .select({ id: slackMessages.id })
+                  .from(slackMessages)
+                  .where(isNotNull(slackMessages.contentExpiredAt)),
+              ),
+            ),
+          )
+          .run();
+        return res.length;
+      },
+      { behavior: "immediate" },
+    );
   }
 
   private event<T extends "message.received" | "message.thread_updated">(

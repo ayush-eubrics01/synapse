@@ -133,7 +133,29 @@ function build(mode: string, texts: string[] = [`${BODY} 1`, `${BODY} 2`]) {
       getCheckpoint: () => undefined,
     } as never) as Promise<unknown>;
   };
-  return { db, run, argvFile };
+  const runSuggest = (messageId: string) => {
+    const id = db.transaction(
+      (tx) =>
+        queue.enqueue(tx, {
+          type: "urgency.suggest_response",
+          idempotencyKey: `urgency.suggest:${messageId}`,
+          input: { messageId },
+        }).id,
+    );
+    const job = {
+      id,
+      type: "urgency.suggest_response",
+      attempts: 1,
+      maxAttempts: 3,
+      input: { messageId },
+    } as unknown as Job;
+    return handlers.get("urgency.suggest_response")?.handler(job, {
+      signal,
+      checkpoint() {},
+      getCheckpoint: () => undefined,
+    } as never) as Promise<unknown>;
+  };
+  return { db, run, runSuggest, argvFile };
 }
 
 const msg = (db: ReturnType<typeof build>["db"], id: string) =>
@@ -190,5 +212,47 @@ describe("urgency.assess through the real provider", () => {
     await run();
     expect(db.select().from(schema.claudeRuns).all()[0]?.status).toBe("succeeded");
     expect(msg(db, "m-urg-1")?.urgencyLevel).toBe("critical");
+  });
+});
+
+describe("urgency.suggest_response through the real provider", () => {
+  test("happy path: draft stored, ToolSearch only, text only inside UNTRUSTED blocks", async () => {
+    const { db, runSuggest, argvFile } = build("suggest_ok");
+    db.update(schema.slackMessages).set({ urgencyLevel: "high" }).run();
+    await runSuggest("m-urg-2");
+    const drafts = db.select().from(schema.messageDrafts).all();
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]).toMatchObject({
+      messageId: "m-urg-2",
+      status: "proposed",
+      text: "Thanks, looking into it now.",
+      confidence: 0.7,
+    });
+    const run = db.select().from(schema.claudeRuns).all();
+    expect(run).toHaveLength(1);
+    expect(drafts[0]?.claudeRunId).toBe(run[0]?.id as string);
+    expect(db.select().from(schema.securityFlags).all()).toHaveLength(0);
+
+    const argv = JSON.parse(readFileSync(argvFile, "utf8")) as string[];
+    const at = (flag: string) => argv[argv.indexOf(flag) + 1];
+    expect(at("--allowedTools")).toBe("ToolSearch");
+    const prompt = at("-p") as string;
+    expect(prompt).toContain(`${BODY} 2`);
+    expect(prompt).toContain(`${BODY} 1`); // earlier message in the conversation as context
+    const outside = prompt.replace(/<<<UNTRUSTED[\s\S]*?<<<END \w+>>>/g, "");
+    expect(outside).not.toContain(BODY);
+    const deny = (at("--disallowedTools") ?? "").split(",");
+    for (const t of ["mcp__claude_ai_Slack", "WebFetch", "Bash", "Write"]) {
+      expect(deny).toContain(t);
+    }
+  });
+
+  test("target plus 10 long CJK context messages pass the real validator", async () => {
+    const texts = Array.from({ length: 11 }, () => "漢".repeat(8000));
+    const { db, runSuggest } = build("suggest_ok", texts);
+    db.update(schema.slackMessages).set({ urgencyLevel: "critical" }).run();
+    await runSuggest("m-urg-11");
+    expect(db.select().from(schema.claudeRuns).all()[0]?.status).toBe("succeeded");
+    expect(db.select().from(schema.messageDrafts).all()).toHaveLength(1);
   });
 });

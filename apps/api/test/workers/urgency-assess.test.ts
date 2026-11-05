@@ -323,6 +323,7 @@ test("critical result: one notification, one event, one suggest job; re-run adds
   const suggest = jobsOf("urgency.suggest_response");
   expect(suggest).toHaveLength(1);
   expect(suggest[0]).toMatchObject({ idempotencyKey: `urgency.suggest:${a}`, priority: 150 });
+  expect(suggest[0]?.concurrencyGroup).toBe("urgency.suggest");
 
   // replay: the message is assessed, so nothing is selected; force re-selection too
   await run();

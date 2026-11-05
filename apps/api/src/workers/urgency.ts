@@ -1,15 +1,15 @@
 import {
-  type ClassifiedError,
   type Job,
   JobError,
   retryDecision,
   type ScreeningRecord,
+  suggestedResponseSchema,
   type UrgencyLevel,
   urgencyAssessmentSchema,
 } from "@synapse/contracts";
 import { type Db, schema, type Tx } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
-import { asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, lt, or, sql } from "drizzle-orm";
 import type { SettingsService } from "../core/config/settings";
 import type { EventPublisher } from "../core/events/publisher";
 import type { JobQueue } from "../core/jobs/queue";
@@ -17,12 +17,16 @@ import type { HandlerRegistration, JobContext } from "../core/jobs/worker";
 import type { NotificationService } from "../core/notifications/notifications";
 import type { ClaudeOrchestrator } from "../core/orchestrator/orchestrator";
 import { parseStructured } from "../core/orchestrator/structured";
-import { classifyTool } from "../core/orchestrator/tool-catalog";
 import { type AssessBatchItem, buildAssessRequest } from "../intelligence/urgency/assess-prompt";
+import {
+  buildSuggestRequest,
+  type SuggestContextItem,
+} from "../intelligence/urgency/suggest-prompt";
 import { renderExcerpt } from "../modules/security-flags/detector";
 import type { SecurityFlagsService } from "../modules/security-flags/service";
+import { createRunHelpers, wrapFailure } from "./urgency-shared";
 
-const { slackMessages, slackConversations, slackUsers, claudeRuns } = schema;
+const { slackMessages, slackConversations, slackUsers, messageDrafts } = schema;
 
 export interface UrgencyJobDeps {
   db: Db;
@@ -37,6 +41,9 @@ export interface UrgencyJobDeps {
 }
 
 const ASSESS_TIMEOUT_MS = 360_000;
+const SUGGEST_TIMEOUT_MS = 360_000;
+const DRAFT_MAX_CHARS = 2000;
+const CONTEXT_MAX = 10;
 const FALLBACK_REASON = "Rule-based (assessment unavailable)";
 const LEVEL_TITLE: Record<UrgencyLevel, string> = {
   critical: "Critical",
@@ -56,6 +63,7 @@ const isUrgent = (l: UrgencyLevel): l is "critical" | "high" => l === "critical"
 
 export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
   const { db, settings, events, queue, notifications, orchestrator, securityFlags } = deps;
+  const { latestRunId, runtimeFlags } = createRunHelpers(db, securityFlags);
 
   const eligibleWhere = sql`json_extract(${slackMessages.screening}, '$.route') = 'assess'
     and coalesce(json_extract(${slackMessages.screening}, '$.assessed'), 0) = 0
@@ -150,6 +158,7 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
       type: "urgency.suggest_response",
       idempotencyKey: `urgency.suggest:${messageId}`,
       input: { messageId },
+      concurrencyGroup: "urgency.suggest",
       priority: 150,
     });
   };
@@ -204,51 +213,6 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
     });
   };
 
-  const latestRunId = (jobId: string): string => {
-    const row = db
-      .select({ id: claudeRuns.id })
-      .from(claudeRuns)
-      .where(eq(claudeRuns.jobId, jobId))
-      .orderBy(desc(claudeRuns.startedAt), sql`${claudeRuns}.rowid desc`)
-      .limit(1)
-      .get();
-    if (!row) throw new JobError({ kind: "unknown", message: "claude run record unavailable" });
-    return row.id;
-  };
-
-  const runtimeFlags = (
-    jobId: string,
-    batch: BatchRow[],
-    result: { permissionDenials: string[]; toolResults: { toolName: string }[] },
-  ) => {
-    const used = result.toolResults.map((t) => t.toolName).filter((n) => n !== "ToolSearch");
-    const denied = result.permissionDenials;
-    if (denied.length === 0 && used.length === 0) return;
-    const names = [...new Set([...denied, ...used])];
-    const severity = names.some((n) => {
-      const c = classifyTool(n);
-      return c === "write" || c === "builtin_write";
-    })
-      ? "high"
-      : "warning";
-    const parts: string[] = [];
-    if (denied.length > 0) parts.push(`denied tools: ${[...new Set(denied)].join(", ")}`);
-    if (used.length > 0) parts.push(`unexpected tools used: ${[...new Set(used)].join(", ")}`);
-    const runId = latestRunId(jobId);
-    db.transaction(
-      (tx) => {
-        securityFlags.recordRuntimeFlag(
-          tx,
-          batch.map((b) => b.messageId),
-          runId,
-          parts.join("; "),
-          severity,
-        );
-      },
-      { behavior: "immediate" },
-    );
-  };
-
   /** Deferral: likely incidents are announced from the rule level alone; nothing is assessed. */
   const onDeferral = (batch: BatchRow[]) => {
     for (const m of batch) {
@@ -290,7 +254,11 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
     try {
       const req = buildAssessRequest(batch, job.id, settings.get("urgency.model"));
       const result = await orchestrator.run(req, ctx.signal);
-      runtimeFlags(job.id, batch, result);
+      runtimeFlags(
+        job.id,
+        batch.map((b) => b.messageId),
+        result,
+      );
       const parsed = parseStructured(result.finalText, urgencyAssessmentSchema);
       if (!parsed.ok) {
         throw new JobError({ kind: "incomplete_ai_output", message: parsed.reason });
@@ -326,11 +294,7 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
       db.transaction((tx) => enqueueNext(tx, job.id), { behavior: "immediate" });
       return { assessed: seen.size, fallbacks };
     } catch (err) {
-      const classified: ClassifiedError =
-        err instanceof JobError
-          ? err.classified
-          : { kind: "unknown", message: "unexpected urgency assessment failure" };
-      const rethrow = err instanceof JobError ? err : new JobError(classified);
+      const { classified, rethrow } = wrapFailure(err);
       const decision = retryDecision(classified.kind);
       if (decision === "defer") onDeferral(batch);
       else if (
@@ -344,5 +308,136 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
     }
   };
 
+  /** `urgency.suggest_response`: a display-only draft; nothing is ever sent. */
+  const suggest = async (job: Job, ctx: JobContext) => {
+    const messageId = (job.input as { messageId?: string } | null)?.messageId;
+    if (!messageId) throw new JobError({ kind: "invalid_input", message: "messageId is required" });
+
+    const target = db
+      .select({
+        id: slackMessages.id,
+        conversationId: slackMessages.conversationId,
+        ts: slackMessages.ts,
+        threadTs: slackMessages.threadTs,
+        text: slackMessages.text,
+        sentAt: slackMessages.sentAt,
+        level: slackMessages.urgencyLevel,
+        convType: slackConversations.type,
+        convName: slackConversations.name,
+        convRef: slackConversations.externalId,
+        senderName: slackUsers.name,
+        senderRef: slackUsers.externalId,
+      })
+      .from(slackMessages)
+      .innerJoin(slackConversations, eq(slackConversations.id, slackMessages.conversationId))
+      .innerJoin(slackUsers, eq(slackUsers.id, slackMessages.senderUserId))
+      .where(eq(slackMessages.id, messageId))
+      .get();
+    if (!target || target.text === null) return { skipped: "expired_or_missing" };
+    if (target.level !== "critical" && target.level !== "high") return { skipped: "not_urgent" };
+    const draftExists = (d: Db | Tx) =>
+      d
+        .select({ id: messageDrafts.id })
+        .from(messageDrafts)
+        .where(
+          and(eq(messageDrafts.messageId, messageId), eq(messageDrafts.kind, "suggested_response")),
+        )
+        .get() !== undefined;
+    if (draftExists(db)) return { skipped: "draft_exists" };
+
+    const sameThread = target.threadTs
+      ? or(eq(slackMessages.threadTs, target.threadTs), eq(slackMessages.ts, target.threadTs))
+      : undefined;
+    const context: SuggestContextItem[] = db
+      .select({
+        senderName: slackUsers.name,
+        senderRef: slackUsers.externalId,
+        text: slackMessages.text,
+        sentAt: slackMessages.sentAt,
+      })
+      .from(slackMessages)
+      .innerJoin(slackUsers, eq(slackUsers.id, slackMessages.senderUserId))
+      .where(
+        and(
+          eq(slackMessages.conversationId, target.conversationId),
+          lt(slackMessages.ts, target.ts),
+          isNotNull(slackMessages.text),
+          sameThread,
+        ),
+      )
+      .orderBy(desc(slackMessages.ts))
+      .limit(CONTEXT_MAX)
+      .all()
+      .reverse()
+      .map((r) => ({
+        senderName: r.senderName ?? r.senderRef,
+        text: r.text as string,
+        sentAt: r.sentAt,
+      }));
+
+    try {
+      const req = buildSuggestRequest(
+        {
+          messageId,
+          senderName: target.senderName ?? target.senderRef,
+          conversationLabel: conversationLabel(target.convType, target.convName, target.convRef),
+          sentAt: target.sentAt,
+          text: target.text,
+        },
+        context,
+        job.id,
+        settings.get("urgency.suggest.model"),
+      );
+      const result = await orchestrator.run(req, ctx.signal);
+      runtimeFlags(job.id, [messageId], result);
+      const parsed = parseStructured(result.finalText, suggestedResponseSchema);
+      if (!parsed.ok) {
+        throw new JobError({ kind: "incomplete_ai_output", message: parsed.reason });
+      }
+      const value = parsed.value;
+      const draft = renderExcerpt(value.draft, DRAFT_MAX_CHARS);
+      if (draft === "") {
+        throw new JobError({
+          kind: "incomplete_ai_output",
+          message: "suggested response draft is empty",
+        });
+      }
+      const runId = latestRunId(job.id);
+      return db.transaction(
+        (tx) => {
+          const cur = tx
+            .select({ text: slackMessages.text })
+            .from(slackMessages)
+            .where(eq(slackMessages.id, messageId))
+            .get();
+          if (!cur || cur.text === null || draftExists(tx)) return { skipped: "raced" };
+          tx.insert(messageDrafts)
+            .values({
+              id: newId(),
+              messageId,
+              kind: "suggested_response",
+              text: draft,
+              confidence: value.confidence,
+              status: "proposed",
+              claudeRunId: runId,
+              createdAt: deps.clock.now().toISOString(),
+            })
+            .run();
+          if (value.suspectedInjection.detected) {
+            securityFlags.recordAiFlag(tx, messageId, runId, value.suspectedInjection);
+          }
+          return { drafted: true };
+        },
+        { behavior: "immediate" },
+      );
+    } catch (err) {
+      throw wrapFailure(err).rethrow;
+    }
+  };
+
   deps.handlers.set("urgency.assess", { handler: assess, timeoutMs: ASSESS_TIMEOUT_MS });
+  deps.handlers.set("urgency.suggest_response", {
+    handler: suggest,
+    timeoutMs: SUGGEST_TIMEOUT_MS,
+  });
 }

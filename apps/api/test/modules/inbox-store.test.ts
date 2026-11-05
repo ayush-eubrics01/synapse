@@ -223,3 +223,40 @@ test("R61: checkpointLagSeconds caps the checkpoint at now - lag; never moves it
   store.persistPage("slack.backfill", page(msg(recent, { conversationId: "C9" })));
   expect(sync.get("slack.backfill").checkpoint).toBe(recent);
 });
+
+test("expireContent clears draft text of expired messages only, keeping the rows", () => {
+  store.persistPage(
+    "slack.messages",
+    page(msg(T1), msg(T2, { sentAt: "2030-01-01T00:00:00.000Z" })),
+  );
+  const ids = db.select().from(schema.slackMessages).all();
+  for (const m of ids) {
+    db.insert(schema.messageDrafts)
+      .values({
+        id: `d-${m.id}`,
+        messageId: m.id,
+        kind: "suggested_response",
+        text: "DRAFT-SECRET",
+        confidence: 0.5,
+        status: "proposed",
+        createdAt: "2026-11-05T11:00:00.000Z",
+      })
+      .run();
+  }
+  expect(store.expireContent(0)).toBe(1);
+  const drafts = db.select().from(schema.messageDrafts).all();
+  expect(drafts).toHaveLength(2);
+  const expired = ids.find((m) => m.ts === T1);
+  for (const d of drafts) {
+    if (d.messageId === expired?.id) {
+      expect(d).toMatchObject({
+        text: null,
+        contentExpiredAt: "2026-11-05T12:00:00.000Z",
+        status: "proposed",
+        confidence: 0.5,
+      });
+    } else {
+      expect(d).toMatchObject({ text: "DRAFT-SECRET", contentExpiredAt: null });
+    }
+  }
+});
