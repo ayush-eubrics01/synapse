@@ -85,14 +85,19 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       now: clock.now(),
     });
     if (items.length < MIN_HISTORY_ITEMS) return { skipped: "insufficient_history" };
-    const byId = new Map(items.map((i) => [i.messageId, i]));
     // R1: runtime signals attach to one message, not to all 150 the run read.
     const newest = (items[items.length - 1] as (typeof items)[number]).messageId;
 
     const before = runIdBefore(job.id);
     let ran = false;
     try {
-      const req = buildInitialRequest(items, job.id, settings.get("people.models.initial"));
+      const { request: req, used } = buildInitialRequest(
+        items,
+        job.id,
+        settings.get("people.models.initial"),
+      );
+      // Only what was really sent can be cited.
+      const byId = new Map(used.map((i) => [i.messageId, i]));
       const result = await orchestrator.run(req, ctx.signal);
       ran = true;
       runtimeFlags(job.id, [newest], result);
@@ -108,7 +113,7 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       // R1: the message whose text holds the model's quote, else the newest provided one.
       const quote = suspectedInjection.quote.trim();
       const flagged =
-        (quote !== "" && items.find((i) => i.text.includes(quote))?.messageId) || newest;
+        (quote !== "" && used.find((i) => i.text.includes(quote))?.messageId) || newest;
 
       return db.transaction(
         (tx) => {
@@ -147,7 +152,7 @@ function evidenceRows(
         const m = byId.get(id);
         if (!m) continue; // unreachable after validateEvidence
         rows.push({
-          observationKey: o.key,
+          observationKey: `${section}.${o.key}`,
           messageId: id,
           sourceExternalRef: m.sourceRef,
           confidence: o.confidence,

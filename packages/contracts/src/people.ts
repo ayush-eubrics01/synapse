@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { suspectedInjectionSchema } from "./urgency";
+import { flagSeveritySchema } from "./urgency";
 
 export const profileSectionSchema = z.enum([
   "professionalContext",
@@ -8,6 +8,16 @@ export const profileSectionSchema = z.enum([
 ]);
 export type ProfileSection = z.infer<typeof profileSectionSchema>;
 const sectionSchema = profileSectionSchema;
+
+/** Strict variant for people outputs: no extra key (a priority, say) may ride along. */
+const strictInjectionSchema = z
+  .object({
+    detected: z.boolean(),
+    severity: flagSeveritySchema,
+    quote: z.string().max(300),
+    reason: z.string().max(300),
+  })
+  .strict();
 
 export const confidenceSchema = z.enum(["low", "medium", "high"]);
 export type Confidence = z.infer<typeof confidenceSchema>;
@@ -33,7 +43,7 @@ export const profileContentSchema = z
 export type ProfileContent = z.infer<typeof profileContentSchema>;
 
 export const initialProfileOutputSchema = z
-  .object({ profile: profileContentSchema, suspectedInjection: suspectedInjectionSchema })
+  .object({ profile: profileContentSchema, suspectedInjection: strictInjectionSchema })
   .strict();
 export type InitialProfileOutput = z.infer<typeof initialProfileOutputSchema>;
 
@@ -52,7 +62,7 @@ export const profileUpdateOutputSchema = z
           .strict(),
       )
       .max(20),
-    suspectedInjection: suspectedInjectionSchema,
+    suspectedInjection: strictInjectionSchema,
   })
   .strict();
 export type ProfileUpdateOutput = z.infer<typeof profileUpdateOutputSchema>;
@@ -70,7 +80,7 @@ export const unknownAssessmentOutputSchema = z
           .strict(),
       )
       .min(1),
-    suspectedInjection: suspectedInjectionSchema,
+    suspectedInjection: strictInjectionSchema,
   })
   .strict();
 export type UnknownAssessmentOutput = z.infer<typeof unknownAssessmentOutputSchema>;

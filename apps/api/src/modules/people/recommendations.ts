@@ -9,7 +9,7 @@ import type { JobQueue } from "../../core/jobs/queue";
 import { observationHash } from "../../intelligence/people/evidence";
 import type { PeopleService } from "./service";
 
-const { peopleProfileRecommendations, peopleProfileEvidence, people } = schema;
+const { peopleProfileRecommendations, peopleProfileEvidence } = schema;
 
 export interface ProfileRecommendationsDeps {
   db: Db;
@@ -23,7 +23,7 @@ export interface ProfileRecommendationsDeps {
 
 export interface InitialProfileRequestResult {
   queued: boolean;
-  reason?: "pending_recommendation" | "identity_required";
+  reason?: "pending_recommendation" | "identity_required" | "already_run_today";
 }
 
 export interface EvidenceRow {
@@ -73,13 +73,14 @@ export class ProfileRecommendations {
         if (this.hasPending(tx, personId)) {
           return { queued: false, reason: "pending_recommendation" as const };
         }
-        queue.enqueue(tx, {
+        const { created } = queue.enqueue(tx, {
           type: INITIAL_PROFILE_JOB,
           idempotencyKey: `people.initial:${personId}:${isoNow(clock).slice(0, 10)}`,
           input: { personId },
           concurrencyGroup: PEOPLE_CONCURRENCY_GROUP,
           priority: INITIAL_PROFILE_PRIORITY,
         });
+        if (!created) return { queued: false, reason: "already_run_today" as const };
         return { queued: true };
       },
       { behavior: "immediate" },
@@ -136,11 +137,5 @@ export class ProfileRecommendations {
       payload: { recommendationId, personId: input.personId, kind: "initial" },
     });
     return { recommendationId, approvalId: approval.id };
-  }
-
-  personExists(tx: DbOrTx, personId: string): boolean {
-    return (
-      tx.select({ id: people.id }).from(people).where(eq(people.id, personId)).get() !== undefined
-    );
   }
 }

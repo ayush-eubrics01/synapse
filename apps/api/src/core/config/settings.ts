@@ -69,7 +69,7 @@ const settingSchemas = {
   "people.models.initial": z.string().min(1).default("sonnet"),
   "people.models.update": z.string().min(1).default("haiku"),
   "people.history.days": z.number().int().positive().default(90),
-  "people.history.maxMessages": z.number().int().positive().default(150),
+  "people.history.maxMessages": z.number().int().positive().max(200).default(150),
   "people.unknown.minMessages": z.number().int().positive().default(3),
   "auth.lastExpiryWarningAt": z.string().nullable().default(null),
   "auth.pausedAt": z.string().nullable().default(null),
