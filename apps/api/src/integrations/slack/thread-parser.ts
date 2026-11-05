@@ -12,9 +12,13 @@ function parseMessage(
   conversationId: string,
   parentTs: string | undefined,
 ): SourceMessage | null {
+  const isReply = parentTs !== undefined;
   const from = FROM.exec(lines[0] ?? "");
   const ts = /^Message TS: (\S+)\s*$/.exec(lines[2] ?? "")?.[1];
-  if (!from || !(lines[1] ?? "").startsWith("Time: ") || !ts) {
+  const structured = (lines[1] ?? "").startsWith("Time: ") && !!ts;
+  // A reply whose From line exists but is not a user (bot, app, hidden email) is rejected, not drift.
+  if (isReply && !from && structured && (lines[0] ?? "").startsWith("From:")) return null;
+  if (!from || !structured || !ts) {
     throw new SlackParseError("thread message header is malformed");
   }
   const rest = lines.slice(3);

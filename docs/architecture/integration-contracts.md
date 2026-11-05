@@ -127,7 +127,8 @@ interface MessageSource {
   fetchThreads(
     requests: { conversationId: string; parentTs: string }[],
     signal: AbortSignal,
-  ): Promise<{ conversationId: string; parentTs: string; messages: SourceMessage[] }[]>;
+  ): Promise<{ conversationId: string; parentTs: string; messages: SourceMessage[]; rejected: number }[]>;
+  // rejected = parser rejections + out-of-window (R42) replies; a thread that fails to parse is dropped (R45)
 }
 
 interface CollectRequest {

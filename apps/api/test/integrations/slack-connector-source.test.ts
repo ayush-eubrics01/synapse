@@ -23,7 +23,7 @@ const CURSOR1 = "U1lOVEhFVElDQ1VSU09SMQ==";
 const signal = new AbortController().signal;
 
 const baseArgs = {
-  query: "after:2026-11-05",
+  query: "after:2026-11-03",
   after: "1793872800",
   sort: "timestamp",
   sort_dir: "asc",
@@ -124,7 +124,7 @@ describe("SlackConnectorSource.collect", () => {
       sort_dir: "asc",
       sort: "timestamp",
       after: 1793872800,
-      query: "after:2026-11-05",
+      query: "after:2026-11-03",
     };
     const { source } = setup([tr(SEARCH, input, fixture("search-channel"))]);
     const r = await source.collect(collectReq, signal);
@@ -204,13 +204,72 @@ describe("SlackConnectorSource.collect", () => {
   test("request shape: backfill includes before", async () => {
     const beforeTs = "1793873500.000000";
     const { query, after, ...rest } = baseArgs;
-    const args = { query: `${query} before:2026-11-05`, after, before: "1793873500", ...rest };
+    const args = { query: `${query} before:2026-11-07`, after, before: "1793873500", ...rest };
     const { source, seen } = setup([tr(SEARCH, args, fixture("search-channel"))]);
     const r = await source.collect({ afterTs: AFTER, beforeTs, maxPages: 2 }, signal);
     expect(r.pages).toHaveLength(1);
     expect(seen[0]?.priorityClass).toBe("backfill");
     expect(seen[0]?.maxTurns).toBe(5);
     expect(seen[0]?.instructions).toContain(JSON.stringify(args));
+  });
+
+  test("empty search is an accepted complete page", async () => {
+    const { source } = setup([tr(SEARCH, baseArgs, fixture("search-empty"))]);
+    const r = await source.collect(collectReq, signal);
+    expect(r.pages).toHaveLength(1);
+    expect(r.pages[0]?.messages).toHaveLength(0);
+    expect(r.complete).toBe(true);
+  });
+
+  test("results beyond maxPages are ignored", async () => {
+    const { source } = setup([
+      tr(SEARCH, baseArgs, fixture("search-group-dm")),
+      tr(SEARCH, { ...baseArgs, cursor: CURSOR1 }, fixture("search-thread-replies")),
+    ]);
+    const r = await source.collect({ afterTs: AFTER, maxPages: 1 }, signal);
+    expect(r.pages).toHaveLength(1);
+    expect(r.complete).toBe(false);
+    expect(r.searches).toBe(2);
+  });
+
+  test("a page after a cursor-less page cuts the chain", async () => {
+    const { source } = setup([
+      tr(SEARCH, baseArgs, fixture("search-channel")),
+      tr(SEARCH, { ...baseArgs, cursor: "X" }, fixture("search-group-dm")),
+    ]);
+    const r = await source.collect(collectReq, signal);
+    expect(r.pages).toHaveLength(1);
+    expect(r.complete).toBe(false);
+  });
+
+  test("an error page followed by a matching retry is accepted", async () => {
+    const { source } = setup([
+      tr(SEARCH, baseArgs, fixture("search-group-dm")),
+      tr(SEARCH, { ...baseArgs, cursor: CURSOR1 }, "Error: temporary failure", true),
+      tr(SEARCH, { ...baseArgs, cursor: CURSOR1 }, fixture("search-channel")),
+    ]);
+    const r = await source.collect(collectReq, signal);
+    expect(r.pages).toHaveLength(2);
+    expect(r.complete).toBe(true);
+    expect(r.searches).toBe(3);
+  });
+
+  test("rate limit after an accepted page still throws", async () => {
+    const { source } = setup([
+      tr(SEARCH, baseArgs, fixture("search-group-dm")),
+      tr(SEARCH, { ...baseArgs, cursor: CURSOR1 }, "Error 429 too many requests", true),
+    ]);
+    expect((await failure(source.collect(collectReq, signal))).classified.kind).toBe(
+      "rate_limited",
+    );
+  });
+
+  test("huge Retry-After is capped at 24 h", async () => {
+    const { source } = setup([
+      tr(SEARCH, baseArgs, "ratelimited Retry-After: 99999999999999", true),
+    ]);
+    const e = await failure(source.collect(collectReq, signal));
+    expect(e.classified.retryAfter).toBe(new Date((NOW + 86400) * 1000).toISOString());
   });
 
   test("R42: message older than afterTs is rejected and counted", async () => {
@@ -256,6 +315,59 @@ describe("SlackConnectorSource.fetchThreads", () => {
     expect(seen[0]?.allowedTools).toEqual([THREAD]);
     expect(seen[0]?.maxTurns).toBe(5);
     expect(seen[0]?.instructions).toContain(JSON.stringify(threadArgs("D0SYNTHDM01", PARENT)));
+  });
+
+  test("duplicate requests yield one instruction line", async () => {
+    const { source, seen } = setup([
+      tr(THREAD, threadArgs("D0SYNTHDM01", PARENT), fixture("read-thread")),
+    ]);
+    const req = { conversationId: "D0SYNTHDM01", parentTs: PARENT };
+    const out = await source.fetchThreads([req, req], signal);
+    expect(out).toHaveLength(1);
+    expect(seen[0]?.maxTurns).toBe(4);
+    const lines = (seen[0]?.instructions ?? "").split("\n").filter((l) => l.startsWith("{"));
+    expect(lines).toHaveLength(1);
+  });
+
+  test("wrong channel_id or extra key is ignored", async () => {
+    const { source } = setup([
+      tr(THREAD, threadArgs("D0WRONG", PARENT), fixture("read-thread")),
+      tr(THREAD, { ...threadArgs("D0SYNTHDM01", PARENT), extra: 1 }, fixture("read-thread")),
+    ]);
+    const out = await source.fetchThreads(
+      [{ conversationId: "D0SYNTHDM01", parentTs: PARENT }],
+      signal,
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  test("one thread's parse error drops only that thread", async () => {
+    const { source } = setup([
+      tr(THREAD, threadArgs("D0BAD", PARENT), JSON.stringify({ messages: "garbage" })),
+      tr(THREAD, threadArgs("D0SYNTHDM01", PARENT), fixture("read-thread")),
+    ]);
+    const out = await source.fetchThreads(
+      [
+        { conversationId: "D0BAD", parentTs: PARENT },
+        { conversationId: "D0SYNTHDM01", parentTs: PARENT },
+      ],
+      signal,
+    );
+    expect(out.map((o) => o.conversationId)).toEqual(["D0SYNTHDM01"]);
+    expect(out[0]?.rejected).toBe(0);
+  });
+
+  test("bot-style reply is rejected and counted, others kept", async () => {
+    const body = JSON.stringify({
+      messages: `=== THREAD PARENT MESSAGE ===\nFrom: A <a@x.com> (U0AAA)\nTime: t\nMessage TS: ${PARENT}\nparent\n\n=== THREAD REPLIES (2 total) ===\n\n--- Reply 1 of 2 ---\nFrom: Jira (B0123)\nTime: t\nMessage TS: 1793872950.000600\nbot text\n\n--- Reply 2 of 2 ---\nFrom: B <b@x.com> (U0BBB)\nTime: t\nMessage TS: 1793872960.000700\nhi\n`,
+    });
+    const { source } = setup([tr(THREAD, threadArgs("D0SYNTHDM01", PARENT), body)]);
+    const out = await source.fetchThreads(
+      [{ conversationId: "D0SYNTHDM01", parentTs: PARENT }],
+      signal,
+    );
+    expect(out[0]?.messages).toHaveLength(2);
+    expect(out[0]?.rejected).toBe(1);
   });
 
   test("R42: parent ts differing from the requested one drops the result", async () => {

@@ -57,5 +57,7 @@ export interface MessageSource {
   fetchThreads(
     requests: ThreadFetchRequest[],
     signal: AbortSignal,
-  ): Promise<{ conversationId: string; parentTs: string; messages: SourceMessage[] }[]>;
+  ): Promise<
+    { conversationId: string; parentTs: string; messages: SourceMessage[]; rejected: number }[]
+  >;
 }

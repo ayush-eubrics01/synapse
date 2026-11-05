@@ -19,7 +19,9 @@ export const THREAD = "mcp__claude_ai_Slack__slack_read_thread";
 
 const THREAD_LIMIT = 100;
 const SKEW_SECONDS = 300;
-const RATE_RE = /ratelimit|rate.limit|429/i;
+const RATE_RE = /ratelimit|rate.limit|\b429\b/i;
+const MAX_RETRY_SECONDS = 24 * 60 * 60;
+const DAY_SECONDS = 86400;
 
 interface Deps {
   orchestrator: { run(req: ClaudeJobRequest, signal: AbortSignal): Promise<AIExecutionResult> };
@@ -60,8 +62,9 @@ export class SlackConnectorSource implements MessageSource {
     const beforeSec = req.beforeTs ? Math.floor(Number(req.beforeTs)) : undefined;
     const base: Args = {
       query:
-        `after:${isoDay(afterSec)}` +
-        (beforeSec !== undefined ? ` before:${isoDay(beforeSec)}` : ""),
+        // R44: day modifiers are padded by 2 days; the unix args and the R42 window filter exactly.
+        `after:${isoDay(afterSec - 2 * DAY_SECONDS)}` +
+        (beforeSec !== undefined ? ` before:${isoDay(beforeSec + 2 * DAY_SECONDS)}` : ""),
       after: String(afterSec),
       ...(beforeSec !== undefined ? { before: String(beforeSec) } : {}),
       sort: "timestamp",
@@ -95,7 +98,7 @@ export class SlackConnectorSource implements MessageSource {
     this.throwIfRateLimited(searchResults);
 
     const upper = beforeSec !== undefined ? Number(req.beforeTs) : this.nowSec() + SKEW_SECONDS;
-    const lower = Number(req.afterTs);
+    const lower = afterSec;
     const pages: MessagePage[] = [];
     let cut = false;
     let sawFirstMismatch = false;
@@ -156,7 +159,9 @@ export class SlackConnectorSource implements MessageSource {
   async fetchThreads(
     requests: ThreadFetchRequest[],
     signal: AbortSignal,
-  ): Promise<{ conversationId: string; parentTs: string; messages: SourceMessage[] }[]> {
+  ): Promise<
+    { conversationId: string; parentTs: string; messages: SourceMessage[]; rejected: number }[]
+  > {
     const wanted = new Map<string, ThreadFetchRequest>();
     for (const r of requests) wanted.set(`${r.conversationId}\u0000${r.parentTs}`, r);
     const unique = [...wanted.values()];
@@ -190,7 +195,12 @@ export class SlackConnectorSource implements MessageSource {
 
     const maxTs = this.nowSec() + SKEW_SECONDS;
     const answered = new Set<string>();
-    const out: { conversationId: string; parentTs: string; messages: SourceMessage[] }[] = [];
+    const out: {
+      conversationId: string;
+      parentTs: string;
+      messages: SourceMessage[];
+      rejected: number;
+    }[] = [];
     for (const r of threadResults) {
       if (r.isError) continue;
       const req = unique.find((u) => sameInput(r.input, argsOf(u)));
@@ -202,7 +212,7 @@ export class SlackConnectorSource implements MessageSource {
       try {
         parsed = parseThreadResult(r.content, req.conversationId);
       } catch (e) {
-        if (e instanceof SlackParseError) throw parseFailed();
+        if (e instanceof SlackParseError) continue; // R45: drop only this thread
         throw e;
       }
       const parent = parsed.messages[0];
@@ -213,7 +223,12 @@ export class SlackConnectorSource implements MessageSource {
         const t = Number(m.ts);
         return t >= parentNum && t <= maxTs;
       });
-      out.push({ conversationId: req.conversationId, parentTs: req.parentTs, messages });
+      out.push({
+        conversationId: req.conversationId,
+        parentTs: req.parentTs,
+        messages,
+        rejected: parsed.rejected + (parsed.messages.length - messages.length),
+      });
     }
     return out;
   }
@@ -231,7 +246,7 @@ export class SlackConnectorSource implements MessageSource {
       at = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
     } else {
       const secs = /retry-after\D{0,5}(\d+)/i.exec(hit.content)?.[1];
-      at = new Date(now.getTime() + (secs ? Number(secs) : 60) * 1000);
+      at = new Date(now.getTime() + (secs ? Math.min(Number(secs), MAX_RETRY_SECONDS) : 60) * 1000);
     }
     throw new JobError({
       kind: "rate_limited",
