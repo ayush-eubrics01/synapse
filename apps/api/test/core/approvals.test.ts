@@ -228,3 +228,57 @@ test("notification is stored and pushed to the live bus", () => {
   svc.markRead(id);
   expect(svc.list({ unreadOnly: true })).toHaveLength(0);
 });
+
+test("concurrent execute with async revalidate: the claim transaction stops the second", async () => {
+  const { db, engine } = setup();
+  let ran = 0;
+  engine.registerExecutor("slack.send", {
+    execute: async () => {
+      ran++;
+      await Bun.sleep(10);
+      return "done";
+    },
+    revalidate: async () => {
+      await Bun.sleep(5);
+      return true;
+    },
+  });
+  const a = engine.request(db, req("slack.send"));
+  engine.approve(a.id);
+  const [x, y] = await Promise.all([engine.execute(a.id), engine.execute(a.id)]);
+  expect(ran).toBe(1);
+  expect([x.status, y.status].sort()).toEqual(["executed", "skipped"]);
+});
+
+test("non-canonical or unparseable expiresAt is rejected", () => {
+  const { db, engine } = setup();
+  for (const expiresAt of ["2026-01-01T01:00:00+01:00", "2026-01-01T00:01:00Z", "tomorrow"]) {
+    expect(() => engine.request(db, req("slack.send", { expiresAt }))).toThrow();
+  }
+  expect(db.select().from(schema.approvals).all()).toHaveLength(0);
+});
+
+test("a result that cannot be stored never marks a performed execution failed", async () => {
+  const { db, engine } = setup();
+  let ran = 0;
+  engine.registerExecutor("slack.send", {
+    execute: async () => {
+      ran++;
+      return { n: 1n };
+    },
+  });
+  const a = engine.request(db, req("slack.send"));
+  engine.approve(a.id);
+  await expect(engine.execute(a.id)).rejects.toThrow();
+  const row = db.select().from(schema.approvals).get();
+  expect(row?.status).toBe("approved");
+  expect(row?.executionStartedAt).not.toBeNull();
+  expect(ran).toBe(1);
+  expect((await engine.execute(a.id)).status).toBe("skipped");
+  expect(ran).toBe(1);
+});
+
+test("user_only operations cannot be requested", () => {
+  const { db, engine } = setup();
+  expect(() => engine.request(db, req("person.priority.set"))).toThrow();
+});

@@ -37,6 +37,9 @@ export class InvalidApprovalTransition extends Error {
   }
 }
 
+// Stored expiry is compared as text with isoNow(), so it must have the same canonical shape.
+const CANONICAL_ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
+
 const ALLOWED: Record<ApprovalStatus, readonly ApprovalStatus[]> = {
   pending: ["approved", "rejected", "expired"],
   approved: ["revoked", "expired", "executed", "failed"],
@@ -97,8 +100,14 @@ export class ApprovalEngine {
       .where(eq(schema.approvals.idempotencyKey, r.idempotencyKey))
       .get();
     if (existing) return toApproval(existing);
-    if (this.permissions.check(r.action) === "denied") {
-      throw new Error(`Operation ${r.action} is denied by permission policy`);
+    if (r.expiresAt !== undefined && !CANONICAL_ISO.test(r.expiresAt)) {
+      throw new Error(
+        `expiresAt must be canonical UTC ISO (YYYY-MM-DDTHH:mm:ss.sssZ): ${r.expiresAt}`,
+      );
+    }
+    const policy = this.permissions.check(r.action);
+    if (policy === "denied" || policy === "user_only") {
+      throw new Error(`Operation ${r.action} cannot be requested for approval (policy ${policy})`);
     }
     const row = tx
       .insert(schema.approvals)
@@ -226,15 +235,18 @@ export class ApprovalEngine {
     }
 
     const approval = toApproval(claimed.row);
+    let result: unknown;
     try {
-      const result = (await executor.execute(approval)) ?? null;
-      this.finish(id, "executed", result);
-      return { status: "executed", result };
+      result = (await executor.execute(approval)) ?? null;
     } catch (e) {
       const error = { error: e instanceof Error ? e.message : String(e) };
       this.finish(id, "failed", error);
       return { status: "failed", result: error };
     }
+    // Outside the try: the side effect already happened. If recording it throws, the error
+    // propagates and the row stays claimed (execution_started_at set), so it can never re-run.
+    this.finish(id, "executed", result);
+    return { status: "executed", result };
   }
 
   private load(id: string): Row {
