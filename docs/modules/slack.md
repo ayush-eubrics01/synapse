@@ -80,7 +80,7 @@ As implemented in `apps/api/src/workers/slack.ts` (handlers and schedules) and `
 
 A coalescing schedule enqueues nothing while a PENDING, RETRY or RUNNING job of its type exists, and still advances `nextRunAt` (R58), so a long auth or quota pause leaves at most one waiting job per schedule.
 
-Not implemented in Phase 3: `slack.send_message` (approval-gated send through `MessageSink`, verify via `findSentMessage` before any retry).
+Sending is implemented in Phase 6: there is no `slack.send_message` job. The `slack.send` approval's executor runs inside the `approval.execute` job, and `outgoing.verify` (Claude-free) searches Slack afterwards. See "Sending (Phase 6)" below.
 
 Each collector run fetches at most `slack.collector.pagesPerRun` (5) pages, with `--max-turns` = pages + 3. The checkpoint (`integration_sync_states.checkpoint` = newest stored `ts`) is committed after each page's messages are persisted, in the same transaction.
 
@@ -164,6 +164,19 @@ The stored copy of a message is the first one seen. Edits and deletes in Slack a
 
 `bun scripts/dev/slack-smoke.ts [--pages N]` runs one real incremental collection through the orchestrator on a temporary database and prints counts only. See `CLAUDE.md`.
 
+## Sending (Phase 6)
+
+Slack sends are the only Slack writes. The adapter is `SlackSender` (`integrations/slack/sender.ts`); the contract is in `integration-contracts.md` (MessageSink).
+
+- **One narrow run per message.** Profile `collector`, priority class `send`, haiku, 3 turns, allowed tools `slack_send_message` and `ToolSearch` only. The prompt is a system instruction plus the approved `{channel_id, message, thread_ts?}` JSON as the only `user_approved` part; there is no untrusted text in the run. All other Slack write tools stay in `--disallowedTools`.
+- **Approval first.** `POST /api/followups/:id/send` or `POST /api/urgent/:messageId/reply` stores the edited text (1..4000 characters after trimming trailing whitespace, otherwise unchanged) and requests a `slack.send` approval (medium risk, 7-day expiry). The approvals view shows the exact text, recipient and conversation. The sink is called only after the user approves; revoke, reject or expiry before the claim sends nothing and returns the draft.
+- **Arguments are verified by code** from the `tool_use` input of the raw tool result. A mismatch is never reported as sent: the message goes to `needs_attention` with a `high` runtime flag and the notification "Send blocked: arguments changed — check Slack".
+- **Delivery is verified by search.** `findSent` runs the Phase 3 search collector (incremental, two pages) and matches conversation, sender (`slack.selfUserId`), thread and whitespace-normalised text. A found message becomes `sent`; an unverified send keeps `sent_unverified` and notifies after `outgoing.verify.maxAttempts`.
+- **Slack index lag.** Search may not show a fresh message yet, so the first verify waits `outgoing.verify.delaySeconds` (120 s) and each attempt searches from 5 s before the send started.
+- **Thread placement.** The sender never decides it: the draft's `thread_ts` is fixed when the draft is made (see `commitments.md`, follow-up drafts). A DM nudge posts top-level; a channel or group DM follow-up threads under the source; a source that expired posts without a thread, and only if the user approves that.
+- **Self id.** Verification needs `slack.selfUserId`; without it `findSent` returns "cannot tell" and the user resolves the message by hand.
+- **Dev smoke for sends:** none. No script sends. `commitments-smoke.ts` injects a sink that throws.
+
 ## Events
 
 Emitted: `message.received`, `message.thread_updated` (no consumer yet; screening listens to `message.received` only), `message.screened`, `message.urgent_detected` (after the urgency result is stored), `collection.completed`, `collection.failed`.
@@ -191,10 +204,11 @@ Backfill: start checkpoint = now − 90 days, `sort_dir: asc`, ~5 pages per job,
 Send (approval required):
 
 ```text
-draft (commitments/urgency) → approval.requested → user approves
-→ revalidate permission → MessageSink.sendMessage (idempotency key)
-→ on timeout/uncertain: findSentMessage before retry
-→ audit → followup.sent / message reference stored
+draft (commitments/urgency) → user edits and requests the send → slack.send approval
+→ user approves the exact text, recipient and conversation shown
+→ approval.execute job → claim pending→sending → SlackSender.send (one narrow run)
+→ sent_unverified (tool ran, arguments verified) → followup.sent → outgoing.verify (search)
+→ uncertain / lost outcome → needs_attention → verify, then the user decides (never an automatic resend)
 ```
 
 ## Permissions and approvals
@@ -214,7 +228,7 @@ Read Slack: allowed. Send, schedule or draft a message, react, create a conversa
 | Quota above threshold | job deferred until `resetsAt` (orchestrator) |
 | Auth failure | `auth_failed` → `NEEDS_ATTENTION`, notification. A backfill stays `running` (not `error`) and shows as resumable (R60 M5) |
 | Interrupted run | next run resumes from the last committed checkpoint; dedup handles overlap |
-| Uncertain send | verify via `findSentMessage`; never blind-retry |
+| Uncertain send | verify via `findSent` (search); never blind-retry; the user decides |
 
 ## Configuration
 
@@ -244,12 +258,13 @@ Not implemented: per-conversation-type filters and an "only my channels" switch.
 - Format drift → `parse_failed`, checkpoint unchanged.
 - Reply whose parent was never collected → stored + thread fetch enqueued.
 - Send timeout with uncertain result → verified, no duplicate message.
+- Send tool called with changed arguments → blocked, `high` flag, never reported sent.
 - Expired message cleanup → text cleared, IDs/permalink and derived records kept.
 - Frontend closed → collection continues.
 
 ## Open questions
 
-- OQ-1 resolved by ADR-033: away-mode auto-replies go through `MessageSink` with the tag `Sent using @claude`.
+- OQ-1 resolved by ADR-033: away-mode auto-replies go through `MessageSink` with the tag `Sent using @claude` (not built; Phase 6 sends only user-approved text).
 - OQ-6 partly resolved: official limits and pacing rules are above. Still unknown: the daily per-user search limit, observed during the backfill.
 - OQ-7: local bot-filter safety net (deferred per ADR-027). Slack's `include_bots: false` is trusted; the connector exposes no bot flag.
 

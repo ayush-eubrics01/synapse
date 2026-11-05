@@ -77,6 +77,15 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 
 `slack_messages.commitments_extracted_at` (nullable) marks messages already processed by commitment extraction.
 
+Phase 6 migrations:
+
+| Migration | Change |
+|---|---|
+| `0009_commitments_outgoing` | The five commitments tables (`commitments`, `commitment_sources`, `commitment_updates`, `followups`, `followup_history`), `outgoing_messages`, and `slack_messages.commitments_extracted_at` |
+| `0010_outgoing_sending_at` | `outgoing_messages.sending_at` |
+| `0011_outgoing_followup_live_uq` | Partial unique index `outgoing_messages_followup_live_uq` on (`followup_id`) for live statuses |
+| `0012_followups_conversation_internal` | Data fix, no schema change: `followups.conversation_id` is the internal `slack_conversations.id`; rewrites older `urgent_reply` rows that stored the external id. Reads still accept either form |
+
 ## Engineering Brain tables (owned by `engineering-brain`)
 
 | Table | Notes |

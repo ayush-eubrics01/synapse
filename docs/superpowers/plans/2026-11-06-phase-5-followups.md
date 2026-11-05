@@ -34,13 +34,15 @@ This confirmed:
 
 ## Phase 6 entry gate (Commitments and follow-ups, drafts and sending)
 
-| # | Item | Why it matters for Phase 6 |
-|---|---|---|
-| H1 | **Guidelines in send runs.** Approved guidelines are model paraphrases of untrusted Slack text, labelled `user_approved`, and the validator lets `user_approved` content into a send-capable run. Before away-mode auto-replies (ADR-033) or any send uses guidelines, either keep them out of send runs or require the user to review the exact outgoing text at approval time | Prompt injection must not reach a send through the profile |
-| H2 | **The §6.5 post-send profile flow.** Start a profile recommendation only after a verified successful send (`followup.sent`). A failed or cancelled send never creates one | The spec requires it, and it was deferred from Phase 5 |
-| H3 | **A dedicated needs-attention error kind.** Approval bookkeeping failures reuse `parse_failed` today | Send approvals will surface these to the user |
-| H4 | **Approval UX for sends.** The send approval must show the exact text, recipient and conversation. Expiry and revoke must be handled end to end, as people approvals now are (R6) | Hard rule 2 |
-| H5 | **Split the large worker files** (`workers/people.ts`, `workers/urgency.ts`) before adding commitment jobs | Maintainability |
+All five items are done in Phase 6 (status column).
+
+| # | Item | Why it matters for Phase 6 | Status |
+|---|---|---|---|
+| H1 | **Guidelines in send runs.** Approved guidelines are model paraphrases of untrusted Slack text, labelled `user_approved`, and the validator lets `user_approved` content into a send-capable run. Before away-mode auto-replies (ADR-033) or any send uses guidelines, either keep them out of send runs or require the user to review the exact outgoing text at approval time | Prompt injection must not reach a send through the profile | Done: guidelines appear only in drafting runs; a send run's only `user_approved` part is the approved message; the user approves the exact text |
+| H2 | **The §6.5 post-send profile flow.** Start a profile recommendation only after a verified successful send (`followup.sent`). A failed or cancelled send never creates one | The spec requires it, and it was deferred from Phase 5 | Done: consumer `people.post_send` on `followup.sent` stores a `suggest_evaluation` (it also fires for `sent_unverified`, where the send tool ran) |
+| H3 | **A dedicated needs-attention error kind.** Approval bookkeeping failures reuse `parse_failed` today | Send approvals will surface these to the user | Done |
+| H4 | **Approval UX for sends.** The send approval must show the exact text, recipient and conversation. Expiry and revoke must be handled end to end, as people approvals now are (R6) | Hard rule 2 | Done: the approvals view shows exact text, recipient and conversation; revoke, reject and expiry return the draft |
+| H5 | **Split the large worker files** (`workers/people.ts`, `workers/urgency.ts`) before adding commitment jobs | Maintainability | Done: `workers/people/`, `workers/urgency/` and `workers/commitments/`, one file per job |
 
 ## Deferred minors (polish)
 
