@@ -20,7 +20,7 @@ import type { CommitmentContext } from "./context";
 import type { CommitmentJobDeps } from "./shared";
 import { DAY_MS, EXTRACT_TIMEOUT_MS, PAGE, type Row, SWEEP_JOB } from "./shared";
 
-const { slackMessages, slackUsers, slackConversations, jobs, commitments } = schema;
+const { slackMessages, slackUsers, slackConversations, jobs } = schema;
 
 export function registerExtract(deps: CommitmentJobDeps, c: CommitmentContext): void {
   const { db, settings, queue, orchestrator, securityFlags, store, scheduler, audit } = deps;

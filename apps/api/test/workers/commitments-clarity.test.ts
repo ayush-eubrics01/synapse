@@ -6,11 +6,10 @@ import {
   type EventType,
   type Job,
   JobError,
-  type PromptPart,
 } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { AuditLogger } from "../../src/core/audit/audit";
 import { SettingsService } from "../../src/core/config/settings";
 import { LiveBus } from "../../src/core/events/live-bus";
@@ -32,8 +31,6 @@ const ago = (hours: number) => new Date(Date.parse(NOW) - hours * H).toISOString
 const SELF = "USELF00001";
 const PRIYA = "UPRIYA0001";
 const SECRET = "SECRET-BODY-TEXT-xyz";
-const DESC = "SECRET-DESCRIPTION-qrs";
-const GUIDE = "SECRET-GUIDELINE-ghj";
 const signal = new AbortController().signal;
 const ctx = { signal, checkpoint() {}, getCheckpoint: () => undefined } as never;
 const unclear = {
@@ -42,7 +39,6 @@ const unclear = {
   questions: ["What steps reproduce it?", "Which environment is it on?"],
   suspectedInjection: { detected: false, severity: "info", quote: "", reason: "" },
 };
-const noInj = { detected: false, severity: "info", quote: "", reason: "" };
 
 let db: ReturnType<typeof openDatabase>["db"];
 let queue: JobQueue;
@@ -186,11 +182,9 @@ const specJobs = () =>
     .all()
     .filter((j) => j.type === JOB && j.idempotencyKey.startsWith("commitments.spec:"));
 const followups = () => db.select().from(schema.followups).all();
-const history = () => db.select().from(schema.followupHistory).all();
 const evs = (type: string) =>
   db.select().from(schema.domainEvents).where(eq(schema.domainEvents.type, type)).all();
-const promptOf = (i = 0) =>
-  (requests[i]?.parts ?? []).map((p: PromptPart) => `${p.provenance}|${p.content}`);
+const history = () => db.select().from(schema.followupHistory).all();
 
 describe("commitments.check_spec_clarity handler", () => {
   test("unclear request: numbered draft, DM top-level, history and event carry no text", async () => {

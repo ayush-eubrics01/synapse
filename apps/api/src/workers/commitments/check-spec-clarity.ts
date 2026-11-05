@@ -17,18 +17,10 @@ import type { CommitmentContext } from "./context";
 import type { CommitmentJobDeps } from "./shared";
 import { DRAFT_MAX_CHARS, SPEC_LEAD, SPEC_TIMEOUT_MS } from "./shared";
 
-const {
-  slackMessages,
-  slackUsers,
-  slackConversations,
-  jobs,
-  commitments,
-  followups,
-  followupHistory,
-} = schema;
+const { slackMessages, slackUsers, slackConversations, followups, followupHistory } = schema;
 
 export function registerSpecClarity(deps: CommitmentJobDeps, c: CommitmentContext): void {
-  const { db, settings, queue, orchestrator, securityFlags } = deps;
+  const { db, settings, orchestrator, securityFlags } = deps;
   const { latestRunId, runIdBefore, runtimeFlags, failedRunFlags } = c;
 
   const checkSpecClarity = async (job: Job, ctx: JobContext) => {

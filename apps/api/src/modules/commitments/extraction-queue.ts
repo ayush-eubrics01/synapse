@@ -74,7 +74,7 @@ export class ExtractionQueue {
     // Old backfill messages are never extracted or checked.
     if (Number.isNaN(sentMs) || sentMs < now - settings.get("people.history.days") * DAY_MS) return;
 
-    if (this.specWanted(tx, messageId, m, selfId, now, sentMs)) {
+    if (this.specWanted(tx, m, selfId, now, sentMs)) {
       queue.enqueue(tx, {
         type: SPEC_JOB,
         idempotencyKey: `commitments.spec:${messageId}`,
@@ -102,7 +102,6 @@ export class ExtractionQueue {
   /** Spec clarity: a fresh task-like request from a non-bot someone, addressed to the user (R13). */
   private specWanted(
     tx: Tx,
-    messageId: string,
     m: {
       text: string | null;
       senderRef: string;

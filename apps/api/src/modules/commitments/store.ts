@@ -64,7 +64,7 @@ export class CommitmentStore {
   }
 
   private upsertCommitment(tx: Tx, input: RecordInput): RecordOutcome {
-    const { clock, settings, events } = this.deps;
+    const { clock, settings } = this.deps;
     const { candidate: c, sources, runId } = input;
     const now = clock.now().toISOString();
     const byKey = (k: string) =>
