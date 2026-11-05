@@ -16,6 +16,8 @@ export interface PriorityInfo {
 export interface PersonListItem extends PriorityInfo {
   slackUserId: string;
   name: string | null;
+  /** Echoed so a PUT (replace semantics) can resend it unchanged. */
+  rationale: string | null;
 }
 
 export interface PeopleServiceDeps {
@@ -131,6 +133,7 @@ export class PeopleService {
         slackUserId: slackUsers.externalId,
         name: slackUsers.name,
         priority: peoplePrioritySettings.priority,
+        rationale: peoplePrioritySettings.rationale,
         extraAttention: peoplePrioritySettings.extraAttention,
       })
       .from(slackUsers)
@@ -142,6 +145,7 @@ export class PeopleService {
         slackUserId: r.slackUserId,
         name: r.name,
         priority: r.priority ?? "normal",
+        rationale: r.rationale ?? null,
         extraAttention: r.extraAttention ?? false,
       }));
   }

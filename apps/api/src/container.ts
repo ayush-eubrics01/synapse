@@ -41,6 +41,7 @@ import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
+import { UrgentInbox } from "./modules/inbox/urgent";
 import { PeopleService } from "./modules/people/service";
 import { SecurityFlagsService } from "./modules/security-flags/service";
 import { registerSlackJobs } from "./workers/slack";
@@ -69,6 +70,7 @@ export interface Container {
   orchestrator: ClaudeOrchestrator;
   health: HealthService;
   inbox: InboxStore;
+  urgent: UrgentInbox;
   sync: SyncStateService;
   people: PeopleService;
   securityFlags: SecurityFlagsService;
@@ -170,6 +172,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
 
   const sync = new SyncStateService(db, clock);
   const inbox = new InboxStore({ db, clock, events, queue, sync });
+  const urgent = new UrgentInbox({ db, clock, events, audit });
   const people = new PeopleService({ db, clock, events, audit, settings });
   const securityFlags = new SecurityFlagsService({
     db,
@@ -254,6 +257,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     orchestrator,
     health,
     inbox,
+    urgent,
     sync,
     people,
     securityFlags,

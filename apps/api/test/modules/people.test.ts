@@ -115,6 +115,7 @@ test("listPeople lists every slack user with defaults", () => {
     slackUserId: "UANN000001",
     name: "Ann",
     priority: "high",
+    rationale: null,
     extraAttention: false,
   });
   expect(list.find((p) => p.slackUserId === "UBOB000001")?.priority).toBe("normal");

@@ -141,3 +141,154 @@ export function startBackfill(
 ): Promise<{ started: boolean; state: SlackSyncState }> {
   return request("/api/slack/backfill", { method: "POST" }, fetchImpl);
 }
+
+export type UrgencyStatusDto = "new" | "acknowledged" | "in_progress" | "resolved" | "dismissed";
+
+export interface UrgentItemDto {
+  messageId: string;
+  level: "critical" | "high" | "medium" | "low";
+  reason: string;
+  status: UrgencyStatusDto;
+  /** Computed by the server; the UI shows exactly these buttons. */
+  allowedTransitions: UrgencyStatusDto[];
+  assessed: boolean;
+  fallback: boolean;
+  sender: { id: string; name: string | null };
+  conversation: { id: string; name: string | null; type: string };
+  sentAt: string;
+  text: string | null;
+  permalink: string | null;
+  draft: { text: string | null; confidence: number } | null;
+}
+
+export function getUrgent(
+  status: "open" | "all" = "open",
+  fetchImpl: typeof fetch = fetch,
+): Promise<UrgentItemDto[]> {
+  return request(`/api/urgent?status=${status}`, undefined, fetchImpl);
+}
+
+export function setUrgentStatus(
+  messageId: string,
+  status: UrgencyStatusDto,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ messageId: string; status: UrgencyStatusDto }> {
+  return request(
+    `/api/urgent/${encodeURIComponent(messageId)}/status`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status }),
+    },
+    fetchImpl,
+  );
+}
+
+export interface GroupedFlagsDto {
+  slackUserId: string;
+  name: string;
+  openCount: number;
+  maxSeverity: "info" | "warning" | "high";
+  latest: { excerpt: string; detector: string; createdAt: string; permalink: string | null };
+}
+
+export interface SecurityFlagDto {
+  id: string;
+  severity: "info" | "warning" | "high";
+  status: "open" | "acknowledged" | "contacted" | "dismissed";
+  detector: string;
+  excerpt: string;
+  createdAt: string;
+}
+
+export type FlagReviewStatus = "acknowledged" | "contacted" | "dismissed";
+
+export function getSecurityFlags(
+  includeReviewed = false,
+  fetchImpl: typeof fetch = fetch,
+): Promise<GroupedFlagsDto[]> {
+  return request(`/api/security/flags?includeReviewed=${includeReviewed}`, undefined, fetchImpl);
+}
+
+export function getPersonFlags(
+  slackUserId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<SecurityFlagDto[]> {
+  return request(
+    `/api/security/flags/person/${encodeURIComponent(slackUserId)}`,
+    undefined,
+    fetchImpl,
+  );
+}
+
+export function reviewFlag(
+  id: string,
+  status: FlagReviewStatus,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ id: string; status: FlagReviewStatus }> {
+  return request(
+    `/api/security/flags/${encodeURIComponent(id)}/review`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status }),
+    },
+    fetchImpl,
+  );
+}
+
+export type PersonPriorityDto = "normal" | "high" | "critical";
+
+export interface PersonDto {
+  slackUserId: string;
+  name: string | null;
+  rationale: string | null;
+  priority: PersonPriorityDto;
+  extraAttention: boolean;
+}
+
+export function getPeople(fetchImpl: typeof fetch = fetch): Promise<PersonDto[]> {
+  return request("/api/people", undefined, fetchImpl);
+}
+
+/** Replace semantics on the server: always send all three fields. */
+export function setPersonPriority(
+  slackUserId: string,
+  input: { priority: PersonPriorityDto; rationale: string; extraAttention: boolean },
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ slackUserId: string; priority: PersonPriorityDto; extraAttention: boolean }> {
+  return request(
+    `/api/people/${encodeURIComponent(slackUserId)}/priority`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    },
+    fetchImpl,
+  );
+}
+
+export interface SlackIdentityDto {
+  selfUserId: string | null;
+  suggestion: string | null;
+  suggestionName: string | null;
+}
+
+export function getSlackIdentity(fetchImpl: typeof fetch = fetch): Promise<SlackIdentityDto> {
+  return request("/api/slack/identity", undefined, fetchImpl);
+}
+
+export function confirmSlackIdentity(
+  selfUserId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ selfUserId: string }> {
+  return request(
+    "/api/slack/identity",
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ selfUserId }),
+    },
+    fetchImpl,
+  );
+}
