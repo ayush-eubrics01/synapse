@@ -16,6 +16,8 @@ import { JobQueue } from "../../src/core/jobs/queue";
 import { type HandlerRegistration, JobWorker } from "../../src/core/jobs/worker";
 import { PermissionManager } from "../../src/core/permissions/permissions";
 
+let keyCounter = 0;
+
 function setup() {
   const { db } = openDatabase(":memory:");
   runMigrations(db);
@@ -33,6 +35,13 @@ function setup() {
   const handlers = new Map<string, HandlerRegistration>();
   registerApprovalExecution({ dispatcher, queue, engine, handlers });
   const worker = new JobWorker(queue, handlers, { workerId: "w1" });
+  const skipReasons = () =>
+    db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "approval.execution_skipped"))
+      .all()
+      .map((r) => (r.details as { reason: string }).reason);
   const jobs = () => db.select().from(schema.jobs).all();
   const request = (integration = "slack", action: Operation = "slack.send") =>
     engine.request(db, {
@@ -41,10 +50,10 @@ function setup() {
       targetRef: "ref",
       payload: { text: "SECRET-PAYLOAD" },
       riskLevel: "medium",
-      idempotencyKey: `k-${Math.random()}`,
+      idempotencyKey: `k-${++keyCounter}`,
       requestedByModule: "test",
     });
-  return { db, engine, dispatcher, worker, jobs, request };
+  return { db, clock, engine, dispatcher, worker, jobs, request, skipReasons, queue, handlers };
 }
 
 test("approve -> exactly one job (replay adds none) -> executor runs once -> executed", async () => {
@@ -137,7 +146,7 @@ test("routes by integration for the same action", async () => {
 });
 
 test("a revoked approval is never executed", async () => {
-  const { db, engine, dispatcher, worker, request } = setup();
+  const { db, engine, dispatcher, worker, request, jobs, skipReasons } = setup();
   let ran = 0;
   registerIntegrationExecutor(engine, "slack.send", "slack", {
     execute: async () => void ran++,
@@ -146,9 +155,109 @@ test("a revoked approval is never executed", async () => {
   engine.approve(a.id);
   dispatcher.dispatchOnce();
   engine.revoke(a.id, "no");
-  await worker.runOnce();
+  expect(await worker.runOnce()).toBe(true);
   expect(ran).toBe(0);
+  expect(jobs()).toHaveLength(1);
+  expect(jobs()[0]?.status).toBe("COMPLETED");
+  expect(skipReasons()).toEqual(["status_revoked"]);
   expect(
     db.select().from(schema.approvals).where(eq(schema.approvals.id, a.id)).get()?.status,
   ).toBe("revoked");
+});
+
+test("an expired approval is never executed", async () => {
+  const { engine, db, clock, dispatcher, worker, jobs, skipReasons } = setup();
+  let ran = 0;
+  registerIntegrationExecutor(engine, "slack.send", "slack", { execute: async () => void ran++ });
+  const a = engine.request(db, {
+    action: "slack.send",
+    targetIntegration: "slack",
+    targetRef: "ref",
+    payload: {},
+    riskLevel: "medium",
+    idempotencyKey: `k-${++keyCounter}`,
+    requestedByModule: "test",
+    expiresAt: "2026-01-01T01:00:00.000Z",
+  });
+  engine.approve(a.id);
+  dispatcher.dispatchOnce();
+  clock.set("2026-01-01T02:00:00.000Z");
+  expect(await worker.runOnce()).toBe(true);
+  expect(ran).toBe(0);
+  expect(jobs()).toHaveLength(1);
+  expect(jobs()[0]?.status).toBe("COMPLETED");
+  expect(skipReasons()).toEqual(["expired"]);
+});
+
+test("an approval already claimed (in progress) is skipped, executor runs 0 times", async () => {
+  const { engine, db, dispatcher, worker, request, skipReasons } = setup();
+  let ran = 0;
+  registerIntegrationExecutor(engine, "slack.send", "slack", { execute: async () => void ran++ });
+  const a = request();
+  engine.approve(a.id);
+  dispatcher.dispatchOnce();
+  db.update(schema.approvals)
+    .set({ executionStartedAt: "2026-01-01T00:00:00.000Z" })
+    .where(eq(schema.approvals.id, a.id))
+    .run();
+  expect(await worker.runOnce()).toBe(true);
+  expect(ran).toBe(0);
+  expect(skipReasons()).toEqual(["already_in_progress"]);
+});
+
+test("bookkeeping failure parks the job in NEEDS_ATTENTION, content-free, one log line", async () => {
+  const { db, queue } = setup();
+  const handlers = new Map<string, HandlerRegistration>();
+  const dispatcher = new OutboxDispatcher(
+    db,
+    new FakeClock("2026-01-01T00:00:00.000Z"),
+    new LiveBus(),
+  );
+  registerApprovalExecution({
+    dispatcher,
+    queue,
+    engine: {
+      execute: async () => {
+        throw new Error("db exploded SECRET-PAYLOAD");
+      },
+    },
+    handlers,
+  });
+  queue.enqueue(db, { type: "approval.execute", idempotencyKey: "x", input: { approvalId: "A1" } });
+  const logs: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => void logs.push(a.join(" "));
+  try {
+    await new JobWorker(queue, handlers, { workerId: "w" }).runOnce();
+  } finally {
+    console.error = orig;
+  }
+  const job = db.select().from(schema.jobs).get();
+  expect(job?.status).toBe("NEEDS_ATTENTION");
+  expect(JSON.stringify(job?.lastError)).not.toContain("SECRET");
+  expect(logs.filter((l) => l.includes("approval=A1"))).toHaveLength(1);
+  expect(logs.join("")).not.toContain("SECRET");
+});
+
+test("invalid job input fails with invalid_input", async () => {
+  const { db, queue, handlers } = setup();
+  queue.enqueue(db, { type: "approval.execute", idempotencyKey: "bad", input: { approvalId: "" } });
+  await new JobWorker(queue, handlers, { workerId: "w" }).runOnce();
+  expect(db.select().from(schema.jobs).get()?.status).toBe("FAILED");
+});
+
+test("duplicate (action, integration) registration throws", () => {
+  const { engine } = setup();
+  registerIntegrationExecutor(engine, "slack.send", "slack", { execute: async () => 1 });
+  expect(() =>
+    registerIntegrationExecutor(engine, "slack.send", "slack", { execute: async () => 2 }),
+  ).toThrow();
+});
+
+test("registering over a non-router executor throws", () => {
+  const { engine } = setup();
+  engine.registerExecutor("slack.send", { execute: async () => 1 });
+  expect(() =>
+    registerIntegrationExecutor(engine, "slack.send", "slack", { execute: async () => 2 }),
+  ).toThrow();
 });

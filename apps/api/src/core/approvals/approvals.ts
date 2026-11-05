@@ -93,6 +93,10 @@ export class ApprovalEngine {
     this.executors.set(action, ex);
   }
 
+  hasExecutor(action: Operation): boolean {
+    return this.executors.has(action);
+  }
+
   request(tx: DbOrTx, r: ApprovalRequest): Approval {
     const existing = tx
       .select()

@@ -1,4 +1,5 @@
 import { type Approval, JobError, type Operation } from "@synapse/contracts";
+import { z } from "zod";
 import type { OutboxDispatcher } from "../events/dispatcher";
 import type { JobQueue } from "../jobs/queue";
 import type { HandlerRegistration } from "../jobs/worker";
@@ -9,6 +10,16 @@ export const APPROVAL_EXECUTE_PRIORITY = 180;
 const CONSUMER = "approvals.execute";
 // Executors may write to external systems; a timeout must not blindly re-run them.
 const EXECUTE_TIMEOUT_MS = 120_000;
+
+const inputSchema = z.object({ approvalId: z.string().min(1) });
+
+function parseInput(raw: unknown): { approvalId: string } {
+  const parsed = inputSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new JobError({ kind: "invalid_input", message: "invalid approval execution input" });
+  }
+  return parsed.data;
+}
 
 export interface ApprovalExecutionDeps {
   dispatcher: Pick<OutboxDispatcher, "subscribe">;
@@ -27,7 +38,7 @@ export function registerApprovalExecution(deps: ApprovalExecutionDeps): void {
   const { dispatcher, queue, engine, handlers } = deps;
 
   dispatcher.subscribe("approval.approved", CONSUMER, (event, tx) => {
-    const { approvalId } = event.payload as { approvalId: string };
+    const { approvalId } = parseInput(event.payload);
     queue.enqueue(tx, {
       type: APPROVAL_EXECUTE_JOB,
       idempotencyKey: `${APPROVAL_EXECUTE_JOB}:${approvalId}`,
@@ -41,14 +52,21 @@ export function registerApprovalExecution(deps: ApprovalExecutionDeps): void {
     timeoutMs: EXECUTE_TIMEOUT_MS,
     externalWrite: true,
     handler: async (job) => {
-      const { approvalId } = job.input as { approvalId: string };
+      const { approvalId } = parseInput(job.input);
       try {
         const outcome = await engine.execute(approvalId);
         // The result is deliberately not returned: it may carry payload-derived content.
         return { approvalId, status: outcome.status };
-      } catch {
-        // Only bookkeeping failures reach here (executor errors are caught by the engine).
-        throw new JobError({ kind: "unknown", message: "approval execution bookkeeping failed" });
+      } catch (e) {
+        // Only bookkeeping failures reach here (executor errors are caught by the engine). The
+        // approval may be stranded claimed, so park the job visibly instead of retrying.
+        console.error(
+          `approvals: execution bookkeeping failed approval=${approvalId} error=${e instanceof Error ? e.name : "unknown"}`,
+        );
+        throw new JobError({
+          kind: "parse_failed",
+          message: "approval execution bookkeeping failed",
+        });
       }
     },
   });
@@ -70,7 +88,13 @@ export function registerIntegrationExecutor(
   const byAction = routers.get(engine) ?? new Map<Operation, Map<string, Executor>>();
   routers.set(engine, byAction);
   let byIntegration = byAction.get(action);
+  if (byIntegration?.has(targetIntegration)) {
+    throw new Error(`executor already registered for ${action}/${targetIntegration}`);
+  }
   if (!byIntegration) {
+    if (engine.hasExecutor(action)) {
+      throw new Error(`action ${action} already has a non-router executor`);
+    }
     const table = new Map<string, Executor>();
     byIntegration = table;
     byAction.set(action, table);
