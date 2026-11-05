@@ -2,7 +2,7 @@ import type { ClassifiedError, Job, JobStatus } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema, type Tx } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { decideFailure } from "./retry";
+import { decideFailure, UNCERTAIN_EXTERNAL_ERROR } from "./retry";
 
 export interface EnqueueInput {
   type: string;
@@ -13,6 +13,8 @@ export interface EnqueueInput {
   runAfter?: string;
   maxAttempts?: number;
   concurrencyGroup?: string;
+  /** Writes to an external system: an uncertain outcome goes to NEEDS_ATTENTION, not RETRY. */
+  externalWrite?: boolean;
 }
 
 const { jobs, jobAttempts, jobCheckpoints } = schema;
@@ -41,6 +43,7 @@ export class JobQueue {
         maxAttempts: input.maxAttempts ?? 3,
         idempotencyKey: input.idempotencyKey,
         concurrencyGroup: input.concurrencyGroup ?? null,
+        externalWrite: input.externalWrite ?? false,
         runAfter: input.runAfter ?? now,
         createdAt: now,
       })
@@ -167,6 +170,34 @@ export class JobQueue {
     );
   }
 
+  /**
+   * The outcome of an owned external-write job is unknown (timeout, forced stop): park it in
+   * NEEDS_ATTENTION instead of retrying. The attempt keeps the original cause.
+   */
+  failUncertain(jobId: string, workerId: string, cause: ClassifiedError): JobStatus {
+    const now = isoNow(this.clock);
+    return this.db.transaction(
+      (tx) => {
+        const res = tx
+          .update(jobs)
+          .set({
+            status: "NEEDS_ATTENTION",
+            lastError: UNCERTAIN_EXTERNAL_ERROR,
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            finishedAt: now,
+          })
+          .where(this.owned(jobId, workerId))
+          .returning({ id: jobs.id })
+          .all();
+        if (res.length === 0) return this.currentStatus(tx, jobId);
+        this.closeAttempt(tx, jobId, "failed", now, cause);
+        return "NEEDS_ATTENTION";
+      },
+      { behavior: "immediate" },
+    );
+  }
+
   defer(jobId: string, workerId: string, runAfter: string): void {
     const now = isoNow(this.clock);
     this.db.transaction(
@@ -225,11 +256,16 @@ export class JobQueue {
     return this.getIn(this.db, id);
   }
 
-  list(filter: { status?: JobStatus; limit?: number } = {}): Job[] {
+  /** `order`: "claim" (default) is the order jobs are claimed in; "newest" is by created_at desc. */
+  list(filter: { status?: JobStatus; limit?: number; order?: "claim" | "newest" } = {}): Job[] {
     const q = this.db.select().from(jobs);
     const filtered = filter.status ? q.where(eq(jobs.status, filter.status)) : q;
+    const order =
+      filter.order === "newest"
+        ? [desc(jobs.createdAt), desc(sql`rowid`)]
+        : [desc(jobs.priority), jobs.runAfter, jobs.createdAt];
     return filtered
-      .orderBy(desc(jobs.priority), jobs.runAfter, jobs.createdAt)
+      .orderBy(...order)
       .limit(filter.limit ?? 100)
       .all()
       .map(toJob);
@@ -296,6 +332,7 @@ function toJob(r: typeof jobs.$inferSelect): Job {
     maxAttempts: r.maxAttempts,
     idempotencyKey: r.idempotencyKey,
     concurrencyGroup: r.concurrencyGroup,
+    externalWrite: r.externalWrite,
     runAfter: r.runAfter,
     leaseOwner: r.leaseOwner,
     leaseExpiresAt: r.leaseExpiresAt,

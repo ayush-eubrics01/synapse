@@ -3,6 +3,19 @@ import { backoffMs } from "@synapse/shared";
 
 export const QUOTA_DEFER_MS = 15 * 60_000;
 
+/** lastError of an external-write job whose outcome is uncertain (timeout, stop, crash). */
+export const UNCERTAIN_EXTERNAL_ERROR: ClassifiedError = {
+  kind: "unknown",
+  message: "verify external outcome before retry",
+};
+
+/** The column, or the legacy `input.externalWrite` flag used before the column existed. */
+export function isExternalWrite(job: { externalWrite: boolean; input: unknown }): boolean {
+  return (
+    job.externalWrite || (job.input as { externalWrite?: unknown } | null)?.externalWrite === true
+  );
+}
+
 export type FailureOutcome =
   | { status: "RETRY" | "DEFER"; runAfter: string }
   | { status: Exclude<JobStatus, "RETRY" | "PENDING" | "RUNNING" | "COMPLETED" | "CANCELLED"> };

@@ -201,3 +201,49 @@ test("fail waits for another connection's commit instead of throwing SQLITE_BUSY
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("externalWrite is persisted at enqueue and defaults to false", () => {
+  const ext = q.enqueue(db, { type: "t", idempotencyKey: "ext", externalWrite: true });
+  const plain = q.enqueue(db, { type: "t", idempotencyKey: "plain" });
+  expect(q.get(ext.id)?.externalWrite).toBe(true);
+  expect(q.get(plain.id)?.externalWrite).toBe(false);
+});
+
+test("list orders newest first on request; default keeps claim order", () => {
+  const older = q.enqueue(db, { type: "t", idempotencyKey: "older", priority: 10 });
+  clock.advance(1000);
+  const newer = q.enqueue(db, { type: "t", idempotencyKey: "newer", priority: 10 });
+  clock.advance(1000);
+  const urgent = q.enqueue(db, {
+    type: "t",
+    idempotencyKey: "urgent",
+    priority: 500,
+    runAfter: "2026-11-05T11:00:00.000Z",
+  });
+  expect(q.list({ order: "newest" }).map((j) => j.id)).toEqual([urgent.id, newer.id, older.id]);
+  expect(q.list({ order: "newest", limit: 1 }).map((j) => j.id)).toEqual([urgent.id]);
+  expect(q.list({}).map((j) => j.id)).toEqual([urgent.id, older.id, newer.id]);
+});
+
+test("failUncertain parks an owned job in NEEDS_ATTENTION and keeps the cause on the attempt", () => {
+  const { id } = q.enqueue(db, { type: "t", idempotencyKey: "k", externalWrite: true });
+  q.claim("w", 60_000, ["t"]);
+  const cause = { kind: "timeout" as const, message: "timed out" };
+  expect(q.failUncertain(id, "other", cause)).toBe("RUNNING");
+  expect(q.failUncertain(id, "w", cause)).toBe("NEEDS_ATTENTION");
+  const job = must(q.get(id));
+  expect(job).toMatchObject({
+    status: "NEEDS_ATTENTION",
+    leaseOwner: null,
+    leaseExpiresAt: null,
+    finishedAt: "2026-11-05T12:00:00.000Z",
+    lastError: { kind: "unknown", message: "verify external outcome before retry" },
+  });
+  const attempt = db
+    .select()
+    .from(schema.jobAttempts)
+    .where(eq(schema.jobAttempts.jobId, id))
+    .get();
+  expect(attempt?.status).toBe("failed");
+  expect(attempt?.error).toEqual(cause);
+});

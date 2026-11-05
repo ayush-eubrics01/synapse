@@ -22,6 +22,8 @@ export interface Job {
   maxAttempts: number;
   idempotencyKey: string;
   concurrencyGroup: string | null;
+  /** The job writes to an external system; an uncertain outcome is verified before any retry. */
+  externalWrite: boolean;
   runAfter: string;
   leaseOwner: string | null;
   leaseExpiresAt: string | null;

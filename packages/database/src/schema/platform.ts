@@ -60,6 +60,7 @@ export const jobs = sqliteTable(
     maxAttempts: integer("max_attempts").notNull().default(3),
     idempotencyKey: text("idempotency_key").notNull(),
     concurrencyGroup: text("concurrency_group"),
+    externalWrite: bool("external_write").notNull().default(false),
     runAfter: text("run_after").notNull(),
     leaseOwner: text("lease_owner"),
     leaseExpiresAt: text("lease_expires_at"),
