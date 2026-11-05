@@ -1,3 +1,9 @@
+import type {
+  CommitmentAction,
+  CommitmentFilter,
+  CommitmentStatus,
+  CommitmentView,
+} from "@synapse/contracts";
 import { type Db, schema, type Tx } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { asc, desc, eq, inArray } from "drizzle-orm";
@@ -9,77 +15,14 @@ import { PROPOSED_REASON_PREFIX } from "./store";
 const { commitments, commitmentSources, commitmentUpdates, followups, slackMessages, slackUsers } =
   schema;
 
-export type CommitmentStatus = "open" | "in_progress" | "blocked" | "completed" | "cancelled";
 export type ReviewDecision = "accept" | "reject";
-export type CommitmentFilter =
-  | "all"
-  | "mine"
-  | "theirs"
-  | "open"
-  | "in_progress"
-  | "blocked"
-  | "overdue"
-  | "due_soon"
-  | "closed"
-  | "review";
-export type CommitmentAction =
-  | "accept"
-  | "reject"
-  | "edit"
-  | "start"
-  | "block"
-  | "unblock"
-  | "complete"
-  | "cancel"
-  | "confirm_proposal";
 
 export interface ReviewEdits {
   description?: string;
-  /** Offset ISO date-time, or null to clear the due date. */
+  /** Offset ISO date-time (stored as UTC), or null to clear the due date. */
   dueAt?: string | null;
   owner?: string;
   counterparty?: string | null;
-}
-
-export interface CommitmentSourceView {
-  sourceExternalRef: string;
-  /** False once the message content expired or was removed; the ref stays. */
-  messageAvailable: boolean;
-  /** http(s) only, null when the message is unavailable. */
-  permalink: string | null;
-}
-
-export interface PendingProposalView {
-  updateId: string;
-  sourceExternalRef: string;
-  proposedAt: string;
-}
-
-export interface FollowupSummary {
-  id: string;
-  origin: string;
-  status: string;
-}
-
-export interface CommitmentView {
-  id: string;
-  description: string;
-  ownerSlackUserId: string;
-  ownerName: string | null;
-  counterpartySlackUserId: string | null;
-  counterpartyName: string | null;
-  direction: "mine" | "theirs";
-  status: CommitmentStatus;
-  reviewStatus: "pending_review" | "accepted" | "rejected";
-  dueAt: string | null;
-  completionEvidence: string | null;
-  closedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-  sources: CommitmentSourceView[];
-  proposals: PendingProposalView[];
-  followups: FollowupSummary[];
-  actions: CommitmentAction[];
 }
 
 export class UnknownCommitment extends Error {
@@ -126,8 +69,13 @@ const TRANSITIONS: Record<CommitmentStatus, CommitmentStatus[]> = {
 const isTerminal = (s: CommitmentStatus) => s === "completed" || s === "cancelled";
 
 /** Decision rows on a proposal (user actor, `field: status`); their reason ends in the proposal's update id. */
+/** `field` of a proposal decision row, so a decision never reads as a status change. */
+export const PROPOSAL_FIELD = "proposal";
 export const CONFIRMED_PROPOSAL_PREFIX = "confirmed_proposal:";
 export const REJECTED_PROPOSAL_PREFIX = "rejected_proposal:";
+
+export const DEFAULT_VIEW_LIMIT = 200;
+export const MAX_VIEW_LIMIT = 500;
 
 const SLACK_ID = /^[UW][A-Z0-9]+$/;
 const OFFSET_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
@@ -179,6 +127,12 @@ export class CommitmentLifecycle {
   }
 
   setStatus(id: string, status: CommitmentStatus, reason?: string): void {
+    if (
+      reason !== undefined &&
+      (reason.startsWith(CONFIRMED_PROPOSAL_PREFIX) || reason.startsWith(REJECTED_PROPOSAL_PREFIX))
+    ) {
+      throw new InvalidCommitmentEdit("reason uses a reserved prefix");
+    }
     this.deps.db.transaction((tx) => {
       const row = this.load(tx, id);
       this.applyStatus(tx, row, status, "user", reason ?? null, null);
@@ -188,7 +142,7 @@ export class CommitmentLifecycle {
   /**
    * Decides a pending AI completion proposal. Accepting completes the commitment through the
    * normal transition rules with the proposal's source ref as evidence; rejecting only records
-   * the decision. Either way a decision row (`confirmed_proposal:<id>` / `rejected_proposal:<id>`)
+   * the decision (also allowed on a closed commitment). Either way a decision row (`field: proposal`) (`confirmed_proposal:<id>` / `rejected_proposal:<id>`)
    * marks the proposal decided, so it cannot be decided twice.
    */
   confirmProposal(updateId: string, accept: boolean): void {
@@ -208,22 +162,25 @@ export class CommitmentLifecycle {
       const row = this.load(tx, proposal.commitmentId);
       if (accept) {
         const evidence = (proposal.reason ?? "").slice(PROPOSED_REASON_PREFIX.length);
-        this.applyStatus(
+        this.applyStatus(tx, row, "completed", "user", `accepted_proposal:${updateId}`, evidence);
+        this.writeUpdate(
           tx,
-          row,
-          "completed",
+          row.id,
           "user",
+          PROPOSAL_FIELD,
+          null,
+          null,
           `${CONFIRMED_PROPOSAL_PREFIX}${updateId}`,
-          evidence,
+          isoNow(this.deps.clock),
         );
       } else {
         this.writeUpdate(
           tx,
           row.id,
           "user",
-          "status",
-          row.status,
-          row.status,
+          PROPOSAL_FIELD,
+          null,
+          null,
           `${REJECTED_PROPOSAL_PREFIX}${updateId}`,
           isoNow(this.deps.clock),
         );
@@ -231,7 +188,7 @@ export class CommitmentLifecycle {
     });
   }
 
-  listViews(filter: CommitmentFilter): CommitmentView[] {
+  listViews(filter: CommitmentFilter, limit = DEFAULT_VIEW_LIMIT): CommitmentView[] {
     const { db, clock, settings } = this.deps;
     const nowMs = clock.now().getTime();
     const soonMs = nowMs + settings.get("commitments.reminder.dueSoonHours") * 3_600_000;
@@ -278,7 +235,8 @@ export class CommitmentLifecycle {
       if ((da === null) !== (dbm === null)) return da === null ? 1 : -1;
       return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
     });
-    return this.toViews(rows);
+    const cap = Math.min(Math.max(Math.trunc(limit) || DEFAULT_VIEW_LIMIT, 1), MAX_VIEW_LIMIT);
+    return this.toViews(rows.slice(0, cap));
   }
 
   private load(tx: Tx, id: string): Row {
@@ -365,8 +323,9 @@ export class CommitmentLifecycle {
       ) {
         throw new InvalidCommitmentEdit("dueAt must be an ISO date-time with a UTC offset");
       }
-      set.dueAt = edits.dueAt;
-      change("due_at", row.dueAt, edits.dueAt);
+      const due = edits.dueAt === null ? null : new Date(edits.dueAt).toISOString();
+      set.dueAt = due;
+      change("due_at", row.dueAt, due);
     }
     if (edits.owner !== undefined || edits.counterparty !== undefined) {
       const self = this.deps.settings.get("slack.selfUserId");
@@ -375,6 +334,9 @@ export class CommitmentLifecycle {
         edits.counterparty !== undefined ? edits.counterparty : row.counterpartySlackUserId;
       if (!SLACK_ID.test(owner) || (counterparty !== null && !SLACK_ID.test(counterparty))) {
         throw new InvalidCommitmentEdit("owner and counterparty must be Slack user ids");
+      }
+      if (owner === counterparty) {
+        throw new InvalidCommitmentEdit("owner and counterparty must differ");
       }
       if (self === null || (owner !== self && counterparty !== self)) {
         throw new InvalidCommitmentEdit("the user must be the owner or the counterparty");
@@ -424,15 +386,32 @@ export class CommitmentLifecycle {
       .where(inArray(followups.commitmentId, ids))
       .orderBy(asc(followups.createdAt), asc(followups.id))
       .all();
+    const group = <T extends { commitmentId: string | null }>(list: T[]) => {
+      const m = new Map<string, T[]>();
+      for (const x of list) {
+        if (x.commitmentId === null) continue;
+        const l = m.get(x.commitmentId);
+        if (l) l.push(x);
+        else m.set(x.commitmentId, [x]);
+      }
+      return m;
+    };
+    const sourcesBy = group(sources);
+    const updatesBy = group(updates);
+    const followupsBy = group(fups);
+    const slackIds = [
+      ...new Set(rows.flatMap((r) => [r.ownerSlackUserId, r.counterpartySlackUserId ?? ""])),
+    ].filter((x) => x !== "");
     const people = new Map(
       db
         .select({ externalId: slackUsers.externalId, name: slackUsers.name })
         .from(slackUsers)
+        .where(inArray(slackUsers.externalId, slackIds))
         .all()
         .map((u) => [u.externalId, u.name]),
     );
     return rows.map((r) => {
-      const mine = updates.filter((u) => u.commitmentId === r.id);
+      const mine = updatesBy.get(r.id) ?? [];
       const decided = decidedIds(mine);
       const proposals = isTerminal(r.status)
         ? []
@@ -457,24 +436,27 @@ export class CommitmentLifecycle {
         status: r.status,
         reviewStatus: r.reviewStatus,
         dueAt: r.dueAt,
+        nextAction: r.nextAction,
+        stalledAt: r.stalledAt,
+        lastFollowupAt: r.lastFollowupAt,
         completionEvidence: r.completionEvidence,
         closedAt: r.closedAt,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
-        sources: sources
-          .filter((s) => s.commitmentId === r.id)
-          .map((s) => {
-            const messageAvailable = s.messageId !== null && s.text !== null;
-            return {
-              sourceExternalRef: s.ref,
-              messageAvailable,
-              permalink: messageAvailable ? safePermalink(s.permalink) : null,
-            };
-          }),
+        sources: (sourcesBy.get(r.id) ?? []).map((s) => {
+          const messageAvailable = s.messageId !== null && s.text !== null;
+          return {
+            sourceExternalRef: s.ref,
+            messageAvailable,
+            permalink: messageAvailable ? safePermalink(s.permalink) : null,
+          };
+        }),
         proposals,
-        followups: fups
-          .filter((f) => f.commitmentId === r.id)
-          .map((f) => ({ id: f.id, origin: f.origin, status: f.status })),
+        followups: (followupsBy.get(r.id) ?? []).map((f) => ({
+          id: f.id,
+          origin: f.origin,
+          status: f.status,
+        })),
         actions: actionsFor(r, proposals.length > 0),
       };
     });
@@ -494,7 +476,7 @@ function isProposal(u: UpdateRow): boolean {
 function decidedIds(history: UpdateRow[]): Set<string> {
   const out = new Set<string>();
   for (const u of history) {
-    if (u.actor !== "user" || u.field !== "status" || u.reason === null) continue;
+    if (u.actor !== "user" || u.field !== PROPOSAL_FIELD || u.reason === null) continue;
     for (const p of [CONFIRMED_PROPOSAL_PREFIX, REJECTED_PROPOSAL_PREFIX]) {
       if (u.reason.startsWith(p)) out.add(u.reason.slice(p.length));
     }

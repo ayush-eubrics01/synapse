@@ -71,11 +71,60 @@ export const specClarityOutputSchema = z
   .strict();
 export type SpecClarityOutput = z.infer<typeof specClarityOutputSchema>;
 
+export const commitmentFilterSchema = z.enum([
+  "all",
+  "mine",
+  "theirs",
+  "open",
+  "in_progress",
+  "blocked",
+  "overdue",
+  "due_soon",
+  "closed",
+  "review",
+]);
+export type CommitmentFilter = z.infer<typeof commitmentFilterSchema>;
+
+export const commitmentActionSchema = z.enum([
+  "accept",
+  "reject",
+  "edit",
+  "start",
+  "block",
+  "unblock",
+  "complete",
+  "cancel",
+  "confirm_proposal",
+]);
+export type CommitmentAction = z.infer<typeof commitmentActionSchema>;
+
+export interface CommitmentSourceView {
+  sourceExternalRef: string;
+  /** False once the message content expired or was removed; the ref stays. */
+  messageAvailable: boolean;
+  /** http(s) only, null when the message is unavailable. */
+  permalink: string | null;
+}
+
+export interface PendingProposalView {
+  updateId: string;
+  sourceExternalRef: string;
+  proposedAt: string;
+}
+
+export interface CommitmentFollowupSummary {
+  id: string;
+  origin: FollowupOrigin;
+  status: FollowupStatus;
+}
+
 export interface CommitmentView {
   id: string;
   description: string;
   ownerSlackUserId: string;
+  ownerName: string | null;
   counterpartySlackUserId: string | null;
+  counterpartyName: string | null;
   direction: CommitmentDirection;
   status: CommitmentStatus;
   reviewStatus: CommitmentReviewStatus;
@@ -87,6 +136,10 @@ export interface CommitmentView {
   closedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  sources: CommitmentSourceView[];
+  proposals: PendingProposalView[];
+  followups: CommitmentFollowupSummary[];
+  actions: CommitmentAction[];
 }
 
 export interface FollowupView {

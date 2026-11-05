@@ -99,7 +99,7 @@ export class CommitmentStore {
           reviewStatus: settings.get("commitments.requireReviewForDetected")
             ? "pending_review"
             : "accepted",
-          dueAt: c.dueAt,
+          dueAt: c.dueAt === null ? null : new Date(c.dueAt).toISOString(),
           dedupKey: key,
           createdAt: now,
           updatedAt: now,

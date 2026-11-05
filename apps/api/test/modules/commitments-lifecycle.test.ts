@@ -119,14 +119,14 @@ describe("review", () => {
     expect(r).toMatchObject({
       reviewStatus: "accepted",
       description: "Ship the fix",
-      dueAt: "2026-11-07T09:00:00+01:00",
+      dueAt: "2026-11-07T08:00:00.000Z",
       ownerSlackUserId: PRIYA,
       counterpartySlackUserId: SELF,
       direction: "theirs",
     });
     const ups = updates(id).map((u) => [u.actor, u.field, u.fromValue, u.toValue]);
     expect(ups).toContainEqual(["user", "description", expect.any(String), "Ship the fix"]);
-    expect(ups).toContainEqual(["user", "due_at", null, "2026-11-07T09:00:00+01:00"]);
+    expect(ups).toContainEqual(["user", "due_at", null, "2026-11-07T08:00:00.000Z"]);
     expect(ups).toContainEqual(["user", "owner", SELF, PRIYA]);
     expect(ups).toContainEqual(["user", "counterparty", PRIYA, SELF]);
     expect(ups).toContainEqual(["user", "direction", "mine", "theirs"]);
@@ -139,6 +139,13 @@ describe("review", () => {
     const id = seed({ reviewStatus: "pending_review" });
     lc.review(id, "accept", { counterparty: PRIYA });
     expect(updates(id)).toHaveLength(0);
+  });
+
+  test("an offset dueAt is stored as UTC ISO", () => {
+    const id = seed({ reviewStatus: "pending_review" });
+    lc.review(id, "accept", { dueAt: "2026-11-07T09:00:00+01:00" });
+    expect(row(id)?.dueAt).toBe("2026-11-07T08:00:00.000Z");
+    expect(updates(id)[0]).toMatchObject({ field: "due_at", toValue: "2026-11-07T08:00:00.000Z" });
   });
 
   test("dueAt null clears the due date", () => {
@@ -177,6 +184,7 @@ describe("review", () => {
     ["long description", { description: "x".repeat(501) }],
     ["date without offset", { dueAt: "2026-11-07T09:00:00" }],
     ["garbage date", { dueAt: "tomorrow" }],
+    ["owner equals counterparty", { owner: SELF, counterparty: SELF }],
     ["bad owner id", { owner: "priya" }],
     ["bad counterparty id", { counterparty: "u123" }],
     ["neither side is the user", { owner: PRIYA, counterparty: OTHER }],
@@ -267,11 +275,12 @@ describe("confirmProposal", () => {
       completionEvidence: "C1:55.0",
     });
     expect(row(id)?.closedAt).toBe(NOW);
-    expect(updates(id).find((u) => u.actor === "user")).toMatchObject({
-      field: "status",
+    const user = updates(id).filter((u) => u.actor === "user");
+    expect(user.find((u) => u.field === "status")).toMatchObject({
       fromValue: "in_progress",
       toValue: "completed",
     });
+    expect(user.find((u) => u.field === "proposal")?.reason).toBe(`confirmed_proposal:${p}`);
     expect(events().find((e) => e.type === "commitment.status_changed")).toBeDefined();
   });
 
@@ -280,10 +289,9 @@ describe("confirmProposal", () => {
     const p = propose(id);
     lc.confirmProposal(p, false);
     expect(row(id)).toMatchObject({ status: "open", closedAt: null });
-    expect(updates(id).find((u) => u.actor === "user")).toMatchObject({
-      field: "status",
-      reason: `rejected_proposal:${p}`,
-    });
+    expect(updates(id).filter((u) => u.actor === "user")).toEqual([
+      expect.objectContaining({ field: "proposal", reason: `rejected_proposal:${p}` }),
+    ]);
     expect(lc.listViews("all")[0]?.proposals).toEqual([]);
   });
 
@@ -303,6 +311,22 @@ describe("confirmProposal", () => {
     const userRow = updates(id)[0];
     expect(() => lc.confirmProposal(userRow?.id ?? "", true)).toThrow(InvalidProposal);
     expect(() => lc.confirmProposal("nope", true)).toThrow(InvalidProposal);
+  });
+
+  test("rejecting a proposal on a closed commitment is allowed", () => {
+    const id = seed({ status: "completed", closedAt: NOW });
+    const p = propose(id);
+    lc.confirmProposal(p, false);
+    expect(row(id)?.status).toBe("completed");
+    expect(() => lc.confirmProposal(p, false)).toThrow(InvalidProposal);
+  });
+
+  test("setStatus refuses a free-text reason using a decision prefix", () => {
+    const id = seed();
+    for (const reason of ["confirmed_proposal:x", "rejected_proposal:x"]) {
+      expect(() => lc.setStatus(id, "blocked", reason)).toThrow(InvalidCommitmentEdit);
+    }
+    expect(row(id)?.status).toBe("open");
   });
 
   test("accepting on a cancelled commitment throws InvalidCommitmentTransition", () => {
@@ -325,16 +349,15 @@ describe("views", () => {
   const at = (ms: number) => new Date(Date.parse(NOW) + ms).toISOString();
 
   test("filters", () => {
-    const open = seed({ id: "open" });
+    seed({ id: "open" });
     const prog = seed({ id: "prog", status: "in_progress", direction: "theirs" });
     const blocked = seed({ id: "blocked", status: "blocked" });
     const overdue = seed({ id: "overdue", dueAt: at(-DAY) });
     const soon = seed({ id: "soon", dueAt: at(3_600_000) });
-    const far = seed({ id: "far", dueAt: at(3 * DAY) });
+    seed({ id: "far", dueAt: at(3 * DAY) });
     const done = seed({ id: "done", status: "completed", dueAt: at(-DAY), closedAt: NOW });
-    const pending = seed({ id: "pending", reviewStatus: "pending_review", dueAt: at(-DAY) });
-    const rejected = seed({ id: "rejected", reviewStatus: "rejected" });
-    void [open, pending, rejected];
+    seed({ id: "pending", reviewStatus: "pending_review", dueAt: at(-DAY) });
+    seed({ id: "rejected", reviewStatus: "rejected" });
     expect(ids("all").sort()).toEqual(
       ["open", "prog", "blocked", "overdue", "soon", "far", "done"].sort(),
     );
@@ -350,7 +373,23 @@ describe("views", () => {
     for (const f of ["all", "mine", "theirs", "open", "overdue", "due_soon", "closed"] as const) {
       expect(ids(f)).not.toContain("rejected");
     }
-    void far;
+  });
+
+  test("boundaries: due now is due soon not overdue; now + dueSoonHours is included", () => {
+    seed({ id: "now", dueAt: NOW });
+    seed({ id: "edge", dueAt: at(24 * 3_600_000) });
+    seed({ id: "past-edge", dueAt: at(24 * 3_600_000 + 1) });
+    expect(ids("overdue")).toEqual([]);
+    expect(ids("due_soon").sort()).toEqual(["edge", "now"]);
+  });
+
+  test("limit defaults to 200, clamps to 500, and applies after ordering", () => {
+    for (let i = 0; i < 3; i++) seed({ id: `r${i}` });
+    seed({ id: "late", dueAt: at(-DAY) });
+    expect(lc.listViews("all", 2).map((v) => v.id)[0]).toBe("late");
+    expect(lc.listViews("all", 2)).toHaveLength(2);
+    expect(lc.listViews("all", 0)).toHaveLength(4);
+    expect(lc.listViews("all", 100000)).toHaveLength(4);
   });
 
   test("due_soon follows the setting", () => {
