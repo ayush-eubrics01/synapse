@@ -14,8 +14,9 @@ export interface HandlerRegistration {
   handler: JobHandler;
   timeoutMs: number;
   /**
-   * The handler writes to an external system. A timeout or forced stop leaves the outcome
-   * uncertain, so the job goes to NEEDS_ATTENTION instead of RETRY (security-model §2). Enqueue
+   * The handler writes to an external system. A timeout, forced stop or a failure carrying
+   * `details.uncertain === true` leaves the outcome uncertain, so the job goes to NEEDS_ATTENTION
+   * instead of RETRY (security-model §2). Enqueue
    * such jobs with `externalWrite: true` too, so recovery honours it without the handler loaded.
    */
   externalWrite?: boolean;
@@ -231,7 +232,11 @@ export class JobWorker {
       checkpoint: (data) => {
         if (settled || controller.signal.aborted)
           throw controller.signal.reason ?? new Error("job settled");
-        this.queue.checkpoint(job.id, owner, data);
+        if (!this.queue.checkpoint(job.id, owner, data)) {
+          // The queue no longer sees us as the owner: the lease is gone.
+          loseLease();
+          throw controller.signal.reason;
+        }
       },
       getCheckpoint: <T>() => this.queue.getCheckpoint<T>(job.id),
     };
@@ -266,7 +271,7 @@ export class JobWorker {
     try {
       if (outcome.kind === "done")
         status = this.queue.complete(job.id, owner, outcome.output) ? "COMPLETED" : null;
-      else if (external && outcome.error.kind === "timeout")
+      else if (external && isUncertain(outcome.error))
         status = this.queue.failUncertain(job.id, owner, outcome.error);
       else status = this.queue.fail(job.id, owner, outcome.error);
     } catch (e) {
@@ -281,6 +286,11 @@ export class JobWorker {
       console.error("worker: onSettled failed", job.id, describe(e));
     }
   }
+}
+
+/** A timeout, or a failure the handler marked uncertain (e.g. a send run that spawned). */
+function isUncertain(e: ClassifiedError): boolean {
+  return e.kind === "timeout" || e.details?.uncertain === true;
 }
 
 /** Error name and message only: never job input, output or handler content. */

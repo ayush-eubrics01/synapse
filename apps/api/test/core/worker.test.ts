@@ -386,3 +386,51 @@ test("claim errors are logged once per interval and recovery is logged once (G7)
     logSpy.mockRestore();
   }
 });
+
+test("I3c: an external-write job failing with an uncertain provider_error goes to NEEDS_ATTENTION", async () => {
+  const uncertain = () => {
+    throw new JobError({ kind: "provider_error", message: "x", details: { uncertain: true } });
+  };
+  const viaReg = enqueue("t", "reg");
+  await mk(reg(async () => uncertain(), 1_000, { externalWrite: true })).runOnce();
+  expect(status(viaReg).status).toBe("NEEDS_ATTENTION");
+  expect(status(viaReg).lastError).toEqual(VERIFY);
+  expect(attempt(viaReg)?.error).toMatchObject({ kind: "provider_error" });
+
+  const viaColumn = enqueue("t", "col", true);
+  await mk(reg(async () => uncertain())).runOnce();
+  expect(status(viaColumn).status).toBe("NEEDS_ATTENTION");
+});
+
+test("I3c: an uncertain failure on a non-external job keeps normal retry rules", async () => {
+  const id = enqueue();
+  await mk(
+    reg(async () => {
+      throw new JobError({ kind: "provider_error", message: "x", details: { uncertain: true } });
+    }),
+  ).runOnce();
+  expect(status(id).status).toBe("RETRY");
+});
+
+test("checkpoint rejected by the queue is a lost lease: abort, throw, no completion", async () => {
+  const id = enqueue();
+  let signal: AbortSignal | undefined;
+  let thrown: unknown;
+  const handler: JobHandler = async (_j, ctx) => {
+    signal = ctx.signal;
+    db.update(schema.jobs).set({ leaseOwner: "thief" }).where(eq(schema.jobs.id, id)).run();
+    try {
+      ctx.checkpoint("x");
+    } catch (e) {
+      thrown = e;
+    }
+    return "late";
+  };
+  await mk(reg(handler), "w1", { heartbeatMs: 10_000 }).runOnce();
+  expect(signal?.aborted).toBe(true);
+  expect(thrown).toBe(signal?.reason);
+  expect((thrown as Error).message).toBe("lease lost");
+  expect(q.getCheckpoint(id)).toBeUndefined();
+  expect(status(id).status).toBe("RUNNING");
+  expect(status(id).leaseOwner).toBe("thief");
+});
