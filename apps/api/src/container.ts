@@ -38,6 +38,7 @@ import { loadSettingsOverride } from "./integrations/claude-code/settings-overri
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
+import { PeopleService } from "./modules/people/service";
 import { registerSlackJobs } from "./workers/slack";
 
 export interface Container {
@@ -64,6 +65,7 @@ export interface Container {
   health: HealthService;
   inbox: InboxStore;
   sync: SyncStateService;
+  people: PeopleService;
   slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
@@ -162,6 +164,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
 
   const sync = new SyncStateService(db, clock);
   const inbox = new InboxStore({ db, clock, events, queue, sync });
+  const people = new PeopleService({ db, clock, events, audit, settings });
   const slack = registerSlackJobs({
     db,
     clock,
@@ -211,6 +214,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     health,
     inbox,
     sync,
+    people,
     slack: { startBackfill: slack.startBackfill, backfillResumable: slack.backfillResumable },
   };
 }
