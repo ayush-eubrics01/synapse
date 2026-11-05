@@ -334,6 +334,7 @@ export const slackMessages = sqliteTable(
     urgencyLevel: text("urgency_level"),
     urgencyReason: text("urgency_reason"),
     urgencyStatus: text("urgency_status"),
+    commitmentsExtractedAt: text("commitments_extracted_at"),
   },
   (t) => [
     uniqueIndex("slack_messages_conversation_id_ts_uq").on(t.conversationId, t.ts),
@@ -524,3 +525,137 @@ export const peopleProfileEvidence = sqliteTable(
     index("people_profile_evidence_recommendation_id_idx").on(t.recommendationId),
   ],
 );
+
+export const commitments = sqliteTable(
+  "commitments",
+  {
+    id: id(),
+    description: text("description").notNull(),
+    ownerSlackUserId: text("owner_slack_user_id").notNull(),
+    counterpartySlackUserId: text("counterparty_slack_user_id"),
+    direction: text("direction", { enum: ["mine", "theirs"] }).notNull(),
+    status: text("status", {
+      enum: ["open", "in_progress", "blocked", "completed", "cancelled"],
+    }).notNull(),
+    reviewStatus: text("review_status", {
+      enum: ["pending_review", "accepted", "rejected"],
+    }).notNull(),
+    dueAt: text("due_at"),
+    nextAction: text("next_action"),
+    completionEvidence: text("completion_evidence"),
+    stalledAt: text("stalled_at"),
+    lastFollowupAt: text("last_followup_at"),
+    closedAt: text("closed_at"),
+    dedupKey: text("dedup_key").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("commitments_dedup_key_uq").on(t.dedupKey),
+    index("commitments_review_status_status_idx").on(t.reviewStatus, t.status),
+  ],
+);
+
+export const commitmentSources = sqliteTable(
+  "commitment_sources",
+  {
+    id: id(),
+    commitmentId: text("commitment_id")
+      .notNull()
+      .references(() => commitments.id),
+    messageId: text("message_id").references(() => slackMessages.id, { onDelete: "set null" }),
+    sourceExternalRef: text("source_external_ref").notNull(),
+    conversationId: text("conversation_id").notNull(),
+    claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("commitment_sources_commitment_id_source_external_ref_uq").on(
+      t.commitmentId,
+      t.sourceExternalRef,
+    ),
+  ],
+);
+
+export const commitmentUpdates = sqliteTable("commitment_updates", {
+  id: id(),
+  commitmentId: text("commitment_id")
+    .notNull()
+    .references(() => commitments.id),
+  actor: text("actor", { enum: ["user", "system", "ai"] }).notNull(),
+  field: text("field").notNull(),
+  fromValue: text("from_value"),
+  toValue: text("to_value"),
+  reason: text("reason"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const outgoingMessages = sqliteTable(
+  "outgoing_messages",
+  {
+    id: id(),
+    approvalId: text("approval_id")
+      .notNull()
+      .unique()
+      .references(() => approvals.id),
+    followupId: text("followup_id").references(() => followups.id),
+    conversationExternalId: text("conversation_external_id").notNull(),
+    threadTs: text("thread_ts"),
+    text: text("text").notNull(),
+    status: text("status", {
+      enum: ["pending", "sending", "sent_unverified", "sent", "failed", "needs_attention"],
+    }).notNull(),
+    claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
+    sentAt: text("sent_at"),
+    verifiedAt: text("verified_at"),
+    verifyAttempts: integer("verify_attempts").notNull().default(0),
+    failure: text("failure"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [index("outgoing_messages_status_idx").on(t.status)],
+);
+
+export const followups = sqliteTable(
+  "followups",
+  {
+    id: id(),
+    commitmentId: text("commitment_id").references(() => commitments.id),
+    origin: text("origin", {
+      enum: ["stalled", "spec_clarity", "urgent_reply", "manual"],
+    }).notNull(),
+    originMessageId: text("origin_message_id").references(() => slackMessages.id),
+    conversationId: text("conversation_id").notNull(),
+    threadTs: text("thread_ts"),
+    recipientSlackUserId: text("recipient_slack_user_id"),
+    draftText: text("draft_text"),
+    confidence: real("confidence"),
+    status: text("status", {
+      enum: [
+        "draft",
+        "awaiting_approval",
+        "sending",
+        "sent",
+        "needs_attention",
+        "discarded",
+        "failed",
+      ],
+    }).notNull(),
+    approvalId: text("approval_id").references(() => approvals.id),
+    outgoingId: text("outgoing_id"),
+    claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [index("followups_status_idx").on(t.status)],
+);
+
+export const followupHistory = sqliteTable("followup_history", {
+  id: id(),
+  followupId: text("followup_id")
+    .notNull()
+    .references(() => followups.id),
+  event: text("event").notNull(),
+  detail: text("detail").notNull(),
+  createdAt: text("created_at").notNull(),
+});

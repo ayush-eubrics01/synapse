@@ -91,6 +91,20 @@ test("people memory settings have the Phase 5 defaults", () => {
   expect(settings.get("people.unknown.minMessages")).toBe(3);
 });
 
+test("phase 6 settings defaults and bounds", () => {
+  const { settings } = setup();
+  expect(settings.get("commitments.extract.debounceMinutes")).toBe(30);
+  expect(settings.get("commitments.extract.batchMax")).toBe(40);
+  expect(settings.get("commitments.stall.waitHours")).toBe(24);
+  expect(settings.get("commitments.reminder.dueSoonHours")).toBe(24);
+  expect(settings.get("commitments.requireReviewForDetected")).toBe(true);
+  expect(settings.get("commitments.models.extract")).toBe("haiku");
+  expect(settings.get("commitments.models.draft")).toBe("haiku");
+  expect(settings.get("outgoing.verify.delaySeconds")).toBe(120);
+  expect(settings.get("outgoing.verify.maxAttempts")).toBe(5);
+  expect(() => settings.set("commitments.extract.batchMax", 61)).toThrow();
+});
+
 test("set then get round-trips and emits one settings.changed", () => {
   const { db, settings } = setup();
   settings.set("jobs.maxAttempts", 5);

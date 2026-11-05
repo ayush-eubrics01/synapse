@@ -11,6 +11,7 @@ export type ErrorKind =
   | "invalid_input"
   | "incomplete_ai_output"
   | "parse_failed"
+  | "needs_attention"
   | "provider_error"
   | "timeout"
   | "unknown";
@@ -26,6 +27,7 @@ export const errorKindSchema = z.enum([
   "invalid_input",
   "incomplete_ai_output",
   "parse_failed",
+  "needs_attention",
   "provider_error",
   "timeout",
   "unknown",
@@ -61,6 +63,7 @@ const DECISIONS: Record<ErrorKind, RetryDecision> = {
   auth_failed: "needs_attention",
   permission_denied: "needs_attention",
   parse_failed: "needs_attention",
+  needs_attention: "needs_attention",
   invalid_input: "fail",
   quota_exhausted: "defer",
   auth_paused: "defer",

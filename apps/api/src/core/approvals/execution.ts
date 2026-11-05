@@ -64,7 +64,7 @@ export function registerApprovalExecution(deps: ApprovalExecutionDeps): void {
           `approvals: execution bookkeeping failed approval=${approvalId} error=${e instanceof Error ? e.name : "unknown"}`,
         );
         throw new JobError({
-          kind: "parse_failed",
+          kind: "needs_attention",
           message: "approval execution bookkeeping failed",
         });
       }
