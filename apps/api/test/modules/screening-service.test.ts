@@ -141,6 +141,9 @@ test("a candidate 30 h old is too_old, kept as candidate, and enqueues nothing",
   handle(id);
   expect(screening(id)).toMatchObject({ route: "skip", skipReason: "too_old", candidate: true });
   expect(assessJobs()).toHaveLength(0);
+  const ev = screenedEvents();
+  expect(ev).toHaveLength(1);
+  expect(ev[0]?.payload).toMatchObject({ messageId: id, candidate: true });
 });
 
 test("old messages are still flagged by the security scan", () => {
@@ -286,4 +289,19 @@ test("screening-rules health is degraded only while a keyword regex is invalid",
   const id = add("blocked");
   handle(id);
   expect(screening(id).matchedRules).toEqual(["blocker"]);
+});
+
+test("enqueue failure rolls back event and job and records error", () => {
+  const queue = (svc as unknown as { deps: { queue: JobQueue } }).deps.queue;
+  const enq = spyOn(queue, "enqueue").mockImplementation(() => {
+    throw new Error("queue boom");
+  });
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  const id = add("prod is down");
+  expect(() => handle(id)).not.toThrow();
+  enq.mockRestore();
+  log.mockRestore();
+  expect(screening(id)).toMatchObject({ error: true, candidate: false });
+  expect(screenedEvents()).toHaveLength(0);
+  expect(assessJobs()).toHaveLength(0);
 });

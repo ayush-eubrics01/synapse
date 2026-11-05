@@ -108,11 +108,12 @@ export class ScreeningService {
     const existing = this.existing(tx, messageId);
     const keep = this.preserved(existing);
     const selfId = settings.get("slack.selfUserId");
-    const write = (
+    const writeRec = (
       rec: Omit<ScreeningRecord, "version" | "assessed" | "fallback" | "notified">,
+      on: DbOrTx = tx,
     ) => {
       const record: ScreeningRecord = { version: 1, ...rec, ...keep };
-      tx.update(slackMessages)
+      on.update(slackMessages)
         .set({ screening: record })
         .where(eq(slackMessages.id, messageId))
         .run();
@@ -120,11 +121,11 @@ export class ScreeningService {
     };
 
     if (m.text === null) {
-      write({ ...EMPTY, route: "skip", skipReason: "expired" });
+      writeRec({ ...EMPTY, route: "skip", skipReason: "expired" });
       return;
     }
     if (selfId !== null && m.senderRef === selfId) {
-      write({ ...EMPTY, route: "skip", skipReason: "own" });
+      writeRec({ ...EMPTY, route: "skip", skipReason: "own" });
       return;
     }
 
@@ -173,32 +174,34 @@ export class ScreeningService {
         skipReason = "too_old";
       }
     }
-    write({ ...result, route, ...(skipReason ? { skipReason } : {}) });
+    // One savepoint: a failed publish or enqueue leaves no record, event or job behind.
+    tx.transaction((t) => {
+      writeRec({ ...result, route, ...(skipReason ? { skipReason } : {}) }, t);
 
-    this.deps.events.publish(tx, {
-      type: "message.screened",
-      aggregateType: "slack_message",
-      aggregateId: messageId,
-      correlationId,
-      payload: {
-        messageId,
-        // Only messages routed to assessment count as candidates downstream.
-        candidate: route === "assess",
-        score: result.score,
-        securityFlag,
-      },
-    });
-
-    if (route === "assess" && !keep.assessed) {
-      const window = settings.get("urgency.assess.batchWindowSeconds");
-      const bucket = Math.floor(clock.now().getTime() / 1000 / window) * window;
-      this.deps.queue.enqueue(tx, {
-        type: "urgency.assess",
-        idempotencyKey: `urgency.batch:${bucket}`,
-        runAfter: new Date((bucket + window) * 1000).toISOString(),
-        priority: 200,
+      this.deps.events.publish(t, {
+        type: "message.screened",
+        aggregateType: "slack_message",
+        aggregateId: messageId,
+        correlationId,
+        payload: {
+          messageId,
+          candidate: result.candidate,
+          score: result.score,
+          securityFlag,
+        },
       });
-    }
+
+      if (route === "assess" && !keep.assessed) {
+        const window = settings.get("urgency.assess.batchWindowSeconds");
+        const bucket = Math.floor(clock.now().getTime() / 1000 / window) * window;
+        this.deps.queue.enqueue(t, {
+          type: "urgency.assess",
+          idempotencyKey: `urgency.batch:${bucket}`,
+          runAfter: new Date((bucket + window) * 1000).toISOString(),
+          priority: 200,
+        });
+      }
+    });
   }
 
   private inThreadWithSelf(
