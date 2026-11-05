@@ -144,7 +144,7 @@ Every `ClaudeJob` lists its prompt parts with a provenance: `untrusted` (Slack/J
 - any request with an `untrusted` part whose `allowedTools` includes a send/write/create/update/delete connector tool, `Bash`, `Edit`, `Write` or `NotebookEdit`
 - any `engineering` request with an `untrusted` part
 - any request without an explicit `--disallowedTools` denylist covering every claude.ai connector tool it doesn't need (including Gmail, Drive and other non-Slack/Jira connectors)
-- any send request with more than one allowed tool, or with arguments not fixed by application code
+- any send request with more than one allowed tool (the arguments the model actually uses are checked after the run against the tool_use input; see integration-contracts.md)
 
 The engineering worker receives only the user-approved task description and repository context. Untrusted parts are wrapped in delimited blocks with a per-run random boundary and labeled as data. After every run that contained untrusted content, `permission_denials` and unexpected tool calls are passed to `security-flags` (ADR-034). The tool catalog classifies each known tool as read or write; unknown tools are treated as write.
 

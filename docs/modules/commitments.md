@@ -212,7 +212,7 @@ Extract and draft: allowed. A detected commitment waits for user review (`review
 | `commitments.reminder.dueSoonHours` | `24` |
 | `commitments.requireReviewForDetected` | `true` |
 | `commitments.models.extract` | `"haiku"` |
-| `commitments.models.draft` | `"haiku"` (follow-up and spec-clarity drafts) |
+| `commitments.models.draft` | `"haiku"` (follow-up drafts; spec clarity uses `commitments.models.extract`) |
 | `outgoing.verify.delaySeconds` | `120` |
 | `outgoing.verify.maxAttempts` | `5` |
 
