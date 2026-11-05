@@ -486,6 +486,25 @@ describe("commitments.queue consumer: spec clarity trigger", () => {
     expect(specJobs()).toHaveLength(4);
   });
 
+  test("global daily cap counts every sender's spec jobs enqueued today", () => {
+    settings.set("commitments.spec.maxPerDay", 2);
+    considered(msg({ text: REQUEST }));
+    db.insert(schema.slackUsers).values({ id: "su-o", externalId: "UOTHER0001", name: "O" }).run();
+    for (let i = 0; i < 2; i++) {
+      const id = msg({ conv: "c-ch", text: `<@${SELF}> ${REQUEST}` });
+      db.update(schema.slackMessages)
+        .set({ senderUserId: "su-o" })
+        .where(eq(schema.slackMessages.id, id))
+        .run();
+      considered(id);
+    }
+    expect(specJobs()).toHaveLength(2);
+    // Yesterday's jobs do not count.
+    db.update(schema.jobs).set({ createdAt: "2026-11-04T10:00:00.000Z" }).run();
+    considered(msg({ text: REQUEST }));
+    expect(specJobs()).toHaveLength(3);
+  });
+
   test("an already-extracted message still gets its clarity check, and extraction is still queued otherwise", () => {
     const id = msg({ text: REQUEST });
     db.update(schema.slackMessages)

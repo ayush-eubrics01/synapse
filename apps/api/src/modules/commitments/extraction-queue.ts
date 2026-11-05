@@ -138,19 +138,23 @@ export class ExtractionQueue {
       .limit(1)
       .get();
     if (open) return false;
-    // Per-sender daily cap, counted from the spec jobs queued today (UTC) for that sender.
+    // Daily caps, counted from the spec jobs queued today (UTC): per sender, and for everyone.
     const dayStart = new Date(now).toISOString().slice(0, 10);
-    const row = tx
-      .select({ n: sql<number>`count(*)` })
-      .from(jobs)
-      .where(
-        and(
-          eq(jobs.type, SPEC_JOB),
-          gte(jobs.createdAt, dayStart),
-          sql`json_extract(${jobs.input}, '$.senderRef') = ${m.senderRef}`,
-        ),
-      )
-      .get();
-    return (row?.n ?? 0) < settings.get("commitments.spec.maxPerSenderPerDay");
+    const today = (sender?: string) =>
+      tx
+        .select({ n: sql<number>`count(*)` })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.type, SPEC_JOB),
+            gte(jobs.createdAt, dayStart),
+            sender === undefined
+              ? undefined
+              : sql`json_extract(${jobs.input}, '$.senderRef') = ${sender}`,
+          ),
+        )
+        .get()?.n ?? 0;
+    if (today() >= settings.get("commitments.spec.maxPerDay")) return false;
+    return today(m.senderRef) < settings.get("commitments.spec.maxPerSenderPerDay");
   }
 }
