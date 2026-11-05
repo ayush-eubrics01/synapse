@@ -38,6 +38,8 @@ export interface CollectRequest {
   afterTs: string;
   beforeTs?: string;
   maxPages: number;
+  /** The queue job driving this run; recorded as claude_runs.job_id (R60 M3). */
+  jobId?: string;
 }
 
 export interface CollectResult {
@@ -50,6 +52,8 @@ export interface CollectResult {
 export interface ThreadFetchRequest {
   conversationId: string;
   parentTs: string;
+  /** The queue job driving this fetch; the batch's first jobId is recorded as claude_runs.job_id (R60 M3). */
+  jobId?: string;
 }
 
 export interface MessageSource {

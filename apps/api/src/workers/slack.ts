@@ -200,6 +200,7 @@ export function registerSlackJobs(deps: SlackJobDeps): {
           afterTs: start.checkpoint,
           beforeTs: start.upperBound,
           maxPages: settings.get("slack.collector.pagesPerRun"),
+          ...(job.id ? { jobId: job.id } : {}),
         },
         ctx.signal,
       );
@@ -289,9 +290,12 @@ export function registerSlackJobs(deps: SlackJobDeps): {
       throw new JobError({ kind: "invalid_input", message: "invalid slack.fetch_thread input" });
     }
     const { conversationId, parentTs } = parsed.data;
-    const found = (await source.fetchThreads([{ conversationId, parentTs }], ctx.signal)).find(
-      (t) => t.conversationId === conversationId && t.parentTs === parentTs,
-    );
+    const found = (
+      await source.fetchThreads(
+        [{ conversationId, parentTs, ...(job.id ? { jobId: job.id } : {}) }],
+        ctx.signal,
+      )
+    ).find((t) => t.conversationId === conversationId && t.parentTs === parentTs);
     if (found) return store.storeThread(conversationId, found.messages);
     db.transaction(
       (tx) => {

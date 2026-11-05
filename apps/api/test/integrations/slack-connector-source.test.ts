@@ -194,7 +194,9 @@ describe("SlackConnectorSource.collect", () => {
     expect(req?.priorityClass).toBe("collection");
     expect(req?.workerProfile).toBe("collector");
     expect(req?.allowedTools).toEqual([SEARCH]);
-    expect(req?.expectedToolNames).toEqual([SEARCH]);
+    // R57: the real provider would discard error results if expectedToolNames were set.
+    expect(req?.expectedToolNames).toBeUndefined();
+    expect(req?.jobId).toBeUndefined();
     expect(req?.maxTurns).toBe(8);
     expect(req?.instructions).toContain(SEARCH);
     expect(req?.instructions).toContain(JSON.stringify(baseArgs));
@@ -270,6 +272,41 @@ describe("SlackConnectorSource.collect", () => {
     ]);
     const e = await failure(source.collect(collectReq, signal));
     expect(e.classified.retryAfter).toBe(new Date((NOW + 86400) * 1000).toISOString());
+  });
+
+  // R57: the fake orchestrator mirrors the real provider without expectedToolNames: the run
+  // succeeds and every tool result (error or not) is returned.
+  test("R57: no search tool_result at all is incomplete_ai_output", async () => {
+    const { source } = setup([tr("ToolSearch", { query: "x" }, "loaded")]);
+    expect((await failure(source.collect(collectReq, signal))).classified.kind).toBe(
+      "incomplete_ai_output",
+    );
+  });
+
+  test("R57: only non-rate search errors is provider_error", async () => {
+    const { source } = setup([
+      tr(SEARCH, baseArgs, "Error: internal_error", true),
+      tr(SEARCH, baseArgs, "Error: internal_error", true),
+    ]);
+    expect((await failure(source.collect(collectReq, signal))).classified.kind).toBe(
+      "provider_error",
+    );
+  });
+
+  test("R57: an error plus a mismatched result is incomplete_ai_output", async () => {
+    const { source } = setup([
+      tr(SEARCH, baseArgs, "Error: internal_error", true),
+      tr(SEARCH, { ...baseArgs, include_bots: true }, fixture("search-channel")),
+    ]);
+    expect((await failure(source.collect(collectReq, signal))).classified.kind).toBe(
+      "incomplete_ai_output",
+    );
+  });
+
+  test("R60 M3: jobId is passed to the orchestrator", async () => {
+    const { source, seen } = setup([tr(SEARCH, baseArgs, fixture("search-channel"))]);
+    await source.collect({ ...collectReq, jobId: "job-9" }, signal);
+    expect(seen[0]?.jobId).toBe("job-9");
   });
 
   test("R42: message older than afterTs is rejected and counted", async () => {
@@ -368,6 +405,48 @@ describe("SlackConnectorSource.fetchThreads", () => {
     );
     expect(out[0]?.messages).toHaveLength(2);
     expect(out[0]?.rejected).toBe(1);
+  });
+
+  test("R57: no thread tool_result at all is incomplete_ai_output, never unavailable", async () => {
+    const { source } = setup([]);
+    const e = await failure(
+      source.fetchThreads([{ conversationId: "D0SYNTHDM01", parentTs: PARENT }], signal),
+    );
+    expect(e.classified.kind).toBe("incomplete_ai_output");
+  });
+
+  test("R57: a non-rate thread error leaves the pair unavailable", async () => {
+    const { source } = setup([
+      tr(THREAD, threadArgs("D0SYNTHDM01", PARENT), "Error: thread_not_found", true),
+    ]);
+    const out = await source.fetchThreads(
+      [{ conversationId: "D0SYNTHDM01", parentTs: PARENT }],
+      signal,
+    );
+    expect(out).toEqual([]);
+  });
+
+  test("R57: a rate-limited thread error is rate_limited", async () => {
+    const { source } = setup([
+      tr(THREAD, threadArgs("D0SYNTHDM01", PARENT), "HTTP 429 Retry-After: 10", true),
+    ]);
+    const e = await failure(
+      source.fetchThreads([{ conversationId: "D0SYNTHDM01", parentTs: PARENT }], signal),
+    );
+    expect(e.classified.kind).toBe("rate_limited");
+    expect(e.classified.retryAfter).toBe(new Date((NOW + 10) * 1000).toISOString());
+  });
+
+  test("R60 M3: thread jobId reaches the orchestrator; expectedToolNames unset", async () => {
+    const { source, seen } = setup([
+      tr(THREAD, threadArgs("D0SYNTHDM01", PARENT), fixture("read-thread")),
+    ]);
+    await source.fetchThreads(
+      [{ conversationId: "D0SYNTHDM01", parentTs: PARENT, jobId: "job-t" }],
+      signal,
+    );
+    expect(seen[0]?.jobId).toBe("job-t");
+    expect(seen[0]?.expectedToolNames).toBeUndefined();
   });
 
   test("R42: parent ts differing from the requested one drops the result", async () => {

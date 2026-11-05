@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","tools":["ToolSearch"],"mcp_servers":[{"name":"claude.ai Slack","status":"connected"}]}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_2","name":"mcp__claude_ai_Slack__slack_read_thread","input":{"channel_id":"D0SYNTHDM01","message_ts":"1793872920.000500","limit":100}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"Error: ratelimited. Retry-After: 45","is_error":true}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":3,"duration_ms":8000,"total_cost_usd":0.0082,"usage":{"input_tokens":8,"output_tokens":6,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"permission_denials":[],"result":"DONE"}

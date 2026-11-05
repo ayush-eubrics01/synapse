@@ -88,14 +88,19 @@ export class SlackConnectorSource implements MessageSource {
         priorityClass: req.beforeTs ? "backfill" : "collection",
         instructions,
         allowedTools: [SEARCH],
-        expectedToolNames: [SEARCH],
+        // R57: no expectedToolNames. The provider would discard error tool_results (rate limits),
+        // so this source enforces ADR-026 itself below.
         maxTurns: n + 3,
+        ...(req.jobId ? { jobId: req.jobId } : {}),
       },
       signal,
     );
 
     const searchResults = result.toolResults.filter((r) => r.toolName === SEARCH);
     this.throwIfRateLimited(searchResults);
+    if (searchResults.length === 0) {
+      throw new JobError({ kind: "incomplete_ai_output", message: "no search tool result" });
+    }
 
     const upper = beforeSec !== undefined ? Number(req.beforeTs) : this.nowSec() + SKEW_SECONDS;
     const lower = afterSec;
@@ -141,6 +146,10 @@ export class SlackConnectorSource implements MessageSource {
     }
 
     if (pages.length === 0) {
+      if (searchResults.every((r) => r.isError)) {
+        // R57: only non-rate error results: a real tool failure, retried.
+        throw new JobError({ kind: "provider_error", message: "slack search returned an error" });
+      }
       throw new JobError({
         kind: "incomplete_ai_output",
         message: sawFirstMismatch
@@ -166,6 +175,7 @@ export class SlackConnectorSource implements MessageSource {
     for (const r of requests) wanted.set(`${r.conversationId}\u0000${r.parentTs}`, r);
     const unique = [...wanted.values()];
     if (unique.length === 0) return [];
+    const jobId = requests.find((r) => r.jobId)?.jobId;
 
     const argsOf = (r: ThreadFetchRequest): Args => ({
       channel_id: r.conversationId,
@@ -184,14 +194,19 @@ export class SlackConnectorSource implements MessageSource {
         priorityClass: "collection",
         instructions,
         allowedTools: [THREAD],
-        expectedToolNames: [THREAD],
+        // R57: no expectedToolNames (see collect); enforced below.
         maxTurns: unique.length + 3,
+        ...(jobId ? { jobId } : {}),
       },
       signal,
     );
 
     const threadResults = result.toolResults.filter((r) => r.toolName === THREAD);
     this.throwIfRateLimited(threadResults);
+    // R57: a pair is only ever "unavailable" after a real tool result; none at all is a failed run.
+    if (threadResults.length === 0) {
+      throw new JobError({ kind: "incomplete_ai_output", message: "no thread tool result" });
+    }
 
     const maxTs = this.nowSec() + SKEW_SECONDS;
     const answered = new Set<string>();
