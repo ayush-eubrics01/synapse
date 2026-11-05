@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import { type Job, JobError } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
+import { eq } from "drizzle-orm";
 import { AuditLogger } from "../../src/core/audit/audit";
 import { SettingsService } from "../../src/core/config/settings";
 import { LiveBus } from "../../src/core/events/live-bus";
@@ -294,3 +295,63 @@ describe("commitments.draft_followup through the real provider and validator", (
 });
 
 const ctxOf = () => ({ signal, checkpoint() {}, getCheckpoint: () => undefined }) as never;
+
+describe("commitments.check_spec_clarity through the real provider and validator", () => {
+  test("unclear bug report: numbered draft in the DM, ToolSearch only, text only inside UNTRUSTED blocks", async () => {
+    const { db, argvFile, handlers, queue } = build("spec_clarity_ok", 2);
+    db.update(schema.slackMessages)
+      .set({ text: `${BODY} the export is broken again, can you take a look at it soon` })
+      .where(eq(schema.slackMessages.id, "m-c-2"))
+      .run();
+    const jobId = db.transaction(
+      (tx) =>
+        queue.enqueue(tx, {
+          type: "commitments.check_spec_clarity",
+          idempotencyKey: "spec",
+          input: { messageId: "m-c-2" },
+        }).id,
+    );
+    const r = await (handlers.get("commitments.check_spec_clarity")?.handler(
+      {
+        id: jobId,
+        type: "commitments.check_spec_clarity",
+        attempts: 1,
+        maxAttempts: 3,
+        input: { messageId: "m-c-2" },
+      } as unknown as Job,
+      ctxOf(),
+    ) as Promise<unknown>);
+    expect(r).toMatchObject({ drafted: true, questions: 2 });
+    const f = db.select().from(schema.followups).all();
+    expect(f).toHaveLength(1);
+    expect(f[0]).toMatchObject({
+      origin: "spec_clarity",
+      originMessageId: "m-c-2",
+      status: "draft",
+      recipientSlackUserId: "UPRIYA0001",
+      threadTs: null,
+      confidence: null,
+    });
+    expect(f[0]?.draftText).toBe(
+      "A few questions so I can pick this up:\n1. What steps reproduce the crash?\n2. Which environment and version does it happen on?",
+    );
+    const h = db.select().from(schema.followupHistory).all();
+    expect(h).toHaveLength(1);
+    expect(h[0]).toMatchObject({ event: "clarity_missing", detail: "steps,environment" });
+    const argv = JSON.parse(readFileSync(argvFile, "utf8")) as string[];
+    const at = (flag: string) => argv[argv.indexOf(flag) + 1];
+    expect(at("--allowedTools")).toBe("ToolSearch");
+    const prompt = at("-p") as string;
+    expect(prompt).toContain("UNTRUSTED");
+    expect(prompt).toContain("slack message m-c-2 by them:UPRIYA0001");
+    const outside = prompt.replace(/<<<UNTRUSTED[\s\S]*?<<<END \w+>>>/g, "");
+    expect(outside).not.toContain(BODY);
+    expect(
+      db
+        .select()
+        .from(schema.claudeRuns)
+        .all()
+        .map((x) => x.status),
+    ).toEqual(["succeeded"]);
+  });
+});

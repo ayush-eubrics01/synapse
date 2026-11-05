@@ -4,11 +4,15 @@ import type { Clock } from "@synapse/shared";
 import { eq } from "drizzle-orm";
 import type { SettingsService } from "../../core/config/settings";
 import type { JobQueue } from "../../core/jobs/queue";
+import { looksLikeTaskRequest } from "../../intelligence/commitments/clarity-prompt";
+import { selfMentionNeedles } from "../people/discovery";
 import { interactsWithUser } from "../people/interaction";
 import { COMMITMENTS_CONCURRENCY_GROUP } from "./store";
 
 export const EXTRACT_JOB = "commitments.extract";
 export const EXTRACT_PRIORITY = 50;
+export const SPEC_JOB = "commitments.check_spec_clarity";
+export const SPEC_PRIORITY = 45;
 
 const DAY_MS = 86_400_000;
 const MINUTE_MS = 60_000;
@@ -61,11 +65,28 @@ export class ExtractionQueue {
       .innerJoin(slackConversations, eq(slackConversations.id, slackMessages.conversationId))
       .where(eq(slackMessages.id, messageId))
       .get();
-    if (!m || m.text === null || m.expiredAt !== null || m.extractedAt !== null) return;
+    if (!m || m.text === null || m.expiredAt !== null) return;
     const now = clock.now().getTime();
     const sentMs = Date.parse(m.sentAt);
-    // Old backfill messages are never extracted.
+    // Old backfill messages are never extracted or checked.
     if (Number.isNaN(sentMs) || sentMs < now - settings.get("people.history.days") * DAY_MS) return;
+
+    // Spec clarity: a task-like request from someone else, addressed to the user.
+    if (
+      m.senderRef !== selfId &&
+      looksLikeTaskRequest(m.text) &&
+      (m.conversationType === "im" || selfMentionNeedles(selfId).some((n) => m.text?.includes(n)))
+    ) {
+      queue.enqueue(tx, {
+        type: SPEC_JOB,
+        idempotencyKey: `commitments.spec:${messageId}`,
+        input: { messageId },
+        concurrencyGroup: COMMITMENTS_CONCURRENCY_GROUP,
+        priority: SPEC_PRIORITY,
+      });
+    }
+
+    if (m.extractedAt !== null) return;
     // The user's own messages count: they make promises too.
     if (m.senderRef !== selfId && !interactsWithUser(tx, m, selfId)) return;
 
