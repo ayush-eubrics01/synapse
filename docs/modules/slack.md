@@ -104,14 +104,14 @@ The May 2025 throttle for non-Marketplace apps (`conversations.history`/`replies
 |---|---|---|
 | Incremental poll (every 10 min) | 1 search, plus 1 more per extra 20 new messages | About 6 searches/hour. Far below limits |
 | Backfill (90 days ≈ 115–270 pages) | 1 search per page | At most 5 pages per run (a burst), at least 3 minutes between runs: about 100 pages/hour, done in roughly 1.5–3 hours. On `rate_limited`, double the gap (up to 30 min) and resume from the checkpoint |
-| Thread fetches | 1 `slack_read_thread` per unknown parent | Batched per run, at most 20 per run |
+| Thread fetches | 1 `slack_read_thread` per unknown parent | One job per missing parent, uncapped; jobs run one at a time (group `slack.threads`, R47) |
 | Daily per-user search limit | unknown | Count searches per day in `integration_sync_states`. If a daily-limit error appears, pause the backfill until the next day, keep incremental polling, and record the count it happened at |
 
 The backfill also yields to quota and to the user's own Claude Code activity (ADR-029, ADR-036).
 
 ## Implementation notes (Phase 3)
 
-Where the Phase 3 code differs from, or is stricter than, the sections above. Rulings are in the phase 3 plan (R35-R55).
+Where the Phase 3 code differs from, or is stricter than, the sections above. Rulings are in `docs/superpowers/plans/2026-11-05-phase-3-followups.md` (R35-R56).
 
 ### Collection and parsing
 
@@ -127,7 +127,7 @@ Where the Phase 3 code differs from, or is stricter than, the sections above. Ru
 - **Checkpoint rules (R48).** After a page the checkpoint becomes max(current, min(newest ts of the page, now)). It never moves backwards and never beyond now, and only pages from a verified chain are persisted.
 - **`SyncStateService`** owns `integration_sync_states` rows for the streams `slack.messages` and `slack.backfill`: status, checkpoint, pages done, per-day search count, stall count, generation, last success and last error.
 - **Thread fetch jobs (R45, R47).** A reply whose parent is not stored enqueues one `slack.fetch_thread` job per missing parent, with no cap. The idempotency key `slack.thread:<conversation>:<parentTs>` prevents duplicates. Jobs run one at a time (group `slack.threads`) at lower priority than collection. The parent `ts` must equal the requested one. An unanswered request completes and writes the audit row `slack.thread_unavailable` (R46). Thread parse errors drop only that thread.
-- **Retention.** Message text, sender name and email are cleared after 180 days (`slack.retention.days`). Ids, permalinks and derived records stay. `text` is `null` in the API afterwards.
+- **Retention.** After `retention.slackContentDays` (default 180) days, `expireContent` clears `slack_messages.text` and `fullNotes` and sets `contentExpiredAt` for messages older than the cutoff. `slack_users` names and emails are kept as the people directory. Ids, permalinks and derived records stay. `text` is `null` in the API afterwards.
 
 ### Jobs
 
@@ -204,9 +204,8 @@ Read Slack: allowed. Send, schedule or draft a message, react, create a conversa
 | `slack.collection.maxPagesPerRun` | `5` |
 | `slack.backfill.minMinutesBetweenRuns` | `3` |
 | `slack.backfill.maxBackoffMinutes` | `30` |
-| `slack.threads.maxFetchesPerRun` | `20` |
 | `slack.backfill.days` | `90` |
-| `slack.retention.days` | `180` |
+| `retention.slackContentDays` | `180` |
 | `slack.collection.conversationTypes` | `im,mpim,private_channel,public_channel` |
 | `slack.collection.onlyMyChannels` | `false` |
 

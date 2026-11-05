@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { MessagePage, SourceMessage } from "@synapse/contracts";
-import { parseArgs, summarize } from "../slack-smoke";
+import { cleanupDir, parseArgs, summarize } from "../slack-smoke";
 
 test("parseArgs: --pages defaults to 1 and accepts 1..3", () => {
   expect(parseArgs([])).toEqual({ pages: 1 });
@@ -78,4 +81,11 @@ test("summarize reports an error kind only", () => {
   }).join("\n");
   expect(out).toContain("run: error (parse_failed)");
   expect(out).toContain("pages: 0");
+});
+
+test("cleanupDir removes the temp dir and its contents", () => {
+  const d = mkdtempSync(join(tmpdir(), "slack-smoke-test-"));
+  writeFileSync(join(d, "x.db"), "x");
+  cleanupDir(d);
+  expect(existsSync(d)).toBe(false);
 });

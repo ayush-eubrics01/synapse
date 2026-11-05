@@ -34,6 +34,11 @@ export function parseArgs(argv: string[]): { pages: number } {
   return { pages };
 }
 
+/** Removes the temp dir; used by the finally block and by the signal handlers. */
+export function cleanupDir(dir: string): void {
+  rmSync(dir, { recursive: true, force: true });
+}
+
 export interface SmokeOutcome {
   pages: MessagePage[];
   persisted: { inserted: number; duplicates: number; threadFetches: number }[];
@@ -75,10 +80,18 @@ async function main(): Promise<number> {
     throw e;
   }
   const dir = mkdtempSync(join(tmpdir(), "synapse-slack-smoke-"));
-  const config = { ...loadConfig(process.env), dbPath: join(dir, "smoke.db") };
-  const c = createContainer(config);
+  const onSignal = (code: number) => () => {
+    cleanupDir(dir);
+    process.exit(code);
+  };
+  process.on("SIGINT", onSignal(130));
+  process.on("SIGTERM", onSignal(143));
+  let sqlite: { close(): void } | undefined;
   const outcome: SmokeOutcome = { pages: [], persisted: [], searches: 0, status: "ok" };
   try {
+    const config = { ...loadConfig(process.env), dbPath: join(dir, "smoke.db") };
+    const c = createContainer(config);
+    sqlite = c.sqlite;
     const source = new SlackConnectorSource({ orchestrator: c.orchestrator, clock: c.clock });
     const afterTs = String(Math.floor(c.clock.now().getTime() / 1000) - 86400);
     try {
@@ -93,8 +106,8 @@ async function main(): Promise<number> {
     for (const line of summarize(outcome)) console.log(line);
     return outcome.status === "ok" ? 0 : 1;
   } finally {
-    c.sqlite.close();
-    rmSync(dir, { recursive: true, force: true });
+    sqlite?.close();
+    cleanupDir(dir);
   }
 }
 
