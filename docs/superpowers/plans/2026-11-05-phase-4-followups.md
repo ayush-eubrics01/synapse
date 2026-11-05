@@ -31,11 +31,11 @@ This confirmed real-format end-to-end behaviour:
 
 | # | Item | Why it matters for Phase 5 |
 |---|---|---|
-| G1 | **Move the urgent-item and flag DTOs into `packages/contracts`.** They are currently duplicated in modules and `apps/web/lib/api.ts` (CLAUDE.md rule 7) | People pages will reuse them |
-| G2 | **Refresh `people.name`/`email` from `slack_users`.** `ensurePerson` currently inserts once and never updates | People Memory profiles key on `people` |
-| G3 | **Clarify `setPriority` semantics.** It replaces every field, so omitted fields reset. Either make it a patch or document it at the API | The People UI will edit priority alongside profiles |
+| G1 | **DONE (Phase 5)** **Move the urgent-item and flag DTOs into `packages/contracts`.** They are currently duplicated in modules and `apps/web/lib/api.ts` (CLAUDE.md rule 7) _How: DTOs now live in `packages/contracts` and the web app imports them._ | People pages will reuse them |
+| G2 | **DONE (Phase 5)** **Refresh `people.name`/`email` from `slack_users`.** `ensurePerson` currently inserts once and never updates _How: `ensurePerson` refreshes name and email from `slack_users` on every call._ | People Memory profiles key on `people` |
+| G3 | **DONE (Phase 5)** **Clarify `setPriority` semantics.** It replaces every field, so omitted fields reset. Either make it a patch or document it at the API _How: `setPriority` is a patch (omitted fields keep their value, `rationale: null` clears it), documented in `people-memory.md`._ | The People UI will edit priority alongside profiles |
 | G4 | **Review the remaining borderline high-severity flag patterns** with real data: sentence-initial `Edit(`/`Write(`, "change the system prompt wording", "act as an assistant" in chatbot context, and `hidden.unicode` at `high` | Per-person flag history becomes part of the person page |
-| G5 | **Version bump path for starter flag rules.** The seeded rules are a snapshot, so any `STARTER_RULES` change needs a new version | Rule tuning will start once real data flows |
+| G5 | **DONE (Phase 5)** **Version bump path for starter flag rules.** The seeded rules are a snapshot, so any `STARTER_RULES` change needs a new version _How: `STARTER_RULES_VERSION` plus `init()` inserts and activates a higher starter version, custom higher versions stay active._ | Rule tuning will start once real data flows |
 
 ## Deferred minors (polish)
 

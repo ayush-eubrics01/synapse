@@ -442,7 +442,7 @@ describe("people.generate_initial_profile", () => {
       profile: profile({ communication: [obs("a", ["ghost"]), obs("b", ["m999"])] }),
       suspectedInjection: noInj,
     };
-    expect(await runJob(personId())).toEqual({ empty: true });
+    expect(await runJob(personId())).toMatchObject({ empty: true, dropped: 2 });
     expect(recs()).toHaveLength(0);
     expect(db.select().from(schema.approvals).all()).toHaveLength(0);
     expect(db.select().from(schema.peopleProfileEvidence).all()).toHaveLength(0);
@@ -655,7 +655,7 @@ describe("review fixes", () => {
         createdAt: NOW,
       })
       .run();
-    expect(await runJob(pid)).toEqual({ skipped: "same_as_rejected" });
+    expect(await runJob(pid)).toMatchObject({ skipped: "same_as_rejected" });
     expect(recs()).toHaveLength(1);
     expect(db.select().from(schema.approvals).all()).toHaveLength(0);
   });

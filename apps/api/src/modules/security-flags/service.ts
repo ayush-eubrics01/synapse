@@ -15,7 +15,7 @@ import type { NotificationService } from "../../core/notifications/notifications
 import { safePermalink } from "../inbox/permalink";
 import type { PeopleService } from "../people/service";
 import { renderExcerpt, scanText } from "./detector";
-import { type FlagRule, STARTER_RULES } from "./rules";
+import { type FlagRule, STARTER_RULES, STARTER_RULES_VERSION } from "./rules";
 
 export type Flag = typeof schema.securityFlags.$inferSelect;
 export type ReviewStatus = "acknowledged" | "contacted" | "dismissed";
@@ -73,19 +73,49 @@ const STARTER_FALLBACK_VERSION = 0;
 export class SecurityFlagsService {
   constructor(private readonly deps: SecurityFlagsDeps) {}
 
-  /** Seeds version 1 from the starter rules on an empty table. Called once at startup. */
-  init(): void {
+  /**
+   * Stores the starter set as STARTER_RULES_VERSION when that version is absent and makes it active
+   * when it is higher than the active version (or nothing is active). A higher custom version stays
+   * active. Called once at startup; the argument exists for tests.
+   */
+  init(
+    starter: { version: number; rules: FlagRule[] } = {
+      version: STARTER_RULES_VERSION,
+      rules: STARTER_RULES,
+    },
+  ): void {
     const { db, clock } = this.deps;
-    db.insert(securityFlagRules)
-      .values({
-        id: newId(),
-        version: 1,
-        rules: STARTER_RULES,
-        active: true,
-        createdAt: isoNow(clock),
-      })
-      .onConflictDoNothing({ target: securityFlagRules.version })
-      .run();
+    db.transaction((tx) => {
+      const rows = tx
+        .select({ version: securityFlagRules.version, active: securityFlagRules.active })
+        .from(securityFlagRules)
+        .all();
+      const activeVersion = Math.max(0, ...rows.filter((r) => r.active).map((r) => r.version));
+      const present = rows.some((r) => r.version === starter.version);
+      const activate = starter.version > activeVersion;
+      if (activate) {
+        tx.update(securityFlagRules)
+          .set({ active: false })
+          .where(eq(securityFlagRules.active, true))
+          .run();
+      }
+      if (!present) {
+        tx.insert(securityFlagRules)
+          .values({
+            id: newId(),
+            version: starter.version,
+            rules: starter.rules,
+            active: activate,
+            createdAt: isoNow(clock),
+          })
+          .run();
+      } else if (activate) {
+        tx.update(securityFlagRules)
+          .set({ active: true })
+          .where(eq(securityFlagRules.version, starter.version))
+          .run();
+      }
+    });
   }
 
   /** The rules in effect. Read-only: invalid stored rules fall back, an empty table uses the starter set. */
@@ -130,7 +160,11 @@ export class SecurityFlagsService {
       .orderBy(desc(securityFlagRules.version))
       .all();
     // Before init() there is nothing stored: the starter set applies, not a degraded state.
-    if (rows.length === 0) return { rules: { version: 1, rules: STARTER_RULES }, fallback: false };
+    if (rows.length === 0)
+      return {
+        rules: { version: STARTER_RULES_VERSION, rules: STARTER_RULES },
+        fallback: false,
+      };
     const active = rows.find((r) => r.active);
     if (active) {
       const rules = this.parseRules(active.version, active.raw);

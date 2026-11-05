@@ -132,7 +132,7 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       const parsed = parseStructured(result.finalText, initialProfileOutputSchema);
       if (!parsed.ok) throw new JobError({ kind: "incomplete_ai_output", message: parsed.reason });
       const { profile, suspectedInjection } = parsed.value;
-      const { content } = validateEvidence(
+      const { content, dropped } = validateEvidence(
         profile,
         new Set(byId.keys()),
         settings.get("people.recommendation.minConfidence") as Confidence,
@@ -141,7 +141,7 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       // R1: the message whose text holds the model's quote, else the newest provided one.
       const flagged = flaggedMessage(used, suspectedInjection, newest);
 
-      return db.transaction(
+      const outcome = db.transaction(
         (tx) => {
           if (suspectedInjection.detected) {
             deps.securityFlags.recordAiFlag(tx, flagged, runId, suspectedInjection);
@@ -159,6 +159,8 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
         },
         { behavior: "immediate" },
       );
+      // Counts only (the smoke script reads them): history sent, observations dropped by validation.
+      return { ...outcome, history: items.length, dropped };
     } catch (err) {
       const { classified, rethrow } = wrapFailure(err);
       if (!ran) safely(() => failedRunFlags(job.id, [newest], classified, before));
