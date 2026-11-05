@@ -3,6 +3,7 @@
 import type {
   ApprovalView,
   CandidatesResponse,
+  CommitmentFilter,
   HealthReport,
   Job,
   PersonDetail,
@@ -13,17 +14,26 @@ import {
   acceptSuggestion,
   type ClaudeRun,
   type ClaudeStatus,
+  type CommitmentEditsDto,
+  type CommitmentStatusDto,
+  type CommitmentViewDto,
   confirmSlackIdentity,
   decideApproval,
+  decideProposal,
+  discardFollowup,
   discardRecommendation,
   dismissSuggestion,
+  draftFollowup,
   evaluatePerson,
   type FlagReviewStatus,
+  type FollowupViewDto,
   type GroupedFlagsDto,
   getApprovals,
   getCandidates,
   getClaudeRuns,
   getClaudeStatus,
+  getCommitments,
+  getFollowups,
   getHealth,
   getInboxMessages,
   getJobs,
@@ -42,10 +52,13 @@ import {
   requestUrgentReply,
   resolveOutgoing,
   retryApply,
+  reviewCommitment,
   reviewFlag,
   type SecurityFlagDto,
   type SlackIdentityDto,
   type SlackStatusDto,
+  sendFollowup,
+  setCommitmentStatus,
   setPersonPriority,
   setUrgentStatus,
   skipUnreadablePage,
@@ -59,6 +72,8 @@ import { LIVE_EVENT_TYPES } from "../lib/live-events";
 import type { Decision } from "../lib/people-decision";
 import { ApprovalsList } from "./components/ApprovalsList";
 import { ClaudePanel } from "./components/ClaudePanel";
+import { CommitmentsPanel } from "./components/CommitmentsPanel";
+import { FollowupDrafts } from "./components/FollowupDrafts";
 import { HealthBadge } from "./components/HealthBadge";
 import { IdentitySetup } from "./components/IdentitySetup";
 import { InboxPanel } from "./components/InboxPanel";
@@ -90,27 +105,36 @@ export default function Dashboard() {
   const [expanded, setExpanded] = useState<string[]>([]);
   const [history, setHistory] = useState<Record<string, SecurityFlagDto[]>>({});
   const expandedRef = useRef<string[]>([]);
+  const [commitmentFilter, setCommitmentFilter] = useState<CommitmentFilter>("all");
+  const commitmentFilterRef = useRef<CommitmentFilter>("all");
+  const [commitments, setCommitments] = useState<CommitmentViewDto[]>([]);
+  const [reviewQueue, setReviewQueue] = useState<CommitmentViewDto[]>([]);
+  const [followups, setFollowups] = useState<FollowupViewDto[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const openUser = personRef.current;
-    const [h, a, j, cs, cr, ss, im, ug, sf, pp, id, cd, rc, pd] = await Promise.allSettled([
-      getHealth(),
-      getApprovals(),
-      getJobs(20),
-      getClaudeStatus(),
-      getClaudeRuns(10),
-      getSlackStatus(),
-      getInboxMessages(50),
-      getUrgent("open"),
-      getSecurityFlags(false),
-      getPeople(),
-      getSlackIdentity(),
-      getCandidates(50),
-      getRecommendations(),
-      openUser ? getPersonProfile(openUser) : Promise.resolve(null),
-    ]);
+    const [h, a, j, cs, cr, ss, im, ug, sf, pp, id, cd, rc, cm, rq, fu, pd] =
+      await Promise.allSettled([
+        getHealth(),
+        getApprovals(),
+        getJobs(20),
+        getClaudeStatus(),
+        getClaudeRuns(10),
+        getSlackStatus(),
+        getInboxMessages(50),
+        getUrgent("open"),
+        getSecurityFlags(false),
+        getPeople(),
+        getSlackIdentity(),
+        getCandidates(50),
+        getRecommendations(),
+        getCommitments(commitmentFilterRef.current),
+        getCommitments("review"),
+        getFollowups(),
+        openUser ? getPersonProfile(openUser) : Promise.resolve(null),
+      ]);
     if (h.status === "fulfilled") setHealth(h.value);
     else setHealth(null);
     if (a.status === "fulfilled") setApprovals(a.value);
@@ -125,6 +149,9 @@ export default function Dashboard() {
     if (id.status === "fulfilled") setIdentity(id.value);
     if (cd.status === "fulfilled") setCandidates(cd.value);
     if (rc.status === "fulfilled") setRecommendations(rc.value);
+    if (cm.status === "fulfilled") setCommitments(cm.value);
+    if (rq.status === "fulfilled") setReviewQueue(rq.value);
+    if (fu.status === "fulfilled") setFollowups(fu.value);
     // The open profile is refetched with everything else; if that fails, the stale profile closes.
     if (openUser && personRef.current === openUser) {
       if (pd.status === "fulfilled") setPerson(pd.value);
@@ -143,7 +170,7 @@ export default function Dashboard() {
       });
       return next;
     });
-    const failed = [h, a, j, cs, cr, ss, im, ug, sf, pp, id, cd, rc].find(
+    const failed = [h, a, j, cs, cr, ss, im, ug, sf, pp, id, cd, rc, cm, rq, fu].find(
       (r) => r.status === "rejected",
     );
     const message = failed?.status === "rejected" ? String(failed.reason) : null;
@@ -247,6 +274,38 @@ export default function Dashboard() {
         items={urgent}
         onStatus={(id: string, s: UrgencyStatusDto) => void act(() => setUrgentStatus(id, s))}
         onReply={(id: string, text: string) => void act(() => requestUrgentReply(id, text))}
+        onResolve={(id: string, d: ResolveDecisionDto) => void act(() => resolveOutgoing(id, d))}
+      />
+      <h2>Commitments</h2>
+      <CommitmentsPanel
+        queue={reviewQueue}
+        items={commitments}
+        filter={commitmentFilter}
+        onFilter={(f: CommitmentFilter) => {
+          commitmentFilterRef.current = f;
+          setCommitmentFilter(f);
+          void refresh();
+        }}
+        onReview={(id: string, d: "accept" | "reject", edits?: CommitmentEditsDto) =>
+          void act(() => reviewCommitment(id, d, edits))
+        }
+        onStatus={(id: string, s: CommitmentStatusDto) =>
+          void act(() => setCommitmentStatus(id, s))
+        }
+        onProposal={(id: string, accept: boolean) => void act(() => decideProposal(id, accept))}
+        onDraftFollowup={(id: string) =>
+          void act(async () => {
+            const r = await draftFollowup(id);
+            if (!r.queued)
+              throw new Error("A follow-up draft is already queued for this commitment");
+          })
+        }
+      />
+      <h2>Follow-up drafts</h2>
+      <FollowupDrafts
+        items={followups}
+        onSend={(id: string, text: string) => void act(() => sendFollowup(id, text))}
+        onDiscard={(id: string) => void act(() => discardFollowup(id))}
         onResolve={(id: string, d: ResolveDecisionDto) => void act(() => resolveOutgoing(id, d))}
       />
       <h2>Red flags</h2>

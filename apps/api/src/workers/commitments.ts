@@ -380,18 +380,28 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
     c.closedAt !== null || c.status === "completed" || c.status === "cancelled";
 
   const draftFollowup = async (job: Job, ctx: JobContext) => {
-    const input = job.input as { commitmentId?: unknown; stalledAt?: unknown } | null;
+    const input = job.input as {
+      commitmentId?: unknown;
+      stalledAt?: unknown;
+      manual?: unknown;
+      origin?: unknown;
+    } | null;
     const commitmentId = typeof input?.commitmentId === "string" ? input.commitmentId : null;
     if (!commitmentId) {
       throw new JobError({ kind: "invalid_input", message: "commitmentId is required" });
     }
+    // A manual request (the user asked for it) skips the stall check only.
+    const manual = input?.manual === true;
+    const origin =
+      manual && input?.origin === "manual" ? ("manual" as const) : ("stalled" as const);
     const selfId = settings.get("slack.selfUserId");
     if (!selfId) {
       // Clear the stall so the commitment can stall again (and be drafted) once identity is set.
-      db.update(commitments)
-        .set({ stalledAt: null, updatedAt: deps.clock.now().toISOString() })
-        .where(eq(commitments.id, commitmentId))
-        .run();
+      if (!manual)
+        db.update(commitments)
+          .set({ stalledAt: null, updatedAt: deps.clock.now().toISOString() })
+          .where(eq(commitments.id, commitmentId))
+          .run();
       return { skipped: "no_identity" };
     }
 
@@ -400,8 +410,9 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
       if (!c) return { skipped: "closed" as const };
       if (c.reviewStatus !== "accepted" || isClosed(c)) return { skipped: "closed" as const };
       if (
-        c.stalledAt === null ||
-        (typeof input?.stalledAt === "string" && input.stalledAt !== c.stalledAt)
+        !manual &&
+        (c.stalledAt === null ||
+          (typeof input?.stalledAt === "string" && input.stalledAt !== c.stalledAt))
       ) {
         return { skipped: "not_stalled" as const };
       }
@@ -547,7 +558,12 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
       return db.transaction(
         (tx) => {
           const c = tx.select().from(commitments).where(eq(commitments.id, commitmentId)).get();
-          if (!c || c.stalledAt === null || isClosed(c) || hasLiveFollowup(tx, commitmentId)) {
+          if (
+            !c ||
+            (!manual && c.stalledAt === null) ||
+            isClosed(c) ||
+            hasLiveFollowup(tx, commitmentId)
+          ) {
             return { skipped: "raced" };
           }
           const now = deps.clock.now().toISOString();
@@ -556,7 +572,7 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
             .values({
               id: followupId,
               commitmentId,
-              origin: "stalled",
+              origin,
               conversationId: prepared.conversationId,
               threadTs: prepared.threadTs,
               recipientSlackUserId: prepared.owner,
@@ -573,7 +589,7 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
               .insert(followupHistory)
               .values({ id: newId(), followupId, event, detail, createdAt: now })
               .run();
-          history("draft_created", "stalled");
+          history("draft_created", origin);
           if (prepared.noThread) history("noThread", "no_thread");
           if (value.suspectedInjection.detected && flagged) {
             securityFlags.recordAiFlag(tx, flagged, runId, value.suspectedInjection);

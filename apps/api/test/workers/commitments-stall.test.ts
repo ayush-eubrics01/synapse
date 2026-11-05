@@ -632,3 +632,38 @@ describe("commitments.draft_followup", () => {
     });
   });
 });
+
+describe("commitments.draft_followup manual (Task 9)", () => {
+  const manual = (id: string) => ({ commitmentId: id, manual: true, origin: "manual" });
+
+  test("a manual request drafts an unstalled commitment with origin manual", async () => {
+    const id = commitment({ sourceId: msg({ from: "self" }), stalledAt: null });
+    const r = await call("commitments.draft_followup", manual(id));
+    expect(r).toMatchObject({ drafted: true });
+    expect(followups()[0]).toMatchObject({ commitmentId: id, origin: "manual", status: "draft" });
+    const h = db.select().from(schema.followupHistory).all();
+    expect(h.map((x) => x.detail)).toContain("manual");
+  });
+
+  test("manual still skips a closed commitment and an existing live follow-up", async () => {
+    const id = commitment({ sourceId: msg({ from: "self" }), stalledAt: null });
+    await call("commitments.draft_followup", manual(id));
+    expect(await call("commitments.draft_followup", manual(id))).toEqual({
+      skipped: "followup_exists",
+    });
+    db.update(schema.followups).set({ status: "discarded" }).run();
+    db.update(schema.commitments)
+      .set({ status: "cancelled", closedAt: NOW })
+      .where(eq(schema.commitments.id, id))
+      .run();
+    expect(await call("commitments.draft_followup", manual(id))).toEqual({ skipped: "closed" });
+    expect(requests).toHaveLength(1);
+  });
+
+  test("without the manual flag an unstalled commitment is still skipped", async () => {
+    const id = commitment({ sourceId: msg({ from: "self" }), stalledAt: null });
+    expect(
+      await call("commitments.draft_followup", { commitmentId: id, origin: "manual" }),
+    ).toEqual({ skipped: "not_stalled" });
+  });
+});

@@ -44,6 +44,7 @@ import { loadSettingsOverride } from "./integrations/claude-code/settings-overri
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { SlackSender } from "./integrations/slack/sender";
 import { ExtractionQueue } from "./modules/commitments/extraction-queue";
+import { FollowupService } from "./modules/commitments/followups";
 import { CommitmentLifecycle } from "./modules/commitments/lifecycle";
 import { StallService } from "./modules/commitments/stall";
 import { CommitmentStore } from "./modules/commitments/store";
@@ -104,6 +105,7 @@ export interface Container {
   /** Commitments and their sources and status proposals (read and review APIs build on it). */
   commitments: CommitmentStore;
   commitmentLifecycle: CommitmentLifecycle;
+  followups: FollowupService;
   /** Urgent-reply drafts sent through approval. */
   urgentReplies: UrgentReplies;
   /** Run by startup recovery and the reaper (main.ts), so core never imports workers. */
@@ -313,6 +315,10 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   });
   const commitments = new CommitmentStore({ db, clock, settings, events });
   const commitmentLifecycle = new CommitmentLifecycle({ db, clock, settings, events });
+  const followupService = new FollowupService({ db, clock, audit, events, queue, outgoing });
+  dispatcher.subscribe("followup.sent", "commitments.followup_sent", (event, tx) =>
+    followupService.onFollowupSent(event, tx),
+  );
   const extractionQueue = new ExtractionQueue({ db, clock, settings, queue });
   dispatcher.subscribe("message.received", "commitments.queue", (event, tx) =>
     extractionQueue.handle(event, tx),
@@ -394,6 +400,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     urgentReplies,
     commitments,
     commitmentLifecycle,
+    followups: followupService,
     handlers,
     recoverySweeps: [
       { name: "urgency.assess", run: urgency.recoverySweep },

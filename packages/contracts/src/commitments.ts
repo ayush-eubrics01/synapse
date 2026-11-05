@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { OutgoingResolveAction } from "./dashboard";
 import { strictSuspectedInjectionSchema } from "./urgency";
 
 const slackUserIdSchema = z.string().regex(/^[UW][A-Z0-9]+$/);
@@ -95,6 +96,7 @@ export const commitmentActionSchema = z.enum([
   "complete",
   "cancel",
   "confirm_proposal",
+  "draft_followup",
 ]);
 export type CommitmentAction = z.infer<typeof commitmentActionSchema>;
 
@@ -142,19 +144,35 @@ export interface CommitmentView {
   actions: CommitmentAction[];
 }
 
+export const followupActionSchema = z.enum(["send", "discard"]);
+/** `send` and `discard` act on the draft; resolve actions act on its outgoing message. */
+export type FollowupAction = z.infer<typeof followupActionSchema>;
+
+export interface FollowupOutgoingView {
+  id: string;
+  status: string;
+  failure: string | null;
+}
+
 export interface FollowupView {
   id: string;
   commitmentId: string | null;
   origin: FollowupOrigin;
-  originMessageId: string | null;
-  conversationId: string;
-  threadTs: string | null;
-  recipientSlackUserId: string | null;
+  recipient: { id: string; name: string | null } | null;
+  /** The established labels: "a DM", "a group DM" or "#name". Null when the conversation is unknown. */
+  conversationLabel: string | null;
+  threadReply: boolean;
+  /** The original message expired, so the draft posts as a new message. */
+  noThread: boolean;
   draftText: string | null;
   confidence: number | null;
   status: FollowupStatus;
+  outgoing: FollowupOutgoingView | null;
   approvalId: string | null;
-  outgoingId: string | null;
+  /** Server-computed: what the user may do with the draft. */
+  actions: FollowupAction[];
+  /** Server-computed: mirrors `OutgoingService.resolveNeedsAttention` exactly. */
+  resolveActions: OutgoingResolveAction[];
   createdAt: string;
   updatedAt: string;
 }

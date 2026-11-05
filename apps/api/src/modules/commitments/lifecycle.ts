@@ -59,6 +59,14 @@ export class InvalidProposal extends Error {
   }
 }
 
+/** No update row with that id (404). */
+export class UnknownProposal extends InvalidProposal {
+  constructor() {
+    super("unknown proposal");
+    this.name = "UnknownProposal";
+  }
+}
+
 const TRANSITIONS: Record<CommitmentStatus, CommitmentStatus[]> = {
   open: ["in_progress", "blocked", "completed", "cancelled"],
   in_progress: ["blocked", "completed", "cancelled"],
@@ -167,7 +175,8 @@ export class CommitmentLifecycle {
         .from(commitmentUpdates)
         .where(eq(commitmentUpdates.id, updateId))
         .get();
-      if (!proposal || !isProposal(proposal)) throw new InvalidProposal("not a pending proposal");
+      if (!proposal) throw new UnknownProposal();
+      if (!isProposal(proposal)) throw new InvalidProposal("not a pending proposal");
       const history = tx
         .select()
         .from(commitmentUpdates)
@@ -509,5 +518,7 @@ function actionsFor(r: Row, hasProposals: boolean): CommitmentAction[] {
   };
   const actions = [...(byStatus[r.status] ?? [])];
   if (hasProposals) actions.push("confirm_proposal");
+  // A manual follow-up draft: only for something owed to the user (mirrors requestManualDraft).
+  if (r.direction === "theirs") actions.push("draft_followup");
   return actions;
 }
