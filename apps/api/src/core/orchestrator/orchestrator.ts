@@ -140,12 +140,15 @@ export class ClaudeOrchestrator {
       if (e instanceof JobError && e.classified.kind === "auth_failed") {
         // Only the auth_failed that starts the pause parks a job (R38); later ones defer.
         if (!this.pauseAuth()) {
+          // R4: keep the original details: a spawned send run stays `uncertain`.
+          const details = e.classified.details;
           throw new JobError({
             kind: "auth_paused",
             message: "Claude authentication is paused until re-login",
             retryAfter: new Date(
               this.deps.clock.now().getTime() + AUTH_PAUSE_RETRY_MS,
             ).toISOString(),
+            ...(details ? { details } : {}),
           });
         }
       }

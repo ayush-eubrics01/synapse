@@ -9,7 +9,6 @@ import {
   type SendMessageCommand,
   type SourceMessage,
 } from "@synapse/contracts";
-import { FakeClock } from "@synapse/shared";
 import { createContainer } from "../../src/container";
 import { loadConfig } from "../../src/core/config/config";
 import { buildSendRequest, SEND, SlackSender } from "../../src/integrations/slack/sender";
@@ -31,12 +30,17 @@ const cmd = (over: Partial<SendMessageCommand> = {}): SendMessageCommand => ({
 const args = { channel_id: "C0SYNTHCHN1", message: TEXT, thread_ts: "1793872900.000300" };
 
 let n = 0;
-const tr = (input: unknown, isError = false, toolName = SEND): RawToolResult => ({
+const tr = (
+  input: unknown,
+  isError = false,
+  toolName = SEND,
+  content = "synthetic result",
+): RawToolResult => ({
   toolUseId: `t${n++}`,
   toolName,
   input,
   isError,
-  content: "synthetic result",
+  content,
 });
 
 const result = (toolResults: RawToolResult[]): AIExecutionResult => ({
@@ -63,6 +67,7 @@ interface Setup {
   collect?: (req: CollectRequest) => Promise<CollectResult>;
   self?: string | null;
   runIds?: (string | null)[];
+  runIdForJob?: (jobId: string) => string | null;
 }
 
 function setup(o: Setup = {}) {
@@ -76,7 +81,6 @@ function setup(o: Setup = {}) {
         return (o.run ?? (async () => result([tr(args)])))(req);
       },
     },
-    clock: new FakeClock("2026-11-06T10:00:00.000Z"),
     searchSource: {
       collect: async (req) => {
         collects.push(req);
@@ -85,7 +89,8 @@ function setup(o: Setup = {}) {
       },
     },
     selfUserId: () => (o.self === undefined ? SELF : o.self),
-    runIdForJob: () => (runIds.length > 1 ? (runIds.shift() ?? null) : (runIds[0] ?? null)),
+    runIdForJob:
+      o.runIdForJob ?? (() => (runIds.length > 1 ? (runIds.shift() ?? null) : (runIds[0] ?? null))),
   });
   return { sender, seen, collects };
 }
@@ -190,20 +195,84 @@ describe("SlackSender.send", () => {
   });
 
   test("a mismatched input that also errored is still argument_mismatch", async () => {
-    const { sender } = setup(withResults(tr({ ...args, channel_id: "C0SYNTHOTHR" }, true)));
+    const { sender } = setup(
+      withResults(tr({ ...args, channel_id: "C0SYNTHOTHR" }, true, SEND, "Error: some_transport")),
+    );
     expect(await sender.send(cmd(), signal)).toMatchObject({
       failure: "argument_mismatch",
       mismatch: true,
     });
   });
 
-  test("tool_error", async () => {
-    const { sender } = setup(withResults(tr(args, true)));
+  test("R3: a definitive Slack rejection -> failed tool_error", async () => {
+    const { sender } = setup(
+      withResults(tr(args, true, SEND, '{"ok":false,"error":"channel_not_found"}')),
+    );
     expect(await sender.send(cmd(), signal)).toEqual({
       status: "failed",
       failure: "tool_error",
       runId: "run-1",
     });
+  });
+
+  for (const code of [
+    "not_in_channel",
+    "is_archived",
+    "channel_is_archived",
+    "msg_too_long",
+    "no_text",
+    "invalid_auth",
+    "not_authed",
+    "restricted_action",
+    "cant_post",
+    "cannot_post",
+    "user_not_found",
+  ]) {
+    test(`R3: ${code} -> failed tool_error`, async () => {
+      const { sender } = setup(withResults(tr(args, true, SEND, `Slack API error: ${code}`)));
+      expect((await sender.send(cmd(), signal)).failure).toBe("tool_error");
+    });
+  }
+
+  const uncertainErrors: [string, string][] = [
+    ["an MCP transport error", "MCP error -32001: Request timed out"],
+    ["an empty error", ""],
+    ["a code inside a longer word", "error: xchannel_not_found_y"],
+    ["an unknown Slack error", "Slack API error: ratelimited"],
+  ];
+  for (const [name, content] of uncertainErrors) {
+    test(`R3: ${name} -> uncertain`, async () => {
+      const { sender } = setup(withResults(tr(args, true, SEND, content)));
+      expect(await sender.send(cmd(), signal)).toEqual({
+        status: "uncertain",
+        failure: "uncertain_outcome",
+        runId: "run-1",
+      });
+    });
+  }
+
+  test("an unexpected tool result -> uncertain", async () => {
+    const { sender } = setup(
+      withResults(tr(args), tr({}, false, "mcp__claude_ai_Slack__slack_read_thread")),
+    );
+    expect(await sender.send(cmd(), signal)).toMatchObject({
+      status: "uncertain",
+      failure: "uncertain_outcome",
+    });
+  });
+
+  test('an "unknown" tool result (no recorded tool_use) with no send -> uncertain', async () => {
+    const { sender } = setup(withResults(tr(undefined, false, "unknown")));
+    expect(await sender.send(cmd(), signal)).toMatchObject({ status: "uncertain" });
+  });
+
+  test("a throwing run-id lookup never changes the outcome", async () => {
+    const { sender } = setup({
+      runIdForJob: () => {
+        throw new Error("db closed");
+      },
+    });
+    expect(await sender.send(cmd(), signal)).toEqual({ status: "sent_unverified" });
   });
 
   test("zero sends -> failed no_send", async () => {
@@ -289,6 +358,7 @@ const msg = (over: Partial<SourceMessage> = {}): SourceMessage => {
     conversationId: "C0SYNTHCHN1",
     conversationType: "channel" as const,
     ts: "1793873000.000100",
+    threadTs: "1793872900.000300",
     senderId: SELF,
     text: TEXT,
     sentAt: "2026-11-06T10:00:00.000Z",
@@ -355,6 +425,35 @@ describe("SlackSender.findSent", () => {
   test("null when not found and the search was incomplete", async () => {
     const { sender } = setup({ collect: async () => pages([msg({ text: "other" })], false) });
     expect(await sender.findSent(cmd(), SINCE)).toBeNull();
+  });
+
+  test("false for the same text in a different thread", async () => {
+    const { sender } = setup({
+      collect: async () => pages([msg({ threadTs: "1793872000.000100" })]),
+    });
+    expect(await sender.findSent(cmd(), SINCE)).toBe(false);
+  });
+
+  test("false for top-level text when a thread was intended", async () => {
+    const { sender } = setup({ collect: async () => pages([msg({ threadTs: undefined })]) });
+    expect(await sender.findSent(cmd(), SINCE)).toBe(false);
+  });
+
+  test("false for a thread reply when a top-level message was intended", async () => {
+    const { sender } = setup({ collect: async () => pages([msg()]) });
+    expect(await sender.findSent(cmd({ threadTs: undefined }), SINCE)).toBe(false);
+  });
+
+  test("true for a top-level match when no thread was intended", async () => {
+    const { sender } = setup({ collect: async () => pages([msg({ threadTs: undefined })]) });
+    expect(await sender.findSent(cmd({ threadTs: undefined }), SINCE)).toBe(true);
+  });
+
+  test("null without searching for a non-finite sinceTs", async () => {
+    const { sender, collects } = setup({ collect: async () => pages([msg()]) });
+    expect(await sender.findSent(cmd(), "not-a-ts")).toBeNull();
+    expect(await sender.findSent(cmd(), "Infinity")).toBeNull();
+    expect(collects).toHaveLength(0);
   });
 
   test("null on a search failure", async () => {

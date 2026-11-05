@@ -8,9 +8,15 @@ import {
   type SendMessageCommand,
   type SendResult,
 } from "@synapse/contracts";
-import type { Clock } from "@synapse/shared";
 
 export const SEND = "mcp__claude_ai_Slack__slack_send_message";
+
+/**
+ * R3: Slack rejection codes that prove nothing was posted. Any other send tool error (transport,
+ * timeout, unknown) may have posted, so it is uncertain. Content is used only to classify.
+ */
+const DEFINITIVE_REJECTION_RE =
+  /\b(channel_not_found|not_in_channel|is_archived|channel_is_archived|msg_too_long|no_text|invalid_auth|not_authed|restricted_action|cant_post|cannot_post|user_not_found)\b/;
 
 /** Search pages read when confirming delivery (R2). */
 const FIND_MAX_PAGES = 2;
@@ -28,7 +34,6 @@ const SEND_INSTRUCTION = [
 
 interface Deps {
   orchestrator: { run(req: ClaudeJobRequest, signal: AbortSignal): Promise<AIExecutionResult> };
-  clock: Clock;
   /** The verified Phase 3 search collector (`SlackConnectorSource`), reused by `findSent`. */
   searchSource: Pick<MessageSource, "collect">;
   /** `slack.selfUserId`; `findSent` cannot attribute a message without it. */
@@ -122,16 +127,24 @@ export class SlackSender implements MessageSink {
   private classify(toolResults: RawToolResult[], cmd: SendMessageCommand): SendResult {
     const sends = toolResults.filter((r) => r.toolName === SEND);
     const mismatch = sends.some((r) => !matchesCommand(r.input, cmd));
-    if (sends.length === 0) return { status: "failed", failure: "no_send" };
-    if (sends.length > 1) {
-      return {
-        status: "uncertain",
-        failure: "uncertain_outcome",
-        ...(mismatch ? { mismatch: true } : {}),
-      };
+    const uncertain: SendResult = {
+      status: "uncertain",
+      failure: "uncertain_outcome",
+      ...(mismatch ? { mismatch: true } : {}),
+    };
+    // Any other tool result (including "unknown", a result with no recorded tool_use) may be a send.
+    if (toolResults.some((r) => r.toolName !== SEND && r.toolName !== "ToolSearch")) {
+      return uncertain;
     }
+    if (sends.length === 0) return { status: "failed", failure: "no_send" };
+    if (sends.length > 1) return uncertain;
+    const only = sends[0] as RawToolResult;
     if (mismatch) return { status: "failed", failure: "argument_mismatch", mismatch: true };
-    if (sends[0]?.isError) return { status: "failed", failure: "tool_error" };
+    if (only.isError) {
+      return DEFINITIVE_REJECTION_RE.test(only.content)
+        ? { status: "failed", failure: "tool_error" }
+        : uncertain;
+    }
     return { status: "sent_unverified" };
   }
 
@@ -145,6 +158,7 @@ export class SlackSender implements MessageSink {
     const self = this.deps.selfUserId();
     if (self === null) return null;
     const since = Number(sinceTs);
+    if (!Number.isFinite(since)) return null;
     let found: Awaited<ReturnType<Deps["searchSource"]["collect"]>>;
     try {
       found = await this.deps.searchSource.collect(
@@ -160,6 +174,7 @@ export class SlackSender implements MessageSink {
         (m) =>
           m.conversationId === cmd.conversationExternalId &&
           m.senderId === self &&
+          m.threadTs === cmd.threadTs &&
           Number(m.ts) >= since &&
           normalise(m.text) === want,
       ),
@@ -168,7 +183,12 @@ export class SlackSender implements MessageSink {
     return found.complete ? false : null;
   }
 
+  /** Best-effort: a failed lookup never changes the send outcome. */
   private runIdOf(jobId: string): string | null {
-    return this.deps.runIdForJob?.(jobId) ?? null;
+    try {
+      return this.deps.runIdForJob?.(jobId) ?? null;
+    } catch {
+      return null;
+    }
   }
 }

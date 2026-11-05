@@ -231,7 +231,6 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   const slackSource = new SlackConnectorSource({ orchestrator, clock });
   const messageSink = new SlackSender({
     orchestrator,
-    clock,
     searchSource: slackSource,
     selfUserId: () => settings.get("slack.selfUserId"),
     runIdForJob: createRunHelpers(db, securityFlags).runIdBefore,

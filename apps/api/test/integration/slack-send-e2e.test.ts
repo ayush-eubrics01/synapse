@@ -6,7 +6,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { JobError, type SendMessageCommand } from "@synapse/contracts";
+import { type AIProvider, JobError, type SendMessageCommand } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
 import { AuditLogger } from "../../src/core/audit/audit";
@@ -31,7 +31,8 @@ const TEXT = "SYNTH-APPROVED-TEXT: deploy is done";
 const signal = new AbortController().signal;
 let seq = 0;
 
-function build(mode: string) {
+/** `beforeExecute` runs inside the real provider call, i.e. while the run is in flight. */
+function build(mode: string, beforeExecute?: (settings: SettingsService) => void) {
   const id = `${mode}-${seq++}`;
   const credsPath = join(tmp, `creds-${id}.json`);
   writeFileSync(
@@ -47,7 +48,7 @@ function build(mode: string) {
   const events = new EventPublisher(clock);
   const settings = new SettingsService(db, clock, events.publish.bind(events));
   const audit = new AuditLogger(clock);
-  const provider = new ClaudeCliProvider({
+  const cli = new ClaudeCliProvider({
     binary: process.execPath,
     prefixArgs: ["run", fakeClaude],
     env: {
@@ -59,6 +60,13 @@ function build(mode: string) {
     clock,
     killGraceMs: 200,
   });
+  const provider: AIProvider = {
+    execute: (req, sig) => {
+      beforeExecute?.(settings);
+      return cli.execute(req, sig);
+    },
+    getHealth: () => cli.getHealth(),
+  };
   const orchestrator = new ClaudeOrchestrator({
     db,
     clock,
@@ -73,7 +81,6 @@ function build(mode: string) {
   const runHelpers = createRunHelpers(db, {} as never);
   const sender = new SlackSender({
     orchestrator,
-    clock,
     searchSource: new SlackConnectorSource({ orchestrator, clock }),
     selfUserId: () => settings.get("slack.selfUserId"),
     runIdForJob: runHelpers.runIdBefore,
@@ -151,6 +158,7 @@ describe("send through the real provider and validator", () => {
     ["send_altered_text", { status: "failed", failure: "argument_mismatch", mismatch: true }],
     ["send_reply_broadcast", { status: "failed", failure: "argument_mismatch", mismatch: true }],
     ["send_tool_error", { status: "failed", failure: "tool_error" }],
+    ["send_tool_error_transport", { status: "uncertain", failure: "uncertain_outcome" }],
     ["send_none", { status: "failed", failure: "no_send" }],
     ["send_two", { status: "uncertain", failure: "uncertain_outcome" }],
   ];
@@ -168,6 +176,20 @@ describe("send through the real provider and validator", () => {
     const r = await sender.send(cmd, signal);
     const runs = db.select().from(schema.claudeRuns).all();
     expect(runs[0]?.status).toBe("failed");
+    expect(r).toEqual({
+      status: "uncertain",
+      failure: "uncertain_outcome",
+      runId: runs[0]?.id as string,
+    });
+  });
+
+  test("R4: an auth failure while another run set the pause mid-flight -> uncertain", async () => {
+    const { db, sender, cmd, settings } = build("auth_error", (s) =>
+      s.set("auth.pausedAt", NOW, { emit: false }),
+    );
+    const r = await sender.send(cmd, signal);
+    expect(settings.get("auth.pausedAt")).toBe(NOW);
+    const runs = db.select().from(schema.claudeRuns).all();
     expect(r).toEqual({
       status: "uncertain",
       failure: "uncertain_outcome",
@@ -199,23 +221,32 @@ describe("send through the real provider and validator", () => {
 
 describe("findSent through the real provider", () => {
   // slack_search_page: message 1793872910.000400 in C0SYNTHCHN1 from U0SYNTH0001,
-  // text "synthetic channel message two"; the request args match afterTs 1793872800.
+  // text "synthetic channel message two", top level; the request args match afterTs 1793872800.
   const since = "1793872801.000000";
+  const topLevel = (cmd: SendMessageCommand, text: string): SendMessageCommand => {
+    const { threadTs: _t, ...rest } = cmd;
+    return { ...rest, text };
+  };
 
   test("true when the self-authored message is found", async () => {
     const { sender, cmd, settings } = build("slack_search_page");
     settings.set("slack.selfUserId", "U0SYNTH0001");
-    const found = await sender.findSent(
-      { ...cmd, text: " synthetic channel\nmessage  two " },
-      since,
-    );
+    const found = await sender.findSent(topLevel(cmd, " synthetic channel\nmessage  two "), since);
     expect(found).toBe(true);
   });
 
   test("false for a different text", async () => {
     const { sender, cmd, settings } = build("slack_search_page");
     settings.set("slack.selfUserId", "U0SYNTH0001");
-    expect(await sender.findSent({ ...cmd, text: "something else" }, since)).toBe(false);
+    expect(await sender.findSent(topLevel(cmd, "something else"), since)).toBe(false);
+  });
+
+  test("false for the same text when a thread reply was intended", async () => {
+    const { sender, cmd, settings } = build("slack_search_page");
+    settings.set("slack.selfUserId", "U0SYNTH0001");
+    expect(await sender.findSent({ ...cmd, text: "synthetic channel message two" }, since)).toBe(
+      false,
+    );
   });
 
   test("null on a search error", async () => {

@@ -716,6 +716,29 @@ describe("auth pause (ADR-037 §4)", () => {
     expect(notes()).toHaveLength(1);
     expect((await fails(run(req()))).classified.kind).toBe("auth_paused");
   });
+
+  test("R4: a send run whose auth failure is replaced by auth_paused stays uncertain", async () => {
+    provider.next = () => {
+      // the pause is set by another run while this send run is in flight
+      settings.set("auth.pausedAt", START, { emit: false });
+      return authFailed();
+    };
+    const e = await fails(
+      run(
+        req({
+          priorityClass: "send",
+          allowedTools: ["mcp__claude_ai_Slack__slack_send_message"],
+          parts: [{ provenance: "user_approved", content: "reply text" }],
+        }),
+      ),
+    );
+    expect(e.classified.kind).toBe("auth_paused");
+    expect(e.classified.details).toEqual({ uncertain: true });
+    // a read-only run gets no details
+    provider.next = authFailed;
+    clock.advance(31 * 60_000);
+    expect((await fails(run(req()))).classified.details).toBeUndefined();
+  });
 });
 
 describe("recoverOrphanRuns", () => {
