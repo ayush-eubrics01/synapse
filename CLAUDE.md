@@ -77,7 +77,7 @@ All runs go through the orchestrator and use this shape:
 
 ```bash
 claude -p "<prompt naming exact tools and arguments>" \
-  --setting-sources "" --disable-slash-commands \
+  --setting-sources user --settings "$OVERRIDE" --disable-slash-commands \
   --system-prompt "<short worker-specific prompt>" \
   --allowedTools "ToolSearch,<only what this job needs>" \
   --disallowedTools "<explicit denylist>" \
@@ -85,6 +85,7 @@ claude -p "<prompt naming exact tools and arguments>" \
   --no-session-persistence --output-format stream-json --verbose < /dev/null
 ```
 
+- `$OVERRIDE` is `{"enabledPlugins":{"<each plugin name from ~/.claude/settings.json>":false},"hooks":{}}`: plugin names only, read once at startup; `{"enabledPlugins":{},"hooks":{}}` if the file can't be read. Since CLI 2.1.318, `--setting-sources ""` loads no claude.ai connectors; `user` loads them, and the override drops the user's plugins and hooks (R34, 2026-11-05).
 - `--bare` is unusable (API key only; connectors need claude.ai OAuth).
 - Never use `--tools`; it hides MCP connector tools. Use `--allowedTools`/`--disallowedTools`.
 - Always allow `ToolSearch`; connector tools are deferred.

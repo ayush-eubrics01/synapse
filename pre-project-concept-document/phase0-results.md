@@ -96,6 +96,8 @@ claude -p "<exact tool names + arguments>" \
   --output-format stream-json --verbose < /dev/null
 ```
 
+> **Note (2026-11-05, R34):** On Claude Code 2.1.318, `--setting-sources ""` no longer loads claude.ai connectors (the init event lists none). Replacement: `--setting-sources user --settings '{"enabledPlugins":{"<each plugin>":false},"hooks":{}}'`, built from the plugin names in `~/.claude/settings.json`. This loads the connectors with no hook events and about 25k context tokens. A server-level `--disallowedTools mcp__claude_ai_Gmail` still removes all Gmail tools.
+
 Parse: `tool_result` events → data · `rate_limit_event` → quota gate · `result` → cost/usage/failure.
 
 ## Still open

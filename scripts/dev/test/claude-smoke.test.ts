@@ -48,11 +48,20 @@ test("summarize prints fields but never finalText or tool content", () => {
   expect(out).not.toContain("SECRET-TOOL-CONTENT");
 });
 
-test("denyVerdict", () => {
+test("denyVerdict (R34): PASS iff Gmail connected and no Gmail tool listed", () => {
+  const gmail = (status: string) => [{ name: "claude.ai Gmail", status }];
   const slack = "mcp__claude_ai_Slack__slack_search_users";
-  expect(denyVerdict(["ToolSearch", slack])).toBe("PASS");
-  expect(denyVerdict(["ToolSearch"])).toBe("INCONCLUSIVE");
-  expect(denyVerdict([slack, "mcp__claude_ai_Gmail__send_message"])).toBe("FAIL");
+  expect(denyVerdict(["ToolSearch", slack], gmail("connected"))).toBe("PASS");
+  expect(denyVerdict(["ToolSearch"], gmail("connected"))).toBe("PASS");
+  expect(denyVerdict(["ToolSearch", slack], gmail("pending"))).toBe("INCONCLUSIVE");
+  expect(denyVerdict(["ToolSearch", slack], [])).toBe("INCONCLUSIVE");
+  expect(denyVerdict([slack], [{ name: "claude.ai Slack", status: "connected" }])).toBe(
+    "INCONCLUSIVE",
+  );
+  expect(denyVerdict([slack, "mcp__claude_ai_Gmail__send_message"], gmail("connected"))).toBe(
+    "FAIL",
+  );
+  expect(denyVerdict(["mcp__claude_ai_Gmail__search_threads"], gmail("pending"))).toBe("FAIL");
 });
 
 test("exitCodeFor: non-zero unless the run succeeded and the verdict is not FAIL", () => {

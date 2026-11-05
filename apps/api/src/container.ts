@@ -34,6 +34,7 @@ import { PermissionManager } from "./core/permissions/permissions";
 import { SchedulerService } from "./core/scheduler/scheduler";
 import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
+import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
 
 export interface Container {
   config: AppConfig;
@@ -131,6 +132,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
       binary: config.claudeBinary,
       env: { PATH: `${home}/.bun/bin:${home}/.local/bin:/usr/bin:/bin`, HOME: home },
       clock,
+      // Plugin names only, read once at startup (R34).
+      settingsOverride: loadSettingsOverride(home),
     });
   const auth = new AuthMonitor(db, clock, settings, events, config.credentialsPath);
   const scratchDir =

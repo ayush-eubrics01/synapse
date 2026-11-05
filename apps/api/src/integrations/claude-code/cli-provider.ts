@@ -10,6 +10,7 @@ import type { Clock } from "@synapse/shared";
 import { buildClaudeArgs } from "../../core/orchestrator/cli-args";
 import { clampQuotaRetry } from "../../core/orchestrator/quota-gate";
 import { StreamParser } from "../../core/orchestrator/stream-parser";
+import { DEFAULT_SETTINGS_OVERRIDE } from "./settings-override";
 
 const TESTED_VERSION = "2.1.318";
 const HEALTH_TIMEOUT_MS = 5000;
@@ -35,6 +36,8 @@ export interface ClaudeCliProviderOptions {
   env: Record<string, string>;
   clock: Clock;
   killGraceMs?: number;
+  /** `--settings` JSON disabling plugins and hooks (R34); defaults to an empty override. */
+  settingsOverride?: string;
 }
 
 interface SpawnOutcome {
@@ -191,7 +194,7 @@ export class ClaudeCliProvider implements AIProvider {
     // A parser exception inside the stdout listener would be uncaught and kill the process.
     let parserFault = false;
     const out = await this.run({
-      args: buildClaudeArgs(r),
+      args: buildClaudeArgs(r, this.opts.settingsOverride ?? DEFAULT_SETTINGS_OVERRIDE),
       cwd: r.workingDirectory,
       timeoutMs: r.timeoutMs,
       signal,

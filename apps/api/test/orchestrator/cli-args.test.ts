@@ -18,12 +18,15 @@ const req: AIExecutionRequest = {
 };
 
 test("exact argv", () => {
-  const a = buildClaudeArgs(req);
+  const override = '{"enabledPlugins":{"p@m":false},"hooks":{}}';
+  const a = buildClaudeArgs(req, override);
   expect(a).toEqual([
     "-p",
     "hi",
     "--setting-sources",
-    "",
+    "user",
+    "--settings",
+    override,
     "--disable-slash-commands",
     "--system-prompt",
     "sys",

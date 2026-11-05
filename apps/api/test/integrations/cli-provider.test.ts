@@ -10,6 +10,7 @@ import {
   ClaudeCliProvider,
   spawnErrorMessage,
 } from "../../src/integrations/claude-code/cli-provider";
+import { DEFAULT_SETTINGS_OVERRIDE } from "../../src/integrations/claude-code/settings-override";
 
 const fixture = resolve(import.meta.dir, "../fixtures/fake-claude.ts");
 const tmp = mkdtempSync(join(tmpdir(), "cli-provider-"));
@@ -206,7 +207,22 @@ describe("ClaudeCliProvider.execute", () => {
       request,
       sig(),
     );
-    expect(JSON.parse(readFileSync(argvFile, "utf8"))).toEqual(buildClaudeArgs(request));
+    const argv = JSON.parse(readFileSync(argvFile, "utf8"));
+    expect(argv).toEqual(buildClaudeArgs(request, DEFAULT_SETTINGS_OVERRIDE));
+    const custom = '{"enabledPlugins":{"x@y":false},"hooks":{}}';
+    await new ClaudeCliProvider({
+      binary: process.execPath,
+      prefixArgs: ["run", fixture],
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: process.env.HOME ?? "",
+        FAKE_CLAUDE_MODE: "success",
+        FAKE_CLAUDE_ARGV_FILE: argvFile,
+      },
+      clock: new FakeClock("2026-11-05T00:00:00Z"),
+      settingsOverride: custom,
+    }).execute(request, sig());
+    expect(JSON.parse(readFileSync(argvFile, "utf8"))).toEqual(buildClaudeArgs(request, custom));
   });
 });
 

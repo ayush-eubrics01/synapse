@@ -18,6 +18,7 @@
 - Conventions R11 (tests typechecked) and R12 (`behavior: "immediate"` for read-then-write transactions) apply.
 - **Tests never run the real `claude` binary.** Every adapter and orchestrator test uses the fake script `apps/api/test/fixtures/fake-claude.ts`. Real runs happen only in the manual smoke script (Task 9), run by the controller.
 - Invocation profile, verbatim from Phase 0: `-p <prompt> --setting-sources "" --disable-slash-commands --system-prompt <s> --allowedTools <csv> --disallowedTools <csv> --model <m> --max-turns <n> --no-session-persistence --output-format stream-json --verbose`, stdin `/dev/null`. Never `--bare`, never `--tools`. `ToolSearch` is always allowed when any `mcp__` tool is allowed.
+  - *Amendment 2026-11-05 (R34):* `--setting-sources ""` is replaced by `--setting-sources user --settings <override>` (plugins disabled by name, `hooks: {}`), because on CLI 2.1.318 the empty source loads no claude.ai connectors; `buildClaudeArgs(r, settingsOverride)`.
 - Raw `tool_result` events are the only trusted data. `finalText` is never stored as source data (ADR-026).
 - Never log prompt content, tool inputs or tool results. Logs carry ids, kinds, counts and durations only.
 - Never read token values from `~/.claude/.credentials.json`. Read only `claudeAiOauth.expiresAt` and `claudeAiOauth.refreshTokenExpiresAt`.
