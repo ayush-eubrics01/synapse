@@ -27,12 +27,17 @@ function defaultDbPath(env: Record<string, string | undefined>): string {
   return `${env.HOME}/.local/share/synapse/synapse.db`;
 }
 
+/** The user's home: $HOME, else os.homedir(). Shared with the container's provider env. */
+export function resolveHome(env: Record<string, string | undefined>): string {
+  return env.HOME || homedir();
+}
+
 function homePath(
   env: Record<string, string | undefined>,
   override: string | undefined,
   rel: string,
 ): string {
-  return override || `${env.HOME || homedir()}/${rel}`;
+  return override || `${resolveHome(env)}/${rel}`;
 }
 
 export function loadConfig(env: Record<string, string | undefined>): AppConfig {

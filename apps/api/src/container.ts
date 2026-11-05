@@ -7,7 +7,7 @@ import { type Db, openDatabase, runMigrations } from "@synapse/database";
 import { type Clock, newId, systemClock } from "@synapse/shared";
 import { ApprovalEngine } from "./core/approvals/approvals";
 import { AuditLogger } from "./core/audit/audit";
-import type { AppConfig } from "./core/config/config";
+import { type AppConfig, resolveHome } from "./core/config/config";
 import { SettingsService } from "./core/config/settings";
 import { OutboxDispatcher } from "./core/events/dispatcher";
 import { LiveBus } from "./core/events/live-bus";
@@ -124,7 +124,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     onSettled: (job) => live.publish({ type: "job.updated", data: job }),
   });
 
-  const home = process.env.HOME ?? "";
+  const home = resolveHome(process.env);
   const provider =
     deps.provider ??
     new ClaudeCliProvider({

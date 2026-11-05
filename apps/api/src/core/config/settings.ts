@@ -3,7 +3,7 @@ import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { DEFAULT_KNOWN_SERVERS } from "../orchestrator/tool-catalog";
+import { DEFAULT_KNOWN_SERVERS, SERVER_NAME_RE } from "../orchestrator/tool-catalog";
 
 const settingSchemas = {
   "slack.collection.intervalSeconds": z.number().int().positive().default(600),
@@ -26,7 +26,9 @@ const settingSchemas = {
   "orchestrator.models.collector": z.string().min(1).default("haiku"),
   "orchestrator.models.intelligence": z.string().min(1).default("haiku"),
   "orchestrator.models.engineering": z.string().min(1).default("sonnet"),
-  "orchestrator.knownServers": z.array(z.string()).default(() => [...DEFAULT_KNOWN_SERVERS]),
+  "orchestrator.knownServers": z
+    .array(z.string().regex(SERVER_NAME_RE))
+    .default(() => [...DEFAULT_KNOWN_SERVERS]),
   "auth.lastExpiryWarningAt": z.string().nullable().default(null),
 };
 
