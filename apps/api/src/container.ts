@@ -107,6 +107,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   const worker = new JobWorker(queue, handlers, {
     workerId: `${hostname()}-${process.pid}-${newId()}`,
     concurrency: config.workerConcurrency,
+    onSettled: (job) => live.publish({ type: "job.updated", data: job }),
   });
 
   const health = new HealthService({

@@ -1,4 +1,4 @@
-import { type ClassifiedError, type Job, JobError } from "@synapse/contracts";
+import { type ClassifiedError, type Job, JobError, type JobStatus } from "@synapse/contracts";
 import type { JobQueue } from "./queue";
 import { isExternalWrite } from "./retry";
 
@@ -27,6 +27,8 @@ export interface JobWorkerOptions {
   heartbeatMs?: number;
   concurrency?: number;
   pollMs?: number;
+  /** Called after this worker settles a job (complete, fail, timeout). Ids and status only. */
+  onSettled?: (job: { id: string; status: JobStatus }) => void;
 }
 
 type Outcome =
@@ -46,6 +48,7 @@ export class JobWorker {
   private readonly heartbeatMs: number;
   private readonly concurrency: number;
   private readonly pollMs: number;
+  private readonly onSettled: JobWorkerOptions["onSettled"];
   private readonly inFlight = new Set<InFlight>();
   private running = false;
   private loop: Promise<void> | null = null;
@@ -61,6 +64,7 @@ export class JobWorker {
     this.heartbeatMs = opts.heartbeatMs ?? 20_000;
     this.concurrency = opts.concurrency ?? 2;
     this.pollMs = opts.pollMs ?? 1_000;
+    this.onSettled = opts.onSettled;
   }
 
   /** Claims at most one job and runs it to settlement. */
@@ -226,14 +230,23 @@ export class JobWorker {
       return;
     }
     const op = outcome.kind === "done" ? "complete" : "fail";
+    let status: JobStatus | null;
     try {
-      if (outcome.kind === "done") this.queue.complete(job.id, this.workerId, outcome.output);
+      if (outcome.kind === "done")
+        status = this.queue.complete(job.id, this.workerId, outcome.output) ? "COMPLETED" : null;
       else if (external && outcome.error.kind === "timeout")
-        this.queue.failUncertain(job.id, this.workerId, outcome.error);
-      else this.queue.fail(job.id, this.workerId, outcome.error);
+        status = this.queue.failUncertain(job.id, this.workerId, outcome.error);
+      else status = this.queue.fail(job.id, this.workerId, outcome.error);
     } catch (e) {
       // The job stays RUNNING until its lease expires; the reaper then reclaims it.
       console.error(`worker: ${op} failed`, job.id, describe(e));
+      return;
+    }
+    if (status === null || !this.onSettled) return;
+    try {
+      this.onSettled({ id: job.id, status });
+    } catch (e) {
+      console.error("worker: onSettled failed", job.id, describe(e));
     }
   }
 }

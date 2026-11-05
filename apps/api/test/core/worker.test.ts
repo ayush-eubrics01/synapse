@@ -289,3 +289,33 @@ test("handler rejecting with a null-prototype value is classified unknown withou
   expect(status(id).status).toBe("RETRY");
   expect(status(id).lastError?.kind).toBe("unknown");
 });
+
+test("onSettled reports id and status after complete, fail and timeout", async () => {
+  const settled: unknown[] = [];
+  const onSettled = (e: { id: string; status: string }) => settled.push(e);
+  const done = enqueue("t", "done");
+  await mk(
+    reg(async () => "ok"),
+    "w1",
+    { onSettled },
+  ).runOnce();
+  const failed = enqueue("t", "failed");
+  await mk(
+    reg(async () => {
+      throw new JobError({ kind: "invalid_input", message: "bad" });
+    }),
+    "w1",
+    { onSettled },
+  ).runOnce();
+  const slow = enqueue("t", "slow");
+  await mk(
+    reg(() => new Promise(() => {}), 20),
+    "w1",
+    { onSettled },
+  ).runOnce();
+  expect(settled).toEqual([
+    { id: done, status: "COMPLETED" },
+    { id: failed, status: "FAILED" },
+    { id: slow, status: "RETRY" },
+  ]);
+});

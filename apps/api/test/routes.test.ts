@@ -84,6 +84,33 @@ test("jobs limit over 200 is 400, valid limit is 200", async () => {
   expect(Array.isArray(await res.json())).toBe(true);
 });
 
+test("jobs are listed newest first", async () => {
+  const ids: string[] = [];
+  for (const [i, priority] of [10, 500, 100].entries()) {
+    ids.push(c.queue.enqueue(c.db, { type: "t", idempotencyKey: `order-${i}`, priority }).id);
+    await Bun.sleep(2);
+  }
+  const res = await app.request("/api/jobs?limit=200");
+  const listed = ((await res.json()) as { id: string }[]).map((j) => j.id);
+  expect(listed.filter((id) => ids.includes(id))).toEqual([...ids].reverse());
+});
+
+test("worker pushes job.updated with id and status after a job settles", async () => {
+  const t = createContainer(loadConfig({ SYNAPSE_DB_PATH: ":memory:" }), {
+    run: async () => "Linger=yes",
+    testHandlers: true,
+  });
+  try {
+    const messages: unknown[] = [];
+    t.live.subscribe((m) => messages.push(m));
+    const { id } = t.queue.enqueue(t.db, { type: "test.noop", idempotencyKey: "live-1" });
+    while (await t.worker.runOnce()) {}
+    expect(messages).toContainEqual({ type: "job.updated", data: { id, status: "COMPLETED" } });
+  } finally {
+    t.sqlite.close();
+  }
+});
+
 test("notifications list unread and mark read", async () => {
   const id = c.notifications.notify(c.db, { kind: "k", severity: "info", title: "t" });
   const unread = (await (await app.request("/api/notifications?unread=true")).json()) as {

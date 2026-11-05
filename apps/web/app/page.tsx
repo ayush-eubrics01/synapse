@@ -1,9 +1,10 @@
 "use client";
 
-import type { Approval, EventType, HealthReport, Job } from "@synapse/contracts";
+import type { Approval, HealthReport, Job } from "@synapse/contracts";
 import { useCallback, useEffect, useState } from "react";
 import { decideApproval, getApprovals, getHealth, getJobs } from "../lib/api";
 import { decideThenRefresh } from "../lib/decide";
+import { LIVE_EVENT_TYPES } from "../lib/live-events";
 import { ApprovalsList } from "./components/ApprovalsList";
 import { HealthBadge } from "./components/HealthBadge";
 import { JobsTable } from "./components/JobsTable";
@@ -32,16 +33,7 @@ export default function Dashboard() {
     const source = new EventSource("/api/stream");
     source.onmessage = () => void refresh();
     // Events are named (`event: <type>`), so onmessage alone would miss them.
-    const types = [
-      "approval.requested",
-      "approval.approved",
-      "approval.rejected",
-      "approval.expired",
-      "approval.revoked",
-      "approval.executed",
-      "system.heartbeat",
-    ] satisfies EventType[];
-    for (const t of types) source.addEventListener(t, () => void refresh());
+    for (const t of LIVE_EVENT_TYPES) source.addEventListener(t, () => void refresh());
     return () => source.close();
   }, [refresh]);
 

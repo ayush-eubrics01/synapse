@@ -13,7 +13,7 @@ export function jobRoutes(c: Container): Hono {
   const app = new Hono();
   app.get("/api/jobs", zValidator("query", query), (ctx) => {
     const { status, limit } = ctx.req.valid("query");
-    return ctx.json(c.queue.list({ status, limit }));
+    return ctx.json(c.queue.list({ status, limit, order: "newest" }));
   });
   return app;
 }
