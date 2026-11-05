@@ -496,10 +496,8 @@ test("a denied read tool is a warning flag", async () => {
 });
 
 test("urgency.assess jobs share a concurrency group: the second claim waits", async () => {
-  const a = add();
-  const b = add();
-  void a;
-  void b;
+  add();
+  add();
   db.transaction((tx) => {
     queue.enqueue(tx, {
       type: "urgency.assess",

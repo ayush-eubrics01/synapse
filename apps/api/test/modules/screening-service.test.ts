@@ -168,6 +168,7 @@ test("recent candidates share one batch job per window bucket", () => {
   expect(jobs[0]?.idempotencyKey).toBe(`urgency.batch:${bucket}`);
   expect(jobs[0]?.runAfter).toBe(new Date((bucket + 120) * 1000).toISOString());
   expect(jobs[0]?.priority).toBe(200);
+  expect(jobs[0]?.concurrencyGroup).toBe("urgency.assess");
   expect(jobs[0]?.type).toBe("urgency.assess");
   clock.advance(121_000);
   handle(add("blocked"));

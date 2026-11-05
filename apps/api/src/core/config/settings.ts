@@ -24,7 +24,7 @@ const settingSchemas = {
     .array(keywordRuleSchema)
     .default(() => DEFAULT_KEYWORDS.map((k) => ({ ...k }))),
   "urgency.assess.batchWindowSeconds": z.number().int().positive().default(120),
-  "urgency.assess.batchMax": z.number().int().positive().default(10),
+  "urgency.assess.batchMax": z.number().int().positive().max(10).default(10),
   "urgency.notify.levels": z.array(urgencyLevelSchema).default(["critical", "high"]),
   "urgency.model": z.string().min(1).default("haiku"),
   "urgency.suggest.model": z.string().min(1).default("haiku"),

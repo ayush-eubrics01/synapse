@@ -154,3 +154,10 @@ test("urgency settings have the documented defaults", () => {
   ]);
   expect(() => settings.set("urgency.rules.keywords", [{ id: "x" } as never])).toThrow();
 });
+
+test("urgency.assess.batchMax is capped at 10 so the prompt byte budget always holds", () => {
+  const { settings } = setup();
+  expect(() => settings.set("urgency.assess.batchMax", 11)).toThrow();
+  settings.set("urgency.assess.batchMax", 5);
+  expect(settings.get("urgency.assess.batchMax")).toBe(5);
+});
