@@ -25,7 +25,7 @@ import {
 } from "../intelligence/urgency/suggest-prompt";
 import { renderExcerpt } from "../modules/security-flags/detector";
 import type { SecurityFlagsService } from "../modules/security-flags/service";
-import { createRunHelpers, wrapFailure } from "./urgency-shared";
+import { createRunHelpers, safely, wrapFailure } from "./intelligence-shared";
 
 const { slackMessages, slackConversations, slackUsers, messageDrafts, jobs } = schema;
 
@@ -58,15 +58,6 @@ interface BatchRow extends AssessBatchItem {
 
 const conversationLabel = (type: "im" | "mpim" | "channel", name: string | null, ref: string) =>
   type === "im" ? "a DM" : type === "mpim" ? "a group DM" : `#${name ?? ref}`;
-
-/** Flag bookkeeping on a failure path must never replace the original error. */
-const safely = (fn: () => void) => {
-  try {
-    fn();
-  } catch {
-    console.error("urgency: runtime flag recording failed");
-  }
-};
 
 const isUrgent = (l: UrgencyLevel): l is "critical" | "high" => l === "critical" || l === "high";
 

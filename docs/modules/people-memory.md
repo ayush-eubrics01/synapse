@@ -133,3 +133,13 @@ Phase 4 implements only the priority part of this module: a `people` row is crea
 - OQ-1 resolved by ADR-033: manual priority also decides who may receive away-mode auto-replies. Response guidelines feed both drafts and auto-replies.
 
 See `docs/product/open-questions.md`.
+
+## Initial profile recommendation (Phase 5, Task 4)
+
+`ProfileRecommendations.requestInitialProfile(slackUserId)` (on the container as `profiles`) queues `people.generate_initial_profile` (priority 120, group `people.intelligence`, timeout 420 s, key `people.initial:<personId>:<date>`). It returns `{ queued: false, reason: "identity_required" | "pending_recommendation" }` instead of throwing.
+
+The job selects the newest `people.history.maxMessages` unexpired messages of the last `people.history.days` (the person's messages anywhere, the user's messages in a DM with the person, every message of a thread both posted in) and sends each as its own `untrusted` part tagged `slack message <id> by them|you|other in <label> at <time>`. The person's name is not put in the prompt. The run is the `intelligence` profile with `ToolSearch` only. Output is parsed with `initialProfileOutputSchema` (strict: a `priority` key fails as `incomplete_ai_output`).
+
+`validateEvidence` removes cited ids that were not provided, drops observations with no valid id, below `people.recommendation.minConfidence` or with a repeated key in the section. No observations left means no recommendation. Otherwise one transaction stores the pending recommendation (`observation_hash` = sha256 of the sorted `section:key:text` lines), evidence rows (`source_external_ref` = `<conversation external id>:<ts>`), a `records.update` approval (`people.rec:<id>`) and `person.profile_recommendation_created`. Profile text appears only in `people_profile_recommendations.content`.
+
+Security flags (ruling R1): runtime flags attach to the person's newest provided message; an AI injection flag attaches to the provided message containing the model's quote, else the newest one.

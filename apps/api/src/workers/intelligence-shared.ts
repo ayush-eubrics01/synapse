@@ -13,7 +13,7 @@ const isWrite = (name: string) => {
   return c === "write" || c === "builtin_write";
 };
 
-/** Helpers shared by the urgency Claude jobs (assess, suggest). */
+/** Helpers shared by the Claude jobs of every module (urgency, people). */
 export function createRunHelpers(db: Db, securityFlags: SecurityFlagsService) {
   const latestRun = (jobId: string) =>
     db
@@ -96,6 +96,15 @@ export function wrapFailure(err: unknown): { classified: ClassifiedError; rethro
   const classified: ClassifiedError =
     err instanceof JobError
       ? err.classified
-      : { kind: "unknown", message: "unexpected urgency job failure" };
+      : { kind: "unknown", message: "unexpected job failure" };
   return { classified, rethrow: err instanceof JobError ? err : new JobError(classified) };
 }
+
+/** Flag bookkeeping on a failure path must never replace the original error. */
+export const safely = (fn: () => void) => {
+  try {
+    fn();
+  } catch {
+    console.error("claude job: runtime flag recording failed");
+  }
+};

@@ -28,9 +28,15 @@ beforeEach(() => {
   scheduler = new SchedulerService(db, clock, new JobQueue(db, clock));
   handlers = new Map();
   registerPeopleJobs({
+    db,
     clock,
+    settings,
     scheduler,
     handlers,
+    // The expiry job uses none of the Claude-path dependencies.
+    recommendations: {} as never,
+    orchestrator: {} as never,
+    securityFlags: {} as never,
     temporary: new TemporaryContacts({ db, clock, settings, events }),
   });
 });
