@@ -168,6 +168,12 @@ describe("fetchThreads through the real provider", () => {
     expect(runs.map((r) => r.jobId)).toContain(id);
   });
 
+  test("R62: a thread error whose input does not match the pair -> incomplete_ai_output", async () => {
+    const { source } = build("slack_thread_error_mismatch"); // message_ts sent as a number
+    const e = await failure(source.fetchThreads([req], signal));
+    expect(e.classified.kind).toBe("incomplete_ai_output");
+  });
+
   test("no thread tool_result at all -> incomplete_ai_output (never unavailable)", async () => {
     const { source } = build("slack_thread_none");
     const e = await failure(source.fetchThreads([req], signal));

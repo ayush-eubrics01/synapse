@@ -208,6 +208,21 @@ export class SlackConnectorSource implements MessageSource {
       throw new JobError({ kind: "incomplete_ai_output", message: "no thread tool result" });
     }
 
+    const keyOf = (r: ThreadFetchRequest) => `${r.conversationId}\u0000${r.parentTs}`;
+    // R62: a pair may end up "unavailable" (error, parse drop, parent mismatch) only when some
+    // THREAD result's input matches it; a pair nobody answered is a failed run, retried.
+    const matched = new Set<string>();
+    for (const r of threadResults) {
+      const req = unique.find((u) => sameInput(r.input, argsOf(u)));
+      if (req) matched.add(keyOf(req));
+    }
+    if (unique.some((u) => !matched.has(keyOf(u)))) {
+      throw new JobError({
+        kind: "incomplete_ai_output",
+        message: "a requested thread has no matching tool result",
+      });
+    }
+
     const maxTs = this.nowSec() + SKEW_SECONDS;
     const answered = new Set<string>();
     const out: {
@@ -220,7 +235,7 @@ export class SlackConnectorSource implements MessageSource {
       if (r.isError) continue;
       const req = unique.find((u) => sameInput(r.input, argsOf(u)));
       if (!req) continue;
-      const key = `${req.conversationId}\u0000${req.parentTs}`;
+      const key = keyOf(req);
       if (answered.has(key)) continue;
       answered.add(key);
       let parsed: { messages: SourceMessage[]; rejected: number };

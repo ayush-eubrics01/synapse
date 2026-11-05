@@ -334,10 +334,11 @@ describe("SlackConnectorSource.fetchThreads", () => {
   });
   const PARENT = "1793872920.000500";
 
-  test("2 requested, 1 answered, unrequested ignored", async () => {
+  test("2 requested and both answered (one unavailable), unrequested ignored", async () => {
     const { source, seen } = setup([
       tr(THREAD, threadArgs("D0SYNTHDM01", PARENT), fixture("read-thread")),
       tr(THREAD, threadArgs("D0OTHER", "1793872921.000000"), fixture("read-thread")),
+      tr(THREAD, threadArgs("D0SYNTHDM02", "1793872930.000000"), "Error: thread_not_found", true),
     ]);
     const out = await source.fetchThreads(
       [
@@ -354,6 +355,37 @@ describe("SlackConnectorSource.fetchThreads", () => {
     expect(seen[0]?.instructions).toContain(JSON.stringify(threadArgs("D0SYNTHDM01", PARENT)));
   });
 
+  test("R62: a requested pair with no matching THREAD result is incomplete_ai_output", async () => {
+    const { source } = setup([
+      tr(THREAD, threadArgs("D0SYNTHDM01", PARENT), fixture("read-thread")),
+    ]);
+    const e = await failure(
+      source.fetchThreads(
+        [
+          { conversationId: "D0SYNTHDM01", parentTs: PARENT },
+          { conversationId: "D0SYNTHDM02", parentTs: "1793872930.000000" },
+        ],
+        signal,
+      ),
+    );
+    expect(e.classified.kind).toBe("incomplete_ai_output");
+  });
+
+  test("R62: an error result with a non-matching input (numeric ts) is incomplete_ai_output", async () => {
+    const { source } = setup([
+      tr(
+        THREAD,
+        { channel_id: "D0SYNTHDM01", message_ts: 1793872920.0005, limit: 100 },
+        "Error: thread_not_found",
+        true,
+      ),
+    ]);
+    const e = await failure(
+      source.fetchThreads([{ conversationId: "D0SYNTHDM01", parentTs: PARENT }], signal),
+    );
+    expect(e.classified.kind).toBe("incomplete_ai_output");
+  });
+
   test("duplicate requests yield one instruction line", async () => {
     const { source, seen } = setup([
       tr(THREAD, threadArgs("D0SYNTHDM01", PARENT), fixture("read-thread")),
@@ -366,16 +398,15 @@ describe("SlackConnectorSource.fetchThreads", () => {
     expect(lines).toHaveLength(1);
   });
 
-  test("wrong channel_id or extra key is ignored", async () => {
+  test("wrong channel_id or extra key is ignored (no matching result: incomplete, R62)", async () => {
     const { source } = setup([
       tr(THREAD, threadArgs("D0WRONG", PARENT), fixture("read-thread")),
       tr(THREAD, { ...threadArgs("D0SYNTHDM01", PARENT), extra: 1 }, fixture("read-thread")),
     ]);
-    const out = await source.fetchThreads(
-      [{ conversationId: "D0SYNTHDM01", parentTs: PARENT }],
-      signal,
+    const e = await failure(
+      source.fetchThreads([{ conversationId: "D0SYNTHDM01", parentTs: PARENT }], signal),
     );
-    expect(out).toHaveLength(0);
+    expect(e.classified.kind).toBe("incomplete_ai_output");
   });
 
   test("one thread's parse error drops only that thread", async () => {
