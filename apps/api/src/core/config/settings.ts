@@ -3,6 +3,7 @@ import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { DEFAULT_KNOWN_SERVERS } from "../orchestrator/tool-catalog";
 
 const settingSchemas = {
   "slack.collection.intervalSeconds": z.number().int().positive().default(600),
@@ -14,6 +15,19 @@ const settingSchemas = {
   "health.authExpiryWarningHours": z.number().positive().default(48),
   "autoReply.awayMode": z.boolean().default(false),
   "system.lastHeartbeatAt": z.string().nullable().default(null),
+  "orchestrator.quota.fiveHour.soft": z.number().min(0).max(1).default(0.6),
+  "orchestrator.quota.fiveHour.hard": z.number().min(0).max(1).default(0.85),
+  "orchestrator.quota.fiveHour.stop": z.number().min(0).max(1).default(0.95),
+  "orchestrator.quota.sevenDay.soft": z.number().min(0).max(1).default(0.7),
+  "orchestrator.quota.sevenDay.hard": z.number().min(0).max(1).default(0.9),
+  "orchestrator.timeouts.collector": z.number().int().positive().default(180),
+  "orchestrator.timeouts.intelligence": z.number().int().positive().default(300),
+  "orchestrator.timeouts.engineering": z.number().int().positive().default(1800),
+  "orchestrator.models.collector": z.string().min(1).default("haiku"),
+  "orchestrator.models.intelligence": z.string().min(1).default("haiku"),
+  "orchestrator.models.engineering": z.string().min(1).default("sonnet"),
+  "orchestrator.knownServers": z.array(z.string()).default(() => [...DEFAULT_KNOWN_SERVERS]),
+  "auth.lastExpiryWarningAt": z.string().nullable().default(null),
 };
 
 export type SettingKey = keyof typeof settingSchemas;
