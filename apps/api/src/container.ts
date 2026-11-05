@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { AIProvider, DesktopNotifier } from "@synapse/contracts";
+import type { AIProvider, DesktopNotifier, MessageSink } from "@synapse/contracts";
 import { type Db, openDatabase, runMigrations } from "@synapse/database";
 import { type Clock, newId, systemClock } from "@synapse/shared";
 import { ApprovalEngine } from "./core/approvals/approvals";
@@ -42,6 +42,7 @@ import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notif
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
+import { SlackSender } from "./integrations/slack/sender";
 import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
@@ -53,6 +54,7 @@ import { PeopleService } from "./modules/people/service";
 import { TemporaryContacts } from "./modules/people/temporary";
 import { PeopleViews } from "./modules/people/views";
 import { SecurityFlagsService } from "./modules/security-flags/service";
+import { createRunHelpers } from "./workers/intelligence-shared";
 import { registerPeopleJobs } from "./workers/people";
 import { registerSlackJobs } from "./workers/slack";
 import { registerUrgencyJobs, responseGuidelinesLookup } from "./workers/urgency";
@@ -89,6 +91,8 @@ export interface Container {
   profileStore: ProfileService;
   peopleViews: PeopleViews;
   securityFlags: SecurityFlagsService;
+  /** The only Slack send path (approval executor, Task 3); no executor is registered yet. */
+  messageSink: MessageSink;
   /** Run by startup recovery and the reaper (main.ts), so core never imports workers. */
   recoverySweeps: RecoverySweep[];
   /** Job handler registry; the urgency smoke script runs one handler directly. */
@@ -224,10 +228,18 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   dispatcher.subscribe("message.received", "people.temporary", (event, tx) =>
     temporary.handle(event, tx),
   );
+  const slackSource = new SlackConnectorSource({ orchestrator, clock });
+  const messageSink = new SlackSender({
+    orchestrator,
+    clock,
+    searchSource: slackSource,
+    selfUserId: () => settings.get("slack.selfUserId"),
+    runIdForJob: createRunHelpers(db, securityFlags).runIdBefore,
+  });
   const slack = registerSlackJobs({
     db,
     clock,
-    source: new SlackConnectorSource({ orchestrator, clock }),
+    source: slackSource,
     store: inbox,
     sync,
     queue,
@@ -320,6 +332,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     profileStore,
     peopleViews,
     securityFlags,
+    messageSink,
     handlers,
     recoverySweeps: [{ name: "urgency.assess", run: urgency.recoverySweep }],
     slack: { startBackfill: slack.startBackfill, backfillResumable: slack.backfillResumable },

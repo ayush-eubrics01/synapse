@@ -4,12 +4,18 @@ export interface SendMessageCommand {
   conversationExternalId: string;
   threadTs?: string;
   text: string;
+  /** The queue job driving the send; recorded as claude_runs.job_id and used to find the run id. */
+  jobId?: string;
 }
 
 export interface SendResult {
   status: "sent_unverified" | "failed" | "uncertain";
-  /** Content-free reason. */
+  /** Content-free reason: `no_send`, `argument_mismatch`, `tool_error` or `uncertain_outcome`. */
   failure?: string;
+  /** The send tool was called with arguments other than the approved ones; raise a high flag. */
+  mismatch?: boolean;
+  /** The Claude run that performed the send, when one was recorded for `jobId`. */
+  runId?: string;
 }
 
 /** The port a send executor uses to post an approved message. */
