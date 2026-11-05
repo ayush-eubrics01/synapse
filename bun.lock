@@ -17,6 +17,13 @@
     "apps/api": {
       "name": "@synapse/api",
       "version": "0.0.0",
+      "dependencies": {
+        "@synapse/contracts": "workspace:*",
+        "@synapse/database": "workspace:*",
+        "@synapse/shared": "workspace:*",
+        "drizzle-orm": "^0.45.4",
+        "zod": "^4.6.7",
+      },
     },
     "packages/config": {
       "name": "@synapse/config",
