@@ -297,31 +297,32 @@ export class ClaudeOrchestrator {
   }
 
   private rowToSnapshot(row: typeof schema.quotaSnapshots.$inferSelect): QuotaSnapshot {
-    const fallback = new Date(this.deps.clock.now().getTime() + 3_600_000).toISOString();
+    const fallback = new Date(Date.parse(row.observedAt) + 3_600_000).toISOString();
     const five = row.fiveHourUtilization ?? 0;
     const seven = row.sevenDayUtilization ?? 0;
-    // One stored status: a rejection belongs to the window with the higher utilization.
-    const rejectedWindow = row.status === "rejected" ? (seven > five ? "seven" : "five") : null;
+    let fiveStatus: string;
+    let sevenStatus: string;
+    if (row.fiveHourStatus !== null || row.sevenDayStatus !== null) {
+      fiveStatus = row.fiveHourStatus ?? "allowed";
+      sevenStatus = row.sevenDayStatus ?? "allowed";
+    } else if (row.status === "rejected") {
+      // Legacy row (no per-window statuses): attribute to the higher-utilization window.
+      fiveStatus = seven > five ? "allowed" : "rejected";
+      sevenStatus = seven > five ? "rejected" : "allowed";
+    } else {
+      fiveStatus = row.status;
+      sevenStatus = row.status;
+    }
     return {
       observedAt: row.observedAt,
       fiveHour: {
         utilization: five,
-        status:
-          rejectedWindow === "five"
-            ? "rejected"
-            : row.status === "rejected"
-              ? "allowed"
-              : row.status,
+        status: fiveStatus,
         resetsAt: row.fiveHourResetsAt ?? fallback,
       },
       sevenDay: {
         utilization: seven,
-        status:
-          rejectedWindow === "seven"
-            ? "rejected"
-            : row.status === "rejected"
-              ? "allowed"
-              : row.status,
+        status: sevenStatus,
         resetsAt: row.sevenDayResetsAt ?? fallback,
       },
     };
@@ -358,6 +359,8 @@ export class ClaudeOrchestrator {
             sevenDayUtilization: q.sevenDay.utilization,
             sevenDayResetsAt: q.sevenDay.resetsAt,
             status,
+            fiveHourStatus: q.fiveHour.status,
+            sevenDayStatus: q.sevenDay.status,
             claudeRunId: runId,
           })
           .run();
@@ -388,7 +391,10 @@ export class ClaudeOrchestrator {
     const known = settings.get("orchestrator.knownServers");
     const fresh = [
       ...new Set(
-        result.connectors.map((c) => connectorToServer(c.name)).filter((s) => !known.includes(s)),
+        result.connectors
+          .map((c) => connectorToServer(c.name))
+          .filter((s) => /^mcp__[A-Za-z0-9_]+$/.test(s) && /[A-Za-z0-9]/.test(s.slice(5)))
+          .filter((s) => !known.includes(s)),
       ),
     ];
     if (fresh.length > 0) {

@@ -107,6 +107,28 @@ function req(over: Partial<ClaudeJobRequest> = {}): ClaudeJobRequest {
 const runs = () => db.select().from(schema.claudeRuns).all();
 const events = (type: string) =>
   db.select().from(schema.domainEvents).where(eq(schema.domainEvents.type, type)).all();
+function snap2(o: {
+  five: number | null;
+  seven: number | null;
+  fiveStatus: string | null;
+  sevenStatus: string | null;
+  fiveResets?: string;
+  sevenResets?: string;
+}) {
+  db.insert(schema.quotaSnapshots)
+    .values({
+      id: crypto.randomUUID(),
+      observedAt: START,
+      fiveHourUtilization: o.five,
+      fiveHourResetsAt: o.fiveResets ?? "2026-11-05T15:00:00.000Z",
+      sevenDayUtilization: o.seven,
+      sevenDayResetsAt: o.sevenResets ?? "2026-11-10T00:00:00.000Z",
+      status: "rejected",
+      fiveHourStatus: o.fiveStatus,
+      sevenDayStatus: o.sevenStatus,
+    })
+    .run();
+}
 function snap(five: number, status = "allowed", resetsAt = "2026-11-05T15:00:00.000Z") {
   db.insert(schema.quotaSnapshots)
     .values({
@@ -192,6 +214,66 @@ describe("run", () => {
     const e = await fails(orch.run(req({ priorityClass: "urgent" })));
     expect(e.classified.kind).toBe("quota_exhausted");
     expect(provider.requests).toHaveLength(0);
+  });
+
+  test("seven-day rejection with higher five-hour utilization stops until seven-day reset", async () => {
+    snap2({ five: 0.5, seven: 0.1, fiveStatus: "allowed", sevenStatus: "rejected" });
+    const e = await fails(orch.run(req({ priorityClass: "urgent" })));
+    expect(e.classified.retryAfter).toBe("2026-11-10T00:00:00.000Z");
+  });
+
+  test("five-hour rejection with zero utilization stops only until five-hour reset", async () => {
+    snap2({ five: 0, seven: 0.06, fiveStatus: "rejected", sevenStatus: "allowed" });
+    const e = await fails(orch.run(req({ priorityClass: "urgent" })));
+    expect(e.classified.retryAfter).toBe("2026-11-05T15:00:00.000Z");
+  });
+
+  test("previous level uses per-window statuses", async () => {
+    snap2({ five: 0, seven: 0.06, fiveStatus: "rejected", sevenStatus: "allowed" });
+    clock.advance(4 * 3_600_000); // five-hour window reset: gate open again
+    provider.next = () => result({ quota: quota(0.9, "2026-11-05T20:00:00.000Z") });
+    await orch.run(req({ priorityClass: "collection" }));
+    const ev = events("quota.threshold_reached");
+    expect(ev).toHaveLength(1);
+    const stored = db.select().from(schema.quotaSnapshots).all();
+    expect(stored.at(-1)?.fiveHourStatus).toBe("allowed");
+    expect(stored.at(-1)?.sevenDayStatus).toBe("allowed");
+  });
+
+  test("null resetsAt expires one hour after observation", async () => {
+    db.insert(schema.quotaSnapshots)
+      .values({
+        id: "q",
+        observedAt: START,
+        fiveHourUtilization: 0,
+        fiveHourResetsAt: null,
+        sevenDayUtilization: 0,
+        sevenDayResetsAt: null,
+        status: "rejected",
+        fiveHourStatus: "rejected",
+        sevenDayStatus: "allowed",
+      })
+      .run();
+    clock.advance(2 * 3_600_000);
+    await orch.run(req({ priorityClass: "urgent" }));
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("invalid connector names are skipped", async () => {
+    provider.next = () =>
+      result({
+        connectors: [
+          { name: "", status: "connected" },
+          { name: "  ", status: "connected" },
+          { name: "..", status: "connected" },
+        ],
+      });
+    const before = settings.get("orchestrator.knownServers");
+    await orch.run(req());
+    expect(settings.get("orchestrator.knownServers")).toEqual(before);
+    provider.next = () => result();
+    await orch.run(req());
+    expect(runs().every((r) => r.status === "succeeded")).toBe(true);
   });
 
   test("threshold event fires once on rising level", async () => {

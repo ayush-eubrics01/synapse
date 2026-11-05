@@ -224,6 +224,8 @@ export const quotaSnapshots = sqliteTable("quota_snapshots", {
   sevenDayUtilization: real("seven_day_utilization"),
   sevenDayResetsAt: text("seven_day_resets_at"),
   status: text("status").notNull(),
+  fiveHourStatus: text("five_hour_status"),
+  sevenDayStatus: text("seven_day_status"),
   claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
 });
 
