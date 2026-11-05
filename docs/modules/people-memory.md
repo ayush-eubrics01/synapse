@@ -50,19 +50,20 @@ Identity is kept separate from approved knowledge. A person may exist as a tempo
 
 | Job type | Trigger | Profile / model | Idempotency key | Retry |
 |---|---|---|---|---|
-| `people.discover_contacts` | setup step 4 | none (from collected messages) | `people.discover:<date>` | 3 |
 | `people.generate_initial_profile` | user selects a person | intelligence / sonnet | `people.initial:<personId>:<date>` | 3; `incomplete_ai_output` retried |
 | `people.recommend_update` | schedule (coalesce, `people.update.intervalSeconds`); each tick enqueues one `people.update_profile` job (priority 60) per profiled person with history newer than the current version's evidence and nothing pending | intelligence / haiku (`people.models.update`) | `people.update:<personId>:<newest sentAt>` | 3 |
 | `people.assess_unknown` | the temporary-contact consumer, when a contact's `message_count` first reaches `people.unknown.minMessages`; runs at the end of the hour bucket (priority 40) | intelligence / haiku | `people.assess:<hourBucket>` | 3 |
-| `people.expire_temporary` | daily | none | `people.expire:<date>` | 3 |
+| `people.expire_temporary` | daily schedule (coalesce) | none | none (an idempotent delete by predicate) | 3 |
+
+Contact discovery is not a job: `GET /api/people/candidates` runs one ranking query over the collected messages (see Discovery scoring).
 
 The intelligence worker receives message text as untrusted content and has no write or send tools (ADR-032).
 
 ## Events
 
-Emitted: `person.discovered`, `person.profile_recommendation_created`, `person.profile_approved`.
+Emitted: `person.discovered`, `person.profile_recommendation_created`, `person.profile_approved`, `person.recommendation_decided`.
 
-Consumed: `message.received` (unknown senders, new activity), `followup.sent` (post-send profile flow), `approval.approved` / `rejected` / `expired`.
+Consumed: `message.received` (temporary contacts for unknown senders who interact with the user), `approval.rejected` / `approval.revoked` / `approval.expired` (the `people.decisions` consumer). Approved recommendations are applied by the generic `approval.execute` path, not by a people consumer of `approval.approved`. `followup.sent` (post-send profile flow) arrives with Phase 6.
 
 ## Workflows
 
@@ -79,7 +80,7 @@ Initial collection (setup):
 
 Profile update: analyze new context → compare with current profile → propose a diff with evidence → review queue → user approves/rejects → on approval write a new `people_profile_versions` row and update `people_profiles`. Rejection is recorded and nothing changes.
 
-Unknown people: a message from an unknown sender creates a `temporary_contacts` row with just enough to handle the interaction. `people.assess_unknown` decides whether a permanent profile is useful. If so, it creates a recommendation for approval. Priority is never assigned automatically.
+Unknown people: a message from an unknown sender who interacts with the user (a DM or group DM, a mention of the user, or a reply in a thread the user posted in) creates a `temporary_contacts` row with just enough to handle the interaction. `people.assess_unknown` decides whether a permanent profile is useful. If so, it creates a pending `suggest_evaluation` (no content, no approval); accepting it requests the initial profile, which then goes through approval. Priority is never assigned automatically.
 
 New recipient when completing a task (§6.5):
 
@@ -128,7 +129,7 @@ A `people` row is created when first needed (a flag is recorded for the user, th
 
 ### Temporary contacts and expiry
 
-The `people.temporary` outbox consumer of `message.received` creates a `temporary_contacts` row for a sender with no `people` row (and emits `person.discovered` on first sight), counts messages, and sets `expires_at` to the newest message time plus `people.temporaryContact.ttlDays` (first insert is `sentAt + ttl`, so a backfill does not give old contacts a fresh lease; a later message only moves it forward). Tracking is off while the identity is unconfirmed and skips the user. The daily `people.expire_temporary` job deletes expired contacts that have no pending recommendation. When a contact's `message_count` first reaches `people.unknown.minMessages` the consumer enqueues `people.assess_unknown`.
+The `people.temporary` outbox consumer of `message.received` creates a `temporary_contacts` row for a sender with no `people` row (and emits `person.discovered` on first sight), counts messages, and sets `expires_at` to the newest message time plus `people.temporaryContact.ttlDays` (first insert is `sentAt + ttl`, so a backfill does not give old contacts a fresh lease; a later message only moves it forward). Tracking is off while the identity is unconfirmed and skips the user. Tracking scope (R7): only a message that interacts with the user counts, using discovery's signals (`INTERACTIVE_CONVERSATION_TYPES` and `selfMentionNeedles` in `discovery.ts`): a DM or group DM, a mention of the user, or a reply in a thread the user posted in (as root or reply). The check reads the message itself and, for a thread reply only, runs one query with two index probes (`(conversation_id, ts)` for the root, `(conversation_id, thread_ts)` for replies). A message older than `people.temporaryContact.ttlDays` is ignored (it would expire on arrival). The daily `people.expire_temporary` job deletes expired contacts that have no pending recommendation. When a contact's `message_count` first reaches `people.unknown.minMessages` the consumer enqueues `people.assess_unknown`.
 
 ### History selection and byte budget
 
@@ -144,11 +145,15 @@ The `people.temporary` outbox consumer of `message.received` creates a `temporar
 
 ### Initial recommendation
 
-`ProfileRecommendations.requestInitialProfile(slackUserId)` (container `profiles`) queues `people.generate_initial_profile` (priority 120, group `people.intelligence`, timeout 420 s, key `people.initial:<personId>:<date>`, so a person can be re-evaluated after a rejection the next day) and returns `{ queued: false, reason: "identity_required" | "pending_recommendation" | "already_run_today" }` instead of throwing. When validated observations remain, one transaction stores the pending recommendation, its evidence rows, a `records.update` approval (target `people`, key `people.rec:<id>`) and `person.profile_recommendation_created`. Profile text lives only in `people_profile_recommendations.content`: never in events, audit rows, notifications, logs or `lastError`. The handler's return value carries counts only.
+`ProfileRecommendations.requestInitialProfile(slackUserId)` (container `profiles`) queues `people.generate_initial_profile` (priority 120, group `people.intelligence`, timeout 420 s, key `people.initial:<personId>:<date>`, so a person can be re-evaluated after a rejection the next day) and returns `{ queued: false, reason: "identity_required" | "profile_exists" | "pending_recommendation" | "already_run_today" }` instead of throwing. An initial cannot apply over an existing profile, so a person with a profile gets `profile_exists` (R7; later changes come from the update schedule), and a job queued before a profile was approved returns `{ skipped: "profile_exists" }` without a Claude run. When validated observations remain, one transaction stores the pending recommendation, its evidence rows, a `records.update` approval (target `people`, key `people.rec:<id>`) and `person.profile_recommendation_created`. Profile text lives only in `people_profile_recommendations.content`: never in events, audit rows, notifications, logs or `lastError`. The handler's return value carries counts only.
 
 ### Approval execution and retry (R3)
 
-Approval of a people recommendation runs the generic `approval.execute` path (see `runtime-design.md`) into `ProfileService.apply`, one immediate transaction, so a failure leaves no partial version. Executors throw only content-free messages because the engine stores `e.message` in the approval and audit row. A skipped apply (recommendation no longer pending, stale base, profile exists, suggestion) still ends as an executed approval with a skipped result. Rejection and expiry consumers set the recommendation `rejected` or `expired` and emit `person.recommendation_decided`; nothing else changes. A failed approval is terminal (R3), so `retryApply(recommendationId)` is allowed only for a pending recommendation whose current approval is `failed`: it requests a fresh approval (key `people.rec:<id>:<n>`, n at least 2) and points `approval_id` at it. Anything else throws `RetryNotAllowed` (409).
+Approval of a people recommendation runs the generic `approval.execute` path (see `runtime-design.md`) into `ProfileService.apply`, one immediate transaction, so a failure leaves no partial version. Executors throw only content-free messages because the engine stores `e.message` in the approval and audit row. A skipped apply (recommendation no longer pending, stale base, profile exists, suggestion) still ends as an executed approval with a skipped result. Rejection and expiry consumers set the recommendation `rejected` or `expired` and emit `person.recommendation_decided`; nothing else changes. A revoked approval can never apply either, so `approval.revoked` sets `rejected` with reason `revoked` (R6). Each decision runs in a savepoint inside the dispatcher's delivery: a failure rolls back that decision only, is logged with the approval id and the error class (never content), and leaves the recommendation pending for the user to discard. The executor acts only through the recommendation's current approval: an approval whose id is not `approval_id` (a stale or stray approval with the same payload) ends executed with `{ status: "skipped", reason: "approval_mismatch" }` and changes nothing (R7). A failed approval is terminal (R3), so `retryApply(recommendationId)` is allowed only for a pending recommendation whose current approval is `failed`: it requests a fresh approval (key `people.rec:<id>:<n>`, n at least 2) and points `approval_id` at it. Anything else throws `RetryNotAllowed` (409).
+
+### Discarding a stuck recommendation (R6)
+
+A pending recommendation blocks the person (no new initial or update while one is pending), so one whose approval can no longer apply it must be removable. `discard(recommendationId)` (`POST /api/people/recommendations/:id/discard`) is allowed for a pending `initial` or `update` whose current approval is `revoked`, `rejected`, `expired` or `failed` (the decision consumer did not land, or the user prefers not to retry), or `approved` but not executed for more than an hour (`STUCK_APPROVED_MS`: an execution skipped, for example after the permission was tightened, or a crash after the claim). It sets `rejected` with reason `discarded`, sets `decided_at` and emits `person.recommendation_decided`; anything else throws `DiscardNotAllowed` (409), an unknown id `RecommendationNotFound` (404). The approval itself is left as it is; the executor skips a recommendation that is no longer pending. The rule is `isDiscardable` in `recommendations.ts`, and the review list computes its actions from it server-side: a failed apply offers `retry` and `discard`, other stuck states `discard`. Like any rejection, a discarded observation set is not re-proposed unchanged. Suggestions use `dismiss` instead.
 
 ### Versions, stale base and supersede
 
@@ -156,15 +161,15 @@ Applying creates an immutable `people_profile_versions` row (monotonic per profi
 
 ### Update proposals and their baseline
 
-A daily scheduled tick (`people.update.intervalSeconds`) enqueues one `people.update_profile` job (priority 60, key `people.update:<personId>:<newest sentAt>`, which also bounds a remove-only re-proposal) per profiled person with nothing pending and history newer than the baseline. The baseline is the newest `observed_at` among the current version's evidence, or the version's `created_at` when it has none. The request carries the current approved content as ONE `user_approved` part (sections, keys, texts, confidence; no evidence ids) and the newer history as `untrusted` parts. Output is a diff (`profileUpdateOutputSchema`): every add must cite sent ids; a remove must cite at least one sent id and name a key present in the current content; invalid entries are dropped. A section may not exceed 20 observations after the diff (`section_full` skip). An empty diff or one that changes nothing stores nothing. The stored `update` keeps the diff as `content`, `base_version`, evidence for the adds and the approval.
+A daily scheduled tick (`people.update.intervalSeconds`) enqueues one `people.update_profile` job (priority 60, key `people.update:<personId>:<newest sentAt>`, which also bounds a remove-only re-proposal) per profiled person with nothing pending and history newer than the baseline. The baseline is the newest `observed_at` among the current version's evidence, or the version's `created_at` when it has none. The request carries the current approved content as ONE `user_approved` part (sections, keys, texts, confidence; no evidence ids) and the newer history as `untrusted` parts. Output is a diff (`profileUpdateOutputSchema`): every add must cite sent ids; a remove must cite at least one sent id and name a key present in the current content; invalid entries are dropped. A section may not exceed 20 observations after the diff (`section_full` skip). An empty diff or one that changes nothing stores nothing. The stored `update` keeps the diff as `content`, `base_version`, evidence for the adds and the approval. The removes' citations are stored as evidence of the recommendation too, under `observation_key` `remove:<section>.<key>` (R7; distinct from the add of a modified key, confidence of the observation removed), so the review shows them on each removed observation; they are never copied to a version.
 
 ### Unknown assessment and suggestions (R4)
 
-`people.assess_unknown` (priority 40) assesses up to 10 unassessed contacts that have at least `minMessages` messages and one unexpired message, each as one `untrusted` part holding up to 5 recent messages. A returned id outside the batch or repeated fails the job as `incomplete_ai_output`. The result is stored in `temporary_contacts.profile_assessment` (`{ worthProfile, reason }`, reason through `renderExcerpt(..., 300)`) and `assessed_at`. `worthProfile: true` ensures a person row and creates a pending `suggest_evaluation` recommendation (reason only, no content, no approval) unless the person already has a pending recommendation. More than 10 candidates queue a follow-up in the next hour bucket. The suggestion is only a nudge: accepting it (`POST .../accept-suggestion`) marks it `applied` and requests the initial profile in one transaction (rolled back, suggestion kept, if nothing is queued). Dismissing it (R4, `POST .../dismiss`, pending `suggest_evaluation` only) sets `rejected` with reason `dismissed` and emits `person.recommendation_decided`, so a stuck suggestion can be removed. Priority is never set by the assessment.
+`people.assess_unknown` (priority 40) assesses up to 10 unassessed contacts that have at least `minMessages` messages, one unexpired message and no `people` row (R7: someone with a priority, a profile or a request is already known), each as one `untrusted` part holding up to 5 recent messages. A returned id outside the batch or repeated fails the job as `incomplete_ai_output`. The result is stored in `temporary_contacts.profile_assessment` (`{ worthProfile, reason }`, reason through `renderExcerpt(..., 300)`) and `assessed_at`. A contact of the batch the model left out gets `{ omitted: true }` and `assessed_at` (R7), so it leaves the batch instead of being re-sent every run. `worthProfile: true` ensures a person row and creates a pending `suggest_evaluation` recommendation (reason only, no content, no approval) unless the person already has a pending recommendation. More than 10 candidates queue a follow-up in the next hour bucket. The suggestion is only a nudge: accepting it (`POST .../accept-suggestion`) marks it `applied` and requests the initial profile in one transaction (rolled back, suggestion kept, if nothing is queued). Dismissing it (R4, `POST .../dismiss`, pending `suggest_evaluation` only) sets `rejected` with reason `dismissed` and emits `person.recommendation_decided`, so a stuck suggestion can be removed. Priority is never set by the assessment.
 
-### Flag attribution (R1)
+### Flag attribution (R1, R5)
 
-People runs attribute security flags narrowly: runtime flags (permission denials, unexpected tools, max turns) are recorded once, against the evaluated person's newest provided message; an AI `suspectedInjection` flag links to the provided message whose text contains the model's quote (first match), else to the newest provided message. Attributing to all up to 150 messages would flood the red-flags list. For unknown assessment the newest message of the first contact in the batch is used.
+People runs attribute security flags narrowly: runtime flags (permission denials, unexpected tools, max turns) are recorded once, against one target message; an AI `suspectedInjection` flag links to the provided message whose text contains the model's quote (first match), else to the same target. Attributing to all up to 150 messages would flood the red-flags list. The target (`flagTarget`, R5) is the newest provided item written by the person, else the newest non-self item (a bystander in a shared thread). A flag is never attributed to `slack.selfUserId`: quote matching skips the user's messages, and a run that was given only the user's messages (possible for an update) records no flag. A flag on the user's own message would otherwise create a `people` row for the user and a "Red flag: message from <me>" popup. For unknown assessment the newest message of the first contact in the batch is used (every batch message is a contact's own).
 
 ### Guidelines in drafts
 
@@ -179,7 +184,7 @@ People runs attribute security flags narrowly: runtime flags (permission denials
 | `POST /api/people/:slackUserId/evaluate` | request the initial profile (202; result carries `queued` and a reason) |
 | `GET /api/people/:slackUserId/profile` | person detail: current profile, versions, evidence, flags, pending recommendation |
 | `GET /api/people/recommendations?status=` | recommendations (default `pending`) with evidence and approval state |
-| `POST /api/people/recommendations/:id/accept-suggestion`, `.../dismiss`, `.../retry-apply` | 404 unknown, 409 not allowed |
+| `POST /api/people/recommendations/:id/accept-suggestion`, `.../dismiss`, `.../retry-apply`, `.../discard` | 404 unknown, 409 not allowed |
 
 Approving or rejecting a recommendation goes through the generic approvals routes. The web page (`apps/web`) shows candidates, a person page and a recommendation review list with server actions; it contains no business logic. A recommendation whose stored content is unreadable is shown but cannot be approved. Rejection reasons are capped at 500 characters for all approvals.
 
@@ -187,7 +192,7 @@ Approving or rejecting a recommendation goes through the generic approvals route
 
 - The §6.5 post-send flow (profile recommendation for a new recipient after a verified send, `followup.sent`) waits for Phase 6, which owns sending.
 - Group and channel profiles (ADR-020).
-- Per-person cap on evidence queries, a dedicated needs-attention kind for parked approvals, and contacts omitted by the model staying unassessed are known follow-ups.
+- Per-person cap on evidence queries and a dedicated needs-attention kind for parked approvals are known follow-ups.
 
 ### Smoke
 
