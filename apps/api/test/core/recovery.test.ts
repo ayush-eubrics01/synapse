@@ -113,6 +113,7 @@ test("startup recovery parks a job interrupted at max attempts instead of loopin
 
 test("reaper reclaims an unexpired RUNNING job of a dead owner once its lease expires", () => {
   const id = running("dead", undefined, 60_000);
+  const deadOwner = q.get(id)?.leaseOwner ?? "";
   expect(reapExpiredJobs({ db, clock, audit })).toEqual({ requeued: 0, needsAttention: 0 });
   expect(q.get(id)?.status).toBe("RUNNING");
   clock.advance(59_999);
@@ -136,8 +137,8 @@ test("reaper reclaims an unexpired RUNNING job of a dead owner once its lease ex
   expect(rows[0]?.details).toEqual({ requeued: 1, needsAttention: 0 });
 
   // A resumed original worker no longer owns the job; the next claim runs it again.
-  expect(q.heartbeat(id, "w-dead", 60_000)).toBe(false);
-  expect(q.complete(id, "w-dead", "late")).toBe(false);
+  expect(q.heartbeat(id, deadOwner, 60_000)).toBe(false);
+  expect(q.complete(id, deadOwner, "late")).toBe(false);
   expect(q.claim("w-new", 60_000, ["t"])?.id).toBe(id);
   expect(q.get(id)?.attempts).toBe(2);
 });

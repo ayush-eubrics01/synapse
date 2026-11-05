@@ -20,7 +20,7 @@ for (
   job = queue.claim(workerId, 60_000, ["t"])
 ) {
   claimed.push(job.id);
-  queue.complete(job.id, workerId);
+  queue.complete(job.id, job.leaseOwner ?? "");
   await Bun.sleep(1); // yield so SQLite lock acquisition is not monopolised by one process
 }
 console.log(JSON.stringify(claimed));

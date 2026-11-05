@@ -27,6 +27,8 @@ export interface JobWorkerOptions {
   heartbeatMs?: number;
   concurrency?: number;
   pollMs?: number;
+  /** Minimum gap between repeated claim-failure log lines (default 60 000 ms). */
+  claimErrorLogIntervalMs?: number;
   /** Called after this worker settles a job (complete, fail, timeout). Ids and status only. */
   onSettled?: (job: { id: string; status: JobStatus }) => void;
 }
@@ -48,7 +50,10 @@ export class JobWorker {
   private readonly heartbeatMs: number;
   private readonly concurrency: number;
   private readonly pollMs: number;
+  private readonly claimErrorLogIntervalMs: number;
   private readonly onSettled: JobWorkerOptions["onSettled"];
+  /** performance.now() of the last claim-failure log; null while claims are healthy. */
+  private claimErrorLoggedAt: number | null = null;
   private readonly inFlight = new Set<InFlight>();
   private running = false;
   private loop: Promise<void> | null = null;
@@ -64,6 +69,7 @@ export class JobWorker {
     this.heartbeatMs = opts.heartbeatMs ?? 20_000;
     this.concurrency = opts.concurrency ?? 2;
     this.pollMs = opts.pollMs ?? 1_000;
+    this.claimErrorLogIntervalMs = opts.claimErrorLogIntervalMs ?? 60_000;
     this.onSettled = opts.onSettled;
   }
 
@@ -100,9 +106,21 @@ export class JobWorker {
 
   private claim(): Job | null {
     try {
-      return this.queue.claim(this.workerId, this.leaseMs, [...this.handlers.keys()]);
+      const job = this.queue.claim(this.workerId, this.leaseMs, [...this.handlers.keys()]);
+      if (this.claimErrorLoggedAt !== null) {
+        this.claimErrorLoggedAt = null;
+        console.log("worker: claim recovered");
+      }
+      return job;
     } catch (e) {
-      console.error("worker: claim failed", describe(e));
+      const at = performance.now();
+      if (
+        this.claimErrorLoggedAt === null ||
+        at - this.claimErrorLoggedAt >= this.claimErrorLogIntervalMs
+      ) {
+        this.claimErrorLoggedAt = at;
+        console.error("worker: claim failed", describe(e));
+      }
       return null;
     }
   }
@@ -154,6 +172,20 @@ export class JobWorker {
     const reg = this.handlers.get(job.type);
     const external = isExternalWrite(job) || reg?.externalWrite === true;
     const controller = new AbortController();
+    const owner = job.leaseOwner;
+    if (owner === null) throw new Error(`claimed job ${job.id} has no lease owner`);
+    if (reg?.externalWrite && !job.externalWrite) {
+      // Persist before the handler runs so the reaper parks a crash in NEEDS_ATTENTION.
+      let marked = false;
+      try {
+        marked = this.queue.markExternalWrite(job.id, owner);
+      } catch (e) {
+        // The job stays RUNNING until its lease expires; the reaper then reclaims it.
+        console.error("worker: markExternalWrite failed", job.id, describe(e));
+        return;
+      }
+      if (!marked) return;
+    }
     let owned = true;
     // Monotonic time of the last successful lease renewal (the claim counts as one).
     let renewedAt = performance.now();
@@ -174,7 +206,7 @@ export class JobWorker {
       if (leaseExpired()) return loseLease();
       const beatAt = performance.now();
       try {
-        if (this.queue.heartbeat(job.id, this.workerId, this.leaseMs)) renewedAt = beatAt;
+        if (this.queue.heartbeat(job.id, owner, this.leaseMs)) renewedAt = beatAt;
         else loseLease();
       } catch {
         // transient queue failure: keep going, the next beat will retry until the lease runs out
@@ -199,7 +231,7 @@ export class JobWorker {
       checkpoint: (data) => {
         if (settled || controller.signal.aborted)
           throw controller.signal.reason ?? new Error("job settled");
-        this.queue.checkpoint(job.id, data);
+        this.queue.checkpoint(job.id, owner, data);
       },
       getCheckpoint: <T>() => this.queue.getCheckpoint<T>(job.id),
     };
@@ -233,10 +265,10 @@ export class JobWorker {
     let status: JobStatus | null;
     try {
       if (outcome.kind === "done")
-        status = this.queue.complete(job.id, this.workerId, outcome.output) ? "COMPLETED" : null;
+        status = this.queue.complete(job.id, owner, outcome.output) ? "COMPLETED" : null;
       else if (external && outcome.error.kind === "timeout")
-        status = this.queue.failUncertain(job.id, this.workerId, outcome.error);
-      else status = this.queue.fail(job.id, this.workerId, outcome.error);
+        status = this.queue.failUncertain(job.id, owner, outcome.error);
+      else status = this.queue.fail(job.id, owner, outcome.error);
     } catch (e) {
       // The job stays RUNNING until its lease expires; the reaper then reclaims it.
       console.error(`worker: ${op} failed`, job.id, describe(e));

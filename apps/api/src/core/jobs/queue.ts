@@ -60,16 +60,22 @@ export class JobQueue {
     return { id: existing.id, created: false };
   }
 
+  /**
+   * Leases the next job to `workerId`. The lease owner is a per-claim token
+   * (`${workerId}:${newId()}`, returned as `job.leaseOwner`), so a stale holder cannot act on a
+   * job its own worker later re-claims.
+   */
   claim(workerId: string, leaseMs: number, types: string[]): Job | null {
     if (types.length === 0) return null;
     const nowDate = this.clock.now();
     const now = nowDate.toISOString();
     const leaseExpiresAt = new Date(nowDate.getTime() + leaseMs).toISOString();
+    const owner = `${workerId}:${newId()}`;
     return this.db.transaction(
       (tx) => {
         const rows = tx.all<{ id: string; attempts: number }>(sql`
         UPDATE jobs
-        SET status = 'RUNNING', lease_owner = ${workerId}, lease_expires_at = ${leaseExpiresAt},
+        SET status = 'RUNNING', lease_owner = ${owner}, lease_expires_at = ${leaseExpiresAt},
             attempts = attempts + 1, started_at = ${now}
         WHERE id = (
           SELECT j.id FROM jobs j
@@ -104,18 +110,18 @@ export class JobQueue {
     );
   }
 
-  heartbeat(jobId: string, workerId: string, leaseMs: number): boolean {
+  heartbeat(jobId: string, owner: string, leaseMs: number): boolean {
     const leaseExpiresAt = new Date(this.clock.now().getTime() + leaseMs).toISOString();
     const res = this.db
       .update(jobs)
       .set({ leaseExpiresAt })
-      .where(this.owned(jobId, workerId))
+      .where(this.owned(jobId, owner))
       .returning({ id: jobs.id })
       .all();
     return res.length > 0;
   }
 
-  complete(jobId: string, workerId: string, output?: unknown): boolean {
+  complete(jobId: string, owner: string, output?: unknown): boolean {
     const now = isoNow(this.clock);
     return this.db.transaction(
       (tx) => {
@@ -128,7 +134,7 @@ export class JobQueue {
             leaseOwner: null,
             leaseExpiresAt: null,
           })
-          .where(this.owned(jobId, workerId))
+          .where(this.owned(jobId, owner))
           .returning({ id: jobs.id })
           .all();
         if (res.length === 0) return false;
@@ -139,12 +145,12 @@ export class JobQueue {
     );
   }
 
-  fail(jobId: string, workerId: string, error: ClassifiedError): JobStatus {
+  fail(jobId: string, owner: string, error: ClassifiedError): JobStatus {
     const nowDate = this.clock.now();
     const now = nowDate.toISOString();
     return this.db.transaction(
       (tx) => {
-        const job = tx.select().from(jobs).where(this.owned(jobId, workerId)).get();
+        const job = tx.select().from(jobs).where(this.owned(jobId, owner)).get();
         if (!job) return this.currentStatus(tx, jobId);
         const outcome = decideFailure(error, job.attempts, job.maxAttempts, nowDate, this.random);
         if (outcome.status === "DEFER") {
@@ -174,7 +180,7 @@ export class JobQueue {
    * The outcome of an owned external-write job is unknown (timeout, forced stop): park it in
    * NEEDS_ATTENTION instead of retrying. The attempt keeps the original cause.
    */
-  failUncertain(jobId: string, workerId: string, cause: ClassifiedError): JobStatus {
+  failUncertain(jobId: string, owner: string, cause: ClassifiedError): JobStatus {
     const now = isoNow(this.clock);
     return this.db.transaction(
       (tx) => {
@@ -187,7 +193,7 @@ export class JobQueue {
             leaseExpiresAt: null,
             finishedAt: now,
           })
-          .where(this.owned(jobId, workerId))
+          .where(this.owned(jobId, owner))
           .returning({ id: jobs.id })
           .all();
         if (res.length === 0) return this.currentStatus(tx, jobId);
@@ -198,21 +204,36 @@ export class JobQueue {
     );
   }
 
-  defer(jobId: string, workerId: string, runAfter: string): void {
+  defer(jobId: string, owner: string, runAfter: string): void {
     const now = isoNow(this.clock);
     this.db.transaction(
       (tx) => {
-        if (!tx.select({ id: jobs.id }).from(jobs).where(this.owned(jobId, workerId)).get()) return;
+        if (!tx.select({ id: jobs.id }).from(jobs).where(this.owned(jobId, owner)).get()) return;
         this.deferIn(tx, jobId, runAfter, now, null);
       },
       { behavior: "immediate" },
     );
   }
 
-  checkpoint(jobId: string, data: unknown): void {
+  /** Sets external_write = 1 on a job the caller still owns; false if the lease is not theirs. */
+  markExternalWrite(jobId: string, owner: string): boolean {
+    return (
+      this.db
+        .update(jobs)
+        .set({ externalWrite: true })
+        .where(this.owned(jobId, owner))
+        .returning({ id: jobs.id })
+        .all().length > 0
+    );
+  }
+
+  /** Stores the checkpoint only while `owner` still holds the lease; returns whether it did. */
+  checkpoint(jobId: string, owner: string, data: unknown): boolean {
     const now = isoNow(this.clock);
-    this.db.transaction(
+    return this.db.transaction(
       (tx) => {
+        if (!tx.select({ id: jobs.id }).from(jobs).where(this.owned(jobId, owner)).get())
+          return false;
         const existing = tx
           .select({ id: jobCheckpoints.id })
           .from(jobCheckpoints)
@@ -228,6 +249,7 @@ export class JobQueue {
             .values({ id: newId(), jobId, checkpoint: data, updatedAt: now })
             .run();
         }
+        return true;
       },
       { behavior: "immediate" },
     );
@@ -271,8 +293,8 @@ export class JobQueue {
       .map(toJob);
   }
 
-  private owned(jobId: string, workerId: string) {
-    return and(eq(jobs.id, jobId), eq(jobs.status, "RUNNING"), eq(jobs.leaseOwner, workerId));
+  private owned(jobId: string, owner: string) {
+    return and(eq(jobs.id, jobId), eq(jobs.status, "RUNNING"), eq(jobs.leaseOwner, owner));
   }
 
   private getIn(tx: DbOrTx, id: string): Job | null {

@@ -126,8 +126,8 @@ test("jobs check reports NEEDS_ATTENTION jobs with a count", async () => {
   const check = jobsCheck(db, clock);
   for (const key of ["a", "b"]) {
     const { id } = q.enqueue(db, { type: "t", idempotencyKey: key });
-    q.claim("w", 60_000, ["t"]);
-    q.fail(id, "w", { kind: "auth_failed", message: "no" });
+    const owner = q.claim("w", 60_000, ["t"])?.leaseOwner ?? "";
+    q.fail(id, owner, { kind: "auth_failed", message: "no" });
   }
   expect(await check()).toEqual({ status: "degraded", detail: "2 job(s) need attention" });
 });
@@ -135,8 +135,8 @@ test("jobs check reports NEEDS_ATTENTION jobs with a count", async () => {
 test("jobs check lists every problem it finds", async () => {
   const q = new JobQueue(db, clock);
   const parked = q.enqueue(db, { type: "t", idempotencyKey: "parked" }).id;
-  q.claim("w", 60_000, ["t"]);
-  q.fail(parked, "w", { kind: "auth_failed", message: "no" });
+  const owner = q.claim("w", 60_000, ["t"])?.leaseOwner ?? "";
+  q.fail(parked, owner, { kind: "auth_failed", message: "no" });
   q.enqueue(db, { type: "t", idempotencyKey: "stuck" });
   q.claim("w", 1000, ["t"]);
   q.enqueue(db, { type: "t", idempotencyKey: "waiting" });

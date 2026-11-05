@@ -3,8 +3,10 @@ import { type Job, JobError } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
 import { eq } from "drizzle-orm";
+import { AuditLogger } from "../../src/core/audit/audit";
 import { JobQueue } from "../../src/core/jobs/queue";
 import { type HandlerRegistration, type JobHandler, JobWorker } from "../../src/core/jobs/worker";
+import { reapExpiredJobs } from "../../src/core/recovery/recovery";
 
 let db: ReturnType<typeof openDatabase>["db"];
 let q: JobQueue;
@@ -318,4 +320,69 @@ test("onSettled reports id and status after complete, fail and timeout", async (
     { id: failed, status: "FAILED" },
     { id: slow, status: "RETRY" },
   ]);
+});
+
+test("a handler's externalWrite flag is persisted at claim, before the handler runs (G2)", async () => {
+  const id = enqueue();
+  expect(status(id).externalWrite).toBe(false);
+  let seenInHandler: boolean | undefined;
+  await mk(
+    reg(
+      async () => {
+        seenInHandler = status(id).externalWrite;
+        return new Promise(() => {});
+      },
+      30,
+      { externalWrite: true },
+    ),
+  ).runOnce();
+  expect(seenInHandler).toBe(true);
+  expect(status(id).status).toBe("NEEDS_ATTENTION");
+
+  // A crash (no settle) leaves RUNNING; the reaper must honour the persisted flag.
+  const crashed = enqueue("t", "k2");
+  const owner = q.claim("w9", 1_000, ["t"])?.leaseOwner ?? "";
+  expect(q.markExternalWrite(crashed, owner)).toBe(true);
+  const clock = new FakeClock("2026-11-05T12:00:00.000Z");
+  clock.advance(2_000);
+  const reaped = reapExpiredJobs({ db, clock, audit: new AuditLogger(clock) });
+  expect(reaped).toEqual({ requeued: 0, needsAttention: 1 });
+  expect(status(crashed).status).toBe("NEEDS_ATTENTION");
+});
+
+test("claim errors are logged once per interval and recovery is logged once (G7)", async () => {
+  let nowMs = 1_000;
+  const nowSpy = spyOn(performance, "now").mockImplementation(() => nowMs);
+  const claimSpy = spyOn(q, "claim").mockImplementation(() => {
+    throw new Error("db locked");
+  });
+  const errSpy = spyOn(console, "error").mockImplementation(() => {});
+  const logSpy = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const w = mk(
+      reg(async () => 1),
+      "w1",
+      { claimErrorLogIntervalMs: 60_000 },
+    );
+    const polls = async (n: number) => {
+      for (let i = 0; i < n; i++) {
+        await w.runOnce();
+        nowMs += 1_000;
+      }
+    };
+    await polls(10);
+    expect(errSpy.mock.calls).toEqual([["worker: claim failed", "Error: db locked"]]);
+    nowMs += 60_000;
+    await polls(1);
+    expect(errSpy).toHaveBeenCalledTimes(2);
+    claimSpy.mockRestore();
+    await polls(2);
+    expect(errSpy).toHaveBeenCalledTimes(2);
+    expect(logSpy.mock.calls).toEqual([["worker: claim recovered"]]);
+  } finally {
+    nowSpy.mockRestore();
+    claimSpy.mockRestore();
+    errSpy.mockRestore();
+    logSpy.mockRestore();
+  }
 });
