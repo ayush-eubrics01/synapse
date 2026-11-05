@@ -39,7 +39,7 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 | `event_consumptions` | Consumer idempotency | unique(`consumer`,`event_id`), `status`, `attempts`, `last_error`, `next_attempt_at` (nullable; retry backoff, base 5 s, cap 5 min) |
 | `audit_events` | Append-only audit | `actor` (user/system/module), `module`, `worker_profile`, `action`, `target_integration`, `target_ref`, `approval_id`, `result`, `details` JSON (nullable), `occurred_at`. Never deleted by retention |
 | `notifications` | In-app notifications | `kind`, `severity`, `title`, `body`, `ref`, `read_at` |
-| `approvals` | Approval requests | `action`, `target_integration`, `target_ref`, `payload` JSON (exact intended change), `risk_level`, `status` (pending/approved/rejected/expired/executed/failed/revoked), `expires_at`, `decided_at`, `execution_result` JSON, `idempotency_key` unique |
+| `approvals` | Approval requests | `action`, `target_integration`, `target_ref`, `payload` JSON (exact intended change), `risk_level`, `status` (pending/approved/rejected/expired/executed/failed/revoked), `expires_at`, `decided_at`, `execution_result` JSON, `execution_started_at` (nullable; set atomically when `execute` claims the approval, so a second concurrent execute cannot run the executor), `requested_by_module`, `requested_by_worker` (nullable), `idempotency_key` unique |
 | `permissions` | Policy overrides | `operation`, `policy` (allowed/approval/explicit_approval/denied), `scope` JSON |
 
 ## Slack tables (owned by `inbox`)
