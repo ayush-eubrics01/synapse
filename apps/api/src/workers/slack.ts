@@ -44,6 +44,7 @@ export const tsFromMs = (ms: number): string => (ms / 1000).toFixed(6);
 
 export function registerSlackJobs(deps: SlackJobDeps): {
   startBackfill(): { started: boolean; state: SyncState; reason?: string };
+  backfillResumable(): boolean;
 } {
   const { db, clock, source, store, sync, queue, settings, events, audit, scheduler } = deps;
   const nowMs = () => clock.now().getTime();
@@ -218,8 +219,10 @@ export function registerSlackJobs(deps: SlackJobDeps): {
       const e = err.classified;
       if (e.kind !== "rate_limited") {
         const d = retryDecision(e.kind);
+        // R60 M5: auth_failed parks the job but is not terminal for the backfill: it stays
+        // "running" (resumable once the user logs in again).
         const terminal =
-          d === "needs_attention" ||
+          (d === "needs_attention" && e.kind !== "auth_failed") ||
           d === "fail" ||
           (d === "retry" && job.attempts >= job.maxAttempts);
         return fail(stream, err, terminal);
@@ -397,5 +400,13 @@ export function registerSlackJobs(deps: SlackJobDeps): {
     );
   };
 
-  return { startBackfill };
+  /** R60 M4: "running" with no live job (e.g. the job parked) can only continue via a resume. */
+  const backfillResumable = (): boolean =>
+    db.transaction(
+      (tx) =>
+        sync.get("slack.backfill", tx).status === "running" &&
+        !isLive(tx, "slack.backfill", ["PENDING", "RETRY", "RUNNING"]),
+    );
+
+  return { startBackfill, backfillResumable };
 }

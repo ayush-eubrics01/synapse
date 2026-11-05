@@ -11,7 +11,7 @@ export function slackRoutes(c: Container): Hono {
     const searches = (s: SyncState) => (s.searchCountDate === today ? s.searchCount : 0);
     return ctx.json({
       incremental,
-      backfill,
+      backfill: { ...backfill, resumable: c.slack.backfillResumable() },
       searchesToday: searches(incremental) + searches(backfill),
     });
   });

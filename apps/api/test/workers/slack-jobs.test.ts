@@ -470,3 +470,19 @@ test("R58: Slack schedules coalesce while a job of their type is waiting", () =>
   expect(jobs("slack.collect_incremental")).toHaveLength(1);
   expect(jobs("slack.retention_cleanup")).toHaveLength(1);
 });
+
+test("R60 M5: backfill auth_failed rethrows (job parks) but keeps status running, resumable", async () => {
+  slack.startBackfill();
+  fake.next.push(boom(new JobError({ kind: "auth_failed", message: "login" })));
+  finishBackfill();
+  await expect(run("slack.backfill")).rejects.toBeInstanceOf(JobError);
+  const s = sync.get("slack.backfill");
+  expect(s.status).toBe("running");
+  expect(s.lastError).toEqual({ kind: "auth_failed", message: "login" });
+  expect(slack.backfillResumable()).toBe(true);
+  clock.advance(1000);
+  const r = slack.startBackfill();
+  expect(r.started).toBe(true);
+  expect(r.state.checkpoint).toBe(s.checkpoint);
+  expect(slack.backfillResumable()).toBe(false);
+});

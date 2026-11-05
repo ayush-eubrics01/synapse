@@ -17,6 +17,7 @@ import {
   type SlackStatusDto,
   startBackfill,
 } from "../lib/api";
+import { trailingDebounce } from "../lib/debounce";
 import { decideThenRefresh } from "../lib/decide";
 import { LIVE_EVENT_TYPES } from "../lib/live-events";
 import { ApprovalsList } from "./components/ApprovalsList";
@@ -63,11 +64,16 @@ export default function Dashboard() {
 
   useEffect(() => {
     void refresh();
+    // A burst of live events (e.g. one per stored page) triggers one refresh, 500 ms after the last.
+    const debounced = trailingDebounce(() => void refresh(), 500);
     const source = new EventSource("/api/stream");
-    source.onmessage = () => void refresh();
+    source.onmessage = () => debounced.call();
     // Events are named (`event: <type>`), so onmessage alone would miss them.
-    for (const t of LIVE_EVENT_TYPES) source.addEventListener(t, () => void refresh());
-    return () => source.close();
+    for (const t of LIVE_EVENT_TYPES) source.addEventListener(t, () => debounced.call());
+    return () => {
+      debounced.cancel();
+      source.close();
+    };
   }, [refresh]);
 
   const decide = async (id: string, decision: "approve" | "reject") => {

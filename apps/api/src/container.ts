@@ -64,7 +64,7 @@ export interface Container {
   health: HealthService;
   inbox: InboxStore;
   sync: SyncStateService;
-  slack: { startBackfill: ReturnType<typeof registerSlackJobs>["startBackfill"] };
+  slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
 export interface ContainerDeps {
@@ -211,6 +211,6 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     health,
     inbox,
     sync,
-    slack: { startBackfill: slack.startBackfill },
+    slack: { startBackfill: slack.startBackfill, backfillResumable: slack.backfillResumable },
   };
 }

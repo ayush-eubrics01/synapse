@@ -109,7 +109,8 @@ export interface SlackSyncState {
 
 export interface SlackStatusDto {
   incremental: SlackSyncState;
-  backfill: SlackSyncState;
+  /** `resumable`: running with no live backfill job, so only a resume continues it (R60 M4). */
+  backfill: SlackSyncState & { resumable: boolean };
   searchesToday: number;
 }
 

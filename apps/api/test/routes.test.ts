@@ -389,6 +389,19 @@ test("POST /api/slack/backfill starts once; a second call reports already runnin
   expect(body.state.status).toBe("running");
 });
 
+test("R60 M4: backfill.resumable is true only when running with no live backfill job", async () => {
+  type S = { backfill: { status: string; resumable: boolean } };
+  const status = async () => ((await (await req("/api/slack/status")).json()) as S).backfill;
+  expect((await status()).resumable).toBe(false); // idle
+  await post("/api/slack/backfill");
+  expect(await status()).toMatchObject({ status: "running", resumable: false }); // job PENDING
+  c.db.update(schema.jobs).set({ status: "NEEDS_ATTENTION" }).run();
+  expect(await status()).toMatchObject({ status: "running", resumable: true });
+  const resumed = (await (await post("/api/slack/backfill")).json()) as { started: boolean };
+  expect(resumed.started).toBe(true);
+  expect((await status()).resumable).toBe(false);
+});
+
 test("health ready caches the claude provider health for 60 s", async () => {
   let calls = 0;
   const counting: AIProvider = {
