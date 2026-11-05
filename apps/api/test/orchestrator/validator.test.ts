@@ -119,6 +119,45 @@ describe("validateRequest", () => {
     expect(v(make(), { instructions: "go", boundary: "  " }).ok).toBe(false);
     expect(v(make(), { instructions: "go", boundary: "" }).ok).toBe(false);
   });
+  test("R26 malformed tool names rejected", () => {
+    const cases: [string, string[], "collector" | "engineering"][] = [
+      [
+        "N1",
+        [
+          SEND,
+          "ToolSearch(x),mcp__claude_ai_Slack__slack_read_channel,mcp__claude_ai_Slack__slack_search_public_and_private",
+        ],
+        "collector",
+      ],
+      ["N2", ["Read(x),Foo", "Bash"], "engineering"],
+      ["N3b", ["Bash(x),mcp__newsrv__read_doc"], "engineering"],
+      ["glob", ["mcp__claude_ai_Slack__*", "ToolSearch"], "collector"],
+      ["space", ["Bash(git status)"], "engineering"],
+    ];
+    for (const [, tools, profile] of cases) {
+      const r = make({ workerProfile: profile, allowed: tools, promptParts: [] });
+      expect(reason(v(r))).toBe(
+        `malformed tool name ${tools.find((t) => t.includes(",") || t.includes("*") || t.includes(" ")) ?? ""}`,
+      );
+    }
+  });
+  test("R26 Bash(git:*) accepted on engineering", () => {
+    const r = make({
+      workerProfile: "engineering",
+      allowed: ["Read", "Bash(git:*)"],
+      promptParts: [],
+    });
+    expect(v(r)).toEqual({ ok: true });
+  });
+  test("R26 denylist must cover network and write built-ins", () => {
+    const full = buildDenylist([SEARCH, "ToolSearch"], DEFAULT_KNOWN_SERVERS, "collector");
+    expect(reason(v(make({ disallowedTools: full.filter((t) => t !== "WebFetch") })))).toBe(
+      "denylist missing WebFetch",
+    );
+    expect(reason(v(make({ disallowedTools: full.filter((t) => t !== "Bash") })))).toBe(
+      "denylist missing Bash",
+    );
+  });
   test("rule 6 boundary collision", () => {
     const parts: PromptPart[] = [{ provenance: "untrusted", source: "s", content: "xx BND yy" }];
     expect(

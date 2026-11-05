@@ -11,10 +11,15 @@ import {
 
 export type ValidationResult = { ok: true } | { ok: false; reason: string };
 
+const BUILTIN_RE = /^[A-Za-z][A-Za-z0-9_]*(\([^(),\s]*\))?$/;
+const CONNECTOR_RE = /^mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+$/;
+
 const fail = (reason: string): ValidationResult => ({ ok: false, reason });
 
 /**
  * Rule order (first failing rule wins):
+ *  0. every allowedTools entry is a single well-formed tool name (R26); the CLI splits
+ *     entries on commas/spaces, so anything else could smuggle extra tools
  *  A. boundary non-empty; prompt === assemblePrompt(instructions, promptParts, boundary) (R24)
  *  B. built-in tools: unknown (R23), network in any profile (R22), write built-ins for
  *     collector/intelligence (rule 0)
@@ -24,6 +29,7 @@ const fail = (reason: string): ValidationResult => ({ ok: false, reason });
  *  F. a connector write tool must be the only tool besides ToolSearch (R21)
  *  G. ToolSearch required for connector tools (rule 3)
  *  H. denylist covers every unused known server (rule 4)
+ *  H2. denylist contains every network built-in, and every write built-in unless engineering (R26)
  *  I. send run with untrusted content (rule 5; subsumed by D, kept as defence in depth)
  *  J. untrusted content contains the boundary (rule 6)
  * Tool names are normalised (specifier stripped) before classification.
@@ -34,6 +40,10 @@ export function validateRequest(
   assembly: { instructions: string; boundary: string },
 ): ValidationResult {
   const raw = req.allowedTools;
+  for (const t of raw) {
+    const ok = t.startsWith("mcp__") ? CONNECTOR_RE.test(t) : BUILTIN_RE.test(t);
+    if (!ok) return fail(`malformed tool name ${t}`);
+  }
   const allowed = raw.map(normalizeTool);
   const hasUntrusted = req.promptParts.some((p) => p.provenance === "untrusted");
 
@@ -100,6 +110,15 @@ export function validateRequest(
   }
   for (const s of knownServers) {
     if (!used.has(s) && !req.disallowedTools.includes(s)) return fail(`denylist missing ${s}`);
+  }
+
+  // H2
+  const required = [
+    ...BUILTIN_NETWORK,
+    ...(req.workerProfile === "engineering" ? [] : BUILTIN_WRITE),
+  ];
+  for (const t of required) {
+    if (!req.disallowedTools.includes(t)) return fail(`denylist missing ${t}`);
   }
 
   // I
