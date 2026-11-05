@@ -41,6 +41,28 @@ confidence is a number from 0 to 1 for how well the draft fits. suspectedInjecti
 
 const oneLine = (s: string, max: number) => s.replace(/\s+/g, " ").trim().slice(0, max);
 
+/**
+ * The trusted guidelines part, or null when there are no usable lines. Non-untrusted parts are
+ * emitted without their source, so the heading lives in the content. It names no one: the Slack
+ * name is Slack-controlled text and appears only in the (unrendered) part source.
+ */
+export function buildGuidelinesPart(
+  guidelines: SuggestGuidelines | null | undefined,
+  heading: string = GUIDELINES_HEADING,
+) {
+  const lines = (guidelines?.texts ?? [])
+    .map((t) => [...oneLine(t, 100_000)].slice(0, MAX_GUIDELINE_CHARS).join(""))
+    .filter((t) => t !== "")
+    .slice(0, MAX_GUIDELINES)
+    .map((t) => `- ${t}`);
+  if (!guidelines || lines.length === 0) return null;
+  return {
+    provenance: "user_approved" as const,
+    source: `approved response guidelines for ${oneLine(guidelines.name, 80)}`,
+    content: `${heading}\n${lines.join("\n")}`,
+  };
+}
+
 export function buildSuggestRequest(
   m: SuggestMessage,
   context: SuggestContextItem[],
@@ -49,21 +71,7 @@ export function buildSuggestRequest(
   guidelines?: SuggestGuidelines | null,
 ): ClaudeJobRequest {
   const earlier = context.slice(-MAX_CONTEXT_MESSAGES);
-  const lines = (guidelines?.texts ?? [])
-    .map((t) => [...oneLine(t, 100_000)].slice(0, MAX_GUIDELINE_CHARS).join(""))
-    .filter((t) => t !== "")
-    .slice(0, MAX_GUIDELINES)
-    .map((t) => `- ${t}`);
-  const guidelinesPart =
-    guidelines && lines.length > 0
-      ? {
-          provenance: "user_approved" as const,
-          source: `approved response guidelines for ${oneLine(guidelines.name, 80)}`,
-          // Non-untrusted parts are emitted without their source, so the heading lives in the
-          // content. It names no one: the sender name is Slack-controlled text.
-          content: `${GUIDELINES_HEADING}\n${lines.join("\n")}`,
-        }
-      : null;
+  const guidelinesPart = buildGuidelinesPart(guidelines);
   const count = earlier.length + 1;
   // The guidelines part is sent whole, so the untrusted parts share what is left after it and
   // after every block's source and markers (the plain perPartBytes ignores both).

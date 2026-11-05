@@ -20,6 +20,7 @@ import type { HandlerRegistration } from "../../src/core/jobs/worker";
 import { NotificationService } from "../../src/core/notifications/notifications";
 import { SchedulerService } from "../../src/core/scheduler/scheduler";
 import { ExtractionQueue } from "../../src/modules/commitments/extraction-queue";
+import { StallService } from "../../src/modules/commitments/stall";
 import { CommitmentStore } from "../../src/modules/commitments/store";
 import { PeopleService } from "../../src/modules/people/service";
 import { SecurityFlagsService } from "../../src/modules/security-flags/service";
@@ -133,6 +134,15 @@ beforeEach(() => {
     orchestrator: orchestrator as never,
     securityFlags,
     store,
+    events,
+    stall: new StallService({
+      db,
+      clock,
+      settings,
+      events,
+      queue,
+      notifications: new NotificationService(db, clock, new LiveBus()),
+    }),
     handlers,
   });
   settings.set("slack.selfUserId", SELF);

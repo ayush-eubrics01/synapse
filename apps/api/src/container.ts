@@ -45,6 +45,7 @@ import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { SlackSender } from "./integrations/slack/sender";
 import { ExtractionQueue } from "./modules/commitments/extraction-queue";
 import { CommitmentLifecycle } from "./modules/commitments/lifecycle";
+import { StallService } from "./modules/commitments/stall";
 import { CommitmentStore } from "./modules/commitments/store";
 import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
@@ -326,6 +327,9 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     orchestrator,
     securityFlags,
     store: commitments,
+    events,
+    stall: new StallService({ db, clock, settings, events, queue, notifications }),
+    guidelinesFor: responseGuidelinesLookup(db, (id) => profileStore.getResponseGuidelines(id)),
     handlers,
   });
   const urgency = registerUrgencyJobs({

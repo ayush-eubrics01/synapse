@@ -21,6 +21,7 @@ import { AuthMonitor } from "../../src/core/orchestrator/auth";
 import { ClaudeOrchestrator } from "../../src/core/orchestrator/orchestrator";
 import { SchedulerService } from "../../src/core/scheduler/scheduler";
 import { ClaudeCliProvider } from "../../src/integrations/claude-code/cli-provider";
+import { StallService } from "../../src/modules/commitments/stall";
 import { CommitmentStore } from "../../src/modules/commitments/store";
 import { PeopleService } from "../../src/modules/people/service";
 import { SecurityFlagsService } from "../../src/modules/security-flags/service";
@@ -97,6 +98,8 @@ function build(mode: string, count = 2) {
     orchestrator,
     securityFlags,
     store: new CommitmentStore({ db, clock, settings, events }),
+    events,
+    stall: new StallService({ db, clock, settings, events, queue, notifications }),
     handlers,
   });
   db.insert(schema.slackUsers)
@@ -130,7 +133,7 @@ function build(mode: string, count = 2) {
       getCheckpoint: () => undefined,
     } as never) as Promise<unknown>;
   };
-  return { db, run, argvFile };
+  return { db, run, argvFile, handlers, queue, clock };
 }
 
 describe("commitments.extract through the real provider and validator", () => {
@@ -203,3 +206,76 @@ describe("commitments.extract through the real provider and validator", () => {
     expect(Buffer.byteLength(prompt, "utf8")).toBeLessThan(100 * 1024);
   });
 });
+
+describe("commitments.draft_followup through the real provider and validator", () => {
+  test("stalled commitment: draft stored; trusted parts hold the description and guidelines only; text only inside UNTRUSTED blocks", async () => {
+    const { db, argvFile, handlers } = build("followup_ok", 2);
+    db.insert(schema.commitments)
+      .values({
+        id: "c1",
+        description: "DESCRIPTION-SECRET-xyz",
+        ownerSlackUserId: "UPRIYA0001",
+        counterpartySlackUserId: "USELF00001",
+        direction: "theirs",
+        status: "open",
+        reviewStatus: "accepted",
+        dedupKey: "k1",
+        dueAt: new Date(Date.parse(NOW) - 60_000).toISOString(),
+        createdAt: NOW,
+        updatedAt: NOW,
+      })
+      .run();
+    db.insert(schema.commitmentSources)
+      .values({
+        id: "s1",
+        commitmentId: "c1",
+        messageId: "m-c-2",
+        sourceExternalRef: "D1:1001.000000",
+        conversationId: "c-dm",
+        createdAt: NOW,
+      })
+      .run();
+    // Past due, so the deterministic check stalls it.
+    await handlers.get("commitments.check_stalled")?.handler({} as Job, ctxOf());
+    const job = db
+      .select()
+      .from(schema.jobs)
+      .all()
+      .find((j) => j.type === "commitments.draft_followup");
+    expect(job).toBeDefined();
+    const run = handlers.get("commitments.draft_followup")?.handler(
+      {
+        id: job?.id,
+        type: job?.type,
+        attempts: 1,
+        maxAttempts: 3,
+        input: job?.input,
+      } as unknown as Job,
+      ctxOf(),
+    ) as Promise<unknown>;
+    expect(await run).toMatchObject({ drafted: true });
+    const f = db.select().from(schema.followups).all();
+    expect(f).toHaveLength(1);
+    expect(f[0]).toMatchObject({
+      origin: "stalled",
+      status: "draft",
+      recipientSlackUserId: "UPRIYA0001",
+    });
+    expect(f[0]?.draftText).toContain("checking in");
+    const runs = db.select().from(schema.claudeRuns).all();
+    expect(runs[0]).toMatchObject({ workerProfile: "intelligence", status: "succeeded" });
+    expect(f[0]?.claudeRunId).toBe(runs[0]?.id as string);
+
+    const argv = JSON.parse(readFileSync(argvFile, "utf8")) as string[];
+    const at = (flag: string) => argv[argv.indexOf(flag) + 1];
+    expect(at("--allowedTools")).toBe("ToolSearch");
+    const prompt = at("-p") as string;
+    expect(prompt).toContain("DESCRIPTION-SECRET-xyz");
+    expect(prompt).toContain("UNTRUSTED");
+    const outside = prompt.replace(/<<<UNTRUSTED[\s\S]*?<<<END \w+>>>/g, "");
+    expect(outside).not.toContain(BODY);
+    expect(outside).toContain("DESCRIPTION-SECRET-xyz");
+  });
+});
+
+const ctxOf = () => ({ signal, checkpoint() {}, getCheckpoint: () => undefined }) as never;
