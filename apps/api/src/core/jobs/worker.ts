@@ -100,7 +100,7 @@ export class JobWorker {
       if (this.inFlight.size < this.concurrency) {
         const job = this.claim();
         if (job) {
-          void this.track(job);
+          this.track(job).catch(() => {});
           continue;
         }
       }
@@ -142,6 +142,7 @@ export class JobWorker {
     const reg = this.handlers.get(job.type);
     const controller = new AbortController();
     let owned = true;
+    let settled = false;
     let markLost: () => void = () => {};
     const lost = new Promise<Outcome>((resolve) => {
       markLost = () => resolve({ kind: "lost" });
@@ -175,7 +176,11 @@ export class JobWorker {
 
     const ctx: JobContext = {
       signal: controller.signal,
-      checkpoint: (data) => this.queue.checkpoint(job.id, data),
+      checkpoint: (data) => {
+        if (settled || controller.signal.aborted)
+          throw controller.signal.reason ?? new Error("job settled");
+        this.queue.checkpoint(job.id, data);
+      },
       getCheckpoint: <T>() => this.queue.getCheckpoint<T>(job.id),
     };
     const handled: Promise<Outcome> = !reg
@@ -188,9 +193,14 @@ export class JobWorker {
           (e: unknown): Outcome => ({ kind: "error", error: classify(e) }),
         );
 
-    const outcome = await Promise.race([handled, timedOut, lost, stopped]);
-    clearInterval(heartbeat);
-    clearTimeout(timeout);
+    let outcome: Outcome;
+    try {
+      outcome = await Promise.race([handled, timedOut, lost, stopped]);
+    } finally {
+      settled = true;
+      clearInterval(heartbeat);
+      clearTimeout(timeout);
+    }
     if (outcome.kind === "error" && outcome.error.kind === "timeout") {
       controller.abort(new Error(outcome.error.message));
     }
@@ -206,5 +216,11 @@ export class JobWorker {
 
 function classify(e: unknown): ClassifiedError {
   if (e instanceof JobError) return e.classified;
-  return { kind: "unknown", message: e instanceof Error ? e.message : String(e) };
+  let message = "non-error value thrown";
+  try {
+    message = e instanceof Error ? e.message : String(e);
+  } catch {
+    // value cannot be stringified (e.g. null prototype); keep fallback
+  }
+  return { kind: "unknown", message };
 }

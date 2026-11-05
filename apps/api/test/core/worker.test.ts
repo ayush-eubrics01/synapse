@@ -160,3 +160,34 @@ test("queue errors do not crash the loop", async () => {
   await w.stop(100);
   expect(calls).toBeGreaterThan(1);
 });
+
+test("abandoned handler cannot write checkpoints after timeout", async () => {
+  const id = enqueue();
+  let late: unknown;
+  const handler: JobHandler = async (_j, ctx) => {
+    ctx.checkpoint("before");
+    await sleep(80);
+    try {
+      ctx.checkpoint("after");
+    } catch (e) {
+      late = e;
+    }
+    return "ignored";
+  };
+  await mk(reg(handler, 30)).runOnce();
+  await sleep(90);
+  expect(q.getCheckpoint(id)).toBe("before");
+  expect(late).toBeDefined();
+});
+
+test("handler rejecting with a null-prototype value is classified unknown without leaks", async () => {
+  const id = enqueue();
+  await mk(
+    reg(() => Promise.reject(Object.create(null))),
+    "w1",
+    { heartbeatMs: 5 },
+  ).runOnce();
+  await sleep(20);
+  expect(status(id).status).toBe("RETRY");
+  expect(status(id).lastError?.kind).toBe("unknown");
+});
