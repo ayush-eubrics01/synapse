@@ -149,3 +149,37 @@ test("port in use: exits 1 with a message", async () => {
     blocker.stop(true);
   }
 }, 20_000);
+
+test("SSE stream flushes headers promptly and survives past 10 s idle", async () => {
+  const port = freePort();
+  start(tempDb(), port);
+  await waitFor(() => live(port), 8000);
+  const ctrl = new AbortController();
+  try {
+    const started = Date.now();
+    const res = await fetch(`http://127.0.0.1:${port}/api/stream`, { signal: ctrl.signal });
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error("no body");
+    let closed = false;
+    const pump = (async () => {
+      try {
+        while (true) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+      } catch {
+        // connection reset
+      }
+      closed = true;
+    })();
+    await Bun.sleep(12_000);
+    expect(closed).toBe(false);
+    ctrl.abort();
+    await pump;
+  } finally {
+    ctrl.abort();
+  }
+}, 20_000);

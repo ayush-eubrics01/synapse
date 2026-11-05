@@ -13,6 +13,8 @@ try {
     hostname: config.api.host,
     port: config.api.port,
     fetch: createApp(c).fetch,
+    // Bun's default 10 s idle timeout would cut SSE streams before the 15 s keep-alive.
+    idleTimeout: 0,
   });
 } catch (e) {
   if ((e as { code?: string }).code === "EADDRINUSE") {

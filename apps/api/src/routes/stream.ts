@@ -13,6 +13,8 @@ export function streamRoutes(c: Container): Hono {
       const aborted = new Promise<void>((resolve) => {
         wake = resolve;
       });
+      // Flush headers right away so EventSource sees `open` before the first event.
+      await stream.write(": connected\n\n");
       const unsubscribe = c.live.subscribe((msg) => {
         if (closed) return;
         stream.writeSSE({ event: msg.type, data: JSON.stringify(msg.data) }).catch(() => {});

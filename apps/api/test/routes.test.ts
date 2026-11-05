@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { createApp } from "../src/app";
 import { type Container, createContainer } from "../src/container";
 import { loadConfig } from "../src/core/config/config";
@@ -95,8 +95,20 @@ test("notifications list unread and mark read", async () => {
 });
 
 test("unexpected errors are 500 with a generic body", async () => {
+  const spy = spyOn(console, "error").mockImplementation(() => {});
   c.sqlite.close();
-  const res = await app.request("/api/jobs");
+  let res: Response;
+  try {
+    res = await app.request("/api/jobs");
+    expect(spy).toHaveBeenCalledTimes(1);
+    const args = spy.mock.calls[0] ?? [];
+    expect(args[0]).toBe("request failed:");
+    expect(args[1]).toBe("GET");
+    expect(args[2]).toBe("/api/jobs");
+    expect(typeof args[3]).toBe("string");
+  } finally {
+    spy.mockRestore();
+  }
   expect(res.status).toBe(500);
   expect(await res.json()).toEqual({ error: "internal error" });
   c = createContainer(loadConfig({ SYNAPSE_DB_PATH: ":memory:" }));

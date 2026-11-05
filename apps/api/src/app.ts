@@ -23,6 +23,12 @@ export function createApp(c: Container): Hono {
     if (err instanceof HTTPException && err.status < 500) {
       return ctx.json({ error: err.message }, err.status);
     }
+    console.error(
+      "request failed:",
+      ctx.req.method,
+      ctx.req.path,
+      err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+    );
     return ctx.json({ error: "internal error" }, 500);
   });
   return app;
