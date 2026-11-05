@@ -51,7 +51,12 @@ export type ApplyResult =
   | { status: "applied"; version: number }
   | {
       status: "skipped";
-      reason: "recommendation_not_pending" | "stale_base" | "profile_exists" | "unsupported_kind";
+      reason:
+        | "recommendation_not_pending"
+        | "approval_mismatch"
+        | "stale_base"
+        | "profile_exists"
+        | "unsupported_kind";
     };
 
 /** Content-free by construction: the engine stores `message` in the approval and audit row. */
@@ -126,6 +131,9 @@ export class ProfileService {
     if (!rec) throw new ProfileApplyError("recommendation not found");
     if (rec.status !== "pending")
       return { status: "skipped", reason: "recommendation_not_pending" };
+    // R7 M-4: only the recommendation's current approval may act on it (a stale or stray approval
+    // with the same payload changes nothing).
+    if (rec.approvalId !== approval.id) return { status: "skipped", reason: "approval_mismatch" };
     const now = isoNow(clock);
     const profile = tx
       .select()

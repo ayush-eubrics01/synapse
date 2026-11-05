@@ -4,6 +4,7 @@ import {
   type Job,
   JobError,
   type ProfileContent,
+  type ProfileSection,
   profileContentSchema,
   profileUpdateOutputSchema,
   type SuspectedInjection,
@@ -11,7 +12,7 @@ import {
 } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { type Clock, isoNow } from "@synapse/shared";
-import { and, asc, desc, eq, gte, isNull, max } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, max, notExists } from "drizzle-orm";
 import { z } from "zod";
 import type { SettingsService } from "../core/config/settings";
 import type { JobQueue } from "../core/jobs/queue";
@@ -33,9 +34,12 @@ import { applyDiff } from "../modules/people/profiles";
 import {
   ASSESS_UNKNOWN_JOB,
   ASSESS_UNKNOWN_PRIORITY,
+  type EvidenceRow,
+  hasProfile,
   INITIAL_PROFILE_JOB,
   PEOPLE_CONCURRENCY_GROUP,
   type ProfileRecommendations,
+  removalEvidenceKey,
   UPDATE_PROFILE_JOB,
   UPDATE_PROFILE_PRIORITY,
   UPDATE_SCHEDULE_JOB,
@@ -104,6 +108,8 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       .where(eq(schema.people.id, personId))
       .get();
     if (!person) throw new JobError({ kind: "invalid_input", message: "unknown person" });
+    // R7 M-1: a profile approved after the job was queued; an initial could never apply.
+    if (hasProfile(db, personId)) return { skipped: "profile_exists" };
     if (recommendations.hasPending(db, personId)) return { skipped: "pending_recommendation" };
 
     const items = selectHistory(db, person.slackUserId, {
@@ -353,7 +359,10 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
             baseVersion: profile.currentVersion,
             diff,
             resultContent,
-            evidence: evidenceRows(added, byId),
+            evidence: [
+              ...evidenceRows(added, byId),
+              ...removalEvidenceRows(current.data, valid.remove, byId),
+            ],
           });
           return "skipped" in stored
             ? { skipped: stored.skipped }
@@ -378,6 +387,13 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
         and(
           isNull(schema.temporaryContacts.assessedAt),
           gte(schema.temporaryContacts.messageCount, settings.get("people.unknown.minMessages")),
+          // R7 M-1: someone with a people row (a priority set, a profile requested) is known.
+          notExists(
+            db
+              .select({ id: schema.people.id })
+              .from(schema.people)
+              .where(eq(schema.people.slackUserId, schema.temporaryContacts.slackUserId)),
+          ),
         ),
       )
       .orderBy(asc(schema.temporaryContacts.firstSeenAt), asc(schema.temporaryContacts.id))
@@ -479,6 +495,14 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
               suggested++;
             }
           }
+          // R7 M-2: a contact the model left out is stamped too, so it leaves the batch.
+          for (const c of batch) {
+            if (seen.has(c.slackUserId)) continue;
+            tx.update(schema.temporaryContacts)
+              .set({ profileAssessment: { omitted: true }, assessedAt: nowIso })
+              .where(eq(schema.temporaryContacts.id, c.contactId))
+              .run();
+          }
           if (more) {
             const bucket = new Date(Math.floor(clock.now().getTime() / HOUR_MS + 1) * HOUR_MS);
             queue.enqueue(tx, {
@@ -523,6 +547,33 @@ function flaggedMessage(
   const quote = s.quote.trim();
   if (quote === "") return fallback;
   return used.find((i) => i.author !== "self" && i.text.includes(quote))?.messageId ?? fallback;
+}
+
+/**
+ * R7 M-3: a removal's citations, stored on the recommendation under `remove:<section>.<key>` so the
+ * review shows why; never copied to a version. Confidence is that of the observation removed.
+ */
+function removalEvidenceRows(
+  current: ProfileContent,
+  remove: { section: ProfileSection; key: string; evidence: string[] }[],
+  byId: Map<string, { sentAt: string; sourceRef: string }>,
+): EvidenceRow[] {
+  return remove.flatMap((r) => {
+    const confidence = current[r.section].find((o) => o.key === r.key)?.confidence ?? "low";
+    return r.evidence.flatMap((id) => {
+      const m = byId.get(id);
+      if (!m) return []; // unreachable after validateUpdate
+      return [
+        {
+          observationKey: removalEvidenceKey(r.section, r.key),
+          messageId: id,
+          sourceExternalRef: m.sourceRef,
+          confidence,
+          observedAt: m.sentAt,
+        },
+      ];
+    });
+  });
 }
 
 function evidenceRows(

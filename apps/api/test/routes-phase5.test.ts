@@ -446,3 +446,36 @@ test("discard: stuck recommendations offer discard; the route rejects them as di
     .run();
   expect((await send("POST", "/api/people/recommendations/sug/discard")).status).toBe(409);
 });
+
+test("R7 M-3: removed observations show their own citations; a modify keeps add and remove apart", async () => {
+  const init = store("initial", content({ communication: [obs("brief"), obs("tone")] }));
+  const approval = c.approvals.listPending().find((a) => a.id === init.approvalId);
+  if (!approval) throw new Error("approval missing");
+  c.profileStore.apply(approval);
+  const [m2, m3, m4] = [message(), message(), message()];
+  const diff: ProfileUpdateOutput = {
+    add: [{ section: "communication", ...obs("tone") }],
+    remove: [
+      { section: "communication", key: "brief", evidence: [m2 as string] },
+      { section: "communication", key: "tone", evidence: [m4 as string] },
+    ],
+    suspectedInjection: { detected: false, severity: "info", quote: "", reason: "" },
+  };
+  store(
+    "update",
+    diff,
+    [
+      { key: "remove:communication.brief", messageId: m2 as string },
+      { key: "communication.tone", messageId: m3 as string },
+      { key: "remove:communication.tone", messageId: m4 as string },
+    ],
+    1,
+  );
+  const upd = (await json<RecommendationView[]>("/api/people/recommendations"))[0];
+  const refs = (e: { sourceExternalRef: string }[] | undefined) =>
+    (e ?? []).map((x) => x.sourceExternalRef);
+  const removed = new Map(upd?.diff?.removed.map((o) => [o.key, o]));
+  expect(refs(removed.get("brief")?.evidence)).toEqual([`ref-${m2}`]);
+  expect(refs(removed.get("tone")?.evidence)).toEqual([`ref-${m4}`]);
+  expect(refs(upd?.diff?.added[0]?.evidence)).toEqual([`ref-${m3}`]);
+});

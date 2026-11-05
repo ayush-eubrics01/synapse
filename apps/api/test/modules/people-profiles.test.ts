@@ -618,6 +618,11 @@ describe("decisions and kinds", () => {
       idempotencyKey: "se",
       requestedByModule: "people",
     });
+    // linked as its current approval, so the M-4 approval check passes and the kind check decides
+    db.update(schema.peopleProfileRecommendations)
+      .set({ approvalId: a.id })
+      .where(eq(schema.peopleProfileRecommendations.id, id))
+      .run();
     const out = await approveAndRun(a.id);
     expect(out.status).toBe("executed");
     expect(out.result).toEqual({ status: "skipped", reason: "unsupported_kind" });
@@ -816,5 +821,59 @@ describe("R6: stuck recommendations", () => {
     // and the user can clear it
     recs.discard(r.id);
     expect(recRow(r.id)).toMatchObject({ status: "rejected", reason: "discarded" });
+  });
+});
+
+describe("R7: executor checks", () => {
+  test("M-3: removal citations stay on the recommendation and are never copied to a version", async () => {
+    const m = message();
+    await approveAndRun(
+      store("initial", content({ communication: [obs("a"), obs("b")] })).approvalId,
+    );
+    const u = store(
+      "update",
+      diff({
+        add: [addDiff("communication", "b")],
+        remove: [
+          { section: "communication", key: "a", evidence: [m] },
+          { section: "communication", key: "b", evidence: [m] },
+        ],
+      }),
+      [
+        { key: "communication.b", messageId: m },
+        { key: "remove:communication.a", messageId: m },
+        { key: "remove:communication.b", messageId: m },
+      ],
+      1,
+    );
+    expect((await approveAndRun(u.approvalId)).status).toBe("executed");
+    expect(service.getProfile(personId)?.version).toBe(2);
+    expect(versionEvidence(2)).toEqual([`communication.b:${m}`]);
+    expect(service.getProfile(personId)?.evidence.map((e) => e.observationKey)).toEqual([
+      "communication.b",
+    ]);
+  });
+
+  test("M-4: an approval that is not the recommendation's current one is skipped (approval_mismatch)", async () => {
+    const r = store("initial", content({ communication: [obs("a")] }));
+    const stray = engine.request(db, {
+      action: "records.update",
+      targetIntegration: "people",
+      targetRef: personId,
+      payload: { recommendationId: r.id },
+      riskLevel: "low",
+      idempotencyKey: "stray",
+      requestedByModule: "people",
+    });
+    const out = await approveAndRun(stray.id);
+    expect(out).toEqual({
+      status: "executed",
+      result: { status: "skipped", reason: "approval_mismatch" },
+    });
+    expect(recRow(r.id)).toMatchObject({ status: "pending", approvalId: r.approvalId });
+    expect(service.getProfile(personId)).toBeNull();
+    // the current approval still applies
+    expect((await approveAndRun(r.approvalId)).status).toBe("executed");
+    expect(recRow(r.id)?.status).toBe("applied");
   });
 });

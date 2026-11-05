@@ -305,11 +305,19 @@ describe("people.update_profile", () => {
       .from(schema.peopleProfileEvidence)
       .where(eq(schema.peopleProfileEvidence.recommendationId, rec?.id as string))
       .all();
-    expect(ev.map((e) => e.observationKey)).toEqual([
+    // R7 M-3: the remove's citation is stored too, under its own `remove:` key
+    expect(ev.map((e) => e.observationKey).sort()).toEqual([
       "communication.uses-threads",
       "communication.uses-threads",
+      "remove:communication.prefers-async",
     ]);
-    expect(ev.map((e) => e.messageId).sort()).toEqual([m1, m2].sort());
+    const adds = ev.filter((e) => e.observationKey === "communication.uses-threads");
+    expect(adds.map((e) => e.messageId).sort()).toEqual([m1, m2].sort());
+    expect(ev.find((e) => e.observationKey.startsWith("remove:"))).toMatchObject({
+      messageId: m2,
+      confidence: "high",
+      sourceExternalRef: expect.stringMatching(/^C1:\d+\.\d+$/),
+    });
     expect(db.select().from(schema.approvals).all()).toHaveLength(1);
     const events = db.select().from(schema.domainEvents).all();
     expect(events.filter((e) => e.type === "person.profile_recommendation_created")).toHaveLength(

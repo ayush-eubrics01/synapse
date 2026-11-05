@@ -13,6 +13,20 @@ export interface ContactDiscoveryDeps {
 const DAY_MS = 86_400_000;
 const DEFAULT_LIMIT = 50;
 
+/**
+ * Discovery's interaction signals, shared with temporary-contact tracking (R7 M-2): a message
+ * interacts with the user when it is in a DM or group DM, mentions the user, or replies in a thread
+ * the user posted in (as the root or a reply).
+ */
+export const INTERACTIVE_CONVERSATION_TYPES: readonly string[] = ["im", "mpim"];
+
+/** Plain, `<@U|name>` and Slack-escaped forms of a mention of the user. */
+export const selfMentionNeedles = (selfId: string): [string, string, string] => [
+  `<@${selfId}>`,
+  `<@${selfId}|`,
+  `&lt;@${selfId}&gt;`,
+];
+
 interface Row {
   slack_user_id: string;
   name: string | null;
@@ -43,10 +57,7 @@ export class ContactDiscovery {
     const since = new Date(
       clock.now().getTime() - settings.get("people.history.days") * DAY_MS,
     ).toISOString();
-    // Plain, `<@U|name>` and Slack-escaped forms of a mention of self.
-    const m1 = `<@${selfId}>`;
-    const m2 = `<@${selfId}|`;
-    const m3 = `&lt;@${selfId}&gt;`;
+    const [m1, m2, m3] = selfMentionNeedles(selfId);
     const rows = db.all<Row>(sql`
       WITH self_user(id) AS (SELECT id FROM slack_users WHERE external_id = ${selfId}),
       -- Threads self took part in: self's replies (thread_ts) and self's own messages as roots (ts).

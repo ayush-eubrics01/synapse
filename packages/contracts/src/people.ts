@@ -130,7 +130,7 @@ export interface CandidatesResponse {
 /** `POST /api/people/:slackUserId/evaluate` and `.../accept-suggestion`. */
 export interface EvaluateResult {
   queued: boolean;
-  reason?: "pending_recommendation" | "identity_required" | "already_run_today";
+  reason?: "pending_recommendation" | "identity_required" | "already_run_today" | "profile_exists";
 }
 
 export interface PersonSummary {

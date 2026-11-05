@@ -23,7 +23,7 @@ export interface ProfileRecommendationsDeps {
 
 export interface InitialProfileRequestResult {
   queued: boolean;
-  reason?: "pending_recommendation" | "identity_required" | "already_run_today";
+  reason?: "pending_recommendation" | "identity_required" | "already_run_today" | "profile_exists";
 }
 
 export interface EvidenceRow {
@@ -118,6 +118,8 @@ export class ProfileRecommendations {
       return { queued: false, reason: "identity_required" };
     }
     const personId = peopleService.ensurePerson(tx, slackUserId);
+    // An initial profile cannot apply over an existing one; updates are proposed by the schedule.
+    if (hasProfile(tx, personId)) return { queued: false, reason: "profile_exists" };
     if (this.hasPending(tx, personId)) return { queued: false, reason: "pending_recommendation" };
     const { created } = queue.enqueue(tx, {
       type: INITIAL_PROFILE_JOB,
@@ -479,6 +481,19 @@ export class ProfileRecommendations {
     return { rec, approval };
   }
 }
+
+export const hasProfile = (tx: DbOrTx, personId: string): boolean =>
+  tx
+    .select({ id: schema.peopleProfiles.id })
+    .from(schema.peopleProfiles)
+    .where(eq(schema.peopleProfiles.personId, personId))
+    .get() !== undefined;
+
+/**
+ * Evidence key of a removal citation (R7 M-3): kept on the recommendation for review, distinct
+ * from the `<section>.<key>` of an added observation (a modify has both), never copied to a version.
+ */
+export const removalEvidenceKey = (section: string, key: string) => `remove:${section}.${key}`;
 
 /** An approved approval not executed within this long is treated as stuck (R6). */
 export const STUCK_APPROVED_MS = 3_600_000;

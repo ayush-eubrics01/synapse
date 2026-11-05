@@ -20,7 +20,7 @@ import type { SettingsService } from "../../core/config/settings";
 import { safePermalink } from "../inbox/permalink";
 import type { ContactDiscovery } from "./discovery";
 import type { ProfileService } from "./profiles";
-import { isDiscardable } from "./recommendations";
+import { isDiscardable, removalEvidenceKey } from "./recommendations";
 import type { PeopleService } from "./service";
 
 const {
@@ -216,7 +216,8 @@ export class PeopleViews {
         text: current.success
           ? (current.data[o.section].find((x) => x.key === o.key)?.text ?? null)
           : null,
-        evidence: evidence.get(`${o.section}.${o.key}`) ?? [],
+        // R7 M-3: the removal's own citations, never the evidence of an add with the same key.
+        evidence: evidence.get(removalEvidenceKey(o.section, o.key)) ?? [],
       })),
     };
   }

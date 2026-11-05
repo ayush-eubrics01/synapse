@@ -736,3 +736,31 @@ describe("R5: flagTarget", () => {
     expect(flagTarget([])).toBeNull();
   });
 });
+
+describe("R7 M-1: an existing profile stops the initial path", () => {
+  const withProfile = () => {
+    const pid = personId();
+    db.insert(schema.peopleProfiles)
+      .values({ id: "pp", personId: pid, currentVersion: 1, content: profile(), updatedAt: NOW })
+      .run();
+    return pid;
+  };
+
+  test("requestInitialProfile reports profile_exists and queues nothing", () => {
+    seed();
+    withProfile();
+    expect(profiles.requestInitialProfile(THEM)).toEqual({
+      queued: false,
+      reason: "profile_exists",
+    });
+    expect(db.select().from(schema.jobs).all()).toHaveLength(0);
+  });
+
+  test("a queued job skips without a Claude run once a profile exists", async () => {
+    seed();
+    const pid = withProfile();
+    expect(await runJob(pid)).toEqual({ skipped: "profile_exists" });
+    expect(calls).toBe(0);
+    expect(recs()).toHaveLength(0);
+  });
+});

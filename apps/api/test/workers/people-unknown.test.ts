@@ -425,3 +425,34 @@ describe("people.assess_unknown", () => {
     expect(suggestions()).toHaveLength(0);
   });
 });
+
+describe("R7: assessment candidates", () => {
+  test("M-1: a contact that has a people row is not assessed", async () => {
+    const a = slackId(1);
+    contact(a);
+    db.transaction((tx) =>
+      new PeopleService({
+        db,
+        clock,
+        events: new EventPublisher(clock),
+        audit: new AuditLogger(clock),
+        settings,
+      }).ensurePerson(tx, a),
+    );
+    expect(await runAssess()).toEqual({ skipped: "nothing_to_assess" });
+    expect(calls).toBe(0);
+  });
+
+  test("M-2: contacts the model omitted are stamped omitted and leave the batch", async () => {
+    const a = slackId(1);
+    const b = slackId(2);
+    contact(a);
+    contact(b);
+    script.output = { assessments: [verdict(a, false)], suspectedInjection: noInj };
+    expect(await runAssess()).toEqual({ assessed: 1, suggested: 0 });
+    expect(tc(b)).toMatchObject({ assessedAt: NOW, profileAssessment: { omitted: true } });
+    expect(await runAssess()).toEqual({ skipped: "nothing_to_assess" });
+    expect(calls).toBe(1);
+    expect(suggestions()).toHaveLength(0);
+  });
+});

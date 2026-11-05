@@ -183,7 +183,7 @@ test("flags reflect profile, pending recommendation and temporary contact", () =
 
 test("unknown sender becomes one temporary contact, one event, count increments", () => {
   addUser("UNEW000001");
-  addConv("ch", "channel");
+  addConv("ch", "im"); // R7 M-2: a DM, so the sender interacts with the user
   received(addMsg("ch", "UNEW000001"));
   received(addMsg("ch", "UNEW000001"));
   const rows = db.select().from(schema.temporaryContacts).all();
@@ -197,7 +197,7 @@ test("unknown sender becomes one temporary contact, one event, count increments"
 test("self, known people and profiled senders create no temporary contact", () => {
   addUser("UKNOWN0001");
   addUser("UPROF00001");
-  addConv("ch", "channel");
+  addConv("ch", "im"); // R7 M-2: a DM, so the sender interacts with the user
   db.transaction((tx) => people.ensurePerson(tx, "UKNOWN0001"));
   const pid = db.transaction((tx) => people.ensurePerson(tx, "UPROF00001"));
   db.insert(schema.peopleProfiles)
@@ -212,7 +212,7 @@ test("self, known people and profiled senders create no temporary contact", () =
 
 test("messages older than people.history.days are ignored; null self creates none", () => {
   addUser("UOLD000001");
-  addConv("ch", "channel");
+  addConv("ch", "im"); // R7 M-2: a DM, so the sender interacts with the user
   received(addMsg("ch", "UOLD000001", { sentAt: daysAgo(91) }));
   expect(db.select().from(schema.temporaryContacts).all()).toHaveLength(0);
   settings.clear("slack.selfUserId");
@@ -222,7 +222,7 @@ test("messages older than people.history.days are ignored; null self creates non
 
 test("handler never throws and rolls back its writes on failure", () => {
   addUser("UNEW000001");
-  addConv("ch", "channel");
+  addConv("ch", "im"); // R7 M-2: a DM, so the sender interacts with the user
   const id = addMsg("ch", "UNEW000001");
   const broken = new TemporaryContacts({
     db,
@@ -287,10 +287,11 @@ test("G3: setPriority patches; null rationale clears", () => {
 
 test("a backfilled message does not extend an existing temporary contact's ttl", () => {
   addUser("UNEW000001");
-  addConv("ch", "channel");
+  addConv("ch", "im"); // R7 M-2: a DM, so the sender interacts with the user
   received(addMsg("ch", "UNEW000001"));
   const before = db.select().from(schema.temporaryContacts).get();
-  received(addMsg("ch", "UNEW000001", { sentAt: daysAgo(60) }));
+  // R7 M-2: within the 30-day ttl cutoff (a 60-day-old message is now not tracked at all)
+  received(addMsg("ch", "UNEW000001", { sentAt: daysAgo(20) }));
   const after = db.select().from(schema.temporaryContacts).get();
   expect(after?.messageCount).toBe(2);
   expect(after?.expiresAt).toBe(before?.expiresAt ?? "");
@@ -299,7 +300,7 @@ test("a backfilled message does not extend an existing temporary contact's ttl",
 
 test("a malformed sentAt is ignored", () => {
   addUser("UBAD0000001");
-  addConv("ch", "channel");
+  addConv("ch", "im"); // R7 M-2: a DM, so the sender interacts with the user
   received(addMsg("ch", "UBAD0000001", { sentAt: "not-a-date" }));
   expect(db.select().from(schema.temporaryContacts).all()).toHaveLength(0);
 });
@@ -345,4 +346,62 @@ test("perf: ranks 100k messages (500 users, 200 conversations, a third thread re
   console.log(`perf listContactCandidates: ${ms.toFixed(1)} ms`);
   expect(list).toHaveLength(50);
   expect(ms).toBeLessThan(1000);
+});
+
+test("R7 M-2: only senders interacting with the user are tracked (discovery's signals)", () => {
+  addConv("ch", "channel");
+  addConv("dm", "im");
+  addConv("gdm", "mpim");
+  for (const u of ["UCHAN00001", "UDM0000001", "UGDM000001", "UMENT00001", "UTHR000001"]) {
+    addUser(u);
+  }
+  addUser("UNOTHR0001");
+  // a channel message with no mention of the user, and a reply in a thread the user is not in
+  received(addMsg("ch", "UCHAN00001"));
+  addMsg("ch", "UCHAN00001", { ts: "7000.000" });
+  received(addMsg("ch", "UNOTHR0001", { threadTs: "7000.000" }));
+  // interacting: a DM, a group DM, a mention, a reply in a thread the user posted in
+  received(addMsg("dm", "UDM0000001"));
+  received(addMsg("gdm", "UGDM000001"));
+  received(addMsg("ch", "UMENT00001", { text: `hey &lt;@${SELF}&gt; can you look` }));
+  addMsg("ch", SELF, { ts: "8000.000" });
+  received(addMsg("ch", "UTHR000001", { threadTs: "8000.000" }));
+  const tracked = db
+    .select()
+    .from(schema.temporaryContacts)
+    .all()
+    .map((t) => t.slackUserId)
+    .sort();
+  expect(tracked).toEqual(["UDM0000001", "UGDM000001", "UMENT00001", "UTHR000001"]);
+});
+
+test("R7 M-2: a reply in a thread where the user only replied (not the root) counts", () => {
+  addConv("ch", "channel");
+  addUser("UROOT00001");
+  addUser("UTHR000001");
+  addMsg("ch", "UROOT00001", { ts: "9000.000" });
+  addMsg("ch", SELF, { threadTs: "9000.000" });
+  received(addMsg("ch", "UTHR000001", { threadTs: "9000.000" }));
+  expect(
+    db
+      .select()
+      .from(schema.temporaryContacts)
+      .all()
+      .map((t) => t.slackUserId),
+  ).toEqual(["UTHR000001"]);
+});
+
+test("R7 M-2: the age cutoff is people.temporaryContact.ttlDays", () => {
+  addConv("dm", "im");
+  addUser("UOLD000001");
+  addUser("UNEW000001");
+  received(addMsg("dm", "UOLD000001", { sentAt: daysAgo(40) })); // inside 90 history days, past ttl 30
+  received(addMsg("dm", "UNEW000001", { sentAt: daysAgo(20) }));
+  expect(
+    db
+      .select()
+      .from(schema.temporaryContacts)
+      .all()
+      .map((t) => t.slackUserId),
+  ).toEqual(["UNEW000001"]);
 });
