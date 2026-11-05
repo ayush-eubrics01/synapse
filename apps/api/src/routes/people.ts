@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Container } from "../container";
 import {
+  DiscardNotAllowed,
   RecommendationNotFound,
   RetryNotAllowed,
   SuggestionNotAcceptable,
@@ -75,6 +76,19 @@ export function peopleRoutes(c: Container): Hono {
       if (e instanceof SuggestionNotAcceptable) {
         return ctx.json({ error: "not a pending suggestion" }, 409);
       }
+      throw e;
+    }
+  });
+  // R6: a stuck recommendation (its approval can no longer apply it) is removed by the user.
+  app.post("/api/people/recommendations/:id/discard", zValidator("param", recParam), (ctx) => {
+    try {
+      c.profiles.discard(ctx.req.valid("param").id);
+      return ctx.json({ discarded: true });
+    } catch (e) {
+      if (e instanceof RecommendationNotFound) {
+        return ctx.json({ error: "recommendation not found" }, 404);
+      }
+      if (e instanceof DiscardNotAllowed) return ctx.json({ error: "discard not allowed" }, 409);
       throw e;
     }
   });

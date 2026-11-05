@@ -249,7 +249,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   });
   const profileStore = new ProfileService({ db, clock, events, audit });
   profileStore.register(approvals, dispatcher);
-  const peopleViews = new PeopleViews({ db, settings, people, discovery, profileStore });
+  const peopleViews = new PeopleViews({ db, clock, settings, people, discovery, profileStore });
   registerPeopleJobs({
     db,
     clock,

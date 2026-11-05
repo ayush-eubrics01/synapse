@@ -268,7 +268,7 @@ test("recommendations: initial proposed sections and update diff with evidence a
   expect(upd?.proposed).toBeNull();
 });
 
-test("recommendations: a failed approval offers retry only, and retry-apply issues a new approval", async () => {
+test("recommendations: a failed approval offers retry (and discard), and retry-apply issues a new approval", async () => {
   const { id, approvalId } = store("initial", content({ communication: [obs("x")] }));
   expect((await send("POST", `/api/people/recommendations/${id}/retry-apply`)).status).toBe(409);
   c.db
@@ -278,7 +278,8 @@ test("recommendations: a failed approval offers retry only, and retry-apply issu
     .run();
   const r = (await json<RecommendationView[]>("/api/people/recommendations"))[0];
   expect(r?.approvalStatus).toBe("failed");
-  expect(r?.actions).toEqual(["retry"]);
+  // R6: a failed apply can also be discarded
+  expect(r?.actions).toEqual(["retry", "discard"]);
   const res = await send("POST", `/api/people/recommendations/${id}/retry-apply`);
   expect(res.status).toBe(200);
   const { approvalId: next } = (await res.json()) as { approvalId: string };
@@ -400,4 +401,48 @@ test("recommendations: unparsable content drops approve but keeps reject", async
   expect(r?.id).toBe(init.id);
   expect(r?.proposed).toBeNull();
   expect(r?.actions).toEqual(["reject"]);
+});
+
+test("discard: stuck recommendations offer discard; the route rejects them as discarded; 409/404", async () => {
+  const setApproval = (id: string, set: Partial<typeof schema.approvals.$inferInsert>) =>
+    c.db.update(schema.approvals).set(set).where(eq(schema.approvals.id, id)).run();
+  const actionsOf = async (id: string) =>
+    (await json<RecommendationView[]>("/api/people/recommendations")).find((r) => r.id === id)
+      ?.actions;
+  const fresh = store("initial", content({ communication: [obs("a")] }));
+  expect(await actionsOf(fresh.id)).toEqual(["approve", "reject"]);
+  expect((await send("POST", `/api/people/recommendations/${fresh.id}/discard`)).status).toBe(409);
+
+  // approved but never executed: discardable only after an hour
+  setApproval(fresh.approvalId, { status: "approved", decidedAt: new Date().toISOString() });
+  expect(await actionsOf(fresh.id)).toEqual([]);
+  expect((await send("POST", `/api/people/recommendations/${fresh.id}/discard`)).status).toBe(409);
+  setApproval(fresh.approvalId, {
+    decidedAt: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+  });
+  expect(await actionsOf(fresh.id)).toEqual(["discard"]);
+
+  for (const status of ["revoked", "rejected", "expired"] as const) {
+    const r = store("initial", content({ communication: [obs(status)] }));
+    setApproval(r.approvalId, { status });
+    expect(await actionsOf(r.id)).toEqual(["discard"]);
+  }
+
+  const res = await send("POST", `/api/people/recommendations/${fresh.id}/discard`);
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ discarded: true });
+  expect(recRow(fresh.id)).toMatchObject({ status: "rejected", reason: "discarded" });
+  expect((await send("POST", `/api/people/recommendations/${fresh.id}/discard`)).status).toBe(409);
+  expect((await send("POST", "/api/people/recommendations/nope/discard")).status).toBe(404);
+  c.db
+    .insert(schema.peopleProfileRecommendations)
+    .values({
+      id: "sug",
+      personId: personId(),
+      kind: "suggest_evaluation",
+      status: "pending",
+      createdAt: NOW,
+    })
+    .run();
+  expect((await send("POST", "/api/people/recommendations/sug/discard")).status).toBe(409);
 });

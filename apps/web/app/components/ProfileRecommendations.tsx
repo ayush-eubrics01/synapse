@@ -64,12 +64,14 @@ function Item({
   onRetry,
   onEvaluate,
   onDismiss,
+  onDiscard,
 }: {
   r: RecommendationView;
   onDecide: (d: Decision) => void;
   onRetry: (recommendationId: string) => void;
   onEvaluate: (recommendationId: string) => void;
   onDismiss: (recommendationId: string) => void;
+  onDiscard: (recommendationId: string) => void;
 }) {
   const [reason, setReason] = useState("");
   const decide = (d: "approve" | "reject", why?: string) => {
@@ -136,6 +138,11 @@ function Item({
           <button type="button" onClick={() => onDismiss(r.id)}>
             Dismiss
           </button>
+        )}{" "}
+        {can("discard") && (
+          <button type="button" onClick={() => onDiscard(r.id)}>
+            Discard
+          </button>
         )}
       </div>
     </li>
@@ -148,12 +155,14 @@ export function ProfileRecommendations({
   onRetry,
   onEvaluate,
   onDismiss,
+  onDiscard,
 }: {
   items: RecommendationView[];
   onDecide: (d: Decision) => void;
   onRetry: (recommendationId: string) => void;
   onEvaluate: (recommendationId: string) => void;
   onDismiss: (recommendationId: string) => void;
+  onDiscard: (recommendationId: string) => void;
 }) {
   if (items.length === 0) return <p>No profile recommendations to review.</p>;
   return (
@@ -166,6 +175,7 @@ export function ProfileRecommendations({
           onRetry={onRetry}
           onEvaluate={onEvaluate}
           onDismiss={onDismiss}
+          onDiscard={onDiscard}
         />
       ))}
     </ul>

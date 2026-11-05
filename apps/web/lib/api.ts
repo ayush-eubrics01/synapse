@@ -336,6 +336,18 @@ export function dismissSuggestion(
   );
 }
 
+/** R6: removes a stuck recommendation; 409 when it is not stuck. */
+export function discardRecommendation(
+  recommendationId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ discarded: boolean }> {
+  return request(
+    `/api/people/recommendations/${encodeURIComponent(recommendationId)}/discard`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
 export function retryApply(
   recommendationId: string,
   fetchImpl: typeof fetch = fetch,

@@ -13,6 +13,7 @@ import { JobQueue } from "../../src/core/jobs/queue";
 import { PermissionManager } from "../../src/core/permissions/permissions";
 import { ProfileService } from "../../src/modules/people/profiles";
 import {
+  DiscardNotAllowed,
   ProfileRecommendations,
   RecommendationNotFound,
   RetryNotAllowed,
@@ -25,6 +26,7 @@ const SECRET = "SECRET-PROFILE-TEXT";
 let db: ReturnType<typeof openDatabase>["db"];
 let clock: FakeClock;
 let engine: ApprovalEngine;
+let permissions: PermissionManager;
 let dispatcher: OutboxDispatcher;
 let service: ProfileService;
 let recs: ProfileRecommendations;
@@ -39,7 +41,8 @@ beforeEach(() => {
   const events = new EventPublisher(clock);
   const audit = new AuditLogger(clock);
   const settings = new SettingsService(db, clock, events.publish.bind(events));
-  engine = new ApprovalEngine(db, clock, events, audit, new PermissionManager(db, audit));
+  permissions = new PermissionManager(db, audit);
+  engine = new ApprovalEngine(db, clock, events, audit, permissions);
   dispatcher = new OutboxDispatcher(db, clock, new LiveBus());
   const people = new PeopleService({ db, clock, events, audit, settings });
   service = new ProfileService({ db, clock, events, audit });
@@ -667,5 +670,151 @@ describe("decisions and kinds", () => {
       .run();
     dispatcher.dispatchOnce();
     expect(recRow(ok.id)?.status).toBe("applied");
+  });
+});
+
+describe("R6: stuck recommendations", () => {
+  const HOUR = 3_600_000;
+  const decided = () =>
+    db
+      .select()
+      .from(schema.domainEvents)
+      .where(eq(schema.domainEvents.type, "person.recommendation_decided"))
+      .all()
+      .map((e) => e.payload);
+  const initial = () => store("initial", content({ communication: [obs("a")] }));
+  const expectDiscarded = (id: string) => {
+    expect(recRow(id)).toMatchObject({ status: "rejected", reason: "discarded", decidedAt: NOW });
+    expect(decided()).toContainEqual({ recommendationId: id, status: "rejected" });
+  };
+
+  test("(a) a revoked approval rejects the recommendation with reason revoked", () => {
+    const r = initial();
+    engine.approve(r.approvalId);
+    engine.revoke(r.approvalId, "changed my mind");
+    dispatcher.dispatchOnce();
+    expect(recRow(r.id)).toMatchObject({ status: "rejected", reason: "revoked" });
+    expect(decided()).toEqual([{ recommendationId: r.id, status: "rejected" }]);
+  });
+
+  test("(b) discard: revoked, rejected and expired approvals whose decision never landed", () => {
+    // no dispatch: the decision consumer never ran (or failed), so each stays pending
+    const revoked = initial();
+    engine.approve(revoked.approvalId);
+    engine.revoke(revoked.approvalId, "x");
+    const rejected = store("initial", content({ communication: [obs("b")] }));
+    engine.reject(rejected.approvalId, "x");
+    const expired = store("initial", content({ communication: [obs("c")] }));
+    db.update(schema.approvals)
+      .set({ expiresAt: "2026-11-05T11:00:00.000Z" })
+      .where(eq(schema.approvals.id, expired.approvalId))
+      .run();
+    engine.expireDue();
+    for (const r of [revoked, rejected, expired]) {
+      expect(recRow(r.id)?.status).toBe("pending");
+      expect(recs.canDiscard(r.id)).toBe(true);
+      recs.discard(r.id);
+      expectDiscarded(r.id);
+    }
+  });
+
+  test("(b) discard: a failed apply can be discarded instead of retried", async () => {
+    const r = initial();
+    db.update(schema.peopleProfileRecommendations)
+      .set({ content: { bad: 1 } })
+      .where(eq(schema.peopleProfileRecommendations.id, r.id))
+      .run();
+    expect((await approveAndRun(r.approvalId)).status).toBe("failed");
+    recs.discard(r.id);
+    expectDiscarded(r.id);
+    expect(() => recs.retryApply(r.id)).toThrow(RetryNotAllowed);
+  });
+
+  test("(b) discard: permission tightened after approve leaves it approved; discardable after 1 hour", async () => {
+    const r = initial();
+    engine.approve(r.approvalId);
+    permissions.setOverride("records.update", "denied");
+    expect((await engine.execute(r.approvalId)).status).toBe("skipped");
+    expect(recRow(r.id)?.status).toBe("pending");
+    expect(recs.canDiscard(r.id)).toBe(false);
+    expect(() => recs.discard(r.id)).toThrow(DiscardNotAllowed);
+    clock.advance(HOUR + 1);
+    expect(recs.canDiscard(r.id)).toBe(true);
+    recs.discard(r.id);
+    expect(recRow(r.id)).toMatchObject({ status: "rejected", reason: "discarded" });
+  });
+
+  test("(b) discard: a crash after the claim (execution started, never finished)", () => {
+    const r = initial();
+    engine.approve(r.approvalId);
+    db.update(schema.approvals)
+      .set({ executionStartedAt: NOW })
+      .where(eq(schema.approvals.id, r.approvalId))
+      .run();
+    clock.advance(HOUR + 1);
+    recs.discard(r.id);
+    expect(recRow(r.id)).toMatchObject({ status: "rejected", reason: "discarded" });
+  });
+
+  test("(b) discard refused: pending approval, fresh approval, applied, suggestion; 404 unknown", async () => {
+    const r = initial();
+    expect(() => recs.discard(r.id)).toThrow(DiscardNotAllowed);
+    engine.approve(r.approvalId);
+    expect(() => recs.discard(r.id)).toThrow(DiscardNotAllowed);
+    await engine.execute(r.approvalId);
+    expect(recRow(r.id)?.status).toBe("applied");
+    clock.advance(HOUR + 1);
+    expect(() => recs.discard(r.id)).toThrow(DiscardNotAllowed);
+    db.insert(schema.peopleProfileRecommendations)
+      .values({
+        id: "sug",
+        personId,
+        kind: "suggest_evaluation",
+        status: "pending",
+        createdAt: NOW,
+      })
+      .run();
+    expect(() => recs.discard("sug")).toThrow(DiscardNotAllowed);
+    expect(() => recs.discard("missing")).toThrow(RecommendationNotFound);
+    expect(recRow(r.id)?.status).toBe("applied");
+  });
+
+  test("(c) a failing decision rolls back in a savepoint and logs the id and error class only", () => {
+    const broken = new OutboxDispatcher(db, clock, new LiveBus());
+    const failing = new EventPublisher(clock);
+    const publish = failing.publish.bind(failing);
+    failing.publish = ((tx, e) => {
+      if (e.type === "person.recommendation_decided") throw new TypeError(`leak ${SECRET}`);
+      return publish(tx, e);
+    }) as EventPublisher["publish"];
+    const other = new ApprovalEngine(
+      db,
+      clock,
+      new EventPublisher(clock),
+      new AuditLogger(clock),
+      new PermissionManager(db, new AuditLogger(clock)),
+    );
+    new ProfileService({ db, clock, events: failing, audit: new AuditLogger(clock) }).register(
+      other,
+      broken,
+    );
+    const r = initial();
+    engine.reject(r.approvalId, "no");
+    const errs: string[] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => errs.push(a.join(" "));
+    try {
+      expect(broken.dispatchOnce().failed).toBe(0);
+    } finally {
+      console.error = orig;
+    }
+    // nothing half-written: the status update rolled back with the failed publish
+    expect(recRow(r.id)).toMatchObject({ status: "pending", decidedAt: null });
+    expect(errs.join("\n")).toContain(`approval=${r.approvalId}`);
+    expect(errs.join("\n")).toContain("error=TypeError");
+    expect(errs.join("\n")).not.toContain(SECRET);
+    // and the user can clear it
+    recs.discard(r.id);
+    expect(recRow(r.id)).toMatchObject({ status: "rejected", reason: "discarded" });
   });
 });

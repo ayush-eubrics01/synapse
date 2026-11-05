@@ -62,6 +62,14 @@ export class SuggestionNotAcceptable extends Error {
   }
 }
 
+/** Not a stuck recommendation (see `isDiscardable`); the API maps it to 409. */
+export class DiscardNotAllowed extends Error {
+  constructor(readonly recommendationId: string) {
+    super("discard not allowed");
+    this.name = "DiscardNotAllowed";
+  }
+}
+
 export const INITIAL_PROFILE_JOB = "people.generate_initial_profile";
 export const PEOPLE_CONCURRENCY_GROUP = "people.intelligence";
 export const INITIAL_PROFILE_PRIORITY = 120;
@@ -411,4 +419,84 @@ export class ProfileRecommendations {
       { behavior: "immediate" },
     );
   }
+
+  /** True when `discard` would succeed now (see `isDiscardable`). */
+  canDiscard(recommendationId: string): boolean {
+    const found = this.loadWithApproval(this.deps.db, recommendationId);
+    return found !== null && isDiscardable(found.rec, found.approval, this.deps.clock.now());
+  }
+
+  /**
+   * R6: removes a stuck recommendation (one that blocks the person because its approval can no
+   * longer apply it): status `rejected`, reason `discarded`, `person.recommendation_decided`.
+   */
+  discard(recommendationId: string): void {
+    const { db, clock, events } = this.deps;
+    db.transaction(
+      (tx) => {
+        const found = this.loadWithApproval(tx, recommendationId);
+        if (!found) throw new RecommendationNotFound(recommendationId);
+        const { rec, approval } = found;
+        if (!isDiscardable(rec, approval, clock.now())) {
+          throw new DiscardNotAllowed(recommendationId);
+        }
+        tx.update(peopleProfileRecommendations)
+          .set({ status: "rejected", reason: "discarded", decidedAt: isoNow(clock) })
+          .where(eq(peopleProfileRecommendations.id, rec.id))
+          .run();
+        events.publish(tx, {
+          type: "person.recommendation_decided",
+          aggregateType: "person",
+          aggregateId: rec.personId,
+          correlationId: newId(),
+          payload: { recommendationId: rec.id, status: "rejected" },
+        });
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  private loadWithApproval(tx: DbOrTx, recommendationId: string) {
+    const rec = tx
+      .select({
+        id: peopleProfileRecommendations.id,
+        personId: peopleProfileRecommendations.personId,
+        kind: peopleProfileRecommendations.kind,
+        status: peopleProfileRecommendations.status,
+        approvalId: peopleProfileRecommendations.approvalId,
+      })
+      .from(peopleProfileRecommendations)
+      .where(eq(peopleProfileRecommendations.id, recommendationId))
+      .get();
+    if (!rec) return null;
+    const approval = rec.approvalId
+      ? (tx
+          .select({ status: schema.approvals.status, decidedAt: schema.approvals.decidedAt })
+          .from(schema.approvals)
+          .where(eq(schema.approvals.id, rec.approvalId))
+          .get() ?? null)
+      : null;
+    return { rec, approval };
+  }
+}
+
+/** An approved approval not executed within this long is treated as stuck (R6). */
+export const STUCK_APPROVED_MS = 3_600_000;
+const DEAD_APPROVAL: readonly string[] = ["revoked", "rejected", "expired", "failed"];
+
+/**
+ * R6: a pending initial/update recommendation is stuck, and may be discarded, when its current
+ * approval can no longer apply it: revoked, rejected, expired or failed (the decision consumer did
+ * not land, or the user prefers not to retry), or approved but not executed for over an hour (a
+ * skipped execution, for example after the permission was tightened, or a crash after the claim).
+ */
+export function isDiscardable(
+  rec: { kind: string; status: string },
+  approval: { status: string; decidedAt: string | null } | null,
+  now: Date,
+): boolean {
+  if (rec.status !== "pending" || rec.kind === "suggest_evaluation" || !approval) return false;
+  if (DEAD_APPROVAL.includes(approval.status)) return true;
+  if (approval.status !== "approved" || approval.decidedAt === null) return false;
+  return now.getTime() - Date.parse(approval.decidedAt) > STUCK_APPROVED_MS;
 }

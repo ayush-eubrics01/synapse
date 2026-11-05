@@ -75,18 +75,29 @@ export class ProfileService {
     registerIntegrationExecutor(engine, "records.update", "people", {
       execute: async (a) => this.apply(a),
     });
-    for (const type of ["approval.rejected", "approval.expired"] as const) {
+    // R6: a revoked approval can never apply either, so it rejects the recommendation too.
+    const decisions = {
+      "approval.rejected": { status: "rejected", reason: null },
+      "approval.revoked": { status: "rejected", reason: "revoked" },
+      "approval.expired": { status: "expired", reason: null },
+    } as const;
+    for (const [type, decision] of Object.entries(decisions) as [
+      keyof typeof decisions,
+      (typeof decisions)[keyof typeof decisions],
+    ][]) {
       dispatcher.subscribe(type, DECISIONS_CONSUMER, (event, tx) => {
         const approvalId = (event.payload as { approvalId?: unknown }).approvalId;
         if (typeof approvalId !== "string") return;
         try {
-          this.recordDecision(
-            tx,
-            approvalId,
-            type === "approval.rejected" ? "rejected" : "expired",
+          // Savepoint: a failure rolls back this decision only, never half of it.
+          tx.transaction((sp) =>
+            this.recordDecision(sp, approvalId, decision.status, decision.reason),
           );
-        } catch {
-          console.error(`people decision failed approval=${approvalId}`);
+        } catch (e) {
+          // Ids and the error class only; the recommendation stays pending and can be discarded.
+          console.error(
+            `people decision failed approval=${approvalId} error=${e instanceof Error ? e.name : "unknown"}`,
+          );
         }
       });
     }
@@ -253,8 +264,13 @@ export class ProfileService {
     return { status: "applied", version };
   }
 
-  /** Never throws: it runs inside the dispatcher's delivery of approval.rejected/expired. */
-  private recordDecision(tx: DbOrTx, approvalId: string, status: "rejected" | "expired"): void {
+  /** Runs in a savepoint inside the dispatcher's delivery of approval.rejected/revoked/expired. */
+  private recordDecision(
+    tx: DbOrTx,
+    approvalId: string,
+    status: "rejected" | "expired",
+    reason: "revoked" | null,
+  ): void {
     const approval = tx
       .select({ target: approvalsTable.targetIntegration })
       .from(approvalsTable)
@@ -268,7 +284,7 @@ export class ProfileService {
       .get();
     if (!rec) return;
     tx.update(recs)
-      .set({ status, decidedAt: isoNow(this.deps.clock) })
+      .set({ status, decidedAt: isoNow(this.deps.clock), ...(reason ? { reason } : {}) })
       .where(eq(recs.id, rec.id))
       .run();
     this.deps.events.publish(tx, {

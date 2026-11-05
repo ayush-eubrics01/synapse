@@ -3,6 +3,7 @@ import {
   acceptSuggestion,
   confirmSlackIdentity,
   decideApproval,
+  discardRecommendation,
   evaluatePerson,
   getCandidates,
   getClaudeRuns,
@@ -144,6 +145,7 @@ test("people profile calls hit the expected endpoints", async () => {
   await evaluatePerson("U1", f.impl);
   await acceptSuggestion("r 1", f.impl);
   await retryApply("r1", f.impl);
+  await discardRecommendation("r1", f.impl);
   expect(f.calls.map((c) => `${c.init?.method ?? "GET"} ${c.url}`)).toEqual([
     "GET /api/people/candidates?limit=10",
     "GET /api/people/recommendations?status=pending",
@@ -151,6 +153,7 @@ test("people profile calls hit the expected endpoints", async () => {
     "POST /api/people/U1/evaluate",
     "POST /api/people/recommendations/r%201/accept-suggestion",
     "POST /api/people/recommendations/r1/retry-apply",
+    "POST /api/people/recommendations/r1/discard",
   ]);
 });
 

@@ -164,6 +164,7 @@ const renderRecs = (items: RecommendationView[]) =>
       onRetry={() => {}}
       onEvaluate={() => {}}
       onDismiss={() => {}}
+      onDiscard={() => {}}
     />,
   );
 
@@ -380,4 +381,17 @@ test("ProfileRecommendations renders Dismiss only when the actions include dismi
   });
   expect(renderRecs([{ ...sug, actions: ["evaluate", "dismiss"] }])).toContain("Dismiss");
   expect(renderRecs([{ ...sug, actions: ["evaluate"] }])).not.toContain("Dismiss");
+});
+
+test("ProfileRecommendations renders Discard only when the actions include discard", () => {
+  const stuck = rec({ approvalStatus: "revoked", actions: ["discard"] });
+  const html = renderRecs([stuck]);
+  expect(html).toContain("Discard");
+  expect(html).not.toContain("Approve");
+  expect(renderRecs([rec({ approvalStatus: "failed", actions: ["retry", "discard"] })])).toContain(
+    "Discard",
+  );
+  expect(renderRecs([rec({ approvalStatus: "failed", actions: ["retry"] })])).not.toContain(
+    "Discard",
+  );
 });

@@ -107,7 +107,7 @@ export interface EvidenceView {
 }
 
 /** Actions the server allows on an item; the UI renders buttons from this list only. */
-export type PeopleAction = "approve" | "reject" | "retry" | "evaluate" | "dismiss";
+export type PeopleAction = "approve" | "reject" | "retry" | "evaluate" | "dismiss" | "discard";
 
 /** A candidate for evaluation, ranked by interaction score. */
 export interface ContactCandidate {

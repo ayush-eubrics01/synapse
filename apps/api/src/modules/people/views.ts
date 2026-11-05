@@ -14,11 +14,13 @@ import {
   type RemovedObservationView,
 } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
+import type { Clock } from "@synapse/shared";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { SettingsService } from "../../core/config/settings";
 import { safePermalink } from "../inbox/permalink";
 import type { ContactDiscovery } from "./discovery";
 import type { ProfileService } from "./profiles";
+import { isDiscardable } from "./recommendations";
 import type { PeopleService } from "./service";
 
 const {
@@ -36,6 +38,7 @@ const {
 
 export interface PeopleViewsDeps {
   db: Db;
+  clock: Clock;
   settings: SettingsService;
   people: PeopleService;
   discovery: ContactDiscovery;
@@ -144,6 +147,7 @@ export class PeopleViews {
         slackUserId: people.slackUserId,
         name: sql<string | null>`coalesce(${people.name}, ${slackUsers.name})`,
         approvalStatus: approvals.status,
+        approvalDecidedAt: approvals.decidedAt,
       })
       .from(recs)
       .innerJoin(people, eq(people.id, recs.personId))
@@ -179,7 +183,10 @@ export class PeopleViews {
         if (parsed.success) view.diff = this.diffView(r.rec.personId, parsed.data, evidence);
         readable = parsed.success;
       }
-      view.actions = actionsFor(r.rec.kind, r.rec.status, r.approvalStatus ?? null, readable);
+      const approval = r.approvalStatus
+        ? { status: r.approvalStatus, decidedAt: r.approvalDecidedAt ?? null }
+        : null;
+      view.actions = actionsFor(r.rec, approval, readable, this.deps.clock.now());
       return view;
     });
   }
@@ -263,15 +270,17 @@ function observations(
 }
 
 function actionsFor(
-  kind: string,
-  status: string,
-  approvalStatus: string | null,
+  rec: { kind: string; status: string },
+  approval: { status: string; decidedAt: string | null } | null,
   readable: boolean,
+  now: Date,
 ): PeopleAction[] {
-  if (status !== "pending") return [];
-  if (kind === "suggest_evaluation") return ["evaluate", "dismiss"];
+  if (rec.status !== "pending") return [];
+  if (rec.kind === "suggest_evaluation") return ["evaluate", "dismiss"];
   // Unparsable content is never shown, so it must not be approvable; rejecting stays possible.
-  if (approvalStatus === "pending") return readable ? ["approve", "reject"] : ["reject"];
-  if (approvalStatus === "failed") return ["retry"];
-  return [];
+  if (approval?.status === "pending") return readable ? ["approve", "reject"] : ["reject"];
+  const actions: PeopleAction[] = approval?.status === "failed" ? ["retry"] : [];
+  // R6: a stuck recommendation (its approval can no longer apply it) can be discarded.
+  if (isDiscardable(rec, approval, now)) actions.push("discard");
+  return actions;
 }

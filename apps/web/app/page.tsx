@@ -15,6 +15,7 @@ import {
   type ClaudeStatus,
   confirmSlackIdentity,
   decideApproval,
+  discardRecommendation,
   dismissSuggestion,
   evaluatePerson,
   type FlagReviewStatus,
@@ -256,6 +257,7 @@ export default function Dashboard() {
         items={recommendations}
         onDecide={(d: Decision) => void decide(d.approvalId, d.decision, d.reason)}
         onDismiss={(id) => void act(() => dismissSuggestion(id))}
+        onDiscard={(id) => void act(() => discardRecommendation(id))}
         onRetry={(id) => void act(() => retryApply(id))}
         onEvaluate={(id) => void evaluate(() => acceptSuggestion(id))}
       />
