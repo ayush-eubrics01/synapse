@@ -3,6 +3,7 @@
 import type { Approval, EventType, HealthReport, Job } from "@synapse/contracts";
 import { useCallback, useEffect, useState } from "react";
 import { decideApproval, getApprovals, getHealth, getJobs } from "../lib/api";
+import { decideThenRefresh } from "../lib/decide";
 import { ApprovalsList } from "./components/ApprovalsList";
 import { HealthBadge } from "./components/HealthBadge";
 import { JobsTable } from "./components/JobsTable";
@@ -11,7 +12,8 @@ export default function Dashboard() {
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const [h, a, j] = await Promise.allSettled([getHealth(), getApprovals(), getJobs(20)]);
@@ -20,7 +22,9 @@ export default function Dashboard() {
     if (a.status === "fulfilled") setApprovals(a.value);
     if (j.status === "fulfilled") setJobs(j.value);
     const failed = [h, a, j].find((r) => r.status === "rejected");
-    setError(failed?.status === "rejected" ? String(failed.reason) : null);
+    const message = failed?.status === "rejected" ? String(failed.reason) : null;
+    setLoadError(message);
+    return message;
   }, []);
 
   useEffect(() => {
@@ -42,12 +46,9 @@ export default function Dashboard() {
   }, [refresh]);
 
   const decide = async (id: string, decision: "approve" | "reject") => {
-    try {
-      await decideApproval(id, decision);
-    } catch (e) {
-      setError(String(e));
-    }
-    await refresh();
+    setActionError(null);
+    const out = await decideThenRefresh(() => decideApproval(id, decision), refresh);
+    setActionError(out.actionError);
   };
 
   return (
@@ -55,7 +56,15 @@ export default function Dashboard() {
       <h1>
         Synapse <HealthBadge health={health} />
       </h1>
-      {error && <p style={{ color: "#c33" }}>{error}</p>}
+      {loadError && <p style={{ color: "#c33" }}>{loadError}</p>}
+      {actionError && (
+        <p style={{ color: "#c33" }}>
+          {actionError}{" "}
+          <button type="button" onClick={() => setActionError(null)}>
+            Dismiss
+          </button>
+        </p>
+      )}
       <h2>Pending approvals</h2>
       <ApprovalsList approvals={approvals} onDecide={decide} />
       <h2>Latest jobs</h2>
