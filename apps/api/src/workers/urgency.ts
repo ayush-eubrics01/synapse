@@ -364,7 +364,8 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): {
     if (active || !hasMore(tx)) return;
     queue.enqueue(tx, {
       type: "urgency.assess",
-      idempotencyKey: `urgency.batch:recover:${deps.clock.now().toISOString()}`,
+      // One recover job per clock hour: a deterministic crash loop costs at most 3 runs an hour.
+      idempotencyKey: `urgency.batch:recover:${deps.clock.now().toISOString().slice(0, 13)}`,
       concurrencyGroup: "urgency.assess",
       priority: 200,
     });

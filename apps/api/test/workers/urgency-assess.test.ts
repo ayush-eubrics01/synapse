@@ -59,13 +59,14 @@ let sweep: ReturnType<typeof registerUrgencyJobs>["recoverySweep"];
 const SELF = "USELF00001";
 let requests: ClaudeJobRequest[];
 let calls: number;
+let clock: FakeClock;
 
 const inj = { detected: false, severity: "info" as const, quote: "", reason: "" };
 
 beforeEach(() => {
   db = openDatabase(":memory:").db;
   runMigrations(db);
-  const clock = new FakeClock(NOW);
+  clock = new FakeClock(NOW);
   const events = new EventPublisher(clock);
   settings = new SettingsService(db, clock, events.publish.bind(events));
   queue = new JobQueue(db, clock);
@@ -805,7 +806,7 @@ test("R18 (1): recovery sweep enqueues a recover job only when eligible rows hav
   const jobs = jobsOf("urgency.assess");
   expect(jobs).toHaveLength(1);
   expect(jobs[0]).toMatchObject({
-    idempotencyKey: `urgency.batch:recover:${NOW}`,
+    idempotencyKey: `urgency.batch:recover:${NOW.slice(0, 13)}`,
     concurrencyGroup: "urgency.assess",
     priority: 200,
     status: "PENDING",
@@ -827,4 +828,21 @@ test("R18 (1): recovery sweep enqueues a recover job only when eligible rows hav
     sweepNow();
     expect(jobsOf("urgency.assess")).toHaveLength(expected);
   }
+});
+
+test("R18 (1): at most one recover job per clock hour, so a crash loop cannot spend without bound", () => {
+  const sweepNow = () => db.transaction((tx) => sweep(tx));
+  add();
+  sweepNow();
+  expect(jobsOf("urgency.assess")).toHaveLength(1);
+  // the reaper parks it after a crash on its last attempt: rows stay eligible
+  db.update(schema.jobs)
+    .set({ status: "NEEDS_ATTENTION" })
+    .where(eq(schema.jobs.type, "urgency.assess"))
+    .run();
+  sweepNow();
+  expect(jobsOf("urgency.assess")).toHaveLength(1);
+  clock.advance(60 * 60 * 1000);
+  sweepNow();
+  expect(jobsOf("urgency.assess")).toHaveLength(2);
 });

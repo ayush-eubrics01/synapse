@@ -119,7 +119,11 @@ export class NotificationService {
     if (pending === null) return;
     if (this.sentAt.length < DESKTOP_MAX_PER_WINDOW) {
       this.suppressed = null;
-      this.send(desktop, `Synapse: ${pending.count} more notifications`, pending.severity);
+      this.send(
+        desktop,
+        `Synapse: ${pending.count} more notification${pending.count === 1 ? "" : "s"}`,
+        pending.severity,
+      );
       return;
     }
     if (this.summaryArmed) return;

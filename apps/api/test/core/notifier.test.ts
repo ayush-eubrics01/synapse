@@ -203,7 +203,7 @@ describe("desktop rate limit (R15)", () => {
     timers.at(-1)?.fn();
     await tick();
     expect(calls).toHaveLength(6);
-    expect(calls[5]?.title).toBe("Synapse: 1 more notifications");
+    expect(calls[5]?.title).toBe("Synapse: 1 more notification");
     // After the summary the suppressed count is reset; later traffic within capacity pops normally.
     clock.advance(60_000);
     burst(1);
