@@ -435,6 +435,25 @@ describe("people.update_profile", () => {
     expect(await runUpdate()).toHaveProperty("recommendationId");
   });
 
+  test("a discarded or revoked recommendation does not block the same content", async () => {
+    const m1 = add(60);
+    script.output = {
+      add: [addOut("uses-threads", "Replies in threads.", [m1])],
+      remove: [],
+      suspectedInjection: noInj,
+    };
+    await runUpdate();
+    for (const reason of ["discarded", "revoked"]) {
+      const first = pending()[0];
+      db.update(schema.peopleProfileRecommendations)
+        .set({ status: "rejected", reason, decidedAt: NOW })
+        .where(eq(schema.peopleProfileRecommendations.id, first?.id as string))
+        .run();
+      add(30);
+      expect(await runUpdate()).toHaveProperty("recommendationId");
+    }
+  });
+
   test("an initial recommendation identical to a rejected one is not stored again", () => {
     const rejected = observationHash(CURRENT);
     db.update(schema.peopleProfileRecommendations)

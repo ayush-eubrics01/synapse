@@ -1,7 +1,7 @@
 import type { ProfileContent, ProfileUpdateOutput } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, notInArray, or } from "drizzle-orm";
 import type { ApprovalEngine } from "../../core/approvals/approvals";
 import type { SettingsService } from "../../core/config/settings";
 import type { EventPublisher } from "../../core/events/publisher";
@@ -198,6 +198,12 @@ export class ProfileRecommendations {
             eq(peopleProfileRecommendations.personId, personId),
             eq(peopleProfileRecommendations.status, "rejected"),
             eq(peopleProfileRecommendations.observationHash, hash),
+            // Only a judgement by the user blocks a re-proposal; a discarded or revoked
+            // recommendation was never decided on its content.
+            or(
+              isNull(peopleProfileRecommendations.reason),
+              notInArray(peopleProfileRecommendations.reason, ["discarded", "revoked"]),
+            ),
           ),
         )
         .limit(1)
