@@ -3,15 +3,21 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts"
+  },
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@hono/zod-validator": "^0.9.1",
     "@synapse/contracts": "workspace:*",
     "@synapse/database": "workspace:*",
     "@synapse/shared": "workspace:*",
     "croner": "^11.0.0",
     "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.16",
     "zod": "^4.6.7"
   }
 }
