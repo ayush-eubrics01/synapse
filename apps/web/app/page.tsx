@@ -1,15 +1,25 @@
 "use client";
 
-import type { Approval, HealthReport, Job } from "@synapse/contracts";
+import type {
+  Approval,
+  CandidatesResponse,
+  HealthReport,
+  Job,
+  PersonDetail,
+  RecommendationView,
+} from "@synapse/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  acceptSuggestion,
   type ClaudeRun,
   type ClaudeStatus,
   confirmSlackIdentity,
   decideApproval,
+  evaluatePerson,
   type FlagReviewStatus,
   type GroupedFlagsDto,
   getApprovals,
+  getCandidates,
   getClaudeRuns,
   getClaudeStatus,
   getHealth,
@@ -17,6 +27,8 @@ import {
   getJobs,
   getPeople,
   getPersonFlags,
+  getPersonProfile,
+  getRecommendations,
   getSecurityFlags,
   getSlackIdentity,
   getSlackStatus,
@@ -24,6 +36,7 @@ import {
   type InboxMessageDto,
   type PersonDto,
   type PersonPriorityDto,
+  retryApply,
   reviewFlag,
   type SecurityFlagDto,
   type SlackIdentityDto,
@@ -44,7 +57,10 @@ import { HealthBadge } from "./components/HealthBadge";
 import { IdentitySetup } from "./components/IdentitySetup";
 import { InboxPanel } from "./components/InboxPanel";
 import { JobsTable } from "./components/JobsTable";
+import { PeopleCandidates } from "./components/PeopleCandidates";
+import { PersonProfile } from "./components/PersonProfile";
 import { PriorityPeople } from "./components/PriorityPeople";
+import { ProfileRecommendations } from "./components/ProfileRecommendations";
 import { RedFlags } from "./components/RedFlags";
 import { SlackStatus } from "./components/SlackStatus";
 import { UrgentInbox } from "./components/UrgentInbox";
@@ -60,6 +76,10 @@ export default function Dashboard() {
   const [urgent, setUrgent] = useState<UrgentItemDto[]>([]);
   const [flags, setFlags] = useState<GroupedFlagsDto[]>([]);
   const [people, setPeople] = useState<PersonDto[]>([]);
+  const [candidates, setCandidates] = useState<CandidatesResponse | null>(null);
+  const [recommendations, setRecommendations] = useState<RecommendationView[]>([]);
+  const [person, setPerson] = useState<PersonDetail | null>(null);
+  const personRef = useRef<string | null>(null);
   const [identity, setIdentity] = useState<SlackIdentityDto | null>(null);
   const [expanded, setExpanded] = useState<string[]>([]);
   const [history, setHistory] = useState<Record<string, SecurityFlagDto[]>>({});
@@ -68,7 +88,7 @@ export default function Dashboard() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const [h, a, j, cs, cr, ss, im, ug, sf, pp, id] = await Promise.allSettled([
+    const [h, a, j, cs, cr, ss, im, ug, sf, pp, id, cd, rc] = await Promise.allSettled([
       getHealth(),
       getApprovals(),
       getJobs(20),
@@ -80,6 +100,8 @@ export default function Dashboard() {
       getSecurityFlags(false),
       getPeople(),
       getSlackIdentity(),
+      getCandidates(50),
+      getRecommendations(),
     ]);
     if (h.status === "fulfilled") setHealth(h.value);
     else setHealth(null);
@@ -93,6 +115,16 @@ export default function Dashboard() {
     if (sf.status === "fulfilled") setFlags(sf.value);
     if (pp.status === "fulfilled") setPeople(pp.value);
     if (id.status === "fulfilled") setIdentity(id.value);
+    if (cd.status === "fulfilled") setCandidates(cd.value);
+    if (rc.status === "fulfilled") setRecommendations(rc.value);
+    // The open profile is refetched on every refresh; an unknown user closes it.
+    const openUser = personRef.current;
+    if (openUser) {
+      const detail = await Promise.allSettled([getPersonProfile(openUser)]);
+      if (personRef.current === openUser && detail[0]?.status === "fulfilled") {
+        setPerson(detail[0].value);
+      }
+    }
     // Expanded histories are refetched on every refresh so review changes show at once.
     const open = expandedRef.current;
     const hist = await Promise.allSettled(open.map((u) => getPersonFlags(u)));
@@ -103,7 +135,9 @@ export default function Dashboard() {
       });
       return next;
     });
-    const failed = [h, a, j, cs, cr, ss, im, ug, sf, pp, id].find((r) => r.status === "rejected");
+    const failed = [h, a, j, cs, cr, ss, im, ug, sf, pp, id, cd, rc].find(
+      (r) => r.status === "rejected",
+    );
     const message = failed?.status === "rejected" ? String(failed.reason) : null;
     setLoadError(message);
     return message;
@@ -123,9 +157,9 @@ export default function Dashboard() {
     };
   }, [refresh]);
 
-  const decide = async (id: string, decision: "approve" | "reject") => {
+  const decide = async (id: string, decision: "approve" | "reject", reason?: string) => {
     setActionError(null);
-    const out = await decideThenRefresh(() => decideApproval(id, decision), refresh);
+    const out = await decideThenRefresh(() => decideApproval(id, decision, reason), refresh);
     setActionError(out.actionError);
   };
 
@@ -157,6 +191,19 @@ export default function Dashboard() {
     setExpanded(next);
     void refresh();
   };
+
+  const openPerson = (slackUserId: string | null) => {
+    personRef.current = slackUserId;
+    if (slackUserId === null) setPerson(null);
+    void refresh();
+  };
+
+  // A refusal (no identity, already queued) is a normal result; show it as a notice.
+  const evaluate = (fn: () => Promise<{ queued: boolean; reason?: string }>) =>
+    act(async () => {
+      const r = await fn();
+      if (!r.queued) throw new Error(`Not queued: ${r.reason ?? "unknown reason"}`);
+    });
 
   const act = async (fn: () => Promise<unknown>) => {
     setActionError(null);
@@ -200,9 +247,38 @@ export default function Dashboard() {
         onToggle={toggleHistory}
         onReview={(id: string, s: FlagReviewStatus) => void act(() => reviewFlag(id, s))}
       />
+      <h2>Profile recommendations</h2>
+      <ProfileRecommendations
+        items={recommendations}
+        onApprove={(approvalId) => void decide(approvalId, "approve")}
+        onReject={(approvalId, reason) => void decide(approvalId, "reject", reason)}
+        onRetry={(id) => void act(() => retryApply(id))}
+        onEvaluate={(id) => void evaluate(() => acceptSuggestion(id))}
+      />
+      <h2>People to evaluate</h2>
+      <PeopleCandidates
+        data={candidates}
+        onEvaluate={(u) => void evaluate(() => evaluatePerson(u))}
+        onOpen={openPerson}
+      />
+      <PersonProfile
+        person={person}
+        onClose={() => openPerson(null)}
+        onEvaluate={(u) => void evaluate(() => evaluatePerson(u))}
+        onPriority={(p, priority, extraAttention) =>
+          void act(() =>
+            setPersonPriority(p.slackUserId, {
+              priority,
+              rationale: p.rationale ?? "",
+              extraAttention,
+            }),
+          )
+        }
+      />
       <h2>Priority people</h2>
       <PriorityPeople
         people={people}
+        onOpen={openPerson}
         onChange={(p: PersonDto, priority: PersonPriorityDto, extraAttention: boolean) =>
           void act(() =>
             setPersonPriority(p.slackUserId, {

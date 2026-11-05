@@ -1,10 +1,14 @@
 import type {
   Approval,
+  CandidatesResponse,
+  EvaluateResult,
   FlagStatus,
   GroupedFlags,
   HealthReport,
   Job,
+  PersonDetail,
   PersonFlag,
+  RecommendationView,
   UrgencyStatus,
   UrgentItem,
 } from "@synapse/contracts";
@@ -276,6 +280,58 @@ export function confirmSlackIdentity(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ selfUserId }),
     },
+    fetchImpl,
+  );
+}
+
+export function getCandidates(
+  limit = 50,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CandidatesResponse> {
+  return request(`/api/people/candidates?limit=${limit}`, undefined, fetchImpl);
+}
+
+export function getRecommendations(fetchImpl: typeof fetch = fetch): Promise<RecommendationView[]> {
+  return request("/api/people/recommendations?status=pending", undefined, fetchImpl);
+}
+
+export function getPersonProfile(
+  slackUserId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<PersonDetail> {
+  return request(`/api/people/${encodeURIComponent(slackUserId)}/profile`, undefined, fetchImpl);
+}
+
+/** 202 with `{queued, reason?}`: a refusal (identity, pending, already run) is data, not an error. */
+export function evaluatePerson(
+  slackUserId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EvaluateResult> {
+  return request(
+    `/api/people/${encodeURIComponent(slackUserId)}/evaluate`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export function acceptSuggestion(
+  recommendationId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EvaluateResult> {
+  return request(
+    `/api/people/recommendations/${encodeURIComponent(recommendationId)}/accept-suggestion`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export function retryApply(
+  recommendationId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ approvalId: string }> {
+  return request(
+    `/api/people/recommendations/${encodeURIComponent(recommendationId)}/retry-apply`,
+    { method: "POST" },
     fetchImpl,
   );
 }

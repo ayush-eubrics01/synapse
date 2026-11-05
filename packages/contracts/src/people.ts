@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ApprovalStatus } from "./approvals";
 import { flagSeveritySchema } from "./urgency";
 
 export const profileSectionSchema = z.enum([
@@ -105,7 +106,10 @@ export interface EvidenceView {
   permalink: string | null;
 }
 
-/** A candidate for evaluation, ranked by interaction score (`GET /api/people/candidates`). */
+/** Actions the server allows on an item; the UI renders buttons from this list only. */
+export type PeopleAction = "approve" | "reject" | "retry" | "evaluate";
+
+/** A candidate for evaluation, ranked by interaction score. */
 export interface ContactCandidate {
   slackUserId: string;
   name: string | null;
@@ -114,6 +118,19 @@ export interface ContactCandidate {
   hasProfile: boolean;
   hasPendingRecommendation: boolean;
   isTemporary: boolean;
+}
+
+/** `GET /api/people/candidates`. */
+export interface CandidatesResponse {
+  /** True while `slack.selfUserId` is unconfirmed: no ranking is possible and evaluation is refused. */
+  identityRequired: boolean;
+  candidates: (ContactCandidate & { actions: PeopleAction[] })[];
+}
+
+/** `POST /api/people/:slackUserId/evaluate` and `.../accept-suggestion`. */
+export interface EvaluateResult {
+  queued: boolean;
+  reason?: "pending_recommendation" | "identity_required" | "already_run_today";
 }
 
 export interface PersonSummary {
@@ -146,18 +163,40 @@ export interface PersonDetail extends PersonSummary {
     expiresAt: string;
   } | null;
   flagCount: number;
+  actions: PeopleAction[];
 }
 
-/** `GET /api/people/recommendations`. `content` is the full profile (initial) or the diff (update). */
+/** One observation with the evidence that supports it. */
+export interface ObservationView {
+  section: ProfileSection;
+  key: string;
+  text: string;
+  confidence: Confidence;
+  evidence: EvidenceView[];
+}
+
+/** A removed observation: `text` is the current profile's wording, null when it is not found. */
+export interface RemovedObservationView {
+  section: ProfileSection;
+  key: string;
+  text: string | null;
+  evidence: EvidenceView[];
+}
+
+/** `GET /api/people/recommendations`. */
 export interface RecommendationView {
   id: string;
   kind: RecommendationKind;
   status: RecommendationStatus;
   person: { slackUserId: string; name: string | null };
   baseVersion: number | null;
-  content: ProfileContent | ProfileUpdateOutput | null;
-  evidence: EvidenceView[];
+  /** Initial recommendations: the proposed observations. */
+  proposed: ObservationView[] | null;
+  /** Update recommendations: what the new version adds and removes. */
+  diff: { added: ObservationView[]; removed: RemovedObservationView[] } | null;
   approvalId: string | null;
+  approvalStatus: ApprovalStatus | null;
+  actions: PeopleAction[];
   /** Why a `suggest_evaluation` was raised. */
   reason: string | null;
   createdAt: string;

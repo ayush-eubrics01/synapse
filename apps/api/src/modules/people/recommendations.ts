@@ -46,6 +46,22 @@ export class RetryNotAllowed extends Error {
   }
 }
 
+/** `accept-suggestion` on an unknown recommendation id; the API maps it to 404. */
+export class RecommendationNotFound extends Error {
+  constructor(readonly recommendationId: string) {
+    super("recommendation not found");
+    this.name = "RecommendationNotFound";
+  }
+}
+
+/** Not a pending `suggest_evaluation`; the API maps it to 409. */
+export class SuggestionNotAcceptable extends Error {
+  constructor(readonly recommendationId: string) {
+    super("not a pending suggestion");
+    this.name = "SuggestionNotAcceptable";
+  }
+}
+
 export const INITIAL_PROFILE_JOB = "people.generate_initial_profile";
 export const PEOPLE_CONCURRENCY_GROUP = "people.intelligence";
 export const INITIAL_PROFILE_PRIORITY = 120;
@@ -80,28 +96,85 @@ export class ProfileRecommendations {
    * (the history is "you and them") and no pending recommendation. One job per person and day.
    */
   requestInitialProfile(slackUserId: string): InitialProfileRequestResult {
-    const { db, settings, clock, queue, people: peopleService } = this.deps;
+    if (this.deps.settings.get("slack.selfUserId") === null) {
+      return { queued: false, reason: "identity_required" };
+    }
+    return this.deps.db.transaction((tx) => this.requestInitialIn(tx, slackUserId), {
+      behavior: "immediate",
+    });
+  }
+
+  private requestInitialIn(tx: DbOrTx, slackUserId: string): InitialProfileRequestResult {
+    const { settings, clock, queue, people: peopleService } = this.deps;
     if (settings.get("slack.selfUserId") === null) {
       return { queued: false, reason: "identity_required" };
     }
-    return db.transaction(
-      (tx) => {
-        const personId = peopleService.ensurePerson(tx, slackUserId);
-        if (this.hasPending(tx, personId)) {
-          return { queued: false, reason: "pending_recommendation" as const };
-        }
-        const { created } = queue.enqueue(tx, {
-          type: INITIAL_PROFILE_JOB,
-          idempotencyKey: `people.initial:${personId}:${isoNow(clock).slice(0, 10)}`,
-          input: { personId },
-          concurrencyGroup: PEOPLE_CONCURRENCY_GROUP,
-          priority: INITIAL_PROFILE_PRIORITY,
-        });
-        if (!created) return { queued: false, reason: "already_run_today" as const };
-        return { queued: true };
-      },
-      { behavior: "immediate" },
-    );
+    const personId = peopleService.ensurePerson(tx, slackUserId);
+    if (this.hasPending(tx, personId)) return { queued: false, reason: "pending_recommendation" };
+    const { created } = queue.enqueue(tx, {
+      type: INITIAL_PROFILE_JOB,
+      idempotencyKey: `people.initial:${personId}:${isoNow(clock).slice(0, 10)}`,
+      input: { personId },
+      concurrencyGroup: PEOPLE_CONCURRENCY_GROUP,
+      priority: INITIAL_PROFILE_PRIORITY,
+    });
+    if (!created) return { queued: false, reason: "already_run_today" };
+    return { queued: true };
+  }
+
+  /**
+   * Accepts a `suggest_evaluation`: in one transaction the suggestion is marked `applied` (before the
+   * request, because `hasPending` counts any pending kind) and the initial profile is requested.
+   * When nothing is queued (no identity, already run today) the transaction rolls back and the
+   * suggestion stays pending.
+   */
+  acceptSuggestion(recommendationId: string): InitialProfileRequestResult {
+    const { db, clock, events } = this.deps;
+    class Rollback extends Error {
+      constructor(readonly result: InitialProfileRequestResult) {
+        super("rollback");
+      }
+    }
+    try {
+      return db.transaction(
+        (tx) => {
+          const rec = tx
+            .select({
+              id: peopleProfileRecommendations.id,
+              kind: peopleProfileRecommendations.kind,
+              status: peopleProfileRecommendations.status,
+              personId: peopleProfileRecommendations.personId,
+              slackUserId: schema.people.slackUserId,
+            })
+            .from(peopleProfileRecommendations)
+            .innerJoin(schema.people, eq(schema.people.id, peopleProfileRecommendations.personId))
+            .where(eq(peopleProfileRecommendations.id, recommendationId))
+            .get();
+          if (!rec) throw new RecommendationNotFound(recommendationId);
+          if (rec.kind !== "suggest_evaluation" || rec.status !== "pending") {
+            throw new SuggestionNotAcceptable(recommendationId);
+          }
+          tx.update(peopleProfileRecommendations)
+            .set({ status: "applied", decidedAt: isoNow(clock) })
+            .where(eq(peopleProfileRecommendations.id, rec.id))
+            .run();
+          const result = this.requestInitialIn(tx, rec.slackUserId);
+          if (!result.queued) throw new Rollback(result);
+          events.publish(tx, {
+            type: "person.recommendation_decided",
+            aggregateType: "person",
+            aggregateId: rec.personId,
+            correlationId: newId(),
+            payload: { recommendationId: rec.id, status: "applied" },
+          });
+          return result;
+        },
+        { behavior: "immediate" },
+      );
+    } catch (e) {
+      if (e instanceof Rollback) return e.result;
+      throw e;
+    }
   }
 
   /** True when a rejected recommendation of the person has this observation hash (Review Focus 2). */

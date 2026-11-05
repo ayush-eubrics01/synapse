@@ -51,6 +51,7 @@ import { ProfileService } from "./modules/people/profiles";
 import { ProfileRecommendations } from "./modules/people/recommendations";
 import { PeopleService } from "./modules/people/service";
 import { TemporaryContacts } from "./modules/people/temporary";
+import { PeopleViews } from "./modules/people/views";
 import { SecurityFlagsService } from "./modules/security-flags/service";
 import { registerPeopleJobs } from "./workers/people";
 import { registerSlackJobs } from "./workers/slack";
@@ -86,6 +87,7 @@ export interface Container {
   discovery: ContactDiscovery;
   profiles: ProfileRecommendations;
   profileStore: ProfileService;
+  peopleViews: PeopleViews;
   securityFlags: SecurityFlagsService;
   /** Run by startup recovery and the reaper (main.ts), so core never imports workers. */
   recoverySweeps: RecoverySweep[];
@@ -247,6 +249,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   });
   const profileStore = new ProfileService({ db, clock, events, audit });
   profileStore.register(approvals, dispatcher);
+  const peopleViews = new PeopleViews({ db, settings, people, discovery, profileStore });
   registerPeopleJobs({
     db,
     clock,
@@ -315,6 +318,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     discovery,
     profiles,
     profileStore,
+    peopleViews,
     securityFlags,
     handlers,
     recoverySweeps: [{ name: "urgency.assess", run: urgency.recoverySweep }],

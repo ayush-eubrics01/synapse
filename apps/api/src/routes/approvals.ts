@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Container } from "../container";
 
-const decisionBody = z.object({ reason: z.string().optional() });
+const decisionBody = z.object({ reason: z.string().max(500).optional() });
 
 export function approvalRoutes(c: Container): Hono {
   const app = new Hono();
