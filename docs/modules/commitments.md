@@ -141,7 +141,7 @@ The `send` action is listed only when the follow-up is a draft with no live send
 | nothing started (quota, auth, abort before spawn) | `failed` (`not_started`) | `draft` |
 | revoke, reject or expiry before the claim | `failed` (`revoked`, `rejected`, `expired`) | `draft` |
 | uncertain outcome (timeout, crash, unknown tool error, lost executor) | `needs_attention` (`uncertain_outcome`; verified) | `needs_attention` |
-| arguments changed | `needs_attention` (`argument_mismatch`; never verified, never re-sent) | `needs_attention` |
+| arguments changed | `needs_attention` (`argument_mismatch`; detected after the send tool ran, not prevented; never verified, never re-sent automatically) | `needs_attention` |
 | user: mark sent | `sent` | `sent` |
 | user: discard | `failed` (`discarded`) | `discarded` |
 | user: resend | old `failed` (`superseded`), new `pending` with a new approval | `awaiting_approval` |

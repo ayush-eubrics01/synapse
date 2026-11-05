@@ -32,7 +32,11 @@ const APPROVAL_TTL_MS = 7 * 24 * 3_600_000;
 const VERIFY_LOOKBACK_MS = 5_000;
 const LIVE = ["pending", "sending", "sent_unverified", "needs_attention"] as const;
 const TERMINAL_APPROVAL = ["failed", "executed", "revoked", "rejected", "expired"] as const;
-const BLOCKED_TITLE = "Send blocked: arguments changed — check Slack";
+/**
+ * R20: argument mismatches are detected after the send tool ran, not prevented, so a message with the
+ * changed arguments may be in Slack.
+ */
+const MISMATCH_TITLE = "Send went out with changed arguments — check Slack for a stray message";
 const MISMATCH_REASON = "send tool called with changed arguments";
 
 const payloadSchema = z.object({ outgoingId: z.string().min(1) });
@@ -607,7 +611,7 @@ export class OutgoingService {
       notifications.notify(tx, {
         kind: "outgoing.blocked",
         severity: "high",
-        title: BLOCKED_TITLE,
+        title: MISMATCH_TITLE,
         ref: row.id,
       });
       this.auditSend(tx, cur, "slack.send_blocked", "needs_attention", { runId });

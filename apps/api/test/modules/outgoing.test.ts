@@ -605,7 +605,9 @@ describe("slack.send executor", () => {
     });
     const blocked = s
       .notes()
-      .filter((n) => n.title === "Send blocked: arguments changed — check Slack");
+      .filter(
+        (n) => n.title === "Send went out with changed arguments — check Slack for a stray message",
+      );
     expect(blocked).toHaveLength(1);
     expect(blocked[0]?.severity).toBe("high");
     expect(() => s.request()).toThrow(SendAlreadyPending);
@@ -1004,7 +1006,12 @@ describe("R7: no duplicate send when a send outlives its job", () => {
     expect(s.db.select().from(schema.securityFlags).all()).toHaveLength(1);
     // one blocked-send notification (the security flag adds its own)
     expect(
-      s.notes().filter((n) => n.title === "Send blocked: arguments changed — check Slack"),
+      s
+        .notes()
+        .filter(
+          (n) =>
+            n.title === "Send went out with changed arguments — check Slack for a stray message",
+        ),
     ).toHaveLength(1);
   });
 
@@ -1041,7 +1048,12 @@ describe("R7: no duplicate send when a send outlives its job", () => {
     });
     expect(s.db.select().from(schema.securityFlags).all()).toHaveLength(1);
     expect(
-      s.notes().filter((n) => n.title === "Send blocked: arguments changed — check Slack"),
+      s
+        .notes()
+        .filter(
+          (n) =>
+            n.title === "Send went out with changed arguments — check Slack for a stray message",
+        ),
     ).toHaveLength(1);
 
     // late sent_unverified: recorded, verify queued, followup sent
