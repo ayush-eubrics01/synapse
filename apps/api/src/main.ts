@@ -14,7 +14,13 @@ const c = createContainer(config, {
   testHandlers: process.env.SYNAPSE_TEST_HANDLERS === "1",
   notifier: new NotifySendNotifier(),
 });
-recoverOnStartup({ db: c.db, clock: c.clock, leases: c.leases, audit: c.audit });
+recoverOnStartup({
+  db: c.db,
+  clock: c.clock,
+  leases: c.leases,
+  audit: c.audit,
+  sweeps: c.recoverySweeps,
+});
 recoverOrphanRuns(c.db, c.clock);
 try {
   c.auth.record();
@@ -52,7 +58,7 @@ const tick = guarded("scheduler", () => c.scheduler.tick());
 const dispatch = guarded("dispatcher", () => c.dispatcher.dispatchOnce());
 const expire = guarded("approvals.expireDue", () => c.approvals.expireDue());
 const reap = guarded("recovery.reap", () =>
-  reapExpiredJobs({ db: c.db, clock: c.clock, audit: c.audit }),
+  reapExpiredJobs({ db: c.db, clock: c.clock, audit: c.audit, sweeps: c.recoverySweeps }),
 );
 
 tick();

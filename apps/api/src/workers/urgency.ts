@@ -9,7 +9,7 @@ import {
 } from "@synapse/contracts";
 import { type Db, schema, type Tx } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
-import { and, asc, desc, eq, isNotNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, lt, ne, or, sql } from "drizzle-orm";
 import type { SettingsService } from "../core/config/settings";
 import type { EventPublisher } from "../core/events/publisher";
 import type { JobQueue } from "../core/jobs/queue";
@@ -27,7 +27,7 @@ import { renderExcerpt } from "../modules/security-flags/detector";
 import type { SecurityFlagsService } from "../modules/security-flags/service";
 import { createRunHelpers, wrapFailure } from "./urgency-shared";
 
-const { slackMessages, slackConversations, slackUsers, messageDrafts } = schema;
+const { slackMessages, slackConversations, slackUsers, messageDrafts, jobs } = schema;
 
 export interface UrgencyJobDeps {
   db: Db;
@@ -70,16 +70,39 @@ const safely = (fn: () => void) => {
 
 const isUrgent = (l: UrgencyLevel): l is "critical" | "high" => l === "critical" || l === "high";
 
-export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
+export function registerUrgencyJobs(deps: UrgencyJobDeps): {
+  recoverySweep: (tx: Tx) => void;
+} {
   const { db, settings, events, queue, notifications, orchestrator, securityFlags } = deps;
   const { latestRunId, runIdBefore, runtimeFlags, failedRunFlags } = createRunHelpers(
     db,
     securityFlags,
   );
 
-  const eligibleWhere = sql`json_extract(${slackMessages.screening}, '$.route') = 'assess'
+  const cutoffIso = () =>
+    new Date(
+      deps.clock.now().getTime() - settings.get("urgency.maxAgeHours") * 3_600_000,
+    ).toISOString();
+
+  const pendingAssess = sql`json_extract(${slackMessages.screening}, '$.route') = 'assess'
     and coalesce(json_extract(${slackMessages.screening}, '$.assessed'), 0) = 0
     and ${slackMessages.text} is not null`;
+
+  /** R18 (2): still within `urgency.maxAgeHours` when the job runs (the sent_at index serves the range). */
+  const eligibleWhere = () => sql`${slackMessages.sentAt} >= ${cutoffIso()} and ${pendingAssess}`;
+
+  /**
+   * R18 (2): a row that aged past `urgency.maxAgeHours` before its job ran (a long pause, a backlog)
+   * becomes `skip`/`too_old`: never assessed, never notified, no Claude run.
+   */
+  const skipStale = (tx: Tx) => {
+    const stale = tx
+      .select({ id: slackMessages.id })
+      .from(slackMessages)
+      .where(sql`${slackMessages.sentAt} < ${cutoffIso()} and ${pendingAssess}`)
+      .all();
+    for (const r of stale) mergeScreening(tx, r.id, { route: "skip", skipReason: "too_old" });
+  };
 
   const select = (limit: number): BatchRow[] =>
     db
@@ -97,7 +120,7 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
       .from(slackMessages)
       .innerJoin(slackConversations, eq(slackConversations.id, slackMessages.conversationId))
       .innerJoin(slackUsers, eq(slackUsers.id, slackMessages.senderUserId))
-      .where(eligibleWhere)
+      .where(eligibleWhere())
       .orderBy(asc(slackMessages.sentAt), sql`${slackMessages}.rowid`)
       .limit(limit)
       .all()
@@ -116,7 +139,7 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
       });
 
   const hasMore = (tx: Tx): boolean =>
-    tx.select({ id: slackMessages.id }).from(slackMessages).where(eligibleWhere).limit(1).all()
+    tx.select({ id: slackMessages.id }).from(slackMessages).where(eligibleWhere()).limit(1).all()
       .length > 0;
 
   /** Merges into the stored screening JSON; every other field is preserved. */
@@ -193,6 +216,13 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
     return true;
   };
 
+  /**
+   * R18 (7): until the user confirms their Slack identity, own messages cannot be told apart, so
+   * candidates are assessed and listed but nothing notifies and no draft is made (the dashboard's
+   * identity banner explains why).
+   */
+  const identityConfirmed = () => settings.get("slack.selfUserId") !== null;
+
   /** Notification, event, suggest job and `notified` flag, once per message. Never carries text. */
   const notifyOnce = (tx: Tx, m: BatchRow, level: UrgencyLevel, assessed: boolean) => {
     if (!settings.get("urgency.notify.levels").includes(level)) return;
@@ -261,10 +291,12 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
           .where(eq(slackMessages.id, m.messageId))
           .run();
         after?.(tx);
+        if (!identityConfirmed()) return;
         const acts = isUrgent(level) || settings.get("urgency.notify.levels").includes(level);
         if (acts && coalesced(tx, m.messageId)) return;
         notifyOnce(tx, m, level, !fallback);
-        enqueueSuggest(tx, m.messageId, level);
+        // R18 (8): a rule-level fallback gets no draft; the model never saw the message.
+        if (!fallback) enqueueSuggest(tx, m.messageId, level);
       },
       { behavior: "immediate" },
     );
@@ -281,6 +313,9 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
 
   /** Deferral: likely incidents are announced from the rule level alone; nothing is assessed. */
   const onDeferral = (batch: BatchRow[]) => {
+    // R18 (3): the announcement is a critical-level notification, so it follows the levels setting.
+    if (!settings.get("urgency.notify.levels").includes("critical")) return;
+    if (!identityConfirmed()) return;
     for (const m of batch) {
       if (m.ruleLevel !== "critical") continue;
       db.transaction(
@@ -313,7 +348,30 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
     db.transaction((tx) => enqueueNext(tx, jobId), { behavior: "immediate" });
   };
 
+  /**
+   * R18 (1): run at startup and on every reaper pass. Eligible rows with no PENDING, RETRY or
+   * RUNNING `urgency.assess` job (a job lost to a crash, a cancelled or parked job) get one.
+   */
+  const recoverySweep = (tx: Tx) => {
+    const active = tx
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(
+        and(eq(jobs.type, "urgency.assess"), inArray(jobs.status, ["PENDING", "RETRY", "RUNNING"])),
+      )
+      .limit(1)
+      .get();
+    if (active || !hasMore(tx)) return;
+    queue.enqueue(tx, {
+      type: "urgency.assess",
+      idempotencyKey: `urgency.batch:recover:${deps.clock.now().toISOString()}`,
+      concurrencyGroup: "urgency.assess",
+      priority: 200,
+    });
+  };
+
   const assess = async (job: Job, ctx: JobContext) => {
+    db.transaction((tx) => skipStale(tx), { behavior: "immediate" });
     const batch = select(settings.get("urgency.assess.batchMax"));
     if (batch.length === 0) return { assessed: 0 };
     const byId = new Map(batch.map((m) => [m.messageId, m]));
@@ -525,4 +583,5 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
     handler: suggest,
     timeoutMs: SUGGEST_TIMEOUT_MS,
   });
+  return { recoverySweep };
 }

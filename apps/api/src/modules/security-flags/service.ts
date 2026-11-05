@@ -468,7 +468,7 @@ export class SecurityFlagsService {
       this.deps.notifications.notify(tx, {
         kind: "security.flag",
         severity: f.severity,
-        title: user?.name ?? f.slackUserId,
+        title: `Red flag: message from ${user?.name ?? f.slackUserId}`,
         ref: flagId,
       });
     }

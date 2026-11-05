@@ -34,6 +34,7 @@ import { NotificationService } from "./core/notifications/notifications";
 import { AuthMonitor } from "./core/orchestrator/auth";
 import { ClaudeOrchestrator } from "./core/orchestrator/orchestrator";
 import { PermissionManager } from "./core/permissions/permissions";
+import type { RecoverySweep } from "./core/recovery/recovery";
 import { SchedulerService } from "./core/scheduler/scheduler";
 import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
 import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notifier";
@@ -76,6 +77,8 @@ export interface Container {
   sync: SyncStateService;
   people: PeopleService;
   securityFlags: SecurityFlagsService;
+  /** Run by startup recovery and the reaper (main.ts), so core never imports workers. */
+  recoverySweeps: RecoverySweep[];
   /** Job handler registry; the urgency smoke script runs one handler directly. */
   handlers: ReadonlyMap<string, HandlerRegistration>;
   slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
@@ -200,9 +203,10 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     people,
     securityFlags,
   });
-  for (const type of ["message.received", "message.thread_updated"] as const) {
-    dispatcher.subscribe(type, "inbox.screening", (event, tx) => screening.handle(event, tx));
-  }
+  // Replies already arrive as message.received; message.thread_updated would screen them twice.
+  dispatcher.subscribe("message.received", "inbox.screening", (event, tx) =>
+    screening.handle(event, tx),
+  );
   const slack = registerSlackJobs({
     db,
     clock,
@@ -216,7 +220,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     scheduler,
     handlers,
   });
-  registerUrgencyJobs({
+  const urgency = registerUrgencyJobs({
     db,
     clock,
     settings,
@@ -270,6 +274,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     people,
     securityFlags,
     handlers,
+    recoverySweeps: [{ name: "urgency.assess", run: urgency.recoverySweep }],
     slack: { startBackfill: slack.startBackfill, backfillResumable: slack.backfillResumable },
   };
 }

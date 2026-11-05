@@ -363,3 +363,46 @@ test("Q1: skip is 409 for a null or malformed checkpoint and changes nothing", a
   expect(st.checkpoint).toBe("not-a-ts");
   expect(st.lastError?.kind).toBe("parse_failed");
 });
+
+test("R18 (5): a reply in a known thread is screened exactly once", () => {
+  const msgOf = (ts: string, text: string, threadTs?: string) => ({
+    externalId: `C1:${ts}`,
+    conversationId: "C1",
+    conversationType: "channel" as const,
+    conversationName: "ops",
+    ts,
+    ...(threadTs ? { threadTs } : {}),
+    senderId: "U1",
+    senderName: "Ada",
+    text,
+    sentAt: new Date(Number(ts) * 1000).toISOString(),
+  });
+  c.inbox.persistPage("slack.messages", {
+    messages: [msgOf("1700000100.000100", "parent")],
+    rejected: 0,
+  });
+  c.inbox.persistPage("slack.messages", {
+    messages: [msgOf("1700000200.000100", "prod is down", "1700000100.000100")],
+    rejected: 0,
+  });
+  const reply = c.db
+    .select({ id: schema.slackMessages.id })
+    .from(schema.slackMessages)
+    .where(eq(schema.slackMessages.ts, "1700000200.000100"))
+    .get()?.id as string;
+  const types = c.db
+    .select()
+    .from(schema.domainEvents)
+    .all()
+    .filter((e) => (e.payload as { messageId?: string }).messageId === reply)
+    .map((e) => e.type);
+  expect(types).toContain("message.thread_updated");
+  while (c.dispatcher.dispatchOnce().delivered > 0) {}
+  const screened = c.db
+    .select()
+    .from(schema.domainEvents)
+    .where(eq(schema.domainEvents.type, "message.screened"))
+    .all()
+    .filter((e) => (e.payload as { messageId: string }).messageId === reply);
+  expect(screened).toHaveLength(1);
+});

@@ -65,9 +65,53 @@ test("UrgentInbox renders the link only when a permalink is present", () => {
 test("IdentitySetup renders nothing once selfUserId is set", () => {
   const base = { suggestion: "U1", suggestionName: "Ada" };
   expect(
-    renderToString(<IdentitySetup identity={{ ...base, selfUserId: "U1" }} onConfirm={() => {}} />),
+    renderToString(
+      <IdentitySetup identity={{ ...base, selfUserId: "U1" }} people={[]} onConfirm={() => {}} />,
+    ),
   ).toBe("");
   expect(
-    renderToString(<IdentitySetup identity={{ ...base, selfUserId: null }} onConfirm={() => {}} />),
+    renderToString(
+      <IdentitySetup identity={{ ...base, selfUserId: null }} people={[]} onConfirm={() => {}} />,
+    ),
   ).toContain("Confirm");
+});
+
+test("IdentitySetup offers a manual pick from people when there is no suggestion (R18)", () => {
+  const people = [
+    {
+      slackUserId: "U1",
+      name: "Ada",
+      rationale: null,
+      priority: "normal" as const,
+      extraAttention: false,
+    },
+    {
+      slackUserId: "U2",
+      name: null,
+      rationale: null,
+      priority: "normal" as const,
+      extraAttention: false,
+    },
+  ];
+  const html = renderToString(
+    <IdentitySetup
+      identity={{ selfUserId: null, suggestion: null, suggestionName: null }}
+      people={people}
+      onConfirm={() => {}}
+    />,
+  );
+  expect(html).toContain("<select");
+  expect(html).toContain("Ada (U1)");
+  expect(html).toContain("U2");
+  expect(html).toContain("Confirm");
+  // The banner says why urgent alerts are paused.
+  expect(html).toContain("notifications and suggested replies are paused");
+  const none = renderToString(
+    <IdentitySetup
+      identity={{ selfUserId: null, suggestion: null, suggestionName: null }}
+      people={[]}
+      onConfirm={() => {}}
+    />,
+  );
+  expect(none).not.toContain("<select");
 });

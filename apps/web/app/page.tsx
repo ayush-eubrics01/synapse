@@ -184,6 +184,7 @@ export default function Dashboard() {
       )}
       <IdentitySetup
         identity={identity}
+        people={people}
         onConfirm={(u) => void act(() => confirmSlackIdentity(u))}
       />
       <h2>Urgent</h2>

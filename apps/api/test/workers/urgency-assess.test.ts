@@ -55,6 +55,8 @@ interface Script {
   raw?: string;
 }
 let script: Script;
+let sweep: ReturnType<typeof registerUrgencyJobs>["recoverySweep"];
+const SELF = "USELF00001";
 let requests: ClaudeJobRequest[];
 let calls: number;
 
@@ -116,7 +118,7 @@ beforeEach(() => {
       } as unknown as AIExecutionResult;
     },
   };
-  registerUrgencyJobs({
+  ({ recoverySweep: sweep } = registerUrgencyJobs({
     db,
     clock,
     settings,
@@ -126,8 +128,10 @@ beforeEach(() => {
     orchestrator: orchestrator as never,
     securityFlags,
     handlers,
-  });
+  }));
   seq = 0;
+  // R18 (7): notifications and drafts need a confirmed identity.
+  settings.set("slack.selfUserId", SELF);
   db.insert(schema.slackUsers).values({ id: "su1", externalId: "UPRIYA0001", name: "Priya" }).run();
   db.insert(schema.slackConversations)
     .values({ id: "c-ch", externalId: "C1", type: "channel", name: "payments" })
@@ -308,6 +312,7 @@ test("a missing id falls back to its rule level while the others are assessed", 
   });
   expect(msg(miss).screening).toMatchObject({ assessed: true, fallback: true });
   expect(notifs()).toHaveLength(1); // the fallback high level notifies
+  expect(jobsOf("urgency.suggest_response")).toHaveLength(0); // R18 (8): no draft for a fallback
 });
 
 test("critical result: one notification, one event, one suggest job; re-run adds nothing", async () => {
@@ -463,6 +468,7 @@ test("third failing attempt falls back to the rule level, notifies and rethrows"
   expect(msg(b).urgencyLevel).toBe("low");
   expect(notifs()).toHaveLength(1);
   expect(notifs()[0]?.title).toBe("High: message from Priya in #payments");
+  expect(jobsOf("urgency.suggest_response")).toHaveLength(0); // R18 (8)
 });
 
 test("a non-retryable failure falls back immediately", async () => {
@@ -724,4 +730,101 @@ test("R17: deferral coalesces too; the later real assessment adds no popup and n
   expect(urgentEvents()).toHaveLength(1);
   expect(suggestJobs().map((j) => j.idempotencyKey)).toEqual([`urgency.suggest:${ids[0]}`]);
   for (const id of ids.slice(1)) expect(msg(id).screening.coalesced).toBe(true);
+});
+
+// ---- R18 ----
+
+const hoursAgo = (h: number) => new Date(Date.parse(NOW) - h * 3_600_000).toISOString();
+
+test("R18 (2): a row older than maxAgeHours at assess time is skipped as too_old, no Claude", async () => {
+  const stale = add({ ruleLevel: "critical", sentAt: hoursAgo(25) });
+  expect(await run()).toEqual({ assessed: 0 });
+  expect(calls).toBe(0);
+  expect(msg(stale).screening).toMatchObject({
+    route: "skip",
+    skipReason: "too_old",
+    assessed: false,
+    candidate: true,
+    matchedRules: ["kw:prod"],
+  });
+  expect(msg(stale).urgencyLevel).toBeNull();
+  expect(notifs()).toHaveLength(0);
+
+  const fresh = add();
+  const stale2 = add({ sentAt: hoursAgo(30) });
+  script.entries = [{ messageId: fresh }];
+  await run();
+  const req = requests[0] as ClaudeJobRequest;
+  expect((req.parts ?? []).filter((p) => p.provenance === "untrusted")).toHaveLength(1);
+  expect(msg(stale2).screening.route).toBe("skip");
+});
+
+test("R18 (3): deferral notifies only when urgency.notify.levels includes critical", async () => {
+  add({ ruleLevel: "critical" });
+  settings.set("urgency.notify.levels", ["high"]);
+  script.throws = new JobError({ kind: "quota_exhausted", message: "q" });
+  await expect(run()).rejects.toBeInstanceOf(JobError);
+  expect(notifs()).toHaveLength(0);
+  expect(urgentEvents()).toHaveLength(0);
+});
+
+test("R18 (7): with no confirmed identity, levels are written but nothing notifies or drafts", async () => {
+  settings.clear("slack.selfUserId");
+  const a = add({ ruleLevel: "critical" });
+  const b = add();
+  script.throws = new JobError({ kind: "quota_exhausted", message: "q" });
+  await expect(run()).rejects.toBeInstanceOf(JobError);
+  expect(notifs()).toHaveLength(0);
+  script.throws = undefined;
+  script.entries = [
+    { messageId: a, level: "critical" },
+    { messageId: b, level: "high" },
+  ];
+  await run();
+  expect(msg(a)).toMatchObject({ urgencyLevel: "critical", urgencyStatus: "new" });
+  expect(msg(b).urgencyLevel).toBe("high");
+  expect(notifs()).toHaveLength(0);
+  expect(urgentEvents()).toHaveLength(0);
+  expect(jobsOf("urgency.suggest_response")).toHaveLength(0);
+  expect(msg(a).screening.notified).toBeUndefined();
+});
+
+test("R18 (1): recovery sweep enqueues a recover job only when eligible rows have no active job", () => {
+  const sweepNow = () => db.transaction((tx) => sweep(tx));
+  // nothing eligible
+  add({ route: "batch" });
+  sweepNow();
+  expect(jobsOf("urgency.assess")).toHaveLength(0);
+  // an old unassessed row is not eligible either
+  add({ sentAt: hoursAgo(48) });
+  sweepNow();
+  expect(jobsOf("urgency.assess")).toHaveLength(0);
+  // eligible and no job: one recover job
+  add();
+  sweepNow();
+  const jobs = jobsOf("urgency.assess");
+  expect(jobs).toHaveLength(1);
+  expect(jobs[0]).toMatchObject({
+    idempotencyKey: `urgency.batch:recover:${NOW}`,
+    concurrencyGroup: "urgency.assess",
+    priority: 200,
+    status: "PENDING",
+  });
+  // a PENDING job exists: nothing more
+  sweepNow();
+  expect(jobsOf("urgency.assess")).toHaveLength(1);
+  // RETRY and RUNNING also count as active; a finished job does not
+  for (const [status, expected] of [
+    ["RETRY", 1],
+    ["RUNNING", 1],
+    ["COMPLETED", 2],
+  ] as const) {
+    db.update(schema.jobs).set({ status }).where(eq(schema.jobs.type, "urgency.assess")).run();
+    db.update(schema.jobs)
+      .set({ idempotencyKey: `old-${status}` })
+      .where(eq(schema.jobs.type, "urgency.assess"))
+      .run();
+    sweepNow();
+    expect(jobsOf("urgency.assess")).toHaveLength(expected);
+  }
 });

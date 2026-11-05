@@ -46,6 +46,7 @@ function build(mode: string, texts: string[] = [`${BODY} 1`, `${BODY} 2`]) {
   const clock = new FakeClock(NOW);
   const events = new EventPublisher(clock);
   const settings = new SettingsService(db, clock, events.publish.bind(events));
+  settings.set("slack.selfUserId", "USELF00001"); // R18 (7): notifications need an identity
   const audit = new AuditLogger(clock);
   const notifications = new NotificationService(db, clock, new LiveBus());
   const provider = new ClaudeCliProvider({
