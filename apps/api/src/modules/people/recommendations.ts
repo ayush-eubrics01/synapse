@@ -1,4 +1,4 @@
-import type { ProfileContent } from "@synapse/contracts";
+import type { ProfileContent, ProfileUpdateOutput } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { and, eq } from "drizzle-orm";
@@ -34,6 +34,10 @@ export interface EvidenceRow {
   observedAt: string;
 }
 
+export type StoreResult =
+  | { recommendationId: string; approvalId: string }
+  | { skipped: "raced" | "same_as_rejected" };
+
 /** Thrown when a retry is not allowed; the API maps it to 409. */
 export class RetryNotAllowed extends Error {
   constructor(readonly recommendationId: string) {
@@ -45,6 +49,11 @@ export class RetryNotAllowed extends Error {
 export const INITIAL_PROFILE_JOB = "people.generate_initial_profile";
 export const PEOPLE_CONCURRENCY_GROUP = "people.intelligence";
 export const INITIAL_PROFILE_PRIORITY = 120;
+export const UPDATE_SCHEDULE_JOB = "people.recommend_update";
+export const UPDATE_PROFILE_JOB = "people.update_profile";
+export const UPDATE_PROFILE_PRIORITY = 60;
+export const ASSESS_UNKNOWN_JOB = "people.assess_unknown";
+export const ASSESS_UNKNOWN_PRIORITY = 40;
 
 /** Pending recommendations: storage and the request trigger for the initial profile. */
 export class ProfileRecommendations {
@@ -95,25 +104,134 @@ export class ProfileRecommendations {
     );
   }
 
+  /** True when a rejected recommendation of the person has this observation hash (Review Focus 2). */
+  isRejected(tx: DbOrTx, personId: string, hash: string): boolean {
+    return (
+      tx
+        .select({ id: peopleProfileRecommendations.id })
+        .from(peopleProfileRecommendations)
+        .where(
+          and(
+            eq(peopleProfileRecommendations.personId, personId),
+            eq(peopleProfileRecommendations.status, "rejected"),
+            eq(peopleProfileRecommendations.observationHash, hash),
+          ),
+        )
+        .limit(1)
+        .get() !== undefined
+    );
+  }
+
   /**
    * Stores a pending initial recommendation with its evidence rows and approval request. Call inside
-   * the caller's immediate transaction; returns null when one is already pending (a race).
-   * Nothing here logs or emits profile text.
+   * the caller's immediate transaction; skips on a race (one already pending) or when a rejected
+   * recommendation has the same observation set. Nothing here logs or emits profile text.
    */
   storeInitial(
     tx: DbOrTx,
     input: { personId: string; runId: string; content: ProfileContent; evidence: EvidenceRow[] },
-  ): { recommendationId: string; approvalId: string } | null {
-    const { clock, events, approvals } = this.deps;
-    if (this.hasPending(tx, input.personId)) return null;
+  ): StoreResult {
+    return this.store(tx, {
+      kind: "initial",
+      personId: input.personId,
+      runId: input.runId,
+      content: input.content,
+      resultContent: input.content,
+      baseVersion: null,
+      evidence: input.evidence,
+    });
+  }
+
+  /**
+   * Stores a pending update: `diff` is kept as the recommendation content and `resultContent` (the
+   * current version with the diff applied) is what the observation hash identifies.
+   */
+  storeUpdate(
+    tx: DbOrTx,
+    input: {
+      personId: string;
+      runId: string;
+      baseVersion: number;
+      diff: ProfileUpdateOutput;
+      resultContent: ProfileContent;
+      evidence: EvidenceRow[];
+    },
+  ): StoreResult {
+    return this.store(tx, {
+      kind: "update",
+      personId: input.personId,
+      runId: input.runId,
+      content: input.diff,
+      resultContent: input.resultContent,
+      baseVersion: input.baseVersion,
+      evidence: input.evidence,
+    });
+  }
+
+  /**
+   * A pending "worth profiling" suggestion for an unknown contact: no content and no approval (the
+   * user accepts it from the UI, which requests the initial profile). Null when the person already
+   * has a pending recommendation, so a suggestion is never duplicated.
+   */
+  storeSuggestion(tx: DbOrTx, slackUserId: string, reason: string): string | null {
+    const { clock, people: peopleService } = this.deps;
+    const personId = peopleService.ensurePerson(tx, slackUserId);
+    if (this.hasPending(tx, personId)) return null;
+    const recommendationId = newId();
+    tx.insert(peopleProfileRecommendations)
+      .values({
+        id: recommendationId,
+        personId,
+        kind: "suggest_evaluation",
+        reason,
+        status: "pending",
+        createdAt: isoNow(clock),
+      })
+      .run();
+    this.publishCreated(tx, recommendationId, personId, "suggest_evaluation");
+    return recommendationId;
+  }
+
+  private publishCreated(
+    tx: DbOrTx,
+    recommendationId: string,
+    personId: string,
+    kind: "initial" | "update" | "suggest_evaluation",
+  ): void {
+    this.deps.events.publish(tx, {
+      type: "person.profile_recommendation_created",
+      aggregateType: "person",
+      aggregateId: personId,
+      correlationId: newId(),
+      payload: { recommendationId, personId, kind },
+    });
+  }
+
+  private store(
+    tx: DbOrTx,
+    input: {
+      kind: "initial" | "update";
+      personId: string;
+      runId: string;
+      content: unknown;
+      resultContent: ProfileContent;
+      baseVersion: number | null;
+      evidence: EvidenceRow[];
+    },
+  ): StoreResult {
+    const { clock, approvals } = this.deps;
+    if (this.hasPending(tx, input.personId)) return { skipped: "raced" };
+    const hash = observationHash(input.resultContent);
+    if (this.isRejected(tx, input.personId, hash)) return { skipped: "same_as_rejected" };
     const recommendationId = newId();
     tx.insert(peopleProfileRecommendations)
       .values({
         id: recommendationId,
         personId: input.personId,
-        kind: "initial",
+        kind: input.kind,
+        baseVersion: input.baseVersion,
         content: input.content,
-        observationHash: observationHash(input.content),
+        observationHash: hash,
         status: "pending",
         claudeRunId: input.runId,
         createdAt: isoNow(clock),
@@ -137,13 +255,7 @@ export class ProfileRecommendations {
       .set({ approvalId: approval.id })
       .where(eq(peopleProfileRecommendations.id, recommendationId))
       .run();
-    events.publish(tx, {
-      type: "person.profile_recommendation_created",
-      aggregateType: "person",
-      aggregateId: input.personId,
-      correlationId: newId(),
-      payload: { recommendationId, personId: input.personId, kind: "initial" },
-    });
+    this.publishCreated(tx, recommendationId, input.personId, input.kind);
     return { recommendationId, approvalId: approval.id };
   }
 

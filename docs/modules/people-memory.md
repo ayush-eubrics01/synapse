@@ -52,8 +52,8 @@ Identity is kept separate from approved knowledge. A person may exist as a tempo
 |---|---|---|---|---|
 | `people.discover_contacts` | setup step 4 | none (from collected messages) | `people.discover:<date>` | 3 |
 | `people.generate_initial_profile` | user selects a person | intelligence / sonnet | `people.initial:<personId>` | 3; `incomplete_ai_output` retried |
-| `people.recommend_update` | periodic batch (default daily) for profiled people with new messages | intelligence / haiku or sonnet | `people.update:<personId>:<newest ts>` | 3 |
-| `people.assess_unknown` | `person.discovered`, batched | intelligence / haiku | `people.assess:<slackUserId>` | 3 |
+| `people.recommend_update` | schedule (coalesce, `people.update.intervalSeconds`); each tick enqueues one `people.update_profile` job (priority 60) per profiled person with history newer than the current version's evidence and nothing pending | intelligence / haiku (`people.models.update`) | `people.update:<personId>:<newest sentAt>` | 3 |
+| `people.assess_unknown` | the temporary-contact consumer, when a contact's `message_count` first reaches `people.unknown.minMessages`; runs at the end of the hour bucket (priority 40) | intelligence / haiku | `people.assess:<hourBucket>` | 3 |
 | `people.expire_temporary` | daily | none | `people.expire:<date>` | 3 |
 
 The intelligence worker receives message text as untrusted content and has no write or send tools (ADR-032).
@@ -143,3 +143,11 @@ The job selects the newest `people.history.maxMessages` unexpired messages of th
 `validateEvidence` removes cited ids that were not provided, drops observations with no valid id, below `people.recommendation.minConfidence` or with a repeated key in the section. No observations left means no recommendation. Otherwise one transaction stores the pending recommendation (`observation_hash` = sha256 of the sorted `section:key:text` lines), evidence rows (`observation_key` = `<section>.<key>`, e.g. `communication.async`; `source_external_ref` = `<conversation external id>:<ts>`), a `records.update` approval (`people.rec:<id>`) and `person.profile_recommendation_created`. Profile text appears only in `people_profile_recommendations.content`.
 
 Security flags (ruling R1): runtime flags attach to the person's newest provided message; an AI injection flag attaches to the provided message containing the model's quote, else the newest one.
+
+## Updates and unknown contacts (Phase 5, Task 6)
+
+**Update.** `people.update_profile` sends the current approved content as ONE `user_approved` part (JSON of sections, keys, texts, confidence; no evidence ids; it counts in the byte budget) and the history newer than the version's newest evidence `observed_at` (the version's `created_at` when it has none) as `untrusted` parts. Output is `profileUpdateOutputSchema`. Every add must cite provided ids; a remove must cite at least one provided id and name a key present in the current content, else it is dropped. An empty diff, or one whose result equals the current content, stores nothing. A stored `update` keeps the diff as `content`, `base_version`, evidence rows for the adds (`<section>.<key>`), the approval and the event.
+
+**Rejected hash (Review Focus 2).** The observation hash is computed over the content that would result from the diff (initial: the profile itself). If a `rejected` recommendation of the person has the same hash, nothing is stored and the job returns `{ skipped: "same_as_rejected" }`.
+
+**Unknown contacts.** The handler assesses up to 10 unassessed contacts with at least `minMessages` messages and at least one unexpired message, each as one `untrusted` part `slack contact <slackUserId>` holding up to 5 recent messages, one per line starting with `sentAt`. A returned id outside the batch, or repeated, fails the job as `incomplete_ai_output`. Results are stored in `temporary_contacts.profile_assessment` (`{ worthProfile, reason }`, reason through `renderExcerpt(…, 300)`) and `assessed_at`. `worthProfile: true` creates a person row and a pending `suggest_evaluation` recommendation (reason only; no content, no approval) unless the person already has a pending recommendation. More than 10 candidates queue a follow-up job in the next hour bucket. Runtime flags attach to the newest message of the first contact in the batch (R1).

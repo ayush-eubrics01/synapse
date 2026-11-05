@@ -17,6 +17,8 @@ export interface HistoryOptions {
   /** Slack external id of the user; null until confirmed (then only the person's own messages). */
   selfUserId: string | null;
   now: Date;
+  /** Only messages strictly newer than this ISO time (an update looks at what is new). */
+  after?: string;
 }
 
 interface Row {
@@ -73,7 +75,7 @@ export function selectHistory(db: Db, slackUserId: string, opts: HistoryOptions)
     FROM slack_messages m
     JOIN slack_conversations c ON c.id = m.conversation_id
     JOIN p
-    WHERE m.sent_at >= ${since} AND m.text IS NOT NULL AND m.content_expired_at IS NULL
+    WHERE m.sent_at >= ${since} AND (${opts.after ?? null} IS NULL OR m.sent_at > ${opts.after ?? null}) AND m.text IS NOT NULL AND m.content_expired_at IS NULL
       AND (
         m.sender_user_id = p.id
         OR (c.type = 'im' AND m.sender_user_id IN (SELECT id FROM s)

@@ -357,7 +357,7 @@ export class ProfileService {
   }
 }
 
-function applyDiff(
+export function applyDiff(
   base: ProfileContent,
   diff: ProfileUpdateOutput,
   touched: Set<string>,

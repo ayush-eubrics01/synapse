@@ -1,18 +1,26 @@
 import type { DomainEvent, EventType } from "@synapse/contracts";
 import { type Db, schema, type Tx } from "@synapse/database";
-import { type Clock, newId } from "@synapse/shared";
+import { type Clock, isoNow, newId } from "@synapse/shared";
 import { and, eq, lt, notExists, sql } from "drizzle-orm";
 import type { SettingsService } from "../../core/config/settings";
 import type { EventPublisher } from "../../core/events/publisher";
+import type { JobQueue } from "../../core/jobs/queue";
+import {
+  ASSESS_UNKNOWN_JOB,
+  ASSESS_UNKNOWN_PRIORITY,
+  PEOPLE_CONCURRENCY_GROUP,
+} from "./recommendations";
 
 export interface TemporaryContactsDeps {
   db: Db;
   clock: Clock;
   settings: SettingsService;
   events: EventPublisher;
+  queue: JobQueue;
 }
 
 const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
 const { slackMessages, slackUsers, people, temporaryContacts, peopleProfileRecommendations } =
   schema;
 
@@ -66,6 +74,7 @@ export class TemporaryContacts {
         id: temporaryContacts.id,
         lastSeenAt: temporaryContacts.lastSeenAt,
         expiresAt: temporaryContacts.expiresAt,
+        messageCount: temporaryContacts.messageCount,
       })
       .from(temporaryContacts)
       .where(eq(temporaryContacts.slackUserId, m.senderRef))
@@ -79,6 +88,9 @@ export class TemporaryContacts {
         })
         .where(eq(temporaryContacts.id, existing.id))
         .run();
+      if (existing.messageCount + 1 === settings.get("people.unknown.minMessages")) {
+        this.enqueueAssessment(tx);
+      }
       return;
     }
     tx.insert(temporaryContacts)
@@ -97,6 +109,24 @@ export class TemporaryContacts {
       aggregateId: m.senderRef,
       correlationId,
       payload: { slackUserId: m.senderRef },
+    });
+    if (settings.get("people.unknown.minMessages") <= 1) this.enqueueAssessment(tx);
+  }
+
+  /**
+   * One assessment job per hour bucket, queued when a contact first reaches the threshold. It runs
+   * at the end of the bucket, so every contact that crossed during the hour is in one batch.
+   */
+  private enqueueAssessment(tx: Tx): void {
+    const { clock, queue } = this.deps;
+    const bucket = isoNow(clock).slice(0, 13);
+    const runAfter = new Date(Date.parse(`${bucket}:00:00.000Z`) + HOUR_MS).toISOString();
+    queue.enqueue(tx, {
+      type: ASSESS_UNKNOWN_JOB,
+      idempotencyKey: `people.assess:${bucket}`,
+      runAfter,
+      concurrencyGroup: PEOPLE_CONCURRENCY_GROUP,
+      priority: ASSESS_UNKNOWN_PRIORITY,
     });
   }
 

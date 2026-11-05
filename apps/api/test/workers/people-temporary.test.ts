@@ -25,19 +25,21 @@ beforeEach(() => {
   const events = new EventPublisher(clock);
   const settings = new SettingsService(db, clock, events.publish.bind(events));
   people = new PeopleService({ db, clock, events, audit: new AuditLogger(clock), settings });
-  scheduler = new SchedulerService(db, clock, new JobQueue(db, clock));
+  const queue = new JobQueue(db, clock);
+  scheduler = new SchedulerService(db, clock, queue);
   handlers = new Map();
   registerPeopleJobs({
     db,
     clock,
     settings,
     scheduler,
+    queue,
     handlers,
     // The expiry job uses none of the Claude-path dependencies.
     recommendations: {} as never,
     orchestrator: {} as never,
     securityFlags: {} as never,
-    temporary: new TemporaryContacts({ db, clock, settings, events }),
+    temporary: new TemporaryContacts({ db, clock, settings, events, queue }),
   });
 });
 

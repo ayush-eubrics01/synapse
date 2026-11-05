@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import type { Confidence, Observation, ProfileContent, ProfileSection } from "@synapse/contracts";
+import type {
+  Confidence,
+  Observation,
+  ProfileContent,
+  ProfileSection,
+  ProfileUpdateOutput,
+} from "@synapse/contracts";
 
 const SECTIONS: ProfileSection[] = ["professionalContext", "communication", "responseGuidelines"];
 const RANK: Record<Confidence, number> = { low: 0, medium: 1, high: 2 };
@@ -43,4 +49,40 @@ export const observationCount = (c: ProfileContent): number =>
 export function observationHash(c: ProfileContent): string {
   const lines = SECTIONS.flatMap((s) => c[s].map((o) => `${s}:${o.key}:${o.text}`)).sort();
   return createHash("sha256").update(lines.join("\n")).digest("hex");
+}
+
+export type UpdateAdd = ProfileUpdateOutput["add"][number];
+export type UpdateRemove = ProfileUpdateOutput["remove"][number];
+
+/**
+ * Validates a model-proposed diff against the current approved content. Every add keeps only
+ * provided evidence ids (same rules as validateEvidence). A remove must cite at least one provided
+ * id and name a key that exists in the current content, else it is dropped. `added` is the kept adds
+ * as profile content (for evidence rows).
+ */
+export function validateUpdate(
+  current: ProfileContent,
+  output: Pick<ProfileUpdateOutput, "add" | "remove">,
+  providedIds: Set<string>,
+  minConfidence: Confidence,
+): { add: UpdateAdd[]; remove: UpdateRemove[]; added: ProfileContent } {
+  const asContent = {
+    professionalContext: [],
+    communication: [],
+    responseGuidelines: [],
+  } as ProfileContent;
+  for (const { section, ...o } of output.add) asContent[section].push(o);
+  const { content: added } = validateEvidence(asContent, providedIds, minConfidence);
+  const add = SECTIONS.flatMap((section) => added[section].map((o) => ({ section, ...o })));
+  const seen = new Set<string>();
+  const remove: UpdateRemove[] = [];
+  for (const r of output.remove) {
+    const evidence = [...new Set(r.evidence.filter((id) => providedIds.has(id)))];
+    const id = `${r.section}.${r.key}`;
+    if (evidence.length === 0 || seen.has(id)) continue;
+    if (!current[r.section].some((o) => o.key === r.key)) continue;
+    seen.add(id);
+    remove.push({ section: r.section, key: r.key, evidence });
+  }
+  return { add, remove, added };
 }

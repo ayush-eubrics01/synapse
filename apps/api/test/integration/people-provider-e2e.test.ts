@@ -105,7 +105,8 @@ function build(mode: string, texts: string[] = [1, 2, 3, 4].map((n) => `${BODY} 
     clock,
     settings,
     scheduler: new SchedulerService(db, clock, queue),
-    temporary: new TemporaryContacts({ db, clock, settings, events }),
+    queue,
+    temporary: new TemporaryContacts({ db, clock, settings, events, queue }),
     recommendations,
     orchestrator,
     securityFlags,
@@ -151,7 +152,7 @@ function build(mode: string, texts: string[] = [1, 2, 3, 4].map((n) => `${BODY} 
       getCheckpoint: () => undefined,
     } as never) as Promise<unknown>;
   };
-  return { db, run, argvFile };
+  return { db, run, argvFile, handlers, queue, people };
 }
 
 describe("people.generate_initial_profile through the real provider", () => {
@@ -208,5 +209,145 @@ describe("people.generate_initial_profile through the real provider", () => {
     const prompt = argv[argv.indexOf("-p") + 1] as string;
     expect(prompt.match(/<<<UNTRUSTED /g)).toHaveLength(150);
     expect(Buffer.byteLength(prompt, "utf8")).toBeLessThan(100 * 1024);
+  });
+});
+
+const CURRENT: ProfileContent = {
+  professionalContext: [],
+  communication: [
+    { key: "prefers-async", text: "Prefers async.", evidence: ["old-1"], confidence: "high" },
+  ],
+  responseGuidelines: [],
+};
+
+const ctx = { signal, checkpoint() {}, getCheckpoint: () => undefined } as never;
+const jobOf = (id: string, type: string, input: unknown) =>
+  ({ id, type, input, attempts: 1, maxAttempts: 3 }) as unknown as Job;
+
+describe("people.update_profile through the real provider", () => {
+  test("validated diff recommendation; approved profile is the only user_approved part", async () => {
+    const { db, argvFile, handlers, queue, people } = build("people_update_ok");
+    const personId = db.transaction((tx) => people.ensurePerson(tx, "UPRIYA0001"));
+    const old = new Date(Date.parse(NOW) - 7_200_000).toISOString();
+    db.insert(schema.peopleProfiles)
+      .values({ id: "prof", personId, currentVersion: 1, content: CURRENT, updatedAt: old })
+      .run();
+    db.insert(schema.peopleProfileRecommendations)
+      .values({ id: "rec0", personId, kind: "initial", status: "applied", createdAt: old })
+      .run();
+    db.insert(schema.peopleProfileVersions)
+      .values({
+        id: "ver",
+        profileId: "prof",
+        version: 1,
+        content: CURRENT,
+        recommendationId: "rec0",
+        createdAt: old,
+      })
+      .run();
+    const id = db.transaction(
+      (tx) =>
+        queue.enqueue(tx, {
+          type: "people.update_profile",
+          idempotencyKey: "people.update:t",
+          input: { personId },
+        }).id,
+    );
+    const out = (await handlers
+      .get("people.update_profile")
+      ?.handler(jobOf(id, "people.update_profile", { personId }), ctx)) as Record<string, unknown>;
+    expect(out.recommendationId).toBeDefined();
+    const rec = db
+      .select()
+      .from(schema.peopleProfileRecommendations)
+      .all()
+      .find((r) => r.kind === "update");
+    expect(rec).toMatchObject({ status: "pending", baseVersion: 1 });
+    const diff = rec?.content as {
+      add: { key: string; evidence: string[] }[];
+      remove: { key: string }[];
+    };
+    // forged ids, the uncited add and the remove of a missing key are gone
+    expect(diff.add.map((a) => [a.key, a.evidence])).toEqual([["uses-threads", ["m-p-3"]]]);
+    expect(diff.remove.map((r) => r.key)).toEqual(["prefers-async"]);
+    expect(db.select().from(schema.approvals).all()[0]).toMatchObject({
+      action: "records.update",
+      status: "pending",
+    });
+    expect(db.select().from(schema.claudeRuns).all()[0]).toMatchObject({
+      workerProfile: "intelligence",
+      status: "succeeded",
+    });
+
+    const argv = JSON.parse(readFileSync(argvFile, "utf8")) as string[];
+    const at = (flag: string) => argv[argv.indexOf(flag) + 1];
+    expect(at("--allowedTools")).toBe("ToolSearch");
+    expect(at("--model")).toBe("haiku");
+    expect(at("--max-turns")).toBe("3");
+    const prompt = at("-p") as string;
+    expect(prompt).toContain("Prefers async.");
+    expect(prompt).not.toContain("old-1");
+    const outside = prompt.replace(/<<<UNTRUSTED[\s\S]*?<<<END \w+>>>/g, "");
+    expect(outside).toContain("Prefers async."); // trusted block, outside the UNTRUSTED markers
+    expect(outside).not.toContain(BODY);
+  });
+});
+
+describe("people.assess_unknown through the real provider", () => {
+  test("worthwhile contact becomes a pending suggestion; message text only inside UNTRUSTED blocks", async () => {
+    const { db, argvFile, handlers, queue } = build("people_unknown_ok", []);
+    db.insert(schema.slackUsers)
+      .values({ id: "su-new", externalId: "UNEW000001", name: "Newcomer" })
+      .run();
+    for (let i = 0; i < 3; i++) {
+      db.insert(schema.slackMessages)
+        .values({
+          id: `m-n-${i}`,
+          conversationId: "c1",
+          ts: `${5000 + i}.000000`,
+          senderUserId: "su-new",
+          text: `${BODY} new ${i}`,
+          sentAt: new Date(Date.parse(NOW) - 600_000 + i * 1000).toISOString(),
+          collectedAt: NOW,
+        })
+        .run();
+    }
+    db.insert(schema.temporaryContacts)
+      .values({
+        id: "tc1",
+        slackUserId: "UNEW000001",
+        firstSeenAt: NOW,
+        lastSeenAt: NOW,
+        messageCount: 3,
+        expiresAt: new Date(Date.parse(NOW) + 86_400_000).toISOString(),
+      })
+      .run();
+    const id = db.transaction(
+      (tx) =>
+        queue.enqueue(tx, { type: "people.assess_unknown", idempotencyKey: "people.assess:t" }).id,
+    );
+    const out = await handlers
+      .get("people.assess_unknown")
+      ?.handler(jobOf(id, "people.assess_unknown", null), ctx);
+    expect(out).toEqual({ assessed: 1, suggested: 1 });
+    const [rec] = db.select().from(schema.peopleProfileRecommendations).all();
+    expect(rec).toMatchObject({
+      kind: "suggest_evaluation",
+      status: "pending",
+      reason: "Recurring deployment questions.",
+      approvalId: null,
+      content: null,
+    });
+    expect(db.select().from(schema.temporaryContacts).all()[0]?.assessedAt).toBe(NOW);
+    expect(db.select().from(schema.approvals).all()).toHaveLength(0);
+
+    const argv = JSON.parse(readFileSync(argvFile, "utf8")) as string[];
+    const at = (flag: string) => argv[argv.indexOf(flag) + 1];
+    expect(at("--allowedTools")).toBe("ToolSearch");
+    const prompt = at("-p") as string;
+    expect(prompt).toContain("slack contact UNEW000001");
+    expect(prompt.match(/<<<UNTRUSTED /g)).toHaveLength(1);
+    const outside = prompt.replace(/<<<UNTRUSTED[\s\S]*?<<<END \w+>>>/g, "");
+    expect(outside).not.toContain(BODY);
   });
 });

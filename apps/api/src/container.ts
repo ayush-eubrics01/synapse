@@ -218,7 +218,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     screening.handle(event, tx),
   );
   const discovery = new ContactDiscovery({ db, clock, settings });
-  const temporary = new TemporaryContacts({ db, clock, settings, events });
+  const temporary = new TemporaryContacts({ db, clock, settings, events, queue });
   dispatcher.subscribe("message.received", "people.temporary", (event, tx) =>
     temporary.handle(event, tx),
   );
@@ -252,6 +252,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     clock,
     settings,
     scheduler,
+    queue,
     temporary,
     recommendations: profiles,
     orchestrator,

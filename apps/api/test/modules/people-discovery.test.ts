@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { AuditLogger } from "../../src/core/audit/audit";
 import { SettingsService } from "../../src/core/config/settings";
 import { EventPublisher } from "../../src/core/events/publisher";
+import { JobQueue } from "../../src/core/jobs/queue";
 import { ContactDiscovery } from "../../src/modules/people/discovery";
 import { PeopleService } from "../../src/modules/people/service";
 import { TemporaryContacts } from "../../src/modules/people/temporary";
@@ -16,6 +17,7 @@ let events: EventPublisher;
 let people: PeopleService;
 let discovery: ContactDiscovery;
 let temporary: TemporaryContacts;
+let queue: JobQueue;
 let seq = 0;
 const SELF = "USELF00001";
 
@@ -27,7 +29,8 @@ beforeEach(() => {
   settings = new SettingsService(db, clock, events.publish.bind(events));
   people = new PeopleService({ db, clock, events, audit: new AuditLogger(clock), settings });
   discovery = new ContactDiscovery({ db, clock, settings });
-  temporary = new TemporaryContacts({ db, clock, settings, events });
+  queue = new JobQueue(db, clock);
+  temporary = new TemporaryContacts({ db, clock, settings, events, queue });
   seq = 0;
   addUser(SELF, "Me");
   settings.set("slack.selfUserId", SELF);
@@ -225,6 +228,7 @@ test("handler never throws and rolls back its writes on failure", () => {
     db,
     clock,
     settings,
+    queue,
     events: {
       publish: () => {
         throw new Error("boom SECRET text");
