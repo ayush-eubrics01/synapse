@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   type AIExecutionRequest,
   type AIExecutionResult,
   type AIProvider,
   type ClaudeJobRequest,
   JobError,
+  type QuotaWindow,
 } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
@@ -45,7 +46,7 @@ function result(over: Partial<AIExecutionResult> = {}): AIExecutionResult {
 function quota(five: number, resetsAt = "2026-11-05T15:00:00.000Z", status = "allowed") {
   return {
     observedAt: START,
-    fiveHour: { utilization: five, status, resetsAt },
+    fiveHour: { utilization: five, status, resetsAt } as QuotaWindow,
     sevenDay: { utilization: 0.1, status: "allowed", resetsAt: "2026-11-10T00:00:00.000Z" },
   };
 }
@@ -55,7 +56,7 @@ class FakeProvider implements AIProvider {
   next: () => AIExecutionResult | Promise<AIExecutionResult> = () => result();
   active = 0;
   peak = 0;
-  async execute(r: AIExecutionRequest): Promise<AIExecutionResult> {
+  async execute(r: AIExecutionRequest, _signal: AbortSignal): Promise<AIExecutionResult> {
     this.requests.push(r);
     this.active++;
     this.peak = Math.max(this.peak, this.active);
@@ -71,13 +72,14 @@ class FakeProvider implements AIProvider {
 }
 
 let db: ReturnType<typeof openDatabase>["db"];
+let sqlite: ReturnType<typeof openDatabase>["sqlite"];
 let clock: FakeClock;
 let settings: SettingsService;
 let provider: FakeProvider;
 let orch: ClaudeOrchestrator;
 
 beforeEach(() => {
-  db = openDatabase(":memory:").db;
+  ({ db, sqlite } = openDatabase(":memory:"));
   runMigrations(db);
   clock = new FakeClock(START);
   settings = new SettingsService(db, clock, () => "e");
@@ -105,6 +107,8 @@ function req(over: Partial<ClaudeJobRequest> = {}): ClaudeJobRequest {
     ...over,
   };
 }
+const S = () => new AbortController().signal;
+const run = (r: ClaudeJobRequest, signal: AbortSignal = S()) => orch.run(r, signal);
 const runs = () => db.select().from(schema.claudeRuns).all();
 const events = (type: string) =>
   db.select().from(schema.domainEvents).where(eq(schema.domainEvents.type, type)).all();
@@ -156,7 +160,7 @@ async function fails(p: Promise<unknown>): Promise<JobError> {
 describe("run", () => {
   test("success logs the run, events and quota", async () => {
     provider.next = () => result({ quota: quota(0.3) });
-    await orch.run(req());
+    await run(req());
     const r = runs()[0];
     expect(r?.status).toBe("succeeded");
     expect(r?.inputTokens).toBe(10);
@@ -172,7 +176,7 @@ describe("run", () => {
 
   test("validation failure never reaches the provider or stores content", async () => {
     const e = await fails(
-      orch.run(
+      run(
         req({
           workerProfile: "engineering",
           priorityClass: "engineering",
@@ -191,7 +195,7 @@ describe("run", () => {
   });
 
   test("untrusted content never lands in runs, audit or events", async () => {
-    await orch.run(req({ parts: [{ provenance: "untrusted", source: "slack", content: SECRET }] }));
+    await run(req({ parts: [{ provenance: "untrusted", source: "slack", content: SECRET }] }));
     expect(provider.requests[0]?.prompt).toContain(SECRET);
     const dump = JSON.stringify([
       runs(),
@@ -203,29 +207,29 @@ describe("run", () => {
 
   test("quota gate by level and priority", async () => {
     snap(0.9, "allowed", "2026-11-05T14:00:00.000Z");
-    const e = await fails(orch.run(req({ priorityClass: "batch" })));
+    const e = await fails(run(req({ priorityClass: "batch" })));
     expect(e.classified.kind).toBe("quota_exhausted");
     expect(e.classified.retryAfter).toBe("2026-11-05T14:00:00.000Z");
-    await orch.run(req({ priorityClass: "collection" }));
+    await run(req({ priorityClass: "collection" }));
     expect(provider.requests).toHaveLength(1);
   });
 
   test("rejected snapshot blocks urgent", async () => {
     snap(0.5, "rejected");
-    const e = await fails(orch.run(req({ priorityClass: "urgent" })));
+    const e = await fails(run(req({ priorityClass: "urgent" })));
     expect(e.classified.kind).toBe("quota_exhausted");
     expect(provider.requests).toHaveLength(0);
   });
 
   test("seven-day rejection with higher five-hour utilization stops until seven-day reset", async () => {
     snap2({ five: 0.5, seven: 0.1, fiveStatus: "allowed", sevenStatus: "rejected" });
-    const e = await fails(orch.run(req({ priorityClass: "urgent" })));
+    const e = await fails(run(req({ priorityClass: "urgent" })));
     expect(e.classified.retryAfter).toBe("2026-11-10T00:00:00.000Z");
   });
 
   test("five-hour rejection with zero utilization stops only until five-hour reset", async () => {
     snap2({ five: 0, seven: 0.06, fiveStatus: "rejected", sevenStatus: "allowed" });
-    const e = await fails(orch.run(req({ priorityClass: "urgent" })));
+    const e = await fails(run(req({ priorityClass: "urgent" })));
     expect(e.classified.retryAfter).toBe("2026-11-05T15:00:00.000Z");
   });
 
@@ -233,7 +237,7 @@ describe("run", () => {
     snap2({ five: 0, seven: 0.06, fiveStatus: "rejected", sevenStatus: "allowed" });
     clock.advance(4 * 3_600_000); // five-hour window reset: gate open again
     provider.next = () => result({ quota: quota(0.9, "2026-11-05T20:00:00.000Z") });
-    await orch.run(req({ priorityClass: "collection" }));
+    await run(req({ priorityClass: "collection" }));
     const ev = events("quota.threshold_reached");
     expect(ev).toHaveLength(1);
     const stored = db.select().from(schema.quotaSnapshots).all();
@@ -256,7 +260,7 @@ describe("run", () => {
       })
       .run();
     clock.advance(2 * 3_600_000);
-    await orch.run(req({ priorityClass: "urgent" }));
+    await run(req({ priorityClass: "urgent" }));
     expect(provider.requests).toHaveLength(1);
   });
 
@@ -270,21 +274,21 @@ describe("run", () => {
         ],
       });
     const before = settings.get("orchestrator.knownServers");
-    await orch.run(req());
+    await run(req());
     expect(settings.get("orchestrator.knownServers")).toEqual(before);
     provider.next = () => result();
-    await orch.run(req());
+    await run(req());
     expect(runs().every((r) => r.status === "succeeded")).toBe(true);
   });
 
   test("threshold event fires once on rising level", async () => {
     snap(0.5);
     provider.next = () => result({ quota: quota(0.9) });
-    await orch.run(req());
+    await run(req());
     const ev = events("quota.threshold_reached");
     expect(ev).toHaveLength(1);
     expect((ev[0]?.payload as { level: string } | undefined)?.level).toBe("hard");
-    await orch.run(req());
+    await run(req());
     expect(events("quota.threshold_reached")).toHaveLength(1);
   });
 
@@ -294,7 +298,7 @@ describe("run", () => {
       await new Promise((r) => setTimeout(r, 10));
       return result();
     };
-    await Promise.all([orch.run(req()), orch.run(req()), orch.run(req())]);
+    await Promise.all([run(req()), run(req()), run(req())]);
     expect(provider.peak).toBe(1);
     expect(runs()).toHaveLength(3);
   });
@@ -304,12 +308,12 @@ describe("run", () => {
     provider.next = () => {
       throw new Error(`boom ${SECRET}`);
     };
-    const e = await fails(orch.run(req()));
+    const e = await fails(run(req()));
     expect(e.classified.kind).toBe("provider_error");
     expect(runs()[0]?.status).toBe("failed");
     expect(JSON.stringify(runs())).not.toContain(SECRET);
     provider.next = () => result();
-    await orch.run(req());
+    await run(req());
     expect(runs()).toHaveLength(2);
     expect(events("claude.job_failed")).toHaveLength(1);
   });
@@ -317,17 +321,17 @@ describe("run", () => {
   test("timed_out and auth_failed", async () => {
     provider.next = () =>
       result({ status: "timed_out", error: { kind: "timeout", message: "timed out" } });
-    expect((await fails(orch.run(req()))).classified.kind).toBe("timeout");
+    expect((await fails(run(req()))).classified.kind).toBe("timeout");
     expect(runs()[0]?.status).toBe("timed_out");
     provider.next = () =>
       result({ status: "failed", error: { kind: "auth_failed", message: "login needed" } });
-    expect((await fails(orch.run(req()))).classified.kind).toBe("auth_failed");
+    expect((await fails(run(req()))).classified.kind).toBe("auth_failed");
   });
 
   test("failure messages from non-generic kinds never echo content", async () => {
     provider.next = () =>
       result({ status: "failed", error: { kind: "parse_failed", message: SECRET } });
-    const e = await fails(orch.run(req()));
+    const e = await fails(run(req()));
     expect(e.message).not.toContain(SECRET);
     expect(JSON.stringify(runs())).not.toContain(SECRET);
   });
@@ -341,20 +345,18 @@ describe("run", () => {
           { name: "plugin:postman:postman", status: "connected" },
         ],
       });
-    await orch.run(req());
+    await run(req());
     const known = settings.get("orchestrator.knownServers");
     expect(known).toContain("mcp__claude_ai_Notion");
     expect(known).toContain("mcp__claude_ai_Atlassian_MCP");
     expect(known).toContain("mcp__plugin_postman_postman");
     const before = known.length;
-    await orch.run(req());
+    await run(req());
     expect(settings.get("orchestrator.knownServers")).toHaveLength(before);
   });
 
   test("request shape", async () => {
-    await orch.run(
-      req({ parts: [{ provenance: "untrusted", source: "slack", content: "hello" }] }),
-    );
+    await run(req({ parts: [{ provenance: "untrusted", source: "slack", content: "hello" }] }));
     const r = provider.requests[0];
     expect(r?.allowedTools).toEqual([SEARCH, "ToolSearch"]);
     expect(r?.disallowedTools).toContain("Bash");
@@ -367,8 +369,211 @@ describe("run", () => {
   });
 
   test("invalid request is invalid_input", async () => {
-    const e = await fails(orch.run(req({ maxTurns: 0 })));
+    const e = await fails(run(req({ maxTurns: 0 })));
     expect(e.classified.kind).toBe("invalid_input");
+  });
+});
+
+const SEND = "mcp__claude_ai_Slack__slack_send_message";
+const sendReq = () =>
+  req({
+    priorityClass: "send",
+    allowedTools: [SEND],
+    parts: [{ provenance: "user_approved", content: "reply text" }],
+  });
+const deferred = () => {
+  let release: () => void = () => {};
+  const p = new Promise<void>((r) => {
+    release = r;
+  });
+  return { p, release };
+};
+const tick = () => new Promise((r) => setTimeout(r, 5));
+
+describe("final-review fixes", () => {
+  test("I1b: provider quota_exhausted with a 1970 or missing retryAfter is clamped to now + 15 min", async () => {
+    provider.next = () =>
+      result({
+        status: "failed",
+        error: {
+          kind: "quota_exhausted",
+          message: "Claude usage quota exhausted",
+          retryAfter: "1970-01-01T00:00:00.000Z",
+        },
+      });
+    expect((await fails(run(req()))).classified.retryAfter).toBe("2026-11-05T12:15:00.000Z");
+    provider.next = () =>
+      result({ status: "failed", error: { kind: "quota_exhausted", message: "q" } });
+    expect((await fails(run(req()))).classified.retryAfter).toBe("2026-11-05T12:15:00.000Z");
+  });
+
+  test("I1: a rejected snapshot with no resetsAt blocks for an hour, retryAfter >= now + 15 min", async () => {
+    snap2({ five: 0, seven: null, fiveStatus: "rejected", sevenStatus: null });
+    db.update(schema.quotaSnapshots).set({ fiveHourResetsAt: null, sevenDayResetsAt: null }).run();
+    clock.advance(50 * 60_000);
+    const e = await fails(run(req({ priorityClass: "urgent" })));
+    expect(e.classified.kind).toBe("quota_exhausted");
+    expect(e.classified.retryAfter).toBe("2026-11-05T13:05:00.000Z");
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  test("I1: a five-hour-only snapshot is stored and read back without a seven-day window", async () => {
+    provider.next = () =>
+      result({
+        quota: {
+          observedAt: START,
+          fiveHour: { utilization: 0.97, status: "allowed", resetsAt: "2026-11-05T15:00:00.000Z" },
+        },
+      });
+    await run(req());
+    const s = orch.latestSnapshot();
+    expect(s?.fiveHour?.utilization).toBe(0.97);
+    expect(s?.sevenDay).toBeUndefined();
+    expect(events("quota.threshold_reached")).toHaveLength(1);
+    expect((await fails(run(req({ priorityClass: "urgent" })))).classified.kind).toBe(
+      "quota_exhausted",
+    );
+  });
+
+  test("I3a: a run-row update failure after a successful run still returns success; row not running", async () => {
+    sqlite.run(
+      "CREATE TRIGGER fail_full_update BEFORE UPDATE ON claude_runs WHEN NEW.num_turns IS NOT NULL BEGIN SELECT RAISE(ABORT, 'boom'); END",
+    );
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const r = await run(req());
+      expect(r.status).toBe("succeeded");
+      expect(runs()[0]?.status).toBe("succeeded");
+      expect(runs()[0]?.finishedAt).not.toBeNull();
+      expect(spy.mock.calls.length).toBeGreaterThan(0);
+      for (const call of spy.mock.calls) expect(call).toHaveLength(3);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("I3a: bookkeeping failures never change the outcome or the thrown error", async () => {
+    sqlite.run(
+      "CREATE TRIGGER fail_quota BEFORE INSERT ON quota_snapshots BEGIN SELECT RAISE(ABORT, 'boom'); END",
+    );
+    sqlite.run(
+      "CREATE TRIGGER fail_events BEFORE INSERT ON domain_events WHEN NEW.type <> 'claude.job_started' BEGIN SELECT RAISE(ABORT, 'boom'); END",
+    );
+    const auth = spyOn(AuthMonitor.prototype, "record").mockImplementation(() => {
+      throw new Error("auth boom");
+    });
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      provider.next = () => result({ quota: quota(0.3) });
+      expect((await run(req())).status).toBe("succeeded");
+      provider.next = () =>
+        result({ status: "failed", error: { kind: "auth_failed", message: "login" } });
+      expect((await fails(run(req()))).classified.kind).toBe("auth_failed");
+      expect(runs().map((r) => r.status)).toEqual(["succeeded", "failed"]);
+    } finally {
+      auth.mockRestore();
+      spy.mockRestore();
+    }
+  });
+
+  test("I3b: a send-run failure after spawn carries uncertain", async () => {
+    provider.next = () =>
+      result({ status: "failed", error: { kind: "provider_error", message: "crash" } });
+    const e = await fails(run(sendReq()));
+    expect(e.classified.kind).toBe("provider_error");
+    expect(e.classified.details).toEqual({ uncertain: true });
+    provider.next = () => result({ status: "timed_out", error: { kind: "timeout", message: "t" } });
+    expect((await fails(run(sendReq()))).classified.details).toEqual({ uncertain: true });
+    provider.next = () => {
+      throw new Error("provider threw");
+    };
+    expect((await fails(run(sendReq()))).classified.details).toEqual({ uncertain: true });
+  });
+
+  test("I3b: no uncertain when the process never spawned or no write tool is allowed", async () => {
+    provider.next = () =>
+      result({
+        status: "failed",
+        error: { kind: "provider_error", message: "x", details: { notSpawned: true } },
+      });
+    expect((await fails(run(sendReq()))).classified.details).toBeUndefined();
+    provider.next = () =>
+      result({
+        status: "cancelled",
+        error: { kind: "timeout", message: "x", details: { notSpawned: true } },
+      });
+    expect((await fails(run(sendReq()))).classified.details).toBeUndefined();
+    provider.next = () =>
+      result({ status: "failed", error: { kind: "provider_error", message: "crash" } });
+    expect((await fails(run(req()))).classified.details).toBeUndefined();
+  });
+
+  test("I6: an aborted waiter frees its queue spot and writes no run row", async () => {
+    settings.set("orchestrator.maxConcurrent", 1);
+    const gate = deferred();
+    provider.next = async () => {
+      await gate.p;
+      return result();
+    };
+    const first = run(req());
+    await tick();
+    const ac = new AbortController();
+    const waiting = fails(run(req(), ac.signal));
+    const third = run(req());
+    await tick();
+    ac.abort();
+    const e = await waiting;
+    expect(e.classified).toEqual({
+      kind: "timeout",
+      message: "cancelled while waiting for a Claude slot",
+    });
+    expect(runs()).toHaveLength(1);
+    gate.release();
+    await first;
+    await third;
+    expect(runs()).toHaveLength(2);
+    expect(provider.requests).toHaveLength(2);
+    // An already-aborted signal never takes a slot either.
+    const pre = new AbortController();
+    pre.abort();
+    expect((await fails(run(req(), pre.signal))).classified.kind).toBe("timeout");
+    expect(runs()).toHaveLength(2);
+  });
+
+  test("I6: quota rising to hard while a batch request waits blocks it after acquire", async () => {
+    settings.set("orchestrator.maxConcurrent", 1);
+    const gate = deferred();
+    provider.next = async () => {
+      await gate.p;
+      return result({ quota: quota(0.9) });
+    };
+    const first = run(req({ priorityClass: "collection" }));
+    await tick();
+    const batch = fails(run(req({ priorityClass: "batch" })));
+    await tick();
+    gate.release();
+    await first;
+    const e = await batch;
+    expect(e.classified.kind).toBe("quota_exhausted");
+    expect(provider.requests).toHaveLength(1);
+    expect(runs()).toHaveLength(1);
+    // The slot was released.
+    provider.next = () => result();
+    await run(req({ priorityClass: "collection" }));
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  test("the provider receives the caller's signal", async () => {
+    let got: AbortSignal | undefined;
+    provider.next = () => result();
+    const exec = provider.execute.bind(provider);
+    provider.execute = (r, signal) => {
+      got = signal;
+      return exec(r, signal);
+    };
+    const ac = new AbortController();
+    await run(req(), ac.signal);
+    expect(got).toBe(ac.signal);
   });
 });
 
@@ -376,12 +581,12 @@ describe("runStructured", () => {
   const schemaT = z.object({ n: z.number() });
   test("parses a fenced block", async () => {
     provider.next = () => result({ finalText: 'ok\n```json\n{"n":7}\n```' });
-    const r = await orch.runStructured(req(), schemaT);
+    const r = await orch.runStructured(req(), schemaT, S());
     expect(r.value).toEqual({ n: 7 });
   });
   test("schema mismatch is incomplete_ai_output", async () => {
     provider.next = () => result({ finalText: '{"n":"x"}' });
-    const e = await fails(orch.runStructured(req(), schemaT));
+    const e = await fails(orch.runStructured(req(), schemaT, S()));
     expect(e.classified.kind).toBe("incomplete_ai_output");
   });
 });

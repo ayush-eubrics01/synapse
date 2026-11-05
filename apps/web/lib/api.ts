@@ -74,7 +74,7 @@ export interface ClaudeRun {
 export interface ClaudeQuotaWindow {
   utilization: number;
   status: string;
-  resetsAt: string;
+  resetsAt?: string;
 }
 
 export interface ClaudeStatus {
@@ -82,8 +82,8 @@ export interface ClaudeStatus {
     level: "ok" | "soft" | "hard" | "stop";
     window: "five_hour" | "seven_day" | null;
     resetsAt: string | null;
-    fiveHour: ClaudeQuotaWindow;
-    sevenDay: ClaudeQuotaWindow;
+    fiveHour?: ClaudeQuotaWindow;
+    sevenDay?: ClaudeQuotaWindow;
   } | null;
   auth: { refreshExpiresAt: string | null; slides: boolean | null };
 }

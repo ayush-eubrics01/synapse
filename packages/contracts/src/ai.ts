@@ -63,13 +63,15 @@ export interface AIUsage {
 export interface QuotaWindow {
   utilization: number;
   status: "allowed" | "allowed_warning" | "rejected" | (string & {});
-  resetsAt: string;
+  /** Absent when the event omitted it or gave a non-positive or out-of-range value. */
+  resetsAt?: string;
 }
 
+/** Each window is independent: an event may carry only one of them. */
 export interface QuotaSnapshot {
   observedAt: string;
-  fiveHour: QuotaWindow;
-  sevenDay: QuotaWindow;
+  fiveHour?: QuotaWindow;
+  sevenDay?: QuotaWindow;
 }
 
 export interface ConnectorStatus {

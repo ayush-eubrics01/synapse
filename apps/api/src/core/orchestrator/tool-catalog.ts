@@ -4,8 +4,16 @@ export type ToolClass = "read" | "write" | "builtin_read" | "builtin_write";
 
 export const BUILTIN_WRITE = ["Bash", "Edit", "Write", "NotebookEdit", "MultiEdit", "Monitor"];
 export const BUILTIN_READ = ["Read", "Grep", "Glob", "ToolSearch"];
+/**
+ * Filesystem readers: engineering only until Phase 8 adds path scoping (R33/I4). Collector and
+ * intelligence runs may not allow them and always deny them (they need no permission prompt).
+ */
+export const BUILTIN_FS_READ = ["Read", "Grep", "Glob"];
 /** Network-capable built-ins; classified as write. */
 export const BUILTIN_NETWORK = ["WebFetch", "WebSearch", "Agent", "Task"];
+
+/** A connector server name: `mcp__` plus a non-empty server part with at least one alnum (R31). */
+export const SERVER_NAME_RE = /^mcp__[A-Za-z0-9_]*[A-Za-z0-9][A-Za-z0-9_]*$/;
 
 export const DEFAULT_KNOWN_SERVERS = [
   "mcp__claude_ai_Slack",
@@ -154,7 +162,8 @@ export function buildDenylist(
 ): string[] {
   const allowedSet = new Set(allowed.map(normalizeTool));
   const deny = new Set<string>(BUILTIN_NETWORK);
-  if (profile !== "engineering") for (const t of BUILTIN_WRITE) deny.add(t);
+  if (profile !== "engineering")
+    for (const t of [...BUILTIN_WRITE, ...BUILTIN_FS_READ]) deny.add(t);
   const used = new Set<string>();
   for (const t of allowed.map(normalizeTool)) {
     const s = connectorServerOf(t);

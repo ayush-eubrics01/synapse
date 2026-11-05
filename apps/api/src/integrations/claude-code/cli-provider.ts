@@ -8,12 +8,26 @@ import type {
 } from "@synapse/contracts";
 import type { Clock } from "@synapse/shared";
 import { buildClaudeArgs } from "../../core/orchestrator/cli-args";
+import { clampQuotaRetry } from "../../core/orchestrator/quota-gate";
 import { StreamParser } from "../../core/orchestrator/stream-parser";
 
 const TESTED_VERSION = "2.1.318";
 const HEALTH_TIMEOUT_MS = 5000;
 const CLOSE_CAP_MS = 500;
 const AUTH_RE = /login|oauth token|authentication|unauthori[sz]ed/i;
+const QUOTA_TEXT_RE = /usage limit|rate limit|quota/i;
+
+/** A spawn failure message by errno code; never includes paths or arguments. */
+export function spawnErrorMessage(code: string | undefined): string {
+  if (code === "ENOENT" || code === "EACCES") return "claude binary not found or not executable";
+  if (code === "E2BIG") return "arguments too large";
+  return `spawn failed (${code ?? "unknown"})`;
+}
+
+function errnoCode(e: unknown): string | undefined {
+  const code = (e as { code?: unknown } | null)?.code;
+  return typeof code === "string" && /^[A-Z0-9_]+$/.test(code) ? code : undefined;
+}
 
 export interface ClaudeCliProviderOptions {
   binary: string;
@@ -28,8 +42,11 @@ interface SpawnOutcome {
   stderrBytes: number;
   exitCode: number | null;
   spawnError: boolean;
+  spawnErrorCode?: string;
   timedOut: boolean;
   aborted: boolean;
+  /** A child process was actually started. */
+  spawned: boolean;
 }
 
 interface SpawnOptions {
@@ -66,6 +83,7 @@ export class ClaudeCliProvider implements AIProvider {
         spawnError: false,
         timedOut: false,
         aborted: false,
+        spawned: false,
       };
       if (o.signal?.aborted) {
         out.aborted = true;
@@ -80,12 +98,14 @@ export class ClaudeCliProvider implements AIProvider {
           cwd: o.cwd,
           env: this.opts.env,
         });
-      } catch {
+      } catch (e) {
         out.spawnError = true;
+        out.spawnErrorCode = errnoCode(e);
         resolve(out);
         return;
       }
 
+      out.spawned = child.pid !== undefined;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
       let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
       let closeCapTimer: ReturnType<typeof setTimeout> | undefined;
@@ -138,8 +158,9 @@ export class ClaudeCliProvider implements AIProvider {
       child.stderr?.on("data", (chunk: Buffer) => {
         if (!done) out.stderrBytes += chunk.length;
       });
-      child.on("error", () => {
+      child.on("error", (e) => {
         out.spawnError = true;
+        out.spawnErrorCode = errnoCode(e);
         finish();
       });
       // The leader's exit ends the run; pipe holders (grandchildren) must not stall it.
@@ -167,15 +188,30 @@ export class ClaudeCliProvider implements AIProvider {
   async execute(r: AIExecutionRequest, signal: AbortSignal): Promise<AIExecutionResult> {
     const started = this.opts.clock.now().getTime();
     const parser = new StreamParser();
+    // A parser exception inside the stdout listener would be uncaught and kill the process.
+    let parserFault = false;
     const out = await this.run({
       args: buildClaudeArgs(r),
       cwd: r.workingDirectory,
       timeoutMs: r.timeoutMs,
       signal,
-      onStdout: (c) => parser.push(c),
+      onStdout: (c) => {
+        if (parserFault) return;
+        try {
+          parser.push(c);
+        } catch {
+          parserFault = true;
+        }
+      },
     });
     const now = this.opts.clock.now();
-    const parsed = parser.end(now);
+    let parsed: ReturnType<StreamParser["end"]>;
+    try {
+      parsed = parser.end(now);
+    } catch {
+      parserFault = true;
+      parsed = new StreamParser().end(now);
+    }
     const result = parsed.result;
 
     const base = {
@@ -194,10 +230,21 @@ export class ClaudeCliProvider implements AIProvider {
       error?: ClassifiedError,
     ): AIExecutionResult => ({ ...base, status, toolResults: [], error });
 
+    // Classification order (R28, amended by the final review fixes):
+    //   spawn error (by errno code; marked notSpawned)
+    //   → timed_out / cancelled (a pre-spawn abort is marked notSpawned)
+    //   → parser fault (provider_error)
+    //   → quota: a rejected window in a rate_limit_event
+    //   → quota: an error result whose text mentions a usage/rate limit or quota (no event)
+    //   → auth_failed → connector_not_ready → no result event (provider_error)
+    //   → result.isError (provider_error) → non-zero exit (R29) → expectedToolNames unmet
+    //   (incomplete_ai_output) → succeeded.
+    // quota_exhausted retryAfter is max(resetsAt, now + 15 min), so it can never loop.
     if (out.spawnError) {
       return fail("failed", {
         kind: "provider_error",
-        message: "claude binary not found or not executable",
+        message: spawnErrorMessage(out.spawnErrorCode),
+        details: { notSpawned: true },
       });
     }
     if (out.timedOut) {
@@ -207,17 +254,28 @@ export class ClaudeCliProvider implements AIProvider {
       });
     }
     if (out.aborted) {
-      return fail("cancelled");
+      return fail(
+        "cancelled",
+        out.spawned
+          ? undefined
+          : { kind: "timeout", message: "cancelled before start", details: { notSpawned: true } },
+      );
+    }
+    if (parserFault) {
+      return fail("failed", {
+        kind: "provider_error",
+        message: "claude output could not be parsed",
+      });
     }
 
     const rejected = [parsed.quota?.fiveHour, parsed.quota?.sevenDay].find(
       (w) => w?.status === "rejected",
     );
-    if (rejected) {
+    if (rejected || (result?.isError && QUOTA_TEXT_RE.test(result.text))) {
       return fail("failed", {
         kind: "quota_exhausted",
         message: "Claude usage quota exhausted",
-        retryAfter: rejected.resetsAt,
+        retryAfter: clampQuotaRetry(rejected?.resetsAt, now),
       });
     }
     if (result?.isError && AUTH_RE.test(result.text)) {

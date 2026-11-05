@@ -1,11 +1,15 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AIExecutionRequest } from "@synapse/contracts";
 import { FakeClock } from "@synapse/shared";
 import { buildClaudeArgs } from "../../src/core/orchestrator/cli-args";
-import { ClaudeCliProvider } from "../../src/integrations/claude-code/cli-provider";
+import { StreamParser } from "../../src/core/orchestrator/stream-parser";
+import {
+  ClaudeCliProvider,
+  spawnErrorMessage,
+} from "../../src/integrations/claude-code/cli-provider";
 
 const fixture = resolve(import.meta.dir, "../fixtures/fake-claude.ts");
 const tmp = mkdtempSync(join(tmpdir(), "cli-provider-"));
@@ -203,6 +207,88 @@ describe("ClaudeCliProvider.execute", () => {
       sig(),
     );
     expect(JSON.parse(readFileSync(argvFile, "utf8"))).toEqual(buildClaudeArgs(request));
+  });
+});
+
+describe("final-review fixes", () => {
+  const NOW_PLUS_15 = "2026-11-05T00:15:00.000Z";
+
+  test("I1: rejected window without resetsAt is quota_exhausted, retryAfter >= now + 15 min", async () => {
+    const r = await provider({ FAKE_CLAUDE_MODE: "rate_no_reset" }).execute(req(), sig());
+    expect(r.error?.kind).toBe("quota_exhausted");
+    expect(r.error?.retryAfter).toBe(NOW_PLUS_15);
+  });
+
+  test("I1: rejected window with a past resetsAt is clamped to now + 15 min", async () => {
+    const r = await provider({ FAKE_CLAUDE_MODE: "rate_past_reset" }).execute(req(), sig());
+    expect(r.error?.kind).toBe("quota_exhausted");
+    expect(r.error?.retryAfter).toBe(NOW_PLUS_15);
+  });
+
+  test("I1: a five-hour-only rejected event is quota_exhausted", async () => {
+    const r = await provider({ FAKE_CLAUDE_MODE: "rate_five_only" }).execute(req(), sig());
+    expect(r.error?.kind).toBe("quota_exhausted");
+    expect(r.error?.retryAfter).toBe(new Date(1793893800 * 1000).toISOString());
+    expect(r.quota?.sevenDay).toBeUndefined();
+  });
+
+  test("I1d: an error result mentioning a usage limit is quota_exhausted", async () => {
+    const r = await provider({ FAKE_CLAUDE_MODE: "quota_text" }).execute(req(), sig());
+    expect(r.status).toBe("failed");
+    expect(r.error?.kind).toBe("quota_exhausted");
+    expect(r.error?.retryAfter).toBe(NOW_PLUS_15);
+    expect(r.error?.message).toBe("Claude usage quota exhausted");
+  });
+
+  test("I2: resetsAt 1e20 neither throws nor kills the process", async () => {
+    const r = await provider({ FAKE_CLAUDE_MODE: "rate_huge_reset" }).execute(req(), sig());
+    expect(r.status).toBe("succeeded");
+    expect(r.quota?.fiveHour?.resetsAt).toBeUndefined();
+  });
+
+  test("I2: a parser fault is provider_error without content", async () => {
+    const spy = spyOn(StreamParser.prototype, "push").mockImplementation(() => {
+      throw new RangeError("secret-content");
+    });
+    try {
+      const r = await provider({ FAKE_CLAUDE_MODE: "success" }).execute(req(), sig());
+      expect(r.status).toBe("failed");
+      expect(r.error?.kind).toBe("provider_error");
+      expect(r.error?.message).toBe("claude output could not be parsed");
+      expect(JSON.stringify(r.error)).not.toContain("secret-content");
+      expect(r.toolResults).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("spawn errors are reported by code", () => {
+    expect(spawnErrorMessage("ENOENT")).toBe("claude binary not found or not executable");
+    expect(spawnErrorMessage("EACCES")).toBe("claude binary not found or not executable");
+    expect(spawnErrorMessage("E2BIG")).toBe("arguments too large");
+    expect(spawnErrorMessage("EMFILE")).toBe("spawn failed (EMFILE)");
+    expect(spawnErrorMessage(undefined)).toBe("spawn failed (unknown)");
+  });
+
+  test("a huge argv is E2BIG: arguments too large, marked not spawned", async () => {
+    const r = await provider({ FAKE_CLAUDE_MODE: "success" }).execute(
+      req({ prompt: "x".repeat(300_000) }),
+      sig(),
+    );
+    expect(r.status).toBe("failed");
+    expect(r.error?.kind).toBe("provider_error");
+    expect(r.error?.message).toBe("arguments too large");
+    expect(r.error?.details).toMatchObject({ notSpawned: true });
+  });
+
+  test("missing binary and pre-abort are marked not spawned", async () => {
+    const missing = await provider({}, "/nonexistent/claude").execute(req(), sig());
+    expect(missing.error?.details).toMatchObject({ notSpawned: true });
+    const ac = new AbortController();
+    ac.abort();
+    const pre = await provider({ FAKE_CLAUDE_MODE: "success" }).execute(req(), ac.signal);
+    expect(pre.status).toBe("cancelled");
+    expect(pre.error?.details).toMatchObject({ notSpawned: true });
   });
 });
 

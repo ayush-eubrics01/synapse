@@ -33,13 +33,21 @@ function isObj(v: unknown): v is Obj {
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
+/** Epoch seconds to ISO; missing, non-positive or out-of-range values are absent (never 1970). */
+function resetIso(v: unknown): string | undefined {
+  const secs = num(v);
+  if (secs <= 0) return undefined;
+  const d = new Date(secs * 1000);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : undefined;
+}
+
 function parseWindow(v: unknown): QuotaWindow | undefined {
   if (!isObj(v)) return undefined;
-  const secs = num(v.resetsAt);
+  const resetsAt = resetIso(v.resetsAt);
   return {
     utilization: num(v.utilization),
     status: str(v.status),
-    resetsAt: new Date(secs * 1000).toISOString(),
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
   };
 }
 
@@ -51,7 +59,8 @@ export class StreamParser {
   private toolUses = new Map<string, { name: string; input: unknown }>();
   private toolResults: RawToolResult[] = [];
   private finalText = "";
-  private windows?: { fiveHour: QuotaWindow; sevenDay: QuotaWindow };
+  private fiveHour?: QuotaWindow;
+  private sevenDay?: QuotaWindow;
   private result?: ParsedRun["result"];
 
   push(chunk: string): void {
@@ -75,7 +84,14 @@ export class StreamParser {
       toolUses: this.toolUses,
       toolResults: this.toolResults,
       finalText: this.finalText,
-      quota: this.windows ? { observedAt: now.toISOString(), ...this.windows } : undefined,
+      quota:
+        this.fiveHour || this.sevenDay
+          ? {
+              observedAt: now.toISOString(),
+              ...(this.fiveHour ? { fiveHour: this.fiveHour } : {}),
+              ...(this.sevenDay ? { sevenDay: this.sevenDay } : {}),
+            }
+          : undefined,
       result: this.result,
     };
   }
@@ -165,9 +181,9 @@ export class StreamParser {
   private onRateLimit(ev: Obj): void {
     const info = ev.rate_limit_info;
     if (!isObj(info) || !isObj(info.unifiedWindows)) return;
-    const fiveHour = parseWindow(info.unifiedWindows.five_hour);
-    const sevenDay = parseWindow(info.unifiedWindows.seven_day);
-    if (fiveHour && sevenDay) this.windows = { fiveHour, sevenDay };
+    // Each window is kept independently; the latest event carrying a window wins for it.
+    this.fiveHour = parseWindow(info.unifiedWindows.five_hour) ?? this.fiveHour;
+    this.sevenDay = parseWindow(info.unifiedWindows.seven_day) ?? this.sevenDay;
   }
 
   private onResult(ev: Obj): void {

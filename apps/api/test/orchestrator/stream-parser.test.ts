@@ -26,7 +26,7 @@ test("success: connectors, tool results, quota, result", () => {
     status: "allowed",
     resetsAt: new Date(1793893800 * 1000).toISOString(),
   });
-  expect(r.quota?.sevenDay.utilization).toBe(0.06);
+  expect(r.quota?.sevenDay?.utilization).toBe(0.06);
   expect(r.result?.usage).toEqual({
     inputTokens: 8,
     outputTokens: 636,
@@ -84,12 +84,12 @@ test("unmatched tool_use_id recorded as unknown; last rate_limit_event wins", ()
   p.push(rl(0.1) + rl(0.5));
   const r = p.end(NOW);
   expect(r.toolResults[0]).toMatchObject({ toolName: "unknown", isError: true });
-  expect(r.quota?.fiveHour.utilization).toBe(0.5);
+  expect(r.quota?.fiveHour?.utilization).toBe(0.5);
 });
 
 test("rate_rejected and auth_error fixtures", () => {
   const a = parse("rate_rejected");
-  expect(a.quota?.fiveHour.status).toBe("rejected");
+  expect(a.quota?.fiveHour?.status).toBe("rejected");
   expect(a.result?.isError).toBe(true);
   const b = parse("auth_error");
   expect(b.result?.isError).toBe(true);
@@ -108,4 +108,48 @@ test("init tool names are captured; absent tools default to []", () => {
   p.push('{"type":"system","subtype":"init","tools":["A",3,{"name":"B"}]}\n');
   expect(p.end(NOW).availableTools).toEqual(["A"]);
   expect(new StreamParser().end(NOW).availableTools).toEqual([]);
+});
+
+const rateLine = (windows: Record<string, unknown>) =>
+  `${JSON.stringify({ type: "rate_limit_event", rate_limit_info: { unifiedWindows: windows } })}\n`;
+
+test("I1: missing or non-positive resetsAt is absent, the window is kept", () => {
+  const r = parse("rate_no_reset");
+  expect(r.quota?.fiveHour).toEqual({ utilization: 1, status: "rejected" });
+  expect(r.quota?.fiveHour?.resetsAt).toBeUndefined();
+  expect(r.quota?.sevenDay?.resetsAt).toBe(new Date(1793952000 * 1000).toISOString());
+  for (const bad of [0, -5, "1793893800", null]) {
+    const p = new StreamParser();
+    p.push(rateLine({ five_hour: { utilization: 0.2, status: "allowed", resetsAt: bad } }));
+    expect(p.end(NOW).quota?.fiveHour?.resetsAt).toBeUndefined();
+  }
+});
+
+test("I1: a five-hour-only event keeps the five-hour window; seven-day is undefined", () => {
+  const r = parse("rate_five_only");
+  expect(r.quota?.fiveHour?.status).toBe("rejected");
+  expect(r.quota?.sevenDay).toBeUndefined();
+});
+
+test("I1: each window is kept independently across events", () => {
+  const p = new StreamParser();
+  p.push(
+    rateLine({
+      five_hour: { utilization: 0.1, status: "allowed", resetsAt: 1793893800 },
+      seven_day: { utilization: 0.2, status: "allowed", resetsAt: 1793952000 },
+    }) + rateLine({ five_hour: { utilization: 1, status: "rejected", resetsAt: 1793893800 } }),
+  );
+  const q = p.end(NOW).quota;
+  expect(q?.fiveHour?.status).toBe("rejected");
+  expect(q?.sevenDay?.utilization).toBe(0.2);
+});
+
+test("I2: a huge resetsAt does not throw and is treated as absent", () => {
+  let r: ReturnType<typeof parse> | undefined;
+  expect(() => {
+    r = parse("rate_huge_reset");
+  }).not.toThrow();
+  expect(r?.quota?.fiveHour?.utilization).toBe(0.01);
+  expect(r?.quota?.fiveHour?.resetsAt).toBeUndefined();
+  expect(r?.result?.text).toBe("DONE");
 });

@@ -1,6 +1,7 @@
 import type { AIExecutionRequest } from "@synapse/contracts";
 import { assemblePrompt } from "./prompt";
 import {
+  BUILTIN_FS_READ,
   BUILTIN_NETWORK,
   BUILTIN_READ,
   BUILTIN_WRITE,
@@ -19,22 +20,27 @@ const DENY_CONNECTOR_RE = /^mcp__[A-Za-z0-9_]+(__[A-Za-z0-9_]+)?$/;
 
 const fail = (reason: string): ValidationResult => ({ ok: false, reason });
 
+/** Maximum prompt size in UTF-8 bytes (one argv entry; Linux caps a single argument at 128 KiB). */
+export const MAX_PROMPT_BYTES = 100 * 1024;
+
 /**
  * Rule order (first failing rule wins):
  *  0. every allowedTools entry is a single well-formed tool name (R26); the CLI splits
  *     entries on commas/spaces, so anything else could smuggle extra tools
  *  0b. allowedTools non-empty; every disallowedTools entry is a plain tool or server name (R27),
  *     because one stray `(` would make the CLI swallow the rest of the denylist
- *  A. boundary non-empty; prompt === assemblePrompt(instructions, promptParts, boundary) (R24)
- *  B. built-in tools: unknown (R23), network in any profile (R22), write built-ins for
- *     collector/intelligence (rule 0)
+ *  A. prompt at most 100 KiB (UTF-8) and not starting with "-" (it is an argv entry, R33);
+ *     boundary non-empty; prompt === assemblePrompt(instructions, promptParts, boundary) (R24)
+ *  B. built-in tools: unknown (R23), network in any profile (R22), write built-ins and
+ *     Read/Grep/Glob for collector/intelligence (rule 0; I4 until Phase 8 path scoping)
  *  C. engineering may not allow any connector tool (R20)
  *  D. untrusted content with a write-capable tool (rule 1)
  *  E. engineering with untrusted content (rule 2)
  *  F. a connector write tool must be the only tool besides ToolSearch (R21)
  *  G. ToolSearch required for connector tools (rule 3)
  *  H. denylist covers every unused known server (rule 4)
- *  H2. denylist contains every network built-in, and every write built-in unless engineering (R26)
+ *  H2. denylist contains every network built-in, and every write and filesystem-read built-in
+ *     unless engineering (R26, I4)
  *  I. send run with untrusted content (rule 5; subsumed by D, kept as defence in depth)
  *  J. untrusted content contains the boundary (rule 6)
  * Tool names are normalised (specifier stripped) before classification.
@@ -59,6 +65,8 @@ export function validateRequest(
   const hasUntrusted = req.promptParts.some((p) => p.provenance === "untrusted");
 
   // A
+  if (Buffer.byteLength(req.prompt, "utf8") > MAX_PROMPT_BYTES) return fail("prompt too large");
+  if (req.prompt.startsWith("-")) return fail("prompt must not start with -");
   if (assembly.boundary.trim() === "") return fail("empty boundary");
   if (req.prompt !== assemblePrompt(assembly.instructions, req.promptParts, assembly.boundary)) {
     return fail("prompt does not match declared parts");
@@ -71,7 +79,10 @@ export function validateRequest(
       BUILTIN_READ.includes(t) || BUILTIN_WRITE.includes(t) || BUILTIN_NETWORK.includes(t);
     if (!known) return fail(`unknown built-in tool ${t}`);
     if (BUILTIN_NETWORK.includes(t)) return fail(`profile ${req.workerProfile} may not use ${t}`);
-    if (req.workerProfile !== "engineering" && BUILTIN_WRITE.includes(t)) {
+    if (
+      req.workerProfile !== "engineering" &&
+      (BUILTIN_WRITE.includes(t) || BUILTIN_FS_READ.includes(t))
+    ) {
       return fail(`profile ${req.workerProfile} may not use ${t}`);
     }
   }
@@ -126,7 +137,7 @@ export function validateRequest(
   // H2
   const required = [
     ...BUILTIN_NETWORK,
-    ...(req.workerProfile === "engineering" ? [] : BUILTIN_WRITE),
+    ...(req.workerProfile === "engineering" ? [] : [...BUILTIN_WRITE, ...BUILTIN_FS_READ]),
   ];
   for (const t of required) {
     if (!req.disallowedTools.includes(t)) return fail(`denylist missing ${t}`);

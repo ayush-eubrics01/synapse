@@ -46,10 +46,9 @@ export function summarize(r: AIExecutionResult, runId?: string): string[] {
     `exitCode: ${r.exitCode}`,
   ];
   if (r.quota) {
-    lines.push(
-      `quota fiveHour: ${r.quota.fiveHour.utilization} (${r.quota.fiveHour.status})`,
-      `quota sevenDay: ${r.quota.sevenDay.utilization} (${r.quota.sevenDay.status})`,
-    );
+    const w = (x: { utilization: number; status: string } | undefined) =>
+      x ? `${x.utilization} (${x.status})` : "absent";
+    lines.push(`quota fiveHour: ${w(r.quota.fiveHour)}`, `quota sevenDay: ${w(r.quota.sevenDay)}`);
   }
   for (const c of r.connectors) lines.push(`connector: ${c.name} = ${c.status}`);
   if (r.error) lines.push(`error: ${r.error.kind}`);
@@ -63,6 +62,11 @@ export function denyVerdict(tools: string[]): DenyVerdict {
   return tools.some((t) => t.startsWith("mcp__claude_ai_Slack__")) ? "PASS" : "INCONCLUSIVE";
 }
 
+/** --deny-check exit code: non-zero on FAIL, or when the run itself did not succeed. */
+export function exitCodeFor(verdict: DenyVerdict, status: AIExecutionResult["status"]): number {
+  return verdict === "FAIL" || status !== "succeeded" ? 1 : 0;
+}
+
 const SLACK_READ = "mcp__claude_ai_Slack__slack_search_users";
 
 async function main(): Promise<number> {
@@ -74,6 +78,7 @@ async function main(): Promise<number> {
   const dir = mkdtempSync(join(tmpdir(), "synapse-smoke-"));
   const config = { ...loadConfig(process.env), dbPath: join(dir, "smoke.db") };
   const c = createContainer(config);
+  const signal = new AbortController().signal;
   try {
     let result: AIExecutionResult;
     if (mode === "no-tools") {
@@ -84,7 +89,11 @@ async function main(): Promise<number> {
         allowedTools: ["ToolSearch"],
         maxTurns: 3,
       };
-      ({ result } = await c.orchestrator.runStructured(req, z.object({ ok: z.literal(true) })));
+      ({ result } = await c.orchestrator.runStructured(
+        req,
+        z.object({ ok: z.literal(true) }),
+        signal,
+      ));
     } else {
       const req: ClaudeJobRequest = {
         workerProfile: "collector",
@@ -93,13 +102,13 @@ async function main(): Promise<number> {
         allowedTools: [SLACK_READ],
         maxTurns: 2,
       };
-      result = await c.orchestrator.run(req);
+      result = await c.orchestrator.run(req, signal);
     }
     for (const line of summarize(result)) console.log(line);
     if (mode === "deny-check") {
       const v = denyVerdict(result.availableTools);
       console.log(`deny-check: ${v}`);
-      return v === "FAIL" ? 1 : 0;
+      return exitCodeFor(v, result.status);
     }
     return result.status === "succeeded" ? 0 : 1;
   } finally {

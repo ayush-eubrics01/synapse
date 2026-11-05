@@ -4,6 +4,7 @@ import { openDatabase, runMigrations } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
 import { SettingsService } from "../../src/core/config/settings";
 import {
+  clampQuotaRetry,
   decideQuota,
   type QuotaLevel,
   type QuotaThresholds,
@@ -70,9 +71,52 @@ test("null snapshot is ok; stale windows are ignored", () => {
     window: "seven_day",
     resetsAt: FUTURE7,
   });
-  expect(quotaLevel(snap(0.1, 0.99, { sStatus: "rejected", sReset: PAST }), T, now).level).toBe(
-    "ok",
-  );
+  // A rejected window with a past resetsAt is no longer ignored (I1c); see the tests below.
+  const oldRejected = { ...snap(0.1, 0.99, { sStatus: "rejected", sReset: PAST }) };
+  oldRejected.observedAt = "2026-11-05T10:00:00.000Z";
+  expect(quotaLevel(oldRejected, T, now).level).toBe("ok");
+});
+
+const H1 = "2026-11-05T13:00:00.000Z"; // observedAt (now) + 1 h
+
+test("I1c: rejected with missing resetsAt stops until observedAt + 1h", () => {
+  const s: QuotaSnapshot = {
+    observedAt: now.toISOString(),
+    fiveHour: { utilization: 0, status: "rejected" },
+  };
+  expect(quotaLevel(s, T, now)).toEqual({ level: "stop", window: "five_hour", resetsAt: H1 });
+  expect(quotaLevel(s, T, new Date("2026-11-05T12:59:59.000Z")).level).toBe("stop");
+  expect(quotaLevel(s, T, new Date(H1)).level).toBe("ok");
+});
+
+test("I1c: rejected with a past resetsAt still stops until observedAt + 1h", () => {
+  const s = snap(0.1, 0.1, { fStatus: "rejected", fReset: "1970-01-01T00:00:00.000Z" });
+  expect(quotaLevel(s, T, now)).toEqual({ level: "stop", window: "five_hour", resetsAt: H1 });
+  expect(quotaLevel(s, T, new Date("2026-11-05T13:00:01.000Z")).level).toBe("ok");
+  // A rejected window whose resetsAt is later than observedAt + 1h keeps its own reset.
+  expect(quotaLevel(snap(0.1, 0.1, { fStatus: "rejected" }), T, now).resetsAt).toBe(FUTURE);
+});
+
+test("I1c: stale allowed windows are still ignored; absent windows are ignored", () => {
+  expect(quotaLevel(snap(0.99, 0.1, { fReset: PAST }), T, now).level).toBe("ok");
+  const onlyFive: QuotaSnapshot = {
+    observedAt: now.toISOString(),
+    fiveHour: { utilization: 0.7, status: "allowed", resetsAt: FUTURE },
+  };
+  expect(quotaLevel(onlyFive, T, now)).toEqual({
+    level: "soft",
+    window: "five_hour",
+    resetsAt: FUTURE,
+  });
+  expect(quotaLevel({ observedAt: now.toISOString() }, T, now).level).toBe("ok");
+});
+
+test("I1b: clampQuotaRetry is at least now + 15 min", () => {
+  expect(clampQuotaRetry(undefined, now)).toBe("2026-11-05T12:15:00.000Z");
+  expect(clampQuotaRetry("1970-01-01T00:00:00.000Z", now)).toBe("2026-11-05T12:15:00.000Z");
+  expect(clampQuotaRetry("2026-11-05T12:05:00.000Z", now)).toBe("2026-11-05T12:15:00.000Z");
+  expect(clampQuotaRetry(FUTURE, now)).toBe(FUTURE);
+  expect(clampQuotaRetry("not a date", now)).toBe("2026-11-05T12:15:00.000Z");
 });
 
 test("rejected means stop", () => {

@@ -3,7 +3,8 @@
 import type { ClaudeRun, ClaudeStatus } from "../../lib/api";
 
 const cell = { textAlign: "left", padding: "2px 12px 2px 0" } as const;
-const pct = (u: number) => `${Math.round(u * 100)}%`;
+const pct = (w: { utilization: number } | undefined) =>
+  w ? `${Math.round(w.utilization * 100)}%` : "-";
 
 export function ClaudePanel({ status, runs }: { status: ClaudeStatus | null; runs: ClaudeRun[] }) {
   const quota = status?.quota ?? null;
@@ -13,8 +14,7 @@ export function ClaudePanel({ status, runs }: { status: ClaudeStatus | null; run
         Quota:{" "}
         {quota ? (
           <>
-            {quota.level} (5h {pct(quota.fiveHour.utilization)}, 7d{" "}
-            {pct(quota.sevenDay.utilization)})
+            {quota.level} (5h {pct(quota.fiveHour)}, 7d {pct(quota.sevenDay)})
           </>
         ) : (
           "no data yet"

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { AIExecutionResult } from "@synapse/contracts";
-import { denyVerdict, parseArgs, summarize } from "../claude-smoke";
+import { denyVerdict, exitCodeFor, parseArgs, summarize } from "../claude-smoke";
 
 test("parseArgs", () => {
   expect(parseArgs([])).toEqual({ mode: "no-tools" });
@@ -53,4 +53,18 @@ test("denyVerdict", () => {
   expect(denyVerdict(["ToolSearch", slack])).toBe("PASS");
   expect(denyVerdict(["ToolSearch"])).toBe("INCONCLUSIVE");
   expect(denyVerdict([slack, "mcp__claude_ai_Gmail__send_message"])).toBe("FAIL");
+});
+
+test("exitCodeFor: non-zero unless the run succeeded and the verdict is not FAIL", () => {
+  expect(exitCodeFor("PASS", "succeeded")).toBe(0);
+  expect(exitCodeFor("INCONCLUSIVE", "succeeded")).toBe(0);
+  expect(exitCodeFor("FAIL", "succeeded")).toBe(1);
+  expect(exitCodeFor("INCONCLUSIVE", "failed")).toBe(1);
+  expect(exitCodeFor("PASS", "timed_out")).toBe(1);
+  expect(exitCodeFor("INCONCLUSIVE", "cancelled")).toBe(1);
+});
+
+test("summarize tolerates absent quota windows", () => {
+  const out = summarize({ ...result, quota: { observedAt: "2026-11-05T00:00:00.000Z" } });
+  expect(out.join("\n")).toContain("quota fiveHour: absent");
 });
