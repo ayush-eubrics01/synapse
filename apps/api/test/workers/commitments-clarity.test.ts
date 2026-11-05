@@ -384,7 +384,7 @@ describe("commitments.queue consumer: spec clarity trigger", () => {
       concurrencyGroup: "commitments.intelligence",
     });
     expect(jobs[0]?.input).toEqual({ messageId: id, senderRef: PRIYA });
-    expect(handlers.get(JOB)?.timeoutMs).toBe(300_000);
+    expect(handlers.get(JOB)?.timeoutMs).toBe(420_000);
   });
 
   test("a channel message needs a mention of the user (raw or escaped)", () => {

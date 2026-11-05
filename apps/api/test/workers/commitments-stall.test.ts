@@ -579,6 +579,29 @@ describe("commitments.draft_followup", () => {
     expect(followups()).toHaveLength(1);
   });
 
+  for (const status of ["sending", "needs_attention"] as const) {
+    test(`a follow-up that is ${status} is live: the job skips without running`, async () => {
+      const { id, input } = await stalled();
+      db.insert(schema.followups)
+        .values({
+          id: `f-${status}`,
+          commitmentId: id,
+          origin: "stalled",
+          conversationId: "c-dm",
+          recipientSlackUserId: PRIYA,
+          draftText: "x",
+          status,
+          createdAt: NOW,
+          updatedAt: NOW,
+        })
+        .run();
+      expect(await call("commitments.draft_followup", input)).toEqual({
+        skipped: "followup_exists",
+      });
+      expect(requests).toHaveLength(0);
+    });
+  }
+
   test("a failed run stores nothing; invalid output is incomplete_ai_output with no text in the error", async () => {
     const { input } = await stalled();
     script = { raw: `\`\`\`json\n{"draft":"${SECRET}"}\n\`\`\`` };

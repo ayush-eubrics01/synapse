@@ -482,6 +482,21 @@ describe("commitments routes", () => {
     expect((await post("/api/commitments/nope/draft-followup")).status).toBe(404);
     expect(c.db.select().from(schema.jobs).all()).toHaveLength(1);
   });
+
+  test("draft-followup is 409 (and not offered) while a follow-up of the commitment is live", async () => {
+    for (const status of ["draft", "awaiting_approval", "sending", "needs_attention"] as const) {
+      const id = commitmentRow();
+      followupRow({ commitmentId: id, status });
+      expect((await post(`/api/commitments/${id}/draft-followup`)).status).toBe(409);
+      const v = (await commitmentViews("?filter=theirs")).find((x) => x.id === id);
+      expect(v?.actions).not.toContain("draft_followup");
+    }
+    const done = commitmentRow();
+    followupRow({ commitmentId: done, status: "sent" });
+    followupRow({ commitmentId: done, status: "discarded" });
+    expect((await post(`/api/commitments/${done}/draft-followup`)).status).toBe(202);
+    expect(c.db.select().from(schema.jobs).all()).toHaveLength(1);
+  });
 });
 
 describe("followup routes", () => {
@@ -563,9 +578,15 @@ describe("followup routes", () => {
     });
   });
 
-  test("send accepts an external conversation id as stored by urgent replies and a failed draft again", async () => {
-    const id = followupRow({ conversationId: "C0SYNTH01", status: "failed" });
+  test("send accepts an external conversation id as stored by urgent replies", async () => {
+    const id = followupRow({ conversationId: "C0SYNTH01" });
     expect((await post(`/api/followups/${id}/send`, { text: "again" })).status).toBe(200);
+  });
+
+  test("the unused follow-up status failed is neither listed as active nor sendable", async () => {
+    const id = followupRow({ status: "failed" });
+    expect((await followupViews()).map((x) => x.id)).not.toContain(id);
+    expect((await post(`/api/followups/${id}/send`, { text: "x" })).status).toBe(409);
   });
 
   test("R17: the list labels a DM by its participant, not the recipient", async () => {

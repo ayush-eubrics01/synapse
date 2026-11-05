@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { FollowupStatus } from "@synapse/contracts";
 import { type Db, schema, type Tx } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -10,6 +11,13 @@ const { commitments, commitmentSources, commitmentUpdates } = schema;
 const TERMINAL_STATUS: string[] = ["completed", "cancelled"];
 
 export const COMMITMENTS_CONCURRENCY_GROUP = "commitments.intelligence";
+/** A follow-up in these states is live: no new draft (stalled or manual) is made beside it. */
+export const LIVE_FOLLOWUP: FollowupStatus[] = [
+  "draft",
+  "awaiting_approval",
+  "sending",
+  "needs_attention",
+];
 /** Prefix of a status proposal's `reason`; Task 6 confirms or dismisses the proposal. */
 export const PROPOSED_REASON_PREFIX = "proposed:";
 

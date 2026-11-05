@@ -33,7 +33,8 @@ export interface CommitmentJobDeps {
 export const EXTRACT_TIMEOUT_MS = 420_000;
 export const DRAFT_TIMEOUT_MS = 420_000;
 export const DRAFT_MAX_CHARS = 4000;
-export const SPEC_TIMEOUT_MS = 300_000;
+/** Same as the other drafting runs: a queued Claude slot wait plus the run itself. */
+export const SPEC_TIMEOUT_MS = 420_000;
 export const SPEC_LEAD = "A few questions so I can pick this up:";
 export const CONTEXT_POOL = 200;
 export const DAY_MS = 86_400_000;

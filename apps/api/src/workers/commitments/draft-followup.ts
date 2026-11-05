@@ -8,6 +8,7 @@ import { buildFollowupRequest } from "../../intelligence/commitments/followup-pr
 import { conversationLabel, type HistoryItem } from "../../intelligence/people/history";
 import { REVIEW_STATUS_FIELD } from "../../modules/commitments/lifecycle";
 import { DRAFT_JOB } from "../../modules/commitments/stall";
+import { LIVE_FOLLOWUP } from "../../modules/commitments/store";
 import { followupThreadTs } from "../../modules/commitments/thread";
 import { renderExcerpt } from "../../modules/security-flags/detector";
 import { flaggedMessageOf, flagTargetOf, safely, wrapFailure } from "../intelligence-shared";
@@ -35,10 +36,7 @@ export function registerDraftFollowup(deps: CommitmentJobDeps, c: CommitmentCont
       .select({ id: followups.id })
       .from(followups)
       .where(
-        and(
-          eq(followups.commitmentId, commitmentId),
-          inArray(followups.status, ["draft", "awaiting_approval"]),
-        ),
+        and(eq(followups.commitmentId, commitmentId), inArray(followups.status, LIVE_FOLLOWUP)),
       )
       .limit(1)
       .get() !== undefined;

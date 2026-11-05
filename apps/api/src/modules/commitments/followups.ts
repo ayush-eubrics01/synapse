@@ -10,7 +10,7 @@ import { FollowupNotFound, InvalidOutgoingText, type OutgoingService } from "../
 import { resolveActions } from "../outgoing/urgent-reply";
 import { UnknownCommitment } from "./lifecycle";
 import { DRAFT_JOB, DRAFT_PRIORITY } from "./stall";
-import { COMMITMENTS_CONCURRENCY_GROUP } from "./store";
+import { COMMITMENTS_CONCURRENCY_GROUP, LIVE_FOLLOWUP } from "./store";
 
 const {
   commitments,
@@ -24,16 +24,13 @@ const {
 
 const MAX_TEXT = 4000;
 const LIVE_OUTGOING = ["pending", "sending", "sent_unverified", "needs_attention"] as const;
-/** A draft in these states can be edited and sent for approval. */
-const SENDABLE: FollowupStatus[] = ["draft", "failed"];
+/**
+ * A draft in these states can be edited and sent for approval. The enum's `failed` is never written
+ * (a failed send returns its follow-up to `draft`), so it is neither sendable nor active.
+ */
+const SENDABLE: FollowupStatus[] = ["draft"];
 /** Active drafts: everything the user can still act on. */
-const ACTIVE: FollowupStatus[] = [
-  "draft",
-  "awaiting_approval",
-  "sending",
-  "needs_attention",
-  "failed",
-];
+const ACTIVE: FollowupStatus[] = ["draft", "awaiting_approval", "sending", "needs_attention"];
 
 /** The follow-up is discarded, sent, or has a live send (409). */
 export class FollowupNotSendable extends Error {
@@ -262,8 +259,9 @@ export class FollowupService {
   }
 
   /**
-   * Queues a draft for an accepted, open `theirs` commitment. The job skips the stall check and
-   * its own live-follow-up check still applies. Returns `queued: false` when one is already queued.
+   * Queues a draft for an accepted, open `theirs` commitment with no live follow-up (409 otherwise).
+   * The job skips the stall check; its own live-follow-up check still applies when it runs. Returns
+   * `queued: false` when one is already queued.
    */
   requestManualDraft(commitmentId: string): { queued: boolean } {
     const { db, queue } = this.deps;
@@ -275,6 +273,15 @@ export class FollowupService {
         if (c.reviewStatus !== "accepted" || closed || c.direction !== "theirs") {
           throw new InvalidManualDraft("only an accepted, open commitment owed to you");
         }
+        const live = tx
+          .select({ id: followups.id })
+          .from(followups)
+          .where(
+            and(eq(followups.commitmentId, commitmentId), inArray(followups.status, LIVE_FOLLOWUP)),
+          )
+          .limit(1)
+          .get();
+        if (live) throw new InvalidManualDraft("a follow-up of this commitment is already live");
         const pending = tx
           .select({ id: jobs.id })
           .from(jobs)

@@ -10,7 +10,7 @@ import { asc, desc, eq, inArray } from "drizzle-orm";
 import type { SettingsService } from "../../core/config/settings";
 import type { EventPublisher } from "../../core/events/publisher";
 import { safePermalink } from "../inbox/permalink";
-import { PROPOSED_REASON_PREFIX } from "./store";
+import { LIVE_FOLLOWUP, PROPOSED_REASON_PREFIX } from "./store";
 
 const { commitments, commitmentSources, commitmentUpdates, followups, slackMessages, slackUsers } =
   schema;
@@ -481,7 +481,11 @@ export class CommitmentLifecycle {
           origin: f.origin,
           status: f.status,
         })),
-        actions: actionsFor(r, proposals.length > 0),
+        actions: actionsFor(
+          r,
+          proposals.length > 0,
+          (followupsBy.get(r.id) ?? []).some((f) => LIVE_FOLLOWUP.includes(f.status)),
+        ),
       };
     });
   }
@@ -508,7 +512,7 @@ function decidedIds(history: UpdateRow[]): Set<string> {
   return out;
 }
 
-function actionsFor(r: Row, hasProposals: boolean): CommitmentAction[] {
+function actionsFor(r: Row, hasProposals: boolean, liveFollowup: boolean): CommitmentAction[] {
   if (r.reviewStatus === "pending_review") return ["accept", "reject", "edit"];
   if (r.reviewStatus === "rejected" || isTerminal(r.status)) return [];
   const byStatus: Record<string, CommitmentAction[]> = {
@@ -519,6 +523,6 @@ function actionsFor(r: Row, hasProposals: boolean): CommitmentAction[] {
   const actions = [...(byStatus[r.status] ?? [])];
   if (hasProposals) actions.push("confirm_proposal");
   // A manual follow-up draft: only for something owed to the user (mirrors requestManualDraft).
-  if (r.direction === "theirs") actions.push("draft_followup");
+  if (r.direction === "theirs" && !liveFollowup) actions.push("draft_followup");
   return actions;
 }
