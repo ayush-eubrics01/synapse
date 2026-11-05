@@ -63,6 +63,14 @@ const settingSchemas = {
   "orchestrator.knownServers": z
     .array(z.string().regex(SERVER_NAME_RE))
     .default(() => [...DEFAULT_KNOWN_SERVERS]),
+  "people.update.intervalSeconds": z.number().int().positive().default(86400),
+  "people.temporaryContact.ttlDays": z.number().int().positive().default(30),
+  "people.recommendation.minConfidence": z.enum(["low", "medium", "high"]).default("medium"),
+  "people.models.initial": z.string().min(1).default("sonnet"),
+  "people.models.update": z.string().min(1).default("haiku"),
+  "people.history.days": z.number().int().positive().default(90),
+  "people.history.maxMessages": z.number().int().positive().default(150),
+  "people.unknown.minMessages": z.number().int().positive().default(3),
   "auth.lastExpiryWarningAt": z.string().nullable().default(null),
   "auth.pausedAt": z.string().nullable().default(null),
   "auth.pausedRefreshExpiresAt": z.string().nullable().default(null),

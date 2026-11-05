@@ -50,6 +50,14 @@ export const eventCatalog = {
   }),
   "security.flag_reviewed": z.object({ flagId: z.string(), status: z.string() }),
   "urgency.status_changed": z.object({ messageId: z.string(), status: urgencyStatusSchema }),
+  "person.discovered": z.object({ slackUserId: z.string() }),
+  "person.profile_recommendation_created": z.object({
+    recommendationId: z.string(),
+    personId: z.string(),
+    kind: z.enum(["initial", "update", "suggest_evaluation"]),
+  }),
+  "person.profile_approved": z.object({ personId: z.string(), version: z.number().int() }),
+  "person.recommendation_decided": z.object({ recommendationId: z.string(), status: z.string() }),
 };
 
 export type EventType = keyof typeof eventCatalog;

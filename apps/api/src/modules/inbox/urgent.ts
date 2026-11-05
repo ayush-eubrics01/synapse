@@ -3,6 +3,7 @@ import type {
   ScreeningRecord,
   UrgencyLevel,
   UrgencyStatus,
+  UrgentItem,
 } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
@@ -24,26 +25,6 @@ const TRANSITIONS: Record<UrgencyStatus, UrgencyStatus[]> = {
 };
 const OPEN: UrgencyStatus[] = ["new", "acknowledged", "in_progress"];
 const LEVEL_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
-
-export interface UrgentItem {
-  messageId: string;
-  level: UrgencyLevel;
-  reason: string;
-  status: UrgencyStatus;
-  allowedTransitions: UrgencyStatus[];
-  /** False for a message notified as "not yet assessed" (its level is the rule level). */
-  assessed: boolean;
-  /** True when the level came from the rules because the model gave none. */
-  fallback: boolean;
-  /** R17: a follow-up in a thread that was already notified (no popup, no draft of its own). */
-  coalesced: boolean;
-  sender: { id: string; name: string | null };
-  conversation: { id: string; name: string | null; type: ConversationType };
-  sentAt: string;
-  text: string | null;
-  permalink: string | null;
-  draft: { text: string | null; confidence: number } | null;
-}
 
 export class InvalidUrgencyTransition extends Error {
   constructor(

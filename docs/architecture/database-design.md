@@ -56,12 +56,12 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 
 | Table | Notes |
 |---|---|
-| `people` | Identity only: `slack_user_id` unique not null, name, email, `created_at` (title and team arrive with the people module) |
-| `temporary_contacts` | Short-lived context for unknown people; `slack_user_id` unique, `expires_at`, `profile_assessment` JSON |
-| `people_profiles` | Current approved profile per person (`person_id` unique), structured sections JSON |
-| `people_profile_versions` | Immutable history: `profile_id`, `version`, `content` JSON, `approval_id` |
-| `people_profile_recommendations` | Proposed changes, `status`, `claude_run_id` |
-| `people_profile_evidence` | `recommendation_id` or `version_id`, `message_id` (nullable after retention), `source_external_ref` (always kept), `confidence`, `observed_at` |
+| `people` | Identity only: `slack_user_id` unique not null, name, email, `title`, `team` (nullable, migration 0008), `created_at` |
+| `temporary_contacts` | Short-lived context for unknown people; `slack_user_id` unique, `first_seen_at`, `last_seen_at`, `message_count` (default 0), `expires_at`, `profile_assessment` JSON, `assessed_at` |
+| `people_profiles` | Current approved profile per person (`person_id` unique), `current_version`, structured sections JSON, `updated_at` |
+| `people_profile_versions` | Immutable history: `profile_id`, `version` (unique with `profile_id`), `content` JSON, `recommendation_id`, `approval_id` nullable, `created_at` |
+| `people_profile_recommendations` | Proposed changes: `kind` (initial/update/suggest_evaluation), `base_version`, `content` JSON, `observation_hash`, `status` (pending/approved/rejected/expired/superseded/applied), `approval_id`, `claude_run_id`, `reason`, `decided_at`; index (`person_id`,`status`) |
+| `people_profile_evidence` | `recommendation_id` or `version_id`, `observation_key`, `message_id` (nullable, ON DELETE SET NULL after retention), `source_external_ref` (always kept), `confidence`, `observed_at`; indexes on `version_id` and `recommendation_id` |
 | `people_priority_settings` | `person_id` FK unique, `priority` (normal/high/critical, manual only), `rationale` (nullable), `extra_attention` (default false), `updated_at` |
 
 ## Commitments tables (owned by `commitments`)

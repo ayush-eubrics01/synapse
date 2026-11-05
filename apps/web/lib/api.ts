@@ -1,4 +1,13 @@
-import type { Approval, HealthReport, Job } from "@synapse/contracts";
+import type {
+  Approval,
+  FlagStatus,
+  GroupedFlags,
+  HealthReport,
+  Job,
+  PersonFlag,
+  UrgencyStatus,
+  UrgentItem,
+} from "@synapse/contracts";
 
 async function request<T>(
   url: string,
@@ -148,26 +157,9 @@ export function skipUnreadablePage(
   return request("/api/slack/incremental/skip", { method: "POST" }, fetchImpl);
 }
 
-export type UrgencyStatusDto = "new" | "acknowledged" | "in_progress" | "resolved" | "dismissed";
+export type UrgencyStatusDto = UrgencyStatus;
 
-export interface UrgentItemDto {
-  messageId: string;
-  level: "critical" | "high" | "medium" | "low";
-  reason: string;
-  status: UrgencyStatusDto;
-  /** Computed by the server; the UI shows exactly these buttons. */
-  allowedTransitions: UrgencyStatusDto[];
-  assessed: boolean;
-  fallback: boolean;
-  /** A follow-up in a thread that was already notified: no popup and no draft of its own. */
-  coalesced: boolean;
-  sender: { id: string; name: string | null };
-  conversation: { id: string; name: string | null; type: string };
-  sentAt: string;
-  text: string | null;
-  permalink: string | null;
-  draft: { text: string | null; confidence: number } | null;
-}
+export type UrgentItemDto = UrgentItem;
 
 export function getUrgent(
   status: "open" | "all" = "open",
@@ -192,31 +184,11 @@ export function setUrgentStatus(
   );
 }
 
-export interface GroupedFlagsDto {
-  slackUserId: string;
-  name: string;
-  openCount: number;
-  maxSeverity: "info" | "warning" | "high";
-  latestOpenId: string | null;
-  latest: {
-    id: string;
-    excerpt: string;
-    detector: string;
-    createdAt: string;
-    permalink: string | null;
-  };
-}
+export type GroupedFlagsDto = GroupedFlags;
 
-export interface SecurityFlagDto {
-  id: string;
-  severity: "info" | "warning" | "high";
-  status: "open" | "acknowledged" | "contacted" | "dismissed";
-  detector: string;
-  excerpt: string;
-  createdAt: string;
-}
+export type SecurityFlagDto = PersonFlag;
 
-export type FlagReviewStatus = "acknowledged" | "contacted" | "dismissed";
+export type FlagReviewStatus = Exclude<FlagStatus, "open">;
 
 export function getSecurityFlags(
   includeReviewed = false,

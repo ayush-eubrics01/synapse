@@ -57,6 +57,13 @@
       "when": 1793899987263,
       "tag": "0007_urgency_people_flags",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1793906807615,
+      "tag": "0008_people_memory",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,9 @@
-import { type FlagSeverity, flagSeveritySchema, type SuspectedInjection } from "@synapse/contracts";
+import {
+  type FlagSeverity,
+  flagSeveritySchema,
+  type GroupedFlags,
+  type SuspectedInjection,
+} from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
@@ -23,22 +28,6 @@ export interface SecurityFlagsDeps {
   settings: SettingsService;
   notifications: NotificationService;
   people: PeopleService;
-}
-
-export interface GroupedFlags {
-  slackUserId: string;
-  name: string;
-  openCount: number;
-  maxSeverity: FlagSeverity;
-  latest: {
-    id: string;
-    excerpt: string;
-    detector: string;
-    createdAt: string;
-    permalink: string | null;
-  };
-  /** The person's newest still-open flag: what the grouped-row review buttons act on. */
-  latestOpenId: string | null;
 }
 
 export class UnknownFlagError extends Error {
