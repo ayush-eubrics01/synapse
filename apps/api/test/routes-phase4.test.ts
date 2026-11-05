@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { createApp } from "../src/app";
 import { type Container, createContainer } from "../src/container";
 import { loadConfig } from "../src/core/config/config";
+import { recoverOnStartup } from "../src/core/recovery/recovery";
 
 const fakeProvider: AIProvider = {
   execute: async () => {
@@ -405,4 +406,25 @@ test("R18 (5): a reply in a known thread is screened exactly once", () => {
     .all()
     .filter((e) => (e.payload as { messageId: string }).messageId === reply);
   expect(screened).toHaveLength(1);
+});
+
+test("R18 (1): the container registers the urgency recovery sweep with startup recovery", () => {
+  expect(c.recoverySweeps.map((s) => s.name)).toEqual(["urgency.assess"]);
+  const id = seed(String(Math.floor(Date.now() / 1000)), "x");
+  mark(id, {
+    screening: { route: "assess", assessed: false, ruleLevel: "high", matchedRules: [] },
+  });
+  recoverOnStartup({
+    db: c.db,
+    clock: c.clock,
+    leases: c.leases,
+    audit: c.audit,
+    sweeps: c.recoverySweeps,
+  });
+  const jobs = c.db
+    .select()
+    .from(schema.jobs)
+    .all()
+    .filter((j) => j.idempotencyKey.startsWith("urgency.batch:recover:"));
+  expect(jobs).toHaveLength(1);
 });
