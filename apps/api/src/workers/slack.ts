@@ -346,7 +346,7 @@ export function registerSlackJobs(deps: SlackJobDeps): {
           return { started: false, state: cur, reason: "backfill already running" };
         }
         if (cur.status === "paused") {
-          // Paused (auth or quota) resumes by itself; resetting here would restart the window.
+          // Nothing sets "paused" for backfill today; refuse rather than reset so a future pause never wipes the checkpoint.
           return { started: false, state: cur, reason: "backfill is paused" };
         }
         const now = nowMs();
