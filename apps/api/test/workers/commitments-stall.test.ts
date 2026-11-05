@@ -249,13 +249,68 @@ describe("commitments.check_stalled", () => {
     expect(get(id).stalledAt).toBeNull();
   });
 
-  test("an owner message after the source (even with null text) means not stalled", async () => {
+  test("an owner message within waitHours (even with null text) means not stalled", async () => {
     const src = msg({ from: "self", sentAt: ago(30) });
-    msg({ from: "priya", sentAt: ago(28), text: null });
+    msg({ from: "priya", sentAt: ago(20), text: null });
     const id = commitment({ sourceId: src });
     await call("commitments.check_stalled");
     expect(get(id).stalledAt).toBeNull();
     expect(evs("commitment.stalled")).toHaveLength(0);
+  });
+
+  test("R16: acked then overdue stalls (accepted 14 d ago, owner reply 13 d ago, due 10 d ago)", async () => {
+    const src = msg({ from: "self", sentAt: ago(14 * 24) });
+    msg({ from: "priya", sentAt: ago(13 * 24) });
+    const id = commitment({ sourceId: src, dueAt: ago(10 * 24), createdAt: ago(14 * 24) });
+    const r = await call("commitments.check_stalled");
+    expect(r).toMatchObject({ stalled: 1 });
+    expect(get(id).stalledAt).toBe(NOW);
+  });
+
+  test("R16: one old owner reply does not stop stall detection without a due date", async () => {
+    const src = msg({ from: "self", sentAt: ago(14 * 24) });
+    msg({ from: "priya", sentAt: ago(13 * 24) });
+    const id = commitment({ sourceId: src });
+    await call("commitments.check_stalled");
+    expect(get(id).stalledAt).toBe(NOW);
+  });
+
+  test("R16: past due waits waitHours after the owner's latest reply", async () => {
+    const src = msg({ from: "self", sentAt: ago(30) });
+    msg({ from: "priya", sentAt: ago(2) });
+    const id = commitment({ sourceId: src, dueAt: ago(1) });
+    await call("commitments.check_stalled");
+    expect(get(id).stalledAt).toBeNull();
+    clock.set(new Date(Date.parse(NOW) + 23 * H));
+    await call("commitments.check_stalled");
+    expect(get(id).stalledAt).not.toBeNull();
+  });
+
+  test("R16: the owner-authored source message is not a reply that delays a past-due stall", async () => {
+    const src = msg({ from: "priya", sentAt: ago(2) });
+    const id = commitment({ sourceId: src, dueAt: ago(1) });
+    await call("commitments.check_stalled");
+    expect(get(id).stalledAt).toBe(NOW);
+  });
+
+  test("R16: a thread-reply source scopes owner activity to that thread", async () => {
+    const T = "777.000000";
+    const inThread = msg({ from: "self", sentAt: ago(30), thread: T });
+    const elsewhere = msg({ from: "self", sentAt: ago(30), thread: "888.000000" });
+    msg({ from: "priya", sentAt: ago(2), thread: T });
+    const a = commitment({ sourceId: inThread });
+    const b = commitment({ sourceId: elsewhere });
+    await call("commitments.check_stalled");
+    expect(get(a).stalledAt).toBeNull();
+    expect(get(b).stalledAt).toBe(NOW);
+  });
+
+  test("R16: a top-level source counts owner messages anywhere in its conversation", async () => {
+    const src = msg({ from: "self", sentAt: ago(30) });
+    msg({ from: "priya", sentAt: ago(2), thread: "555.000000" });
+    const id = commitment({ sourceId: src });
+    await call("commitments.check_stalled");
+    expect(get(id).stalledAt).toBeNull();
   });
 
   test("an owner message in another conversation does not count", async () => {

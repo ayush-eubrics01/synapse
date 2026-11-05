@@ -1,6 +1,6 @@
 import { type Db, schema, type Tx } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, notInArray } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, isNull, notInArray, or, type SQL } from "drizzle-orm";
 import type { SettingsService } from "../../core/config/settings";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
@@ -18,6 +18,13 @@ export const OVERDUE_NOTIFIED_FIELD = "overdue_notified";
 export const REMINDER_KIND = "commitment.reminder";
 
 const HOUR_MS = 3_600_000;
+
+/** The latest of the given ISO timestamps, ignoring nulls; null when all are null. */
+function latest(...times: (string | null)[]): string | null {
+  let out: string | null = null;
+  for (const t of times) if (t !== null && (out === null || t > out)) out = t;
+  return out;
+}
 const CLOSED = ["completed", "cancelled"] as const;
 
 export interface StallServiceDeps {
@@ -38,43 +45,64 @@ export type ReminderState = "due_soon" | "overdue";
 export class StallService {
   constructor(private readonly deps: StallServiceDeps) {}
 
-  /** Newest source message time, or the commitment's creation when no source message survives. */
-  private newestSourceAt(tx: Tx, id: string, createdAt: string): string {
-    const row = tx
+  /** Newest and oldest source message times (newest falls back to the commitment's creation). */
+  private sourceTimes(
+    tx: Tx,
+    id: string,
+    createdAt: string,
+  ): { newest: string; oldest: string | null } {
+    const rows = tx
       .select({ sentAt: slackMessages.sentAt })
       .from(commitmentSources)
       .innerJoin(slackMessages, eq(slackMessages.id, commitmentSources.messageId))
       .where(eq(commitmentSources.commitmentId, id))
       .orderBy(desc(slackMessages.sentAt))
-      .limit(1)
-      .get();
-    return row?.sentAt ?? createdAt;
+      .all();
+    return { newest: rows[0]?.sentAt ?? createdAt, oldest: rows.at(-1)?.sentAt ?? null };
   }
 
-  /** Only existence matters: messages with null text, or expired text, count. */
-  private ownerRepliedAfter(tx: Tx, id: string, owner: string, after: string): boolean {
-    const convs = tx
-      .select({ c: commitmentSources.conversationId })
+  /**
+   * R16: the owner's latest message in the source scope sent after `after` (when given). The scope is
+   * the source thread for a source that is a thread reply (root included), else the source
+   * conversation. Only existence and time matter: messages with null or expired text count.
+   */
+  private ownerLatestAt(tx: Tx, id: string, owner: string, after: string | null): string | null {
+    const sources = tx
+      .select({ conv: commitmentSources.conversationId, threadTs: slackMessages.threadTs })
       .from(commitmentSources)
+      .leftJoin(slackMessages, eq(slackMessages.id, commitmentSources.messageId))
       .where(eq(commitmentSources.commitmentId, id))
-      .all()
-      .map((r) => r.c);
-    if (convs.length === 0) return false;
-    return (
-      tx
-        .select({ id: slackMessages.id })
-        .from(slackMessages)
-        .innerJoin(slackUsers, eq(slackUsers.id, slackMessages.senderUserId))
-        .where(
-          and(
-            eq(slackUsers.externalId, owner),
-            inArray(slackMessages.conversationId, convs),
-            gt(slackMessages.sentAt, after),
-          ),
-        )
-        .limit(1)
-        .get() !== undefined
-    );
+      .all();
+    const scopes: SQL[] = [];
+    for (const s of sources) {
+      if (s.conv === null) continue;
+      if (s.threadTs) {
+        const inConv = eq(slackMessages.conversationId, s.conv);
+        const inThread = or(
+          eq(slackMessages.threadTs, s.threadTs),
+          eq(slackMessages.ts, s.threadTs),
+        );
+        scopes.push(and(inConv, inThread) as SQL);
+      } else {
+        scopes.push(eq(slackMessages.conversationId, s.conv));
+      }
+    }
+    if (scopes.length === 0) return null;
+    const row = tx
+      .select({ sentAt: slackMessages.sentAt })
+      .from(slackMessages)
+      .innerJoin(slackUsers, eq(slackUsers.id, slackMessages.senderUserId))
+      .where(
+        and(
+          eq(slackUsers.externalId, owner),
+          or(...scopes),
+          after === null ? undefined : gt(slackMessages.sentAt, after),
+        ),
+      )
+      .orderBy(desc(slackMessages.sentAt))
+      .limit(1)
+      .get();
+    return row?.sentAt ?? null;
   }
 
   /**
@@ -110,27 +138,30 @@ export class StallService {
             return;
           }
           if (c.status === "blocked") return;
+          const { newest, oldest } = this.sourceTimes(tx, c.id, c.createdAt);
+          // The owner's latest reply: messages after the oldest source, so an owner-authored source
+          // message ("I'll do X") is not itself a reply.
+          const ownerAt = this.ownerLatestAt(tx, c.id, c.ownerSlackUserId, oldest);
           if (c.stalledAt !== null) {
             const followedUp = c.lastFollowupAt !== null && c.lastFollowupAt > c.stalledAt;
-            if (!followedUp && !this.ownerRepliedAfter(tx, c.id, c.ownerSlackUserId, c.stalledAt)) {
-              return; // still the same stall
-            }
+            const ownerReplied = ownerAt !== null && ownerAt > c.stalledAt;
+            if (!followedUp && !ownerReplied) return; // still the same stall
             tx.update(commitments)
               .set({ stalledAt: null, updatedAt: now })
               .where(eq(commitments.id, c.id))
               .run();
             out.cleared++;
           }
-          const newest = this.newestSourceAt(tx, c.id, c.createdAt);
-          const since =
-            c.lastFollowupAt !== null && c.lastFollowupAt > newest ? c.lastFollowupAt : newest;
-          if (this.ownerRepliedAfter(tx, c.id, c.ownerSlackUserId, since)) return;
-          const quiet = nowMs - Date.parse(since) >= waitMs;
-          // Past due stalls early, but never again right after a follow-up (same wait applies).
+          // R16: stalled when nothing happened for waitHours since the latest of the newest source,
+          // the last follow-up and the owner's latest reply. One old reply never stops detection.
+          const reference = latest(newest, c.lastFollowupAt, ownerAt) as string;
+          const quiet = nowMs - Date.parse(reference) >= waitMs;
+          // Past due stalls early, once waitHours have passed since the last contact (the owner's
+          // latest reply or our last follow-up), or at once when there was none.
           const pastDue = c.dueAt !== null && c.dueAt < now;
-          const coolingDown =
-            c.lastFollowupAt !== null && nowMs - Date.parse(c.lastFollowupAt) < waitMs;
-          if (!quiet && !(pastDue && !coolingDown)) return;
+          const lastContact = latest(ownerAt, c.lastFollowupAt);
+          const contactAged = lastContact === null || nowMs - Date.parse(lastContact) >= waitMs;
+          if (!quiet && !(pastDue && contactAged)) return;
           tx.update(commitments)
             .set({ stalledAt: now, nextAction: c.nextAction ?? "Follow up", updatedAt: now })
             .where(eq(commitments.id, c.id))
