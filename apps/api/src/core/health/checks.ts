@@ -188,3 +188,13 @@ export function securityRulesCheck(rules: { rulesFallbackActive(): boolean }): H
       : { status: "ok" },
   );
 }
+
+/** Degraded while any user-edited screening keyword regex is invalid and skipped. */
+export function screeningRulesCheck(rules: { invalidKeywordIds(): string[] }): HealthCheck {
+  return guarded(async () => {
+    const n = rules.invalidKeywordIds().length;
+    return n > 0
+      ? { status: "degraded", detail: `${n} screening keyword rule(s) invalid and skipped` }
+      : { status: "ok" };
+  });
+}

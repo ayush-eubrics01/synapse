@@ -21,6 +21,7 @@ import {
   heartbeatCheck,
   jobsCheck,
   lingerCheck,
+  screeningRulesCheck,
   securityRulesCheck,
 } from "./core/health/checks";
 import { HealthService } from "./core/health/health";
@@ -37,6 +38,7 @@ import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
+import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
 import { PeopleService } from "./modules/people/service";
@@ -178,6 +180,18 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     people,
   });
   securityFlags.init();
+  const screening = new ScreeningService({
+    db,
+    clock,
+    events,
+    queue,
+    settings,
+    people,
+    securityFlags,
+  });
+  for (const type of ["message.received", "message.thread_updated"] as const) {
+    dispatcher.subscribe(type, "inbox.screening", (event, tx) => screening.handle(event, tx));
+  }
   const slack = registerSlackJobs({
     db,
     clock,
@@ -202,6 +216,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     auth: authCheck(auth, clock),
     claude: claudeCheck(provider, clock),
     "security-rules": securityRulesCheck(securityFlags),
+    "screening-rules": screeningRulesCheck(screening),
   });
 
   return {

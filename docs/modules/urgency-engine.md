@@ -52,6 +52,10 @@ message.received
        └─ not candidate → batch analysis (commitments, people, brain)
 ```
 
+## Screening consumer
+
+`ScreeningService` (`modules/inbox/screening-service.ts`) is outbox consumer `inbox.screening` on `message.received` and `message.thread_updated`. Scoring is the pure `screenMessage` (`intelligence/screening/screen.ts`): keyword weights plus context (DM +1, group DM +0.5, mention +1, thread with the user +1, priority high/critical +1, extra attention +1). A candidate needs at least one signal keyword and a score at or above `urgency.candidateThreshold`, lowered by 1 (minimum 1) for priority or extra attention. Priority alone never makes a candidate. Own and expired messages are skipped; candidates older than `urgency.maxAgeHours` are `skip/too_old` (flagged, never assessed). Recent candidates enqueue one `urgency.assess` job per batch-window bucket (`urgency.batch:<bucket>`, priority 200). The `screening` JSON holds rule ids, scores and flags only; re-screening preserves `assessed`, `fallback` and `notified`. The handler never throws: a failure sets `screening.error = true` and logs the message id only. Invalid user-edited keyword regexes are skipped and the `screening-rules` health check reports `degraded`. `message.screened.candidate` is true only for messages routed to assessment.
+
 ## Urgency levels
 
 | Level | Meaning | Behaviour |
