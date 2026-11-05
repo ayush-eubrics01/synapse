@@ -131,3 +131,19 @@ test("publish rejects invalid payload", () => {
   expect(() => pub.publish(db, ev("approval.requested", {}))).toThrow();
   expect(db.select().from(schema.domainEvents).all()).toHaveLength(0);
 });
+
+test("an event whose consumer is in backoff does not occupy the batch", () => {
+  const { db, pub, d } = setup();
+  const got: string[] = [];
+  d.subscribe("settings.changed", "bad", () => {
+    throw new Error("boom");
+  });
+  d.subscribe("system.heartbeat", "good", (e) => {
+    got.push(e.id);
+  });
+  pub.publish(db, ev("settings.changed", { key: "x" }));
+  const b = pub.publish(db, ev("system.heartbeat", { at: "t" }));
+  d.dispatchOnce(1); // A fails, enters backoff
+  d.dispatchOnce(1); // must skip A and deliver B
+  expect(got).toEqual([b]);
+});

@@ -36,7 +36,13 @@ export class OutboxDispatcher {
     const rows = this.db
       .select()
       .from(schema.domainEvents)
-      .where(isNull(schema.domainEvents.dispatchedAt))
+      .where(
+        and(
+          isNull(schema.domainEvents.dispatchedAt),
+          // skip events with a consumer still in backoff so they cannot fill the batch
+          sql`NOT EXISTS (SELECT 1 FROM ${schema.eventConsumptions} WHERE ${schema.eventConsumptions.eventId} = ${schema.domainEvents.id} AND ${schema.eventConsumptions.status} = 'pending' AND ${schema.eventConsumptions.nextAttemptAt} > ${isoNow(this.clock)})`,
+        ),
+      )
       .orderBy(asc(schema.domainEvents.occurredAt), sql`rowid`)
       .limit(limit)
       .all();
