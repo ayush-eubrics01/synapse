@@ -57,7 +57,7 @@ function parseBlock(lines: string[]): SourceMessage | null {
 
   // Trailer: the block's final "\n\n---\n" plus trailing blank lines.
   let body = lines.slice(textIdx + 1).join("\n");
-  body = body.replace(/\n\n---\n*$/, "").replace(/\n+$/, "");
+  body = body.replace(/\n\n---\n*$/, "");
   const bodyLines = body.split("\n");
   let fullNotes: string | undefined;
   const last = bodyLines[bodyLines.length - 1];
@@ -65,7 +65,7 @@ function parseBlock(lines: string[]): SourceMessage | null {
     fullNotes = last.slice("Full notes: ".length);
     bodyLines.pop();
   }
-  const text = bodyLines.join("\n").replace(/^\n/, "").replace(/\n+$/, "");
+  const text = bodyLines.join("\n");
 
   const ts = fields.get("Message_ts");
   const conversationId = channel[2] ?? "";
@@ -109,16 +109,29 @@ export function parseSearchResult(content: string): MessagePage {
   if (pagination !== undefined && typeof pagination !== "string") {
     throw new SlackParseError("pagination_info has an unexpected type");
   }
-  if (!/^# Search Results for:/m.test(results)) {
+  const lines = results.split("\n");
+  if (!(lines[0] ?? "").startsWith("# Search Results for:")) {
     throw new SlackParseError("search body lacks its header");
   }
+  const countIdx = lines.findIndex((l) => /^## Messages \(\d+ results?\)$/.test(l));
+  const firstBlockIdx = lines.findIndex((l) => BLOCK_START.test(l));
+  if (countIdx < 0 || (firstBlockIdx >= 0 && firstBlockIdx < countIdx)) {
+    throw new SlackParseError("search body lacks its message count");
+  }
+  const expected = Number(/\((\d+) results?\)/.exec(lines[countIdx] ?? "")?.[1]);
 
-  const lines = results.split("\n");
+  // Fail closed: the block headers must be exactly 1..N of N, wherever they appear.
   const blocks: string[][] = [];
   for (const line of lines) {
-    if (BLOCK_START.test(line)) blocks.push([]);
-    else blocks[blocks.length - 1]?.push(line);
+    const m = /^### Result (\d+) of (\d+)$/.exec(line);
+    if (m) {
+      if (Number(m[1]) !== blocks.length + 1 || Number(m[2]) !== expected) {
+        throw new SlackParseError("result headers are out of sequence");
+      }
+      blocks.push([]);
+    } else blocks[blocks.length - 1]?.push(line);
   }
+  if (blocks.length !== expected) throw new SlackParseError("result count mismatch");
 
   const messages: SourceMessage[] = [];
   let rejected = 0;
