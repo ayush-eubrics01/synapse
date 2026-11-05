@@ -1,7 +1,7 @@
 "use client";
 
 import type { Approval, HealthReport, Job } from "@synapse/contracts";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type ClaudeRun,
   type ClaudeStatus,
@@ -16,6 +16,7 @@ import {
   getInboxMessages,
   getJobs,
   getPeople,
+  getPersonFlags,
   getSecurityFlags,
   getSlackIdentity,
   getSlackStatus,
@@ -24,6 +25,7 @@ import {
   type PersonDto,
   type PersonPriorityDto,
   reviewFlag,
+  type SecurityFlagDto,
   type SlackIdentityDto,
   type SlackStatusDto,
   setPersonPriority,
@@ -58,6 +60,9 @@ export default function Dashboard() {
   const [flags, setFlags] = useState<GroupedFlagsDto[]>([]);
   const [people, setPeople] = useState<PersonDto[]>([]);
   const [identity, setIdentity] = useState<SlackIdentityDto | null>(null);
+  const [expanded, setExpanded] = useState<string[]>([]);
+  const [history, setHistory] = useState<Record<string, SecurityFlagDto[]>>({});
+  const expandedRef = useRef<string[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -87,6 +92,16 @@ export default function Dashboard() {
     if (sf.status === "fulfilled") setFlags(sf.value);
     if (pp.status === "fulfilled") setPeople(pp.value);
     if (id.status === "fulfilled") setIdentity(id.value);
+    // Expanded histories are refetched on every refresh so review changes show at once.
+    const open = expandedRef.current;
+    const hist = await Promise.allSettled(open.map((u) => getPersonFlags(u)));
+    setHistory((prev) => {
+      const next = { ...prev };
+      hist.forEach((r, i) => {
+        if (r.status === "fulfilled") next[open[i] as string] = r.value;
+      });
+      return next;
+    });
     const failed = [h, a, j, cs, cr, ss, im, ug, sf, pp, id].find((r) => r.status === "rejected");
     const message = failed?.status === "rejected" ? String(failed.reason) : null;
     setLoadError(message);
@@ -121,6 +136,15 @@ export default function Dashboard() {
       setActionError(String(e));
     }
     await refresh();
+  };
+
+  const toggleHistory = (u: string) => {
+    const next = expandedRef.current.includes(u)
+      ? expandedRef.current.filter((x) => x !== u)
+      : [...expandedRef.current, u];
+    expandedRef.current = next;
+    setExpanded(next);
+    void refresh();
   };
 
   const act = async (fn: () => Promise<unknown>) => {
@@ -159,6 +183,9 @@ export default function Dashboard() {
       <h2>Red flags</h2>
       <RedFlags
         groups={flags}
+        expanded={expanded}
+        history={history}
+        onToggle={toggleHistory}
         onReview={(id: string, s: FlagReviewStatus) => void act(() => reviewFlag(id, s))}
       />
       <h2>Priority people</h2>

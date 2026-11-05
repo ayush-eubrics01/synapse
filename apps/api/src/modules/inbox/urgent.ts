@@ -10,6 +10,8 @@ import { and, eq, sql } from "drizzle-orm";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { EventPublisher } from "../../core/events/publisher";
 
+import { safePermalink } from "./permalink";
+
 const { slackMessages, slackConversations, slackUsers, messageDrafts } = schema;
 
 /** The only transitions the user may make. Resolved and dismissed are terminal. */
@@ -119,14 +121,16 @@ export class UrgentInbox {
         },
         sentAt: r.sentAt,
         text: r.text,
-        permalink: r.permalink,
+        permalink: safePermalink(r.permalink),
         draft:
           r.draftId === null ? null : { text: r.draftText, confidence: r.draftConfidence ?? 0 },
       });
     }
     return items.sort(
       (a, b) =>
-        (LEVEL_RANK[a.level] ?? 9) - (LEVEL_RANK[b.level] ?? 9) || b.sentAt.localeCompare(a.sentAt),
+        (LEVEL_RANK[a.level] ?? 9) - (LEVEL_RANK[b.level] ?? 9) ||
+        b.sentAt.localeCompare(a.sentAt) ||
+        a.messageId.localeCompare(b.messageId),
     );
   }
 

@@ -2,6 +2,7 @@ import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { Container } from "../container";
+import { UnknownSlackUserError } from "../modules/people/service";
 
 const param = z.object({ slackUserId: z.string().regex(/^[UW][A-Z0-9]+$/) });
 // PeopleService.setPriority replaces: omitted rationale/extraAttention reset.
@@ -23,7 +24,7 @@ export function peopleRoutes(c: Container): Hono {
       try {
         c.people.setPriority(slackUserId, ctx.req.valid("json"));
       } catch (e) {
-        if (e instanceof Error && e.message === "unknown slack user") {
+        if (e instanceof UnknownSlackUserError) {
           return ctx.json({ error: "unknown slack user" }, 404);
         }
         throw e;

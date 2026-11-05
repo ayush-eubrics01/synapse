@@ -189,7 +189,14 @@ export interface GroupedFlagsDto {
   name: string;
   openCount: number;
   maxSeverity: "info" | "warning" | "high";
-  latest: { excerpt: string; detector: string; createdAt: string; permalink: string | null };
+  latestOpenId: string | null;
+  latest: {
+    id: string;
+    excerpt: string;
+    detector: string;
+    createdAt: string;
+    permalink: string | null;
+  };
 }
 
 export interface SecurityFlagDto {

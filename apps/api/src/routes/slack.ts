@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Container } from "../container";
 import type { SyncState } from "../modules/inbox/sync-state";
+import { UnknownSlackUserError } from "../modules/people/service";
 
 export function slackRoutes(c: Container): Hono {
   const app = new Hono();
@@ -36,7 +37,7 @@ export function slackRoutes(c: Container): Hono {
       try {
         c.people.confirmSelfUserId(selfUserId);
       } catch (e) {
-        if (e instanceof Error && e.message === "unknown slack user") {
+        if (e instanceof UnknownSlackUserError) {
           return ctx.json({ error: "unknown slack user" }, 400);
         }
         throw e;

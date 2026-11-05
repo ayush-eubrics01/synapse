@@ -30,6 +30,12 @@ export interface PeopleServiceDeps {
 
 const prioritySchema = z.enum(["normal", "high", "critical"]);
 const slackUserIdSchema = z.string().regex(/^[UW][A-Z0-9]+$/);
+export class UnknownSlackUserError extends Error {
+  constructor() {
+    super("unknown slack user");
+  }
+}
+
 /** The suggestion needs the sender in at least this many distinct DMs. */
 const MIN_SELF_DM_CONVERSATIONS = 2;
 
@@ -94,7 +100,7 @@ export class PeopleService {
           .from(slackUsers)
           .where(eq(slackUsers.externalId, slackUserId))
           .get();
-        if (!known) throw new Error("unknown slack user");
+        if (!known) throw new UnknownSlackUserError();
         const personId = this.ensurePerson(tx, slackUserId);
         const extraAttention = input.extraAttention ?? false;
         const rationale = input.rationale ?? null;
@@ -177,7 +183,7 @@ export class PeopleService {
       .from(slackUsers)
       .where(eq(slackUsers.externalId, parsed))
       .get();
-    if (!known) throw new Error("unknown slack user");
+    if (!known) throw new UnknownSlackUserError();
     this.deps.settings.set("slack.selfUserId", parsed);
   }
 }

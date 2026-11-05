@@ -7,6 +7,7 @@ import type { AuditLogger } from "../../core/audit/audit";
 import type { SettingsService } from "../../core/config/settings";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { NotificationService } from "../../core/notifications/notifications";
+import { safePermalink } from "../inbox/permalink";
 import type { PeopleService } from "../people/service";
 import { renderExcerpt, scanText } from "./detector";
 import { type FlagRule, STARTER_RULES } from "./rules";
@@ -29,7 +30,21 @@ export interface GroupedFlags {
   name: string;
   openCount: number;
   maxSeverity: FlagSeverity;
-  latest: { excerpt: string; detector: string; createdAt: string; permalink: string | null };
+  latest: {
+    id: string;
+    excerpt: string;
+    detector: string;
+    createdAt: string;
+    permalink: string | null;
+  };
+  /** The person's newest still-open flag: what the grouped-row review buttons act on. */
+  latestOpenId: string | null;
+}
+
+export class UnknownFlagError extends Error {
+  constructor() {
+    super("unknown flag");
+  }
 }
 
 const RANK: Record<FlagSeverity, number> = { info: 0, warning: 1, high: 2 };
@@ -230,7 +245,7 @@ export class SecurityFlagsService {
           .where(eq(securityFlags.id, flagId))
           .returning({ id: securityFlags.id })
           .get();
-        if (!row) throw new Error("unknown flag");
+        if (!row) throw new UnknownFlagError();
         this.deps.audit.record(tx, {
           actor: "user",
           module: "security-flags",
@@ -265,6 +280,7 @@ export class SecurityFlagsService {
         excerpt: securityFlags.excerpt,
         detector: securityFlags.detector,
         createdAt: securityFlags.createdAt,
+        id: securityFlags.id,
         permalink: slackMessages.permalink,
         name: slackUsers.name,
       })
@@ -284,16 +300,21 @@ export class SecurityFlagsService {
           name: r.name ?? r.slackUserId,
           openCount: 0,
           maxSeverity: r.severity,
+          latestOpenId: null,
           latest: {
+            id: r.id,
             excerpt: r.excerpt,
             detector: r.detector,
             createdAt: r.createdAt,
-            permalink: r.permalink,
+            permalink: safePermalink(r.permalink),
           },
         };
         groups.set(r.slackUserId, g);
       }
-      if (r.status === "open") g.openCount += 1;
+      if (r.status === "open") {
+        g.openCount += 1;
+        g.latestOpenId ??= r.id;
+      }
       if (RANK[r.severity] > RANK[g.maxSeverity]) g.maxSeverity = r.severity;
     }
     return [...groups.values()].sort(

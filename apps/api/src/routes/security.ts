@@ -2,6 +2,7 @@ import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { Container } from "../container";
+import { UnknownFlagError } from "../modules/security-flags/service";
 
 const flagsQuery = z.object({
   includeReviewed: z
@@ -37,7 +38,7 @@ export function securityRoutes(c: Container): Hono {
       try {
         c.securityFlags.review(id, status);
       } catch (e) {
-        if (e instanceof Error && e.message === "unknown flag") {
+        if (e instanceof UnknownFlagError) {
           return ctx.json({ error: "flag not found" }, 404);
         }
         throw e;
