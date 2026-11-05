@@ -42,7 +42,7 @@ Tool: `mcp__claude_ai_Slack__slack_search_public_and_private`. Arguments for eve
 
 | Param | Value |
 |---|---|
-| `query` | `after:<checkpoint date YYYY-MM-DD>` (day-level hint only) |
+| `query` | `after:<UTC date of checkpoint minus 2 days>` (wide day hint only; see Implementation notes) |
 | `after` | checkpoint as a Unix timestamp string (inclusive; the real filter) |
 | `sort` / `sort_dir` | `timestamp` / `asc` |
 | `limit` | `20` (maximum) |
@@ -108,6 +108,43 @@ The May 2025 throttle for non-Marketplace apps (`conversations.history`/`replies
 | Daily per-user search limit | unknown | Count searches per day in `integration_sync_states`. If a daily-limit error appears, pause the backfill until the next day, keep incremental polling, and record the count it happened at |
 
 The backfill also yields to quota and to the user's own Claude Code activity (ADR-029, ADR-036).
+
+## Implementation notes (Phase 3)
+
+Where the Phase 3 code differs from, or is stricter than, the sections above. Rulings are in the phase 3 plan (R35-R55).
+
+### Collection and parsing
+
+- **Search tool and filter (R44).** Collection uses `slack_search_public_and_private`. The exact filter is the Unix `after` (and, for backfill, `before`) argument. The `query` text carries only a wide day hint (`after:` two days earlier, `before:` two days later), because Slack's day modifiers are exclusive and timezone-dependent and could silently drop a day.
+- **Page-chain verification (R35).** The model's text is never trusted. A page is accepted only if the tool input of that `tool_result` equals the requested arguments (first page) or the requested arguments plus the previous page's cursor. Primitive values compare as strings, key order is ignored, and extra or missing keys mismatch. The first mismatch ends the chain; later pages are discarded. `complete` means no next cursor after the last accepted page.
+- **Fail-closed parsing (R41, R43).** The search parser takes the result count from the `## Messages (N results)` line and requires block headers `### Result 1 of N` ... `### Result N of N` consecutively. The thread parser requires exactly one parent marker, one replies marker and consecutive `--- Reply i of M ---` markers. Any extra, missing or out-of-order marker fails the whole page with `parse_failed` (`NEEDS_ATTENTION`), so message text cannot forge structure. The only accepted empty result is the exact observed "No results found." form. A message that fails Zod validation is rejected and counted. A thread reply with no parsable sender (bot or app) is rejected and counted (R45).
+- **ts window (R42).** A message is kept only if its `ts` is within `[floor(afterTs), beforeTs or now + 5 min]`. Others are rejected and counted. This bounds a forged or garbled `ts`.
+- **Conversation types.** `im` (D ids), `mpim` (group DMs, recognised by the connector's "Group DM" label) and `channel` (public and private channels). The type is derived by the parser and stored on `slack_conversations`.
+
+### Storage and checkpoint
+
+- **`InboxStore.persistPage`** runs in one immediate transaction: upserts conversations and users, inserts messages, publishes `message.received` for each new message, and decides the thread handling for replies. The dedupe key is unique(`conversation_id`, `ts`); the inclusive boundary message and repeated pages count as duplicates.
+- **Checkpoint rules (R48).** After a page the checkpoint becomes max(current, min(newest ts of the page, now)). It never moves backwards and never beyond now, and only pages from a verified chain are persisted.
+- **`SyncStateService`** owns `integration_sync_states` rows for the streams `slack.messages` and `slack.backfill`: status, checkpoint, pages done, per-day search count, stall count, generation, last success and last error.
+- **Thread fetch jobs (R45, R47).** A reply whose parent is not stored enqueues one `slack.fetch_thread` job per missing parent, with no cap. The idempotency key `slack.thread:<conversation>:<parentTs>` prevents duplicates. Jobs run one at a time (group `slack.threads`) at lower priority than collection. The parent `ts` must equal the requested one. An unanswered request completes and writes the audit row `slack.thread_unavailable` (R46). Thread parse errors drop only that thread.
+- **Retention.** Message text, sender name and email are cleared after 180 days (`slack.retention.days`). Ids, permalinks and derived records stay. `text` is `null` in the API afterwards.
+
+### Jobs
+
+- **Incremental (R52).** `slack.collect_incremental` completes without calling Claude when the last success is newer than half the interval, or when another incremental job is running. Quota and auth deferrals are pauses, not failures: they write no `lastError` and emit no `collection.failed`.
+- **Backfill (R49-R51).** It starts only on request (`POST /api/slack/backfill`), never automatically. The upper bound is the incremental checkpoint, or now if there is none (R37). Runs are paced by `slack.backfill.minMinutesBetweenRuns`, in group `slack.backfill`, and a new run is enqueued only if no PENDING or RETRY backfill job exists. Each start or resume gets a new generation, which is part of the idempotency key (`slack.backfill:<generation>:<checkpoint>:<pagesDone>:<runAfter>`), so crashes and resumes cannot create duplicate chains. Backfill is complete only when the last accepted page has no cursor. Three consecutive runs that leave the checkpoint unchanged (stall) set status `error` and stop. A terminal job failure also sets `error`. Starting again from `error` (or from `running` with no live job) resumes from the current checkpoint. A `paused` backfill is not reset by a start request.
+
+### HTTP routes (localhost, no auth beyond the bind)
+
+| Route | Result |
+|---|---|
+| `GET /api/inbox/messages?limit&before&conversationId` | Newest-first messages. `limit` 1..200 (default 50); `before` is an ISO datetime with offset; `conversationId` matches `/^[CDG][A-Z0-9]+$/`. Items hold conversation (id, name, type), sender, `sentAt`, `text` (null once expired), permalink, `threadTs`, `replyCount`. Invalid params return 400 |
+| `GET /api/slack/status` | `{ incremental, backfill, searchesToday }`; each state has status, checkpoint, pages done, last success, last error and stall count |
+| `POST /api/slack/backfill` | Starts or resumes the backfill. Returns `{ started, state, reason? }`; `started: false` with a reason if already running, paused or complete |
+
+### Dev smoke
+
+`bun scripts/dev/slack-smoke.ts [--pages N]` runs one real incremental collection through the orchestrator on a temporary database and prints counts only. See `CLAUDE.md`.
 
 ## Events
 

@@ -178,6 +178,7 @@ interface SourceMessage {
 - Parses the markdown inside the JSON `results` field. The parser has contract tests against recorded, anonymized fixtures. If the format changes, the parser fails loudly; it never guesses.
 - Results are validated with Zod. A result missing `Message_ts`, channel ID or sender ID is rejected and counted, not stored.
 - Uses the `collector` worker profile and Haiku.
+- Phase 3 behaviour (page-chain verification, fail-closed parsing, ts window, HTTP routes `GET /api/inbox/messages`, `GET /api/slack/status`, `POST /api/slack/backfill`) is described in `docs/modules/slack.md`, "Implementation notes (Phase 3)".
 
 ### Message sink (`MessageSink`)
 

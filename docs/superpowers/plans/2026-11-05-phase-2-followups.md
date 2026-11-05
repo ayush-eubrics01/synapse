@@ -10,16 +10,16 @@ Phase 2 (Claude Orchestrator) passed per-task reviews, a final whole-branch revi
 
 ## Phase 3 entry gate (fix before or during the Slack collector)
 
-| # | Item | Why it matters for Phase 3 |
-|---|---|---|
-| P1 | **Auth pause (ADR-037 §4).** After `auth_failed`, block all Claude runs until the credentials expiry changes or a probe succeeds. Raise one notification and one NEEDS_ATTENTION item. Call `auth.record()` once at startup | The collector runs every 10 minutes. Without this, every run spawns claude and creates its own NEEDS_ATTENTION item |
-| P2 | Cap `resetsAt` at `observedAt + 8 days` | A malformed far-future reset (e.g. ms instead of s) would stop all work, with no way to recover except manual repair |
-| P3 | Narrow the text-based quota regex (`usage limit|rate limit|quota (exceeded|exhausted|reached)`), or cap consecutive text-only quota deferrals | Deferrals don't consume attempts, so a false positive re-spawns every 15 min forever |
-| P4 | When `rate_limit_info.unifiedWindows` is missing, map the top-level `status`/`resetsAt`/`rateLimitType` onto the matching window | Otherwise a rejection reported only at top level is missed |
-| P5 | Cache `claude --version` health with a TTL | Every dashboard refresh spawns a process |
-| P6 | Sweep `claude_runs` rows left `running` at startup | A crash leaves orphan rows |
-| P7 | Lint/boundary rule: only `core/orchestrator` may call `Container.provider.execute` | Prevents bypassing the validator |
-| P8 | Rebuild the plugin override when plugins change (or document "restart after installing plugins") | Plugins installed after API start aren't disabled |
+| # | Item | Why it matters for Phase 3 | Status / how |
+|---|---|---|---|
+| P1 | **Auth pause (ADR-037 §4).** After `auth_failed`, block all Claude runs until the credentials expiry changes or a probe succeeds. Raise one notification and one NEEDS_ATTENTION item. Call `auth.record()` once at startup | The collector runs every 10 minutes. Without this, every run spawns claude and creates its own NEEDS_ATTENTION item | Done (Phase 3 Task 1): auth pause keys with a credentials-expiry/probe re-arm; one notification and one NEEDS_ATTENTION item; a failed probe defers with `auth_paused` (R38-R40). |
+| P2 | Cap `resetsAt` at `observedAt + 8 days` | A malformed far-future reset (e.g. ms instead of s) would stop all work, with no way to recover except manual repair | Done: `resetsAt` capped at `observedAt + 8 days`. |
+| P3 | Narrow the text-based quota regex (`usage limit|rate limit|quota (exceeded|exhausted|reached)`), or cap consecutive text-only quota deferrals | Deferrals don't consume attempts, so a false positive re-spawns every 15 min forever | Done: text quota regex narrowed to `usage limit|rate limit|quota (exceeded|exhausted|reached)`. |
+| P4 | When `rate_limit_info.unifiedWindows` is missing, map the top-level `status`/`resetsAt`/`rateLimitType` onto the matching window | Otherwise a rejection reported only at top level is missed | Done: top-level `status`/`resetsAt`/`rateLimitType` mapped onto the matching window when `unifiedWindows` is missing. |
+| P5 | Cache `claude --version` health with a TTL | Every dashboard refresh spawns a process | Done (Task 8): `claude --version` health cached; the in-flight promise is shared, errors are not cached, non-ok results are cached 10 s (R55). |
+| P6 | Sweep `claude_runs` rows left `running` at startup | A crash leaves orphan rows | Done: startup sweep of `claude_runs` rows left `running`. |
+| P7 | Lint/boundary rule: only `core/orchestrator` may call `Container.provider.execute` | Prevents bypassing the validator | Done (Task 8, R55): `tests/boundaries.test.ts` scans `apps/` and `scripts/` for `provider.execute` and `ClaudeCliProvider` imports outside `core/orchestrator`. |
+| P8 | Rebuild the plugin override when plugins change (or document "restart after installing plugins") | Plugins installed after API start aren't disabled | Done by documentation: restart the API after installing or removing Claude Code plugins, because the plugin override is read once at startup (see CLAUDE.md). |
 
 ## Before the first send-run phase
 
