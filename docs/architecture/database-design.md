@@ -34,6 +34,7 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 | `leases` | Named locks | `name` PK (e.g. `engineering`), `holder` (job/task id), `acquired_at`, `expires_at`, `heartbeat_at` |
 | `claude_runs` | Every Claude execution | `id` (runId), `job_id` FK, `worker_profile`, `model`, `status`, `num_turns`, `duration_ms`, token columns, `cost_usd_equivalent`, `permission_denials` JSON, `error` JSON, `started_at`, `finished_at`. Raw tool results are not stored here |
 | `quota_snapshots` | Quota history | `observed_at`, `five_hour_utilization`, `five_hour_resets_at`, `seven_day_utilization`, `seven_day_resets_at`, `status`, `claude_run_id` FK |
+| `auth_snapshots` | Credential expiry history (ADR-037): `observed_at`, `access_expires_at`, `refresh_expires_at`, `claude_run_id` FK. Never tokens |
 | `domain_events` | Outbox | `id`, `type`, `version`, `aggregate_type`, `aggregate_id`, `correlation_id`, `causation_id`, `payload` JSON, `occurred_at`, `dispatched_at`, `ephemeral` |
 | `event_consumptions` | Consumer idempotency | unique(`consumer`,`event_id`), `status`, `attempts`, `last_error` |
 | `audit_events` | Append-only audit | `actor` (user/system/module), `module`, `worker_profile`, `action`, `target_integration`, `target_ref`, `approval_id`, `result`, `occurred_at`. Never deleted by retention |

@@ -7,9 +7,9 @@ Unresolved product and technical questions. Don't implement behaviour that depen
 | OQ-1 | Can Synapse send messages without approval while the user is away? | UR-5c, UR-5f sending | **Resolved** (ADR-033) |
 | OQ-2 | How does the user approve actions when away from the machine? | Non-priority drafts while away | Deferred (less pressing after ADR-033) |
 | OQ-3 | In the Git workflow, which branch does the PR come from and target? | Engineering task PR step | **Resolved** (ADR-030) |
-| OQ-4 | Does the Claude Code refresh-token expiry slide forward on refresh? | Unattended operation | Open (re-check credentials metadata) |
+| OQ-4 | Does the Claude Code refresh-token expiry slide forward on refresh? | Unattended operation | **Decided** (ADR-037); the slide itself is confirmed automatically by the health monitor |
 | OQ-5 | Does UR-7 include monitoring the user's interactive Claude Code sessions? | Orchestrator scope | **Resolved** (ADR-036) |
-| OQ-6 | What are the sustained Slack rate limits through the connector? | Backfill pacing | Open |
+| OQ-6 | What are the sustained Slack rate limits through the connector? | Backfill pacing | **Mostly resolved**: official limits and pacing in `slack.md`; daily per-user search cap unknown |
 | OQ-7 | Should a local bot filter back up Slack's `include_bots: false`? | Inbox quality | Deferred (ADR-027) |
 
 ## OQ-1 — Away-mode replies vs. the approval rule
@@ -45,6 +45,9 @@ The workflow is: task branch → `git pull origin <parent>` && `git pull upstrea
 
 ## OQ-4 — Refresh-token lifetime
 
+**Decided 2026-11-05 (ADR-037):** Synapse never touches tokens. Its regular runs keep Claude Code's automatic refresh going. The health monitor records `refreshTokenExpiresAt` after each run to confirm whether it slides. If it's fixed: warnings at 48 h and 2 h, then test a `claude setup-token` long-lived token and adopt it only if connectors still load.
+
+
 During Phase 0, `refreshTokenExpiresAt` was about 7 days out. If it is fixed, the user must re-login weekly. The health monitor warns at < 48 h either way (`runtime-design.md`).
 
 ## OQ-5 — Scope of "admin of my Claude Code"
@@ -56,6 +59,9 @@ Original question, for history:
 Either Synapse only manages jobs it launches (current design), or it also observes the user's own interactive sessions (for example, `~/.claude/projects` transcripts) to track what's in progress.
 
 ## OQ-6 — Sustained Slack rate limits
+
+**Mostly resolved 2026-11-05:** message search is limited to about 10 requests/min per user (with bursts) and a daily per-user cap whose number isn't published. Thread reads are 50+/min. Pacing rules are in `docs/modules/slack.md`. The daily cap is observed and recorded during the backfill.
+
 
 Phase 0 tested a 5-page burst with no errors. A 90-day backfill is about 115–270 pages. The collector must pace and back off on `rate_limited`, and record what it observes.
 
@@ -73,3 +79,4 @@ Phase 0 couldn't prove `include_bots: false` works, because no bot messages appe
 - Prompt-injection attempts shown as red flags per person on the dashboard (ADR-034).
 - Collector worker profile accepted (ADR-031).
 - Interactive Claude Code sessions observed via metadata only (ADR-036, resolves OQ-5).
+- Login kept alive by Claude Code's own refresh, with expiry monitoring and a long-lived-token fallback (ADR-037, decides OQ-4).

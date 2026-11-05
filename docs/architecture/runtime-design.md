@@ -45,7 +45,7 @@ Both are **systemd user services**. The API runs independently of the web servic
 | Job processor | Queue depth, oldest pending job, stuck leases |
 | Claude Code | CLI present, last successful run, connector status at last init |
 | Quota | Latest five-hour/seven-day utilization and reset times |
-| Auth | `refreshTokenExpiresAt` from credentials metadata: warn at < 48 h (`auth.expiry_warning`); `auth_failed` → NEEDS_ATTENTION |
+| Auth | `expiresAt`/`refreshTokenExpiresAt` recorded in `auth_snapshots` after each run (ADR-037). Detects whether the refresh expiry slides. Warns at 48 h and 2 h (`auth.expiry_warning`). `auth_failed` pauses all Claude jobs, one notification, NEEDS_ATTENTION; resume after a healthy check |
 | Integrations | Last successful collection per stream, consecutive failures |
 | Engineering lock | Holder, age, heartbeat |
 

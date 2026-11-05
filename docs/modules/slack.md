@@ -81,6 +81,34 @@ Each collector run fetches at most ~5 pages (`maxPages`), with `--max-turns` = p
 
 Cost note: every poll is a Claude run, even when nothing is new (~$0.005 API-equivalent on Haiku, ≈ $0.70/day at 10 minutes). Polling frequency is the main steady-state cost lever. The 90-day backfill is estimated at 115–270 pages, about 25–55 runs.
 
+## Slack rate limits (official, checked 2026-11-05)
+
+Slack says the same limits apply whether an action goes through the MCP server or the Web API. Claude.ai and Claude Code are listed partner clients of Slack's MCP server.
+
+| Action (tool) | Limit | Impact on Synapse |
+|---|---|---|
+| Search messages (`slack_search_public_and_private`, backed by `assistant.search.context`) | Workspace: 10+ requests/min with bursts (larger teams up to 400+). **Per user: 10/min with burst; sustained use at or above this hits a daily per-user limit (number not published).** Every paginated request counts. Max 20 results per page | The main constraint. Fine for 10-minute polling, but the backfill must be paced |
+| Read a thread (`slack_read_thread`) | Tier 3: 50+/min | Fine |
+| Read a channel (`slack_read_channel`) | Tier 3: 50+/min | Not used for collection |
+| Send message (`slack_send_message`) | Special (`chat.postMessage`: about 1 message per second per channel) | Fine; auto-replies are capped anyway |
+| Search users/channels, list user channels | Tier 2: 20+/min | Fine |
+| Read user profile, list channel members | Tier 4: 100+/min | Fine |
+
+When a limit is hit, Slack returns HTTP 429 with `Retry-After` (seconds). Slack doesn't document how the MCP server passes this on to the client. The adapter treats an error tool_result mentioning `ratelimited`/`rate_limited`/429 as `rate_limited`, honours a `Retry-After` value if present, and otherwise backs off.
+
+The May 2025 throttle for non-Marketplace apps (`conversations.history`/`replies` at 1 request/min, 15 objects) is tied to how an app is distributed. Slack's pages don't say it applies to the MCP server or its partner clients. Synapse doesn't depend on those methods for collection either way.
+
+### Pacing rules
+
+| Situation | Calls | Rule |
+|---|---|---|
+| Incremental poll (every 10 min) | 1 search, plus 1 more per extra 20 new messages | About 6 searches/hour. Far below limits |
+| Backfill (90 days ≈ 115–270 pages) | 1 search per page | At most 5 pages per run (a burst), at least 3 minutes between runs: about 100 pages/hour, done in roughly 1.5–3 hours. On `rate_limited`, double the gap (up to 30 min) and resume from the checkpoint |
+| Thread fetches | 1 `slack_read_thread` per unknown parent | Batched per run, at most 20 per run |
+| Daily per-user search limit | unknown | Count searches per day in `integration_sync_states`. If a daily-limit error appears, pause the backfill until the next day, keep incremental polling, and record the count it happened at |
+
+The backfill also yields to quota and to the user's own Claude Code activity (ADR-029, ADR-036).
+
 ## Events
 
 Emitted: `message.received`, `message.thread_updated`, `message.screened`, `message.urgent_detected` (after the urgency result is stored), `collection.completed`, `collection.failed`.
@@ -103,7 +131,7 @@ scheduler → slack.collect_incremental
 
 Thread handling: a reply (`threadTs` set) whose parent is already stored emits `message.thread_updated`. If the parent is unknown, a `slack.fetch_thread` job is enqueued, and the reply is still stored with `thread_ts`.
 
-Backfill: start checkpoint = now − 90 days, `sort_dir: asc`, ~5 pages per job, a checkpoint after every page, self-enqueue until there's no next cursor, then mark `slack.backfill` complete and hand off to `slack.messages`.
+Backfill: start checkpoint = now − 90 days, `sort_dir: asc`, ~5 pages per job, at least 3 minutes between jobs (see Pacing rules), a checkpoint after every page, self-enqueue until there's no next cursor, then mark `slack.backfill` complete and hand off to `slack.messages`.
 
 Send (approval required):
 
@@ -125,7 +153,7 @@ Read Slack: allowed. Send, schedule or draft a message, react, create a conversa
 | Connector `pending` / not connected | `connector_not_ready` → retry with backoff |
 | No real tool_result from the search tool | `incomplete_ai_output` → retry; the run's text reply is ignored |
 | Format change | `parse_failed` → `NEEDS_ATTENTION`, checkpoint not advanced |
-| Slack rate limit | `rate_limited` → retry after delay |
+| Slack rate limit | `rate_limited` → honour `Retry-After` if given, else exponential backoff (backfill gap doubles up to 30 min); a daily-limit error pauses the backfill until the next day |
 | Quota above threshold | job deferred until `resetsAt` (orchestrator) |
 | Auth failure | `auth_failed` → `NEEDS_ATTENTION`, notification |
 | Interrupted run | next run resumes from the last committed checkpoint; dedup handles overlap |
@@ -137,6 +165,9 @@ Read Slack: allowed. Send, schedule or draft a message, react, create a conversa
 |---|---|
 | `slack.collection.intervalMinutes` | `10` |
 | `slack.collection.maxPagesPerRun` | `5` |
+| `slack.backfill.minMinutesBetweenRuns` | `3` |
+| `slack.backfill.maxBackoffMinutes` | `30` |
+| `slack.threads.maxFetchesPerRun` | `20` |
 | `slack.backfill.days` | `90` |
 | `slack.retention.days` | `180` |
 | `slack.collection.conversationTypes` | `im,mpim,private_channel,public_channel` |
@@ -159,7 +190,7 @@ Read Slack: allowed. Send, schedule or draft a message, react, create a conversa
 ## Open questions
 
 - OQ-1 resolved by ADR-033: away-mode auto-replies go through `MessageSink` with the tag `Sent using @claude`.
-- OQ-6: sustained Slack rate limits during backfill (only a 5-page burst tested).
+- OQ-6 partly resolved: official limits and pacing rules are above. Still unknown: the daily per-user search limit, observed during the backfill.
 - OQ-7: local bot-filter safety net (deferred per ADR-027). Slack's `include_bots: false` is trusted; the connector exposes no bot flag.
 
 See `docs/product/open-questions.md`.

@@ -69,3 +69,4 @@ File naming: `ADR/ADR-NNN-kebab-case-title.md`. Number sequentially; never reuse
 | ADR-034 | Prompt-Injection Detection and Red Flags | Accepted | [ADR-034-injection-detection-red-flags.md](ADR/ADR-034-injection-detection-red-flags.md) |
 | ADR-035 | Repository Branch Registry and Branch Confirmation | Accepted | [ADR-035-repository-branch-registry.md](ADR/ADR-035-repository-branch-registry.md) |
 | ADR-036 | Observe Interactive Claude Code Sessions (Metadata Only) | Accepted | [ADR-036-interactive-session-observation.md](ADR/ADR-036-interactive-session-observation.md) |
+| ADR-037 | Keep the Claude Code Login Alive Without Repeated Re-Login | Accepted | [ADR-037-claude-auth-renewal.md](ADR/ADR-037-claude-auth-renewal.md) |
