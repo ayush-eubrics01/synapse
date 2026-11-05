@@ -107,6 +107,7 @@ export class UrgentReplies {
             text: slackMessages.text,
             expiredAt: slackMessages.contentExpiredAt,
             senderRef: slackUsers.externalId,
+            conversationId: slackMessages.conversationId,
             convRef: slackConversations.externalId,
           })
           .from(slackMessages)
@@ -146,7 +147,8 @@ export class UrgentReplies {
         const reuse = existing[0] && REQUESTABLE.includes(existing[0].status) ? existing[0] : null;
         const followupId = reuse?.id ?? newId();
         const fields = {
-          conversationId: m.convRef,
+          // R15: the internal slack_conversations.id, like every other follow-up.
+          conversationId: m.conversationId,
           threadTs,
           recipientSlackUserId: m.senderRef,
           draftText: text,

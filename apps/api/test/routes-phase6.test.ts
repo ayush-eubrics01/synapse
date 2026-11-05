@@ -109,7 +109,8 @@ describe("urgent reply", () => {
     expect(f).toMatchObject({
       origin: "urgent_reply",
       originMessageId: id,
-      conversationId: "C0SYNTH01",
+      // R15: the internal slack_conversations.id, not the external id.
+      conversationId: "c1",
       threadTs: "1793879000.000050",
       recipientSlackUserId: SENDER,
       draftText: SECRET,
@@ -535,6 +536,14 @@ describe("followup routes", () => {
   test("send accepts an external conversation id as stored by urgent replies and a failed draft again", async () => {
     const id = followupRow({ conversationId: "C0SYNTH01", status: "failed" });
     expect((await post(`/api/followups/${id}/send`, { text: "again" })).status).toBe(200);
+  });
+
+  test("a draft whose conversation cannot be resolved lists discard only, and send is 409", async () => {
+    const id = followupRow({ conversationId: "gone" });
+    const v = (await followupViews()).find((x) => x.id === id);
+    expect(v).toMatchObject({ conversationLabel: null, actions: ["discard"] });
+    expect((await post(`/api/followups/${id}/send`, { text: "x" })).status).toBe(409);
+    expect(sink.sends).toHaveLength(0);
   });
 
   test("send validation and 404/409 cases; a rejected send leaves the draft unchanged", async () => {

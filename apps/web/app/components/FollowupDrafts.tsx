@@ -41,9 +41,12 @@ function Draft({
       {line && <div>{line}</div>}
       {f.outgoing &&
         f.resolveActions.map((a) => (
-          <button key={a} type="button" onClick={() => f.outgoing && onResolve(f.outgoing.id, a)}>
-            {RESOLVE_LABEL[a]}
-          </button>
+          <span key={a}>
+            <button type="button" onClick={() => f.outgoing && onResolve(f.outgoing.id, a)}>
+              {RESOLVE_LABEL[a]}
+            </button>{" "}
+            {a === "resend" && <small>Requires your approval</small>}{" "}
+          </span>
         ))}
       {f.actions.includes("send") ? (
         <div>
@@ -70,7 +73,14 @@ function Draft({
           )}
         </div>
       ) : (
-        f.draftText !== null && <div>{f.draftText}</div>
+        <>
+          {f.draftText !== null && <div>{f.draftText}</div>}
+          {f.actions.includes("discard") && (
+            <button type="button" onClick={() => onDiscard(f.id)}>
+              Discard
+            </button>
+          )}
+        </>
       )}
     </li>
   );

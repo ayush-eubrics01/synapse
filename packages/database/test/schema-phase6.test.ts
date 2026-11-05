@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase, runMigrations } from "../src/index.ts";
@@ -89,4 +89,33 @@ test("slack_messages.commitments_extracted_at is nullable", () => {
     v: string | null;
   };
   expect(row.v).toBeNull();
+});
+
+test("0012 rewrites urgent_reply followups from the external to the internal conversation id", () => {
+  const sqlite = setup();
+  const ins = (id: string, origin: string, conversation: string) =>
+    sqlite.run(
+      "insert into followups (id, origin, conversation_id, status, created_at, updated_at) values (?,?,?,'draft','t','t')",
+      [id, origin, conversation],
+    );
+  ins("f-ext", "urgent_reply", "C1");
+  ins("f-int", "urgent_reply", "cv1");
+  ins("f-unknown", "urgent_reply", "C-gone");
+  ins("f-stalled", "stalled", "cv1");
+  const sql = readFileSync(
+    join(import.meta.dir, "../migrations/0012_followups_conversation_internal.sql"),
+    "utf8",
+  );
+  sqlite.run(sql);
+  sqlite.run(sql); // idempotent
+  const conv = (id: string) =>
+    (
+      sqlite.query("select conversation_id as c from followups where id = ?").get(id) as {
+        c: string;
+      }
+    ).c;
+  expect(conv("f-ext")).toBe("cv1");
+  expect(conv("f-int")).toBe("cv1");
+  expect(conv("f-unknown")).toBe("C-gone");
+  expect(conv("f-stalled")).toBe("cv1");
 });
