@@ -1,0 +1,23 @@
+# Dependencies and builds
+node_modules/
+.next/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Local data — never commit
+*.db
+*.db-wal
+*.db-shm
+data/
+backups/
+
+# Env and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and OS files
+*.log
+.DS_Store
