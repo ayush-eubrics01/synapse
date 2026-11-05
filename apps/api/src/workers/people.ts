@@ -25,7 +25,7 @@ import {
   validateEvidence,
   validateUpdate,
 } from "../intelligence/people/evidence";
-import { selectHistory } from "../intelligence/people/history";
+import { type HistoryItem, selectHistory } from "../intelligence/people/history";
 import { buildInitialRequest } from "../intelligence/people/initial-prompt";
 import { buildUnknownRequest } from "../intelligence/people/unknown-prompt";
 import { buildUpdateRequest } from "../intelligence/people/update-prompt";
@@ -113,8 +113,9 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       now: clock.now(),
     });
     if (items.length < MIN_HISTORY_ITEMS) return { skipped: "insufficient_history" };
-    // R1: runtime signals attach to one message, not to all 150 the run read.
-    const newest = (items[items.length - 1] as (typeof items)[number]).messageId;
+    // R1/R5: runtime signals attach to one message of the person, never to the user's own.
+    const target = flagTarget(items);
+    const targets = target ? [target] : [];
 
     const before = runIdBefore(job.id);
     let ran = false;
@@ -128,7 +129,7 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       const byId = new Map(used.map((i) => [i.messageId, i]));
       const result = await orchestrator.run(req, ctx.signal);
       ran = true;
-      runtimeFlags(job.id, [newest], result);
+      runtimeFlags(job.id, targets, result);
       const parsed = parseStructured(result.finalText, initialProfileOutputSchema);
       if (!parsed.ok) throw new JobError({ kind: "incomplete_ai_output", message: parsed.reason });
       const { profile, suspectedInjection } = parsed.value;
@@ -138,12 +139,12 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
         settings.get("people.recommendation.minConfidence") as Confidence,
       );
       const runId = latestRunId(job.id);
-      // R1: the message whose text holds the model's quote, else the newest provided one.
-      const flagged = flaggedMessage(used, suspectedInjection, newest);
+      // R1/R5: the person's (or a bystander's) message holding the model's quote, else the target.
+      const flagged = flaggedMessage(used, suspectedInjection, target);
 
       const outcome = db.transaction(
         (tx) => {
-          if (suspectedInjection.detected) {
+          if (suspectedInjection.detected && flagged) {
             deps.securityFlags.recordAiFlag(tx, flagged, runId, suspectedInjection);
           }
           if (observationCount(content) === 0) return { empty: true };
@@ -163,7 +164,7 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       return { ...outcome, history: items.length, dropped };
     } catch (err) {
       const { classified, rethrow } = wrapFailure(err);
-      if (!ran) safely(() => failedRunFlags(job.id, [newest], classified, before));
+      if (!ran) safely(() => failedRunFlags(job.id, targets, classified, before));
       throw rethrow;
     }
   };
@@ -271,7 +272,8 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       historyOpts(baselineOf(profile), settings.get("people.history.maxMessages")),
     );
     if (items.length === 0) return { skipped: "no_new_history" };
-    const newest = (items[items.length - 1] as (typeof items)[number]).messageId;
+    const target = flagTarget(items);
+    const targets = target ? [target] : [];
 
     const before = runIdBefore(job.id);
     let ran = false;
@@ -285,7 +287,7 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       const byId = new Map(used.map((i) => [i.messageId, i]));
       const result = await orchestrator.run(req, ctx.signal);
       ran = true;
-      runtimeFlags(job.id, [newest], result);
+      runtimeFlags(job.id, targets, result);
       const parsed = parseStructured(result.finalText, profileUpdateOutputSchema);
       if (!parsed.ok) throw new JobError({ kind: "incomplete_ai_output", message: parsed.reason });
       const { suspectedInjection } = parsed.value;
@@ -296,7 +298,7 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
         settings.get("people.recommendation.minConfidence") as Confidence,
       );
       const runId = latestRunId(job.id);
-      const flagged = flaggedMessage(used, suspectedInjection, newest);
+      const flagged = flaggedMessage(used, suspectedInjection, target);
       let adds = valid.add;
       const build = () => {
         const d = { add: adds, remove: valid.remove, suspectedInjection };
@@ -320,7 +322,7 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       if (full || !profileContentSchema.safeParse(resultContent).success) {
         return db.transaction(
           (tx) => {
-            if (suspectedInjection.detected) {
+            if (suspectedInjection.detected && flagged) {
               deps.securityFlags.recordAiFlag(tx, flagged, runId, suspectedInjection);
             }
             return { skipped: "section_full" };
@@ -341,7 +343,7 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
 
       return db.transaction(
         (tx) => {
-          if (suspectedInjection.detected) {
+          if (suspectedInjection.detected && flagged) {
             deps.securityFlags.recordAiFlag(tx, flagged, runId, suspectedInjection);
           }
           if (empty) return { empty: true };
@@ -361,7 +363,7 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       );
     } catch (err) {
       const { classified, rethrow } = wrapFailure(err);
-      if (!ran) safely(() => failedRunFlags(job.id, [newest], classified, before));
+      if (!ran) safely(() => failedRunFlags(job.id, targets, classified, before));
       throw rethrow;
     }
   };
@@ -418,8 +420,10 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
     }
     const first = batch[0];
     if (!first) return { skipped: "nothing_to_assess" };
-    // R1: runtime signals attach to one message: the newest of the first contact.
+    // R1/R5: runtime signals attach to one message: the newest of the first contact (every batch
+    // message is a contact's own, never the user's).
     const newest = (first.messages[first.messages.length - 1] as { id: string }).id;
+    const targets = [newest];
     const all = batch.flatMap((c) => c.messages);
 
     const before = runIdBefore(job.id);
@@ -432,7 +436,7 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       );
       const result = await orchestrator.run(req, ctx.signal);
       ran = true;
-      runtimeFlags(job.id, [newest], result);
+      runtimeFlags(job.id, targets, result);
       const parsed = parseStructured(result.finalText, unknownAssessmentOutputSchema);
       if (!parsed.ok) throw new JobError({ kind: "incomplete_ai_output", message: parsed.reason });
       const inBatch = new Map(batch.map((c) => [c.slackUserId, c]));
@@ -491,21 +495,34 @@ export function registerPeopleJobs(deps: PeopleJobDeps): void {
       );
     } catch (err) {
       const { classified, rethrow } = wrapFailure(err);
-      if (!ran) safely(() => failedRunFlags(job.id, [newest], classified, before));
+      if (!ran) safely(() => failedRunFlags(job.id, targets, classified, before));
       throw rethrow;
     }
   };
   handlers.set(ASSESS_UNKNOWN_JOB, { handler: assessUnknown, timeoutMs: UNKNOWN_TIMEOUT_MS });
 }
 
-/** R1: the provided message whose text holds the model's quote, else the newest provided one. */
+/**
+ * R5: the message a people run's flags attach to: the newest provided item by the person, else the
+ * newest non-self item (a bystander in a shared thread). Never the user's own message (a flag on it
+ * would create a people row for the user and a "Red flag: message from <me>" popup); null when only
+ * the user's messages were provided, and then no flag is recorded.
+ */
+export function flagTarget(items: HistoryItem[]): string | null {
+  const newestBy = (ok: (a: HistoryItem["author"]) => boolean) =>
+    items.findLast((i) => ok(i.author))?.messageId ?? null;
+  return newestBy((a) => a === "them") ?? newestBy((a) => a !== "self");
+}
+
+/** R1/R5: the provided non-self message whose text holds the model's quote, else `fallback`. */
 function flaggedMessage(
-  used: { messageId: string; text: string }[],
+  used: HistoryItem[],
   s: SuspectedInjection,
-  newest: string,
-): string {
+  fallback: string | null,
+): string | null {
   const quote = s.quote.trim();
-  return (quote !== "" && used.find((i) => i.text.includes(quote))?.messageId) || newest;
+  if (quote === "") return fallback;
+  return used.find((i) => i.author !== "self" && i.text.includes(quote))?.messageId ?? fallback;
 }
 
 function evidenceRows(

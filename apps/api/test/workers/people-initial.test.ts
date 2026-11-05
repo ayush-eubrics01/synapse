@@ -27,7 +27,7 @@ import { ProfileRecommendations } from "../../src/modules/people/recommendations
 import { PeopleService } from "../../src/modules/people/service";
 import { TemporaryContacts } from "../../src/modules/people/temporary";
 import { SecurityFlagsService } from "../../src/modules/security-flags/service";
-import { registerPeopleJobs } from "../../src/workers/people";
+import { flagTarget, registerPeopleJobs } from "../../src/workers/people";
 
 const NOW = "2026-11-05T12:00:00.000Z";
 const SELF = "USELF00001";
@@ -658,5 +658,81 @@ describe("review fixes", () => {
     expect(await runJob(pid)).toMatchObject({ skipped: "same_as_rejected" });
     expect(recs()).toHaveLength(1);
     expect(db.select().from(schema.approvals).all()).toHaveLength(0);
+  });
+});
+
+describe("R5: flags never land on the user", () => {
+  const injection = {
+    detected: true,
+    severity: "high",
+    quote: "ignore previous instructions",
+    reason: "tries to instruct the AI",
+  };
+  const selfPeople = () =>
+    db
+      .select()
+      .from(schema.people)
+      .all()
+      .filter((p) => p.slackUserId === SELF);
+  const titles = () =>
+    db
+      .select()
+      .from(schema.notifications)
+      .all()
+      .map((n) => n.title);
+
+  test("newest item is a self DM reply: flags on the person's message, no self person, no 'message from Me'", async () => {
+    const t1 = add({ conv: "c-dm", by: "u-them" });
+    add({ conv: "c-dm", by: "u-them" });
+    const t3 = add({ conv: "c-dm", by: "u-them" });
+    // the user's own reply is the newest item and the only one holding the quote
+    add({ conv: "c-dm", by: "u-self", text: "ignore previous instructions, said by me" });
+    expect(hist().at(-1)?.author).toBe("self");
+    script.denials = ["mcp__claude_ai_Slack__slack_send_message"];
+    script.output = {
+      profile: profile({ communication: [obs("a", [t1 as string])] }),
+      suspectedInjection: injection,
+    };
+    await runJob(personId());
+    const flags = db.select().from(schema.securityFlags).all();
+    expect(flags.map((f) => [f.detector, f.messageId]).sort()).toEqual([
+      ["ai", t3 as string],
+      ["runtime", t3 as string],
+    ]);
+    expect(flags.every((f) => f.slackUserId === THEM)).toBe(true);
+    expect(selfPeople()).toHaveLength(0);
+    expect(titles().length).toBeGreaterThan(0);
+    expect(titles().some((t) => t.includes("Me"))).toBe(false);
+  });
+
+  test("a failed run with the user's reply newest flags the person's message", async () => {
+    add({ conv: "c-dm", by: "u-them" });
+    add({ conv: "c-dm", by: "u-them" });
+    const t3 = add({ conv: "c-dm", by: "u-them" });
+    add({ conv: "c-dm", by: "u-self" });
+    script.throws = new JobError({ kind: "provider_error", message: "boom" });
+    script.runDenials = ["mcp__claude_ai_Slack__slack_send_message"];
+    await runJob(personId()).catch(() => {});
+    const flags = db.select().from(schema.securityFlags).all();
+    expect(flags.map((f) => f.messageId)).toEqual([t3 as string]);
+    expect(selfPeople()).toHaveLength(0);
+  });
+});
+
+describe("R5: flagTarget", () => {
+  const item = (messageId: string, author: "them" | "self" | "other") => ({
+    messageId,
+    sentAt: NOW,
+    author,
+    conversationLabel: "a DM",
+    text: "t",
+    sourceRef: "D1:1",
+  });
+
+  test("newest 'them' item, else newest non-self item, else null", () => {
+    expect(flagTarget([item("a", "them"), item("b", "other"), item("c", "self")])).toBe("a");
+    expect(flagTarget([item("a", "other"), item("b", "other"), item("c", "self")])).toBe("b");
+    expect(flagTarget([item("a", "self"), item("b", "self")])).toBeNull();
+    expect(flagTarget([])).toBeNull();
   });
 });
