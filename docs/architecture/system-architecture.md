@@ -9,7 +9,7 @@ Synapse is a **modular monolith** with **ports and adapters**, running locally a
 │                                                                        │
 │  synapse-web.service          synapse-api.service                      │
 │  ┌──────────────┐  REST/SSE  ┌─────────────────────────────────────┐   │
-│  │  Next.js UI  │──────────▶│ NestJS                               │   │
+│  │  Next.js UI  │──────────▶│ Hono on Bun                          │   │
 │  └──────────────┘           │  controllers ─▶ domain modules       │   │
 │                              │  core: jobs, scheduler, events,      │   │
 │                              │        approvals, permissions,       │   │

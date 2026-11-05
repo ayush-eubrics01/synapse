@@ -80,6 +80,9 @@ Events that are purely for live UI updates (SSE) may skip the outbox and are mar
 | `approval.approved` | approvals | requesting module | Execution happens after revalidation |
 | `approval.rejected` | approvals | requesting module | |
 | `approval.expired` | approvals | requesting module | |
+| `approval.revoked` | approvals | requesting module, dashboard | Approval withdrawn before execution |
+| `approval.executed` | approvals | requesting module, audit, dashboard | Approved action ran after revalidation |
 | `settings.changed` | settings | scheduler, orchestrator | |
+| `system.heartbeat` | scheduler | health | Periodic liveness signal; payload `{ at }` |
 
 New events must be added here and to `packages/contracts/events` in the same change.

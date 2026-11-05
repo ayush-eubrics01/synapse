@@ -27,8 +27,8 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 | `integration_capabilities` | Discovered capabilities | `integration_id` FK, `name`, `available`, unique(`integration_id`,`name`) |
 | `integration_sync_states` | Checkpoints | `integration_id` FK, `stream` (e.g. `slack.messages`, `slack.backfill`, `jira.issues`), `checkpoint` (Slack ts / Jira updated), `cursor`, `status`, `last_success_at`, `last_error` JSON, unique(`integration_id`,`stream`) |
 | `modules`, `module_dependencies` | Module registry | name, enabled, version; dependency edges |
-| `scheduled_tasks` | Recurring schedules | `name` unique, `job_type`, `interval_seconds`, `enabled`, `next_run_at` |
-| `jobs` | Durable queue | `id`, `type`, `priority`, `status` (PENDING/RUNNING/RETRY/COMPLETED/FAILED/NEEDS_ATTENTION/CANCELLED), `input` JSON, `output_ref`, `attempts`, `max_attempts` (3), `idempotency_key` unique, `concurrency_group` (e.g. `engineering`), `run_after`, `lease_owner`, `lease_expires_at`, timestamps, `last_error` JSON. Index (`status`,`priority`,`run_after`) |
+| `scheduled_tasks` | Recurring schedules | `name` unique, `job_type`, `interval_seconds` (nullable), `cron` (nullable), `input` JSON, `priority` (default 100), `enabled`, `next_run_at`, `last_run_at` |
+| `jobs` | Durable queue | `id`, `type`, `priority`, `status` (PENDING/RUNNING/RETRY/COMPLETED/FAILED/NEEDS_ATTENTION/CANCELLED), `input` JSON, `output` JSON (nullable), `attempts`, `max_attempts` (3), `idempotency_key` unique, `concurrency_group` (e.g. `engineering`), `external_write` (boolean, default false; set at enqueue for jobs that write to an external system — an uncertain outcome after a timeout, forced stop or crash goes to NEEDS_ATTENTION instead of RETRY), `run_after`, `lease_owner`, `lease_expires_at`, timestamps, `last_error` JSON. Index (`status`,`priority`,`run_after`) |
 | `job_attempts` | Per-attempt history | `job_id` FK, `attempt`, `started_at`, `finished_at`, `status`, `error` JSON, `claude_run_id` FK nullable |
 | `job_checkpoints` | Resumable progress | `job_id` FK, `checkpoint` JSON, `updated_at` |
 | `leases` | Named locks | `name` PK (e.g. `engineering`), `holder` (job/task id), `acquired_at`, `expires_at`, `heartbeat_at` |
@@ -36,10 +36,10 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 | `quota_snapshots` | Quota history | `observed_at`, `five_hour_utilization`, `five_hour_resets_at`, `seven_day_utilization`, `seven_day_resets_at`, `status`, `claude_run_id` FK |
 | `auth_snapshots` | Credential expiry history (ADR-037): `observed_at`, `access_expires_at`, `refresh_expires_at`, `claude_run_id` FK. Never tokens |
 | `domain_events` | Outbox | `id`, `type`, `version`, `aggregate_type`, `aggregate_id`, `correlation_id`, `causation_id`, `payload` JSON, `occurred_at`, `dispatched_at`, `ephemeral` |
-| `event_consumptions` | Consumer idempotency | unique(`consumer`,`event_id`), `status`, `attempts`, `last_error` |
-| `audit_events` | Append-only audit | `actor` (user/system/module), `module`, `worker_profile`, `action`, `target_integration`, `target_ref`, `approval_id`, `result`, `occurred_at`. Never deleted by retention |
+| `event_consumptions` | Consumer idempotency | unique(`consumer`,`event_id`), `status`, `attempts`, `last_error`, `next_attempt_at` (nullable; retry backoff, base 5 s, cap 5 min) |
+| `audit_events` | Append-only audit | `actor` (user/system/module), `module`, `worker_profile`, `action`, `target_integration`, `target_ref`, `approval_id`, `result`, `details` JSON (nullable), `occurred_at`. Never deleted by retention |
 | `notifications` | In-app notifications | `kind`, `severity`, `title`, `body`, `ref`, `read_at` |
-| `approvals` | Approval requests | `action`, `target_integration`, `target_ref`, `payload` JSON (exact intended change), `risk_level`, `status` (pending/approved/rejected/expired/executed/failed), `expires_at`, `decided_at`, `execution_result` JSON, `idempotency_key` unique |
+| `approvals` | Approval requests | `action`, `target_integration`, `target_ref`, `payload` JSON (exact intended change), `risk_level`, `status` (pending/approved/rejected/expired/executed/failed/revoked), `expires_at`, `decided_at`, `execution_result` JSON, `execution_started_at` (nullable; set atomically when `execute` claims the approval, so a second concurrent execute cannot run the executor), `requested_by_module`, `requested_by_worker` (nullable), `idempotency_key` unique |
 | `permissions` | Policy overrides | `operation`, `policy` (allowed/approval/explicit_approval/denied), `scope` JSON |
 
 ## Slack tables (owned by `inbox`)

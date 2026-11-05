@@ -18,16 +18,17 @@ Synapse is a local-first, single-user service that runs on the user's Linux mach
 
 | Layer | Choice |
 |---|---|
+| Runtime | Bun ≥ 1.4.4: runtime, package manager (workspaces) and test runner (ADR-039). The system Node (v16) is never used |
 | Language | TypeScript everywhere (strict mode) |
-| Frontend | Next.js (`apps/web`) |
-| Backend + workers | NestJS (`apps/api`) |
-| Database | SQLite (WAL, foreign keys on, busy timeout) + Drizzle ORM, explicit migrations |
+| Frontend | Next.js (`apps/web`), run with `bun --bun next` |
+| Backend + workers | Hono on `Bun.serve` (`apps/api`); plain composition root, no DI framework (ADR-038) |
+| Database | SQLite via `bun:sqlite` (WAL, foreign keys on, busy timeout) + Drizzle ORM (`drizzle-orm/bun-sqlite`), explicit migrations |
 | Validation | Zod; shared schemas in `packages/contracts` |
 | Jobs | Database-backed durable queue (no Redis) |
 | AI | Claude Code CLI (`claude -p`) behind the `AIProvider` port |
 | API | REST + Server-Sent Events, bound to localhost |
 | Process management | systemd user services |
-| Tests | Vitest/Jest unit, contract, integration and failure-path tests |
+| Tests | `bun test`: unit, contract, integration and failure-path tests |
 
 ## Repository layout
 
@@ -102,4 +103,19 @@ Produce a short plan naming: relevant modules, contracts used or changed, databa
 
 ## Commands
 
-No code exists yet. Add build, test, lint and run commands here when the monorepo is scaffolded (Phase 1).
+```bash
+bun install                    # install all workspaces
+bun run check                  # typecheck (tsc -b) + lint (biome) + tests
+bun test                       # run all tests
+bun run --cwd apps/api dev     # API on 127.0.0.1:7400
+bun run --cwd apps/web dev     # web on 127.0.0.1:7401
+bun scripts/setup/check-env.ts # read-only env check (bun >= 1.4.4, claude on service PATH, linger)
+```
+
+Setup commands that change the system. **Ask the user for approval before running any of these:**
+
+```bash
+bun scripts/setup/install-services.ts   # writes ~/.config/systemd/user/synapse-{api,web}.service, prints the next commands
+loginctl enable-linger "$USER"          # keep user services running after logout
+systemctl --user daemon-reload && systemctl --user enable --now synapse-api synapse-web
+```

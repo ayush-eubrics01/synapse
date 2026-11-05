@@ -21,7 +21,7 @@ apps/web ──HTTP/SSE──▶ apps/api (controllers)
 Rules:
 
 - `packages/contracts` depends on nothing but Zod and TypeScript types.
-- Domain modules depend on `packages/contracts` and on `core` services through their public interfaces. They never import from `integrations/*` or `infrastructure/*` directly; adapters are injected through NestJS providers bound to port tokens.
+- Domain modules depend on `packages/contracts` and on `core` services through their public interfaces. They never import from `integrations/*` or `infrastructure/*` directly; adapters are wired to ports in the composition root (`apps/api/src/container.ts`) and passed in by constructor/factory injection, with no DI framework (ADR-038). A lint rule forbids `modules/*` from importing `integrations/*` or `infrastructure/*`.
 - Domain modules never import each other's internals. Cross-module communication uses domain events (`docs/architecture/event-system.md`) or a module's exported public service interface.
 - Only `core/orchestrator` may use the `AIProvider` port. Everything else submits `ClaudeJob`s to the orchestrator.
 - Adapters that collect data through Claude connectors (Slack, Jira) get their Claude runs from the orchestrator. They never spawn processes.
@@ -32,7 +32,7 @@ Rules:
 | Component | Owns | Public interface |
 |---|---|---|
 | `config` | App settings, typed config, settings persistence | `ConfigService` |
-| `events` | Event bus, transactional outbox, consumer offsets | `EventPublisher`, `@OnEvent` consumers |
+| `events` | Event bus, transactional outbox, consumer offsets | `EventPublisher`, consumer registration (`events.subscribe(type, consumerName, handler)`) |
 | `jobs` | Durable job queue, attempts, checkpoints, retries, backoff | `JobQueue`, `JobHandler` registry |
 | `scheduler` | Recurring schedules (`scheduled_tasks`) that enqueue jobs | `SchedulerService` |
 | `leases` | Named leases with expiry (job claims, engineering lock) | `LeaseService` |

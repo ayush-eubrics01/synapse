@@ -1,0 +1,1 @@
+ALTER TABLE `jobs` ADD `external_write` integer DEFAULT false NOT NULL;

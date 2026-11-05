@@ -1,5 +1,5 @@
 # ADR-002: NestJS + TypeScript Backend
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-038](ADR-038-hono-backend.md) (2026-11-05: Hono on Bun)
 - **Date:** 2026-11-05
 - **Source:** concept.md §2, §3.2, §16.1
 

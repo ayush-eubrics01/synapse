@@ -1,0 +1,51 @@
+import type { Approval, HealthReport, Job } from "@synapse/contracts";
+
+async function request<T>(
+  url: string,
+  init: RequestInit | undefined,
+  fetchImpl: typeof fetch,
+  okStatuses: number[] = [],
+): Promise<T> {
+  const res = await fetchImpl(url, init);
+  if (!res.ok && !okStatuses.includes(res.status)) {
+    let detail = "";
+    try {
+      const body = (await res.json()) as { error?: unknown };
+      if (typeof body.error === "string") detail = `: ${body.error}`;
+    } catch {
+      // body was not JSON; the status alone is reported
+    }
+    throw new Error(`${init?.method ?? "GET"} ${url} failed with ${res.status}${detail}`);
+  }
+  return (await res.json()) as T;
+}
+
+// A 503 still carries a HealthReport (status "down"), so it is returned, not thrown.
+export function getHealth(fetchImpl: typeof fetch = fetch): Promise<HealthReport> {
+  return request("/health/ready", undefined, fetchImpl, [503]);
+}
+
+export function getApprovals(fetchImpl: typeof fetch = fetch): Promise<Approval[]> {
+  return request("/api/approvals?status=pending", undefined, fetchImpl);
+}
+
+export function decideApproval(
+  id: string,
+  decision: "approve" | "reject",
+  reason?: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Approval> {
+  return request(
+    `/api/approvals/${encodeURIComponent(id)}/${decision}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason }),
+    },
+    fetchImpl,
+  );
+}
+
+export function getJobs(limit = 20, fetchImpl: typeof fetch = fetch): Promise<Job[]> {
+  return request(`/api/jobs?limit=${limit}`, undefined, fetchImpl);
+}

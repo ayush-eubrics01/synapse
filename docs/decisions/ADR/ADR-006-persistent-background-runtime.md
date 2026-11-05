@@ -7,7 +7,7 @@
 Collection, reminders, urgency detection and engineering jobs must keep running when the browser is closed.
 
 ## Decision
-Run two independently managed processes: the NestJS backend (API, scheduler, job processor, orchestrator) and the Next.js frontend. The backend must work fully without the frontend.
+Run two independently managed processes: the Hono/Bun backend (ADR-038) (API, scheduler, job processor, orchestrator) and the Next.js frontend. The backend must work fully without the frontend.
 
 ## Consequences
 - Positive: closing the UI never interrupts work.

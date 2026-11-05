@@ -1,0 +1,22 @@
+{
+  "name": "@synapse/web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --bun next dev -H 127.0.0.1 -p 7401",
+    "build": "bun --bun next build",
+    "start": "bun --bun next start -H 127.0.0.1 -p 7401"
+  },
+  "dependencies": {
+    "@synapse/contracts": "workspace:*",
+    "next": "^16.4.5",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0"
+  }
+}

@@ -68,7 +68,7 @@ Claude Code is an execution and intelligence provider. It must not become the ap
 | Layer | Technology | Responsibility |
 |---|---|---|
 | Frontend | Next.js + TypeScript | Dashboard and application interface |
-| Backend | NestJS + TypeScript | APIs, orchestration and business logic |
+| Backend | ~~NestJS~~ Hono on Bun + TypeScript (update 2026-11-05, ADR-038/039) | APIs, orchestration and business logic |
 | Database | SQLite | Local persistent storage |
 | ORM | Drizzle ORM | Type-safe database access |
 | Validation | Zod | Shared schemas and runtime validation |

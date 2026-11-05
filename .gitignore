@@ -21,3 +21,9 @@ backups/
 # Logs and OS files
 *.log
 .DS_Store
+
+# Agent workflow scratch
+.superpowers/
+
+# Next.js generated (paths differ between next dev and next build)
+apps/web/next-env.d.ts
