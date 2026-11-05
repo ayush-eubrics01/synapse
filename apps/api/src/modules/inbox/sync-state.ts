@@ -16,6 +16,8 @@ export interface SyncState {
   lastError: ClassifiedError | null;
   nextRunAfter: string | null;
   backoffMinutes: number;
+  stallCount: number;
+  generation: string | null;
   searchCount: number;
   searchCountDate: string | null;
 }
@@ -71,6 +73,8 @@ export class SyncStateService {
       lastError: (row.lastError as ClassifiedError | null) ?? null,
       nextRunAfter: row.nextRunAfter,
       backoffMinutes: row.backoffMinutes,
+      stallCount: row.stallCount,
+      generation: row.generation,
       searchCount: row.searchCount,
       searchCountDate: row.searchCountDate,
     };

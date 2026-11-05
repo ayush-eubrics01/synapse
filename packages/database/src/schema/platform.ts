@@ -286,6 +286,8 @@ export const integrationSyncStates = sqliteTable(
     searchCount: integer("search_count").notNull().default(0),
     nextRunAfter: text("next_run_after"),
     backoffMinutes: integer("backoff_minutes").notNull().default(0),
+    stallCount: integer("stall_count").notNull().default(0),
+    generation: text("generation"),
   },
   (t) => [
     uniqueIndex("integration_sync_states_integration_id_stream_uq").on(t.integrationId, t.stream),

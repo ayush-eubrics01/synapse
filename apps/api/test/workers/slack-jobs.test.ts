@@ -10,6 +10,7 @@ import {
 } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
+import { eq } from "drizzle-orm";
 import { AuditLogger } from "../../src/core/audit/audit";
 import { SettingsService } from "../../src/core/config/settings";
 import { EventPublisher } from "../../src/core/events/publisher";
@@ -123,6 +124,13 @@ const evts = (type: string) =>
     .from(schema.domainEvents)
     .all()
     .filter((e) => e.type === type);
+/** Simulates the worker finishing every backfill job (the running one is no longer live). */
+const finishBackfill = () =>
+  db
+    .update(schema.jobs)
+    .set({ status: "COMPLETED" })
+    .where(eq(schema.jobs.type, "slack.backfill"))
+    .run();
 const nowTs = () => (clock.now().getTime() / 1000).toFixed(6);
 
 test("registration: timeouts and schedules", () => {
@@ -184,7 +192,10 @@ test("backfill start: running, bounds, idempotent", () => {
   expect(r.state.upperBound).toBe(nowTs());
   const [j] = jobs("slack.backfill");
   expect(j?.priority).toBe(10);
-  expect(j?.idempotencyKey).toBe(`slack.backfill:${r.state.checkpoint}`);
+  expect(j?.concurrencyGroup).toBe("slack.backfill");
+  expect(j?.idempotencyKey).toBe(
+    `slack.backfill:${r.state.generation}:${r.state.checkpoint}:0:2026-11-05T12:00:00.000Z`,
+  );
   const again = slack.startBackfill();
   expect(again.started).toBe(false);
   expect(jobs("slack.backfill")).toHaveLength(1);
@@ -197,7 +208,8 @@ test("backfill upper bound uses the incremental checkpoint (R37)", () => {
 
 test("backfill run: re-enqueues with min gap, then complete stops", async () => {
   const start = slack.startBackfill().state;
-  fake.next.push(ok([{ messages: [msg(T1)], rejected: 0 }], false));
+  fake.next.push(ok([{ messages: [msg(T1)], rejected: 0, nextCursor: "c" }], false));
+  finishBackfill();
   await run("slack.backfill");
   expect(fake.collects[0]).toEqual({
     afterTs: start.checkpoint as string,
@@ -208,10 +220,11 @@ test("backfill run: re-enqueues with min gap, then complete stops", async () => 
   expect(s.pagesDone).toBe(1);
   expect(s.checkpoint).toBe(T1);
   expect(s.status).toBe("running");
-  const next = jobs("slack.backfill").find((j) => j.idempotencyKey === `slack.backfill:${T1}`);
+  const next = jobs("slack.backfill").find((j) => j.status === "PENDING");
   expect(next?.runAfter).toBe("2026-11-05T12:03:00.000Z");
 
   fake.next.push(ok([], true));
+  finishBackfill();
   await run("slack.backfill");
   expect(sync.get("slack.backfill").status).toBe("complete");
   expect(jobs("slack.backfill")).toHaveLength(2);
@@ -220,10 +233,11 @@ test("backfill run: re-enqueues with min gap, then complete stops", async () => 
 test("backfill no progress: re-enqueue key includes pages_done and is not swallowed", async () => {
   const start = slack.startBackfill().state;
   fake.next.push(ok([], false));
+  finishBackfill();
   await run("slack.backfill");
   const keys = jobs("slack.backfill").map((j) => j.idempotencyKey);
   expect(keys).toHaveLength(2);
-  expect(keys[1]).toStartWith(`slack.backfill:${start.checkpoint}:0`);
+  expect(keys[1]).toContain(`:${start.checkpoint}:0:`);
 });
 
 test("rate_limited backoff 0->3->6->12->24->30, deferred not failed", async () => {
@@ -231,6 +245,7 @@ test("rate_limited backoff 0->3->6->12->24->30, deferred not failed", async () =
   const seen: number[] = [];
   for (let i = 0; i < 6; i++) {
     fake.next.push(boom(rate()));
+    finishBackfill();
     const out = await run("slack.backfill");
     expect(out).toMatchObject({ deferred: true });
     const s = sync.get("slack.backfill");
@@ -245,6 +260,7 @@ test("rate_limited backoff 0->3->6->12->24->30, deferred not failed", async () =
 test("rate_limited honours a later retryAfter", async () => {
   slack.startBackfill();
   fake.next.push(boom(rate("2026-11-05T14:00:00.000Z")));
+  finishBackfill();
   await run("slack.backfill");
   const last = jobs("slack.backfill").at(-1);
   expect(last?.runAfter).toBe("2026-11-05T14:00:00.000Z");
@@ -305,4 +321,127 @@ test("fetch_thread missing pair completes and audits thread_unavailable", async 
 test("retention calls expireContent with 180", async () => {
   await run("slack.retention_cleanup");
   expect(expired).toEqual([180]);
+});
+
+test("R49: parse_failed backfill -> status error; startBackfill resumes from the same checkpoint", async () => {
+  slack.startBackfill();
+  fake.next.push(ok([{ messages: [msg(T1)], rejected: 0, nextCursor: "c" }], false));
+  finishBackfill();
+  await run("slack.backfill");
+  const cp = sync.get("slack.backfill").checkpoint;
+  fake.next.push(boom(new JobError({ kind: "parse_failed", message: "bad" })));
+  finishBackfill();
+  await expect(run("slack.backfill")).rejects.toBeInstanceOf(JobError);
+  expect(sync.get("slack.backfill").status).toBe("error");
+  clock.advance(1000);
+  finishBackfill();
+  const r = slack.startBackfill();
+  expect(r.started).toBe(true);
+  expect(r.state.status).toBe("running");
+  expect(r.state.checkpoint).toBe(cp);
+  expect(r.state.pagesDone).toBe(1);
+  expect(r.state.generation).toBe("2026-11-05T12:00:01.000Z");
+  expect(jobs("slack.backfill").at(-1)?.idempotencyKey).toStartWith(
+    "slack.backfill:2026-11-05T12:00:01.000Z:",
+  );
+});
+
+test("R49: retryable error is not terminal until attempts are exhausted", async () => {
+  slack.startBackfill();
+  fake.next.push(boom(new JobError({ kind: "incomplete_ai_output", message: "x" })));
+  const h = handlers.get("slack.backfill")?.handler;
+  await expect(
+    h?.({ type: "slack.backfill", attempts: 1, maxAttempts: 3 } as unknown as Job, ctx as never),
+  ).rejects.toBeInstanceOf(JobError);
+  expect(sync.get("slack.backfill").status).toBe("running");
+  fake.next.push(boom(new JobError({ kind: "incomplete_ai_output", message: "x" })));
+  await expect(
+    h?.({ type: "slack.backfill", attempts: 3, maxAttempts: 3 } as unknown as Job, ctx as never),
+  ).rejects.toBeInstanceOf(JobError);
+  expect(sync.get("slack.backfill").status).toBe("error");
+});
+
+test("R49: running with no live job resumes; with a live job does not", () => {
+  const first = slack.startBackfill();
+  expect(slack.startBackfill().started).toBe(false);
+  finishBackfill();
+  clock.advance(1000);
+  const r = slack.startBackfill();
+  expect(r.started).toBe(true);
+  expect(r.state.checkpoint).toBe(first.state.checkpoint);
+  expect(r.state.generation).not.toBe(first.state.generation);
+});
+
+test("R50: last page without nextCursor completes even when complete=false", async () => {
+  slack.startBackfill();
+  fake.next.push(ok([{ messages: [msg(T1)], rejected: 0 }], false));
+  finishBackfill();
+  await run("slack.backfill");
+  expect(sync.get("slack.backfill").status).toBe("complete");
+  expect(jobs("slack.backfill")).toHaveLength(1);
+});
+
+test("R50: three stalled runs -> error, collection.failed unknown, no further job", async () => {
+  slack.startBackfill();
+  for (let i = 0; i < 3; i++) {
+    fake.next.push(ok([], false));
+    finishBackfill();
+    await run("slack.backfill");
+    clock.advance(1000);
+  }
+  const s = sync.get("slack.backfill");
+  expect(s.status).toBe("error");
+  expect(s.stallCount).toBe(3);
+  expect(jobs("slack.backfill")).toHaveLength(3);
+  expect(evts("collection.failed")[0]?.payload).toEqual({
+    stream: "slack.backfill",
+    kind: "unknown",
+  });
+});
+
+test("R51: enqueue is skipped while a PENDING backfill job exists", async () => {
+  slack.startBackfill();
+  fake.next.push(ok([], false));
+  await run("slack.backfill"); // first job still PENDING in the table
+  expect(jobs("slack.backfill")).toHaveLength(1);
+});
+
+test("R52: incremental skips when recently successful or another is RUNNING", async () => {
+  sync.update(db, "slack.messages", { lastSuccessAt: "2026-11-05T11:57:00.000Z" });
+  await run("slack.collect_incremental");
+  expect(fake.collects).toHaveLength(0);
+  sync.update(db, "slack.messages", { lastSuccessAt: "2026-11-05T11:00:00.000Z" });
+  db.insert(schema.jobs)
+    .values({
+      id: "other",
+      type: "slack.collect_incremental",
+      status: "RUNNING",
+      idempotencyKey: "k-other",
+      priority: 100,
+      runAfter: "2026-11-05T12:00:00.000Z",
+      createdAt: "2026-11-05T12:00:00.000Z",
+    } as never)
+    .run();
+  await run("slack.collect_incremental");
+  expect(fake.collects).toHaveLength(0);
+});
+
+test("R53: auth_paused writes no lastError; non-JobError writes unknown", async () => {
+  fake.next.push(boom(new JobError({ kind: "auth_paused", message: "paused" })));
+  await expect(run("slack.collect_incremental")).rejects.toBeInstanceOf(JobError);
+  expect(sync.get("slack.messages").lastError).toBeNull();
+  expect(evts("collection.failed")).toHaveLength(0);
+  fake.next.push(async () => {
+    throw new Error("secret detail");
+  });
+  await expect(run("slack.collect_incremental")).rejects.toThrow("secret detail");
+  expect(sync.get("slack.messages").lastError?.kind).toBe("unknown");
+  expect(sync.get("slack.messages").lastError?.message).not.toContain("secret");
+  expect(evts("collection.failed")).toHaveLength(1);
+});
+
+test("R53: fetch_thread rejects invalid input", async () => {
+  await expect(run("slack.fetch_thread", { nope: 1 })).rejects.toMatchObject({
+    classified: { kind: "invalid_input" },
+  });
 });

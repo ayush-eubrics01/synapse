@@ -1,6 +1,15 @@
-import { type CollectResult, type Job, JobError, type MessageSource } from "@synapse/contracts";
-import type { Db } from "@synapse/database";
+import {
+  type ClassifiedError,
+  type CollectResult,
+  type Job,
+  JobError,
+  type MessageSource,
+  retryDecision,
+} from "@synapse/contracts";
+import { type Db, schema, type Tx } from "@synapse/database";
 import { type Clock, isoNow } from "@synapse/shared";
+import { and, eq, inArray, ne } from "drizzle-orm";
+import { z } from "zod";
 import type { AuditLogger } from "../core/audit/audit";
 import type { SettingsService } from "../core/config/settings";
 import type { EventPublisher } from "../core/events/publisher";
@@ -28,6 +37,8 @@ const HANDLER_TIMEOUT_MS = 300_000; // R36
 const RETENTION_TIMEOUT_MS = 60_000;
 const DAY_MS = 86_400_000;
 const MIN_MS = 60_000;
+const MAX_STALLS = 3;
+const threadInput = z.object({ conversationId: z.string().min(1), parentTs: z.string().min(1) });
 
 export const tsFromMs = (ms: number): string => (ms / 1000).toFixed(6);
 
@@ -37,21 +48,54 @@ export function registerSlackJobs(deps: SlackJobDeps): {
   const { db, clock, source, store, sync, queue, settings, events, audit, scheduler } = deps;
   const nowMs = () => clock.now().getTime();
 
-  const fail = (stream: SyncStream, err: JobError): never => {
-    const e = err.classified;
-    db.transaction(
-      (tx) => {
-        sync.update(tx, stream, { lastError: { kind: e.kind, message: e.message } });
-        events.publish(tx, {
-          type: "collection.failed",
-          aggregateType: "integration",
-          aggregateId: stream,
-          correlationId: stream,
-          payload: { stream, kind: e.kind },
-        });
-      },
-      { behavior: "immediate" },
-    );
+  const isLive = (tx: Tx, type: string, statuses: string[]): boolean =>
+    tx
+      .select({ id: schema.jobs.id })
+      .from(schema.jobs)
+      .where(and(eq(schema.jobs.type, type), inArray(schema.jobs.status, statuses as never[])))
+      .limit(1)
+      .all().length > 0;
+
+  /** auth_paused / quota_exhausted are pauses, not failures: no lastError, no event (R53). */
+  const isPause = (e: ClassifiedError) => retryDecision(e.kind) === "defer";
+
+  const recordFailure = (tx: Tx, stream: SyncStream, e: ClassifiedError, status?: "error") => {
+    sync.update(tx, stream, {
+      lastError: { kind: e.kind, message: e.message },
+      ...(status ? { status } : {}),
+    });
+    events.publish(tx, {
+      type: "collection.failed",
+      aggregateType: "integration",
+      aggregateId: stream,
+      correlationId: stream,
+      payload: { stream, kind: e.kind },
+    });
+  };
+
+  /** Records the failure (unless a pause) and rethrows; `terminal` parks the backfill in "error". */
+  const fail = (stream: SyncStream, err: unknown, terminal = false): never => {
+    if (err instanceof JobError) {
+      if (!isPause(err.classified)) {
+        db.transaction(
+          (tx) => recordFailure(tx, stream, err.classified, terminal ? "error" : undefined),
+          {
+            behavior: "immediate",
+          },
+        );
+      }
+    } else {
+      db.transaction(
+        (tx) =>
+          recordFailure(
+            tx,
+            stream,
+            { kind: "unknown", message: "unexpected collector failure" },
+            terminal ? "error" : undefined,
+          ),
+        { behavior: "immediate" },
+      );
+    }
     throw err;
   };
 
@@ -68,14 +112,37 @@ export function registerSlackJobs(deps: SlackJobDeps): {
     return { inserted, duplicates, rejected };
   };
 
-  const incremental = async (_job: Job, ctx: JobContext) => {
+  const incremental = async (job: Job, ctx: JobContext) => {
     if (!settings.get("slack.collection.enabled")) return { skipped: true };
     const stream: SyncStream = "slack.messages";
-    let checkpoint = sync.get(stream).checkpoint;
-    if (checkpoint === null) {
-      checkpoint = tsFromMs(nowMs() - DAY_MS);
-      sync.update(db, stream, { checkpoint });
-    }
+    // R52: don't pile up after deferrals.
+    const last = sync.get(stream).lastSuccessAt;
+    const halfMs = (settings.get("slack.collection.intervalSeconds") * 1000) / 2;
+    if (last && nowMs() - Date.parse(last) < halfMs) return { skipped: "recent" };
+    const otherRunning = db
+      .select({ id: schema.jobs.id })
+      .from(schema.jobs)
+      .where(
+        and(
+          eq(schema.jobs.type, "slack.collect_incremental"),
+          eq(schema.jobs.status, "RUNNING"),
+          ne(schema.jobs.id, job.id ?? ""),
+        ),
+      )
+      .limit(1)
+      .all();
+    if (otherRunning.length > 0) return { skipped: "running" };
+
+    const checkpoint = db.transaction(
+      (tx) => {
+        const cur = sync.get(stream, tx).checkpoint;
+        if (cur !== null) return cur;
+        const init = tsFromMs(nowMs() - DAY_MS);
+        sync.update(tx, stream, { checkpoint: init });
+        return init;
+      },
+      { behavior: "immediate" },
+    );
     try {
       const result = await source.collect(
         { afterTs: checkpoint, maxPages: settings.get("slack.collector.pagesPerRun") },
@@ -98,27 +165,27 @@ export function registerSlackJobs(deps: SlackJobDeps): {
       );
       return { pages: result.pages.length, ...totals, complete: result.complete };
     } catch (err) {
-      if (err instanceof JobError) fail(stream, err);
-      throw err;
+      return fail(stream, err);
     }
   };
 
-  /** Enqueues the next backfill run; a key that would collide with an earlier job gets a suffix. */
-  const enqueueBackfill = (
-    tx: Parameters<JobQueue["enqueue"]>[0],
-    state: SyncState,
-    runAfterMs: number | null,
-    progressed: boolean,
-  ) => {
-    const runAfter = runAfterMs === null ? undefined : new Date(runAfterMs).toISOString();
-    const base = `slack.backfill:${state.checkpoint}`;
-    const idempotencyKey = progressed
-      ? base
-      : `${base}:${state.pagesDone}${runAfter ? `:${runAfter}` : ""}`;
-    queue.enqueue(tx, { type: "slack.backfill", idempotencyKey, priority: 10, runAfter });
+  /**
+   * Enqueues the next backfill run in the caller's transaction, unless one is already waiting (R51).
+   * Key includes the generation so a resume never collides with an earlier chain.
+   */
+  const enqueueBackfill = (tx: Tx, state: SyncState, runAfterMs: number) => {
+    if (isLive(tx, "slack.backfill", ["PENDING", "RETRY"])) return;
+    const runAfter = new Date(runAfterMs).toISOString();
+    queue.enqueue(tx, {
+      type: "slack.backfill",
+      idempotencyKey: `slack.backfill:${state.generation}:${state.checkpoint}:${state.pagesDone}:${runAfter}`,
+      priority: 10,
+      concurrencyGroup: "slack.backfill",
+      runAfter,
+    });
   };
 
-  const backfill = async (_job: Job, ctx: JobContext) => {
+  const backfill = async (job: Job, ctx: JobContext) => {
     const stream: SyncStream = "slack.backfill";
     const start = sync.get(stream);
     if (start.status !== "running" || start.checkpoint === null || start.upperBound === null) {
@@ -126,8 +193,9 @@ export function registerSlackJobs(deps: SlackJobDeps): {
     }
     const minMinutes = settings.get("slack.backfill.minMinutesBetweenRuns");
     const maxBackoff = settings.get("slack.backfill.maxBackoffMinutes");
+    let result: CollectResult;
     try {
-      const result = await source.collect(
+      result = await source.collect(
         {
           afterTs: start.checkpoint,
           beforeTs: start.upperBound,
@@ -135,64 +203,92 @@ export function registerSlackJobs(deps: SlackJobDeps): {
         },
         ctx.signal,
       );
-      const totals = persistAll(stream, result);
-      db.transaction(
-        (tx) => {
-          sync.countSearches(tx, stream, result.searches);
-          const cur = sync.get(stream, tx);
-          const pagesDone = cur.pagesDone + result.pages.length;
-          const next = { ...cur, pagesDone };
-          sync.update(tx, stream, {
-            pagesDone,
-            backoffMinutes: 0,
-            lastSuccessAt: isoNow(clock),
-            lastError: null,
-            status: result.complete ? "complete" : "running",
-          });
-          events.publish(tx, {
-            type: "collection.completed",
-            aggregateType: "integration",
-            aggregateId: stream,
-            correlationId: stream,
-            payload: { stream, pages: result.pages.length, ...totals },
-          });
-          if (!result.complete) {
-            const runAfter = nowMs() + minMinutes * MIN_MS;
-            sync.update(tx, stream, { nextRunAfter: new Date(runAfter).toISOString() });
-            enqueueBackfill(tx, next, runAfter, cur.checkpoint !== start.checkpoint);
-          }
-        },
-        { behavior: "immediate" },
-      );
-      return { pages: result.pages.length, ...totals, complete: result.complete };
     } catch (err) {
-      if (!(err instanceof JobError)) throw err;
-      if (err.classified.kind !== "rate_limited") return fail(stream, err);
-      const cur = sync.get(stream);
-      const backoff = Math.min(maxBackoff, Math.max(minMinutes, cur.backoffMinutes * 2));
-      const retryAfterMs = err.classified.retryAfter ? Date.parse(err.classified.retryAfter) : 0;
-      const runAfter = Math.max(
-        Number.isNaN(retryAfterMs) ? 0 : retryAfterMs,
-        nowMs() + backoff * MIN_MS,
-      );
-      db.transaction(
+      if (!(err instanceof JobError)) return fail(stream, err, job.attempts >= job.maxAttempts);
+      const e = err.classified;
+      if (e.kind !== "rate_limited") {
+        const d = retryDecision(e.kind);
+        const terminal =
+          d === "needs_attention" ||
+          d === "fail" ||
+          (d === "retry" && job.attempts >= job.maxAttempts);
+        return fail(stream, err, terminal);
+      }
+      const backoffAt = db.transaction(
         (tx) => {
+          const cur = sync.get(stream, tx);
+          const backoff = Math.min(maxBackoff, Math.max(minMinutes, cur.backoffMinutes * 2));
+          const retryAfterMs = e.retryAfter ? Date.parse(e.retryAfter) : 0;
+          const runAfter = Math.max(
+            Number.isNaN(retryAfterMs) ? 0 : retryAfterMs,
+            nowMs() + backoff * MIN_MS,
+          );
           sync.update(tx, stream, {
             backoffMinutes: backoff,
             status: "running",
             nextRunAfter: new Date(runAfter).toISOString(),
-            lastError: { kind: err.classified.kind, message: err.classified.message },
+            lastError: { kind: e.kind, message: e.message },
           });
-          enqueueBackfill(tx, cur, runAfter, false);
+          enqueueBackfill(tx, sync.get(stream, tx), runAfter);
+          return backoff;
         },
         { behavior: "immediate" },
       );
-      return { deferred: true, backoffMinutes: backoff };
+      return { deferred: true, backoffMinutes: backoffAt };
     }
+
+    const totals = persistAll(stream, result);
+    const lastPage = result.pages.at(-1);
+    // R50: complete iff the last accepted page has no next cursor.
+    const complete = lastPage ? !lastPage.nextCursor : result.complete;
+    const outcome = db.transaction(
+      (tx) => {
+        sync.countSearches(tx, stream, result.searches);
+        const cur = sync.get(stream, tx);
+        const progressed = cur.checkpoint !== start.checkpoint;
+        const stallCount = progressed ? 0 : cur.stallCount + 1;
+        const stalled = !complete && stallCount >= MAX_STALLS;
+        sync.update(tx, stream, {
+          pagesDone: cur.pagesDone + result.pages.length,
+          stallCount,
+          backoffMinutes: 0,
+          lastSuccessAt: isoNow(clock),
+          lastError: null,
+          status: complete ? "complete" : stalled ? "error" : "running",
+        });
+        events.publish(tx, {
+          type: "collection.completed",
+          aggregateType: "integration",
+          aggregateId: stream,
+          correlationId: stream,
+          payload: { stream, pages: result.pages.length, ...totals },
+        });
+        if (stalled) {
+          events.publish(tx, {
+            type: "collection.failed",
+            aggregateType: "integration",
+            aggregateId: stream,
+            correlationId: stream,
+            payload: { stream, kind: "unknown" },
+          });
+        } else if (!complete) {
+          const runAfter = nowMs() + minMinutes * MIN_MS;
+          sync.update(tx, stream, { nextRunAfter: new Date(runAfter).toISOString() });
+          enqueueBackfill(tx, sync.get(stream, tx), runAfter);
+        }
+        return complete ? "complete" : stalled ? "stalled" : "continued";
+      },
+      { behavior: "immediate" },
+    );
+    return { pages: result.pages.length, ...totals, outcome };
   };
 
   const fetchThread = async (job: Job, ctx: JobContext) => {
-    const { conversationId, parentTs } = job.input as { conversationId: string; parentTs: string };
+    const parsed = threadInput.safeParse(job.input);
+    if (!parsed.success) {
+      throw new JobError({ kind: "invalid_input", message: "invalid slack.fetch_thread input" });
+    }
+    const { conversationId, parentTs } = parsed.data;
     const found = (await source.fetchThreads([{ conversationId, parentTs }], ctx.signal)).find(
       (t) => t.conversationId === conversationId && t.parentTs === parentTs,
     );
@@ -242,26 +338,37 @@ export function registerSlackJobs(deps: SlackJobDeps): {
     return db.transaction(
       (tx) => {
         const cur = sync.get("slack.backfill", tx);
-        if (cur.status === "running" || cur.status === "complete") {
+        const live = isLive(tx, "slack.backfill", ["PENDING", "RETRY", "RUNNING"]);
+        if (cur.status === "complete" || (cur.status === "running" && live)) {
           return { started: false, state: cur };
         }
         const now = nowMs();
-        const checkpoint = tsFromMs(now - settings.get("slack.backfill.days") * DAY_MS);
-        const upperBound = sync.get("slack.messages", tx).checkpoint ?? tsFromMs(now); // R37
-        sync.update(tx, "slack.backfill", {
-          status: "running",
-          checkpoint,
-          upperBound,
-          pagesDone: 0,
-          backoffMinutes: 0,
-          lastError: null,
-        });
+        const generation = new Date(now).toISOString();
+        const resumable = cur.status === "error" || cur.status === "running";
+        if (resumable && cur.checkpoint !== null && cur.upperBound !== null) {
+          // R49: resume from the current checkpoint, never reset.
+          sync.update(tx, "slack.backfill", {
+            status: "running",
+            generation,
+            stallCount: 0,
+            backoffMinutes: 0,
+            lastError: null,
+          });
+        } else {
+          sync.update(tx, "slack.backfill", {
+            status: "running",
+            checkpoint: tsFromMs(now - settings.get("slack.backfill.days") * DAY_MS),
+            // R37
+            upperBound: sync.get("slack.messages", tx).checkpoint ?? tsFromMs(now),
+            pagesDone: 0,
+            backoffMinutes: 0,
+            stallCount: 0,
+            generation,
+            lastError: null,
+          });
+        }
         const state = sync.get("slack.backfill", tx);
-        queue.enqueue(tx, {
-          type: "slack.backfill",
-          idempotencyKey: `slack.backfill:${checkpoint}`,
-          priority: 10,
-        });
+        enqueueBackfill(tx, state, now);
         return { started: true, state };
       },
       { behavior: "immediate" },
