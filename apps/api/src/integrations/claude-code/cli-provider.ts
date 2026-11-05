@@ -241,7 +241,7 @@ export class ClaudeCliProvider implements AIProvider {
     //   → quota: a rejected window in a rate_limit_event
     //   → quota: an error result whose text mentions a usage/rate limit or quota (no event)
     //   → auth_failed → connector_not_ready → no result event (provider_error)
-    //   → result.isError (provider_error) → non-zero exit (R29) → expectedToolNames unmet
+    //   → error_max_turns (provider_error, details.maxTurns, R16) → result.isError (provider_error) → non-zero exit (R29) → expectedToolNames unmet
     //   (incomplete_ai_output) → succeeded.
     // quota_exhausted retryAfter is max(resetsAt, now + 15 min), so it can never loop.
     if (out.spawnError) {
@@ -310,6 +310,15 @@ export class ClaudeCliProvider implements AIProvider {
         kind: "provider_error",
         message: "claude exited without a result event",
         details: { stderrBytes: out.stderrBytes },
+      });
+    }
+    // R16: a run stopped by --max-turns is a runtime security signal for untrusted-content runs.
+    // Classified by the result subtype whatever is_error or the exit code say.
+    if (result.subtype === "error_max_turns") {
+      return fail("failed", {
+        kind: "provider_error",
+        message: "claude reached max turns",
+        details: { maxTurns: true, stderrBytes: out.stderrBytes },
       });
     }
     if (result.isError) {

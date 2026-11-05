@@ -179,3 +179,64 @@ test("reaper parks external-write and max-attempt jobs in NEEDS_ATTENTION", () =
     expect(attemptRows(id)[0]?.status).toBe("interrupted");
   }
 });
+
+test("R18: startup recovery and the reaper run registered sweeps inside their transaction", () => {
+  const seen: string[] = [];
+  const sweeps = [
+    {
+      name: "a",
+      run: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
+        seen.push("a");
+        q.enqueue(tx, { type: "t", idempotencyKey: "from-sweep" });
+      },
+    },
+  ];
+  recoverOnStartup({ db, clock, leases, audit, sweeps });
+  reapExpiredJobs({ db, clock, audit, sweeps });
+  expect(seen).toEqual(["a", "a"]);
+  expect(
+    db
+      .select()
+      .from(schema.jobs)
+      .all()
+      .map((j) => j.idempotencyKey),
+  ).toEqual(["from-sweep"]);
+});
+
+test("R18: a failing sweep is logged by name and never aborts recovery", () => {
+  const stuck = running("s");
+  clock.advance(5000);
+  const logs: string[] = [];
+  const err = console.error;
+  console.error = (m: string) => logs.push(m);
+  try {
+    const res = recoverOnStartup({
+      db,
+      clock,
+      leases,
+      audit,
+      sweeps: [
+        {
+          name: "boom",
+          run: (tx) => {
+            q.enqueue(tx, { type: "t", idempotencyKey: "partial" });
+            throw new Error("secret detail");
+          },
+        },
+      ],
+    });
+    expect(res.requeued).toBe(1);
+  } finally {
+    console.error = err;
+  }
+  expect(q.get(stuck)?.status).toBe("RETRY");
+  // The sweep's partial write is rolled back with its savepoint.
+  expect(
+    db
+      .select()
+      .from(schema.jobs)
+      .all()
+      .map((j) => j.idempotencyKey),
+  ).toEqual(["s"]);
+  expect(logs).toEqual(["recovery sweep boom failed"]);
+});

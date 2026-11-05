@@ -56,13 +56,13 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 
 | Table | Notes |
 |---|---|
-| `people` | Identity only: `slack_user_id` unique, name, email, title, team |
+| `people` | Identity only: `slack_user_id` unique not null, name, email, `created_at` (title and team arrive with the people module) |
 | `temporary_contacts` | Short-lived context for unknown people; `slack_user_id` unique, `expires_at`, `profile_assessment` JSON |
 | `people_profiles` | Current approved profile per person (`person_id` unique), structured sections JSON |
 | `people_profile_versions` | Immutable history: `profile_id`, `version`, `content` JSON, `approval_id` |
 | `people_profile_recommendations` | Proposed changes, `status`, `claude_run_id` |
 | `people_profile_evidence` | `recommendation_id` or `version_id`, `message_id` (nullable after retention), `source_external_ref` (always kept), `confidence`, `observed_at` |
-| `people_priority_settings` | `person_id` unique, `priority` (manual only), `rationale`, `extra_attention` |
+| `people_priority_settings` | `person_id` FK unique, `priority` (normal/high/critical, manual only), `rationale` (nullable), `extra_attention` (default false), `updated_at` |
 
 ## Commitments tables (owned by `commitments`)
 
@@ -113,8 +113,9 @@ Away mode itself is the `autoReply.awayMode` key in `app_settings`, with changes
 
 | Table | Notes |
 |---|---|
-| `security_flags` | `message_id` FK nullable, `source_external_ref` (always kept), `slack_user_id`, `person_id` FK nullable, `conversation_id`, `detector` (rules/ai/runtime), `rule_id`, `claude_run_id` FK nullable, `severity` (info/warning/high), `excerpt` (≤ 300 chars), `reason`, `status` (open/acknowledged/contacted/dismissed), `rules_version`, `created_at`, `reviewed_at`. Unique(`message_id`,`detector`,`rule_id`). Index (`status`,`severity`), (`slack_user_id`). Kept like audit (not deleted by message retention) |
-| `security_flag_rules` | Versioned rule config: `version`, `rules` JSON, `active`, `created_at` |
+| `security_flags` | `message_id` FK nullable, `source_external_ref` (always kept), `slack_user_id`, `person_id` FK nullable, `conversation_id`, `detector` (rules/ai/runtime), `rule_id`, `claude_run_id` FK nullable, `severity` (info/warning/high), `excerpt` (≤ 300 chars), `reason`, `status` (open/acknowledged/contacted/dismissed), `rules_version`, `created_at`, `reviewed_at`, `updated_at`. `rule_id` is NOT NULL: the `ai` and `runtime` detectors use the literal `"ai"` and `"runtime"`. Unique(`message_id`,`detector`,`rule_id`). Index (`status`,`severity`), (`slack_user_id`). Kept like audit (not deleted by message retention) |
+| `security_flag_rules` | Versioned rule config: `version` int unique, `rules` JSON, `active`, `created_at` |
+| `message_drafts` | Suggested replies (owned by the urgency engine): `message_id` FK, `kind` (`suggested_response`), `text` (nullable; cleared by retention), `confidence` real, `status` (proposed/discarded), `claude_run_id` nullable FK, `created_at`, `content_expired_at`. Unique(`message_id`,`kind`) |
 
 ## Claude activity tables (owned by `claude-activity`, ADR-036)
 

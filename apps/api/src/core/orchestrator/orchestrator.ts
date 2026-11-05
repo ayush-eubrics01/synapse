@@ -457,7 +457,18 @@ export class ClaudeOrchestrator {
     const safeRetry = SAFE_MESSAGE_KINDS.has(kind) ? e?.retryAfter : undefined;
     const retryAfter =
       kind === "quota_exhausted" ? clampQuotaRetry(safeRetry, this.deps.clock.now()) : safeRetry;
-    return { kind, message, ...(retryAfter ? { retryAfter } : {}), ...extra };
+    // R16: the max-turns marker survives classification (a boolean, never content).
+    const maxTurns = e?.kind === kind && e.details?.maxTurns === true;
+    const details = {
+      ...(maxTurns ? { maxTurns: true } : {}),
+      ...(uncertain ? { uncertain: true } : {}),
+    };
+    return {
+      kind,
+      message,
+      ...(retryAfter ? { retryAfter } : {}),
+      ...(Object.keys(details).length > 0 ? { details } : {}),
+    };
   }
 
   latestSnapshot(): QuotaSnapshot | null {

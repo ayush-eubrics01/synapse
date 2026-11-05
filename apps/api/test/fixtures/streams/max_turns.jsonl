@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","tools":["ToolSearch"],"mcp_servers":[]}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"mcp__claude_ai_Slack__slack_send_message","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"denied-1","is_error":true}]}}
+{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":4,"duration_ms":2000,"total_cost_usd":0.002,"usage":{"input_tokens":2,"output_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"permission_denials":[{"tool_name":"mcp__claude_ai_Slack__slack_send_message","tool_use_id":"toolu_1","tool_input":{}}]}

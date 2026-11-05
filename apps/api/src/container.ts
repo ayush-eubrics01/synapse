@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { AIProvider } from "@synapse/contracts";
+import type { AIProvider, DesktopNotifier } from "@synapse/contracts";
 import { type Db, openDatabase, runMigrations } from "@synapse/database";
 import { type Clock, newId, systemClock } from "@synapse/shared";
 import { ApprovalEngine } from "./core/approvals/approvals";
@@ -17,10 +17,13 @@ import {
   bunVersionCheck,
   claudeCheck,
   databaseCheck,
+  desktopNotifierCheck,
   eventsCheck,
   heartbeatCheck,
   jobsCheck,
   lingerCheck,
+  screeningRulesCheck,
+  securityRulesCheck,
 } from "./core/health/checks";
 import { HealthService } from "./core/health/health";
 import { JobQueue } from "./core/jobs/queue";
@@ -31,14 +34,21 @@ import { NotificationService } from "./core/notifications/notifications";
 import { AuthMonitor } from "./core/orchestrator/auth";
 import { ClaudeOrchestrator } from "./core/orchestrator/orchestrator";
 import { PermissionManager } from "./core/permissions/permissions";
+import type { RecoverySweep } from "./core/recovery/recovery";
 import { SchedulerService } from "./core/scheduler/scheduler";
 import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
+import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notifier";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
+import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
+import { UrgentInbox } from "./modules/inbox/urgent";
+import { PeopleService } from "./modules/people/service";
+import { SecurityFlagsService } from "./modules/security-flags/service";
 import { registerSlackJobs } from "./workers/slack";
+import { registerUrgencyJobs } from "./workers/urgency";
 
 export interface Container {
   config: AppConfig;
@@ -63,7 +73,14 @@ export interface Container {
   orchestrator: ClaudeOrchestrator;
   health: HealthService;
   inbox: InboxStore;
+  urgent: UrgentInbox;
   sync: SyncStateService;
+  people: PeopleService;
+  securityFlags: SecurityFlagsService;
+  /** Run by startup recovery and the reaper (main.ts), so core never imports workers. */
+  recoverySweeps: RecoverySweep[];
+  /** Job handler registry; the urgency smoke script runs one handler directly. */
+  handlers: ReadonlyMap<string, HandlerRegistration>;
   slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
@@ -74,6 +91,8 @@ export interface ContainerDeps {
   run?: (cmd: string[]) => Promise<string>;
   /** Registers the `test.noop` job handler (set from SYNAPSE_TEST_HANDLERS by main.ts). */
   testHandlers?: boolean;
+  /** Desktop notification adapter. Defaults to a no-op; main.ts injects the real one. */
+  notifier?: DesktopNotifier & NotifierHealth;
 }
 
 const CORE_MODULES = [
@@ -113,7 +132,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   const settings = new SettingsService(db, clock, events.publish.bind(events));
   const permissions = new PermissionManager(db, audit);
   const approvals = new ApprovalEngine(db, clock, events, audit, permissions);
-  const notifications = new NotificationService(db, clock, live);
+  const notifier = deps.notifier ?? new NoopDesktopNotifier();
+  const notifications = new NotificationService(db, clock, live, { notifier, settings });
   const registry = new ModuleRegistry(db);
 
   for (const name of CORE_MODULES) registry.register({ name, version: "1.0.0", dependsOn: [] });
@@ -162,6 +182,31 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
 
   const sync = new SyncStateService(db, clock);
   const inbox = new InboxStore({ db, clock, events, queue, sync });
+  const urgent = new UrgentInbox({ db, clock, events, audit });
+  const people = new PeopleService({ db, clock, events, audit, settings });
+  const securityFlags = new SecurityFlagsService({
+    db,
+    clock,
+    events,
+    audit,
+    settings,
+    notifications,
+    people,
+  });
+  securityFlags.init();
+  const screening = new ScreeningService({
+    db,
+    clock,
+    events,
+    queue,
+    settings,
+    people,
+    securityFlags,
+  });
+  // Replies already arrive as message.received; message.thread_updated would screen them twice.
+  dispatcher.subscribe("message.received", "inbox.screening", (event, tx) =>
+    screening.handle(event, tx),
+  );
   const slack = registerSlackJobs({
     db,
     clock,
@@ -175,6 +220,17 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     scheduler,
     handlers,
   });
+  const urgency = registerUrgencyJobs({
+    db,
+    clock,
+    settings,
+    events,
+    queue,
+    notifications,
+    orchestrator,
+    securityFlags,
+    handlers,
+  });
 
   const health = new HealthService({
     database: databaseCheck(sqlite),
@@ -185,6 +241,9 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     bun: bunVersionCheck(),
     auth: authCheck(auth, clock),
     claude: claudeCheck(provider, clock),
+    "security-rules": securityRulesCheck(securityFlags),
+    "screening-rules": screeningRulesCheck(screening),
+    "desktop-notifier": desktopNotifierCheck(notifier),
   });
 
   return {
@@ -210,7 +269,12 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     orchestrator,
     health,
     inbox,
+    urgent,
     sync,
+    people,
+    securityFlags,
+    handlers,
+    recoverySweeps: [{ name: "urgency.assess", run: urgency.recoverySweep }],
     slack: { startBackfill: slack.startBackfill, backfillResumable: slack.backfillResumable },
   };
 }

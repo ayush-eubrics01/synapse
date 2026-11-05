@@ -43,34 +43,34 @@ Non-responsibilities:
 | `override.ignore_instructions` | "ignore (all\|previous\|your) instructions", "disregard the above", "forget your rules" | high |
 | `override.role` | "you are now", "act as", "system prompt", "developer mode" | high |
 | `tools.named` | `mcp__`, `slack_send_message`, `Bash`, `Edit`, tool-call syntax (`<invoke`, `<function`) | high |
-| `exfil.secrets` | asks for `.env`, tokens, keys, passwords, credentials | high |
+| `exfil.secrets` | asks to send/show `.env`, private or SSH keys, credentials.json | high |
+| `exfil.secrets_generic` | asks to send/show tokens, API keys, passwords, credentials | warning |
 | `hidden.unicode` | zero-width or bidi control characters | high |
 | `hidden.blob` | long base64/hex blobs, HTML/markdown comments containing text | warning |
 | `action.command` | "run this command", "git push", "delete", "merge this", "deploy" addressed to Claude | warning |
 | `address.claude` | addresses Claude/AI directly ("Claude, …", "hey AI") | info, raised to warning if combined with an action verb |
 
-Matching is case-insensitive. Messages from the user themselves are excluded.
+Matching is case-insensitive unless a rule sets `caseSensitive` (`tools.named`). Only the first 40,000 characters (Slack's maximum message length) of a message are scanned, and Slack-escaped text (`&lt; &gt; &amp;`) is also scanned unescaped.
+
+**Custom rules must be linear.** Rule validation only checks that patterns compile, not that they are cheap. Avoid nested or adjacent unbounded quantifiers (for example `<!--[\s\S]*?\S[\s\S]*?-->` is cubic and froze the API on 8 KB of input). The starter set has a timing regression test.
+
+Messages from the user themselves are excluded.
 
 ## Severity and dedup
 
-- One flag per (message, rule/detector). Repeat detections update the existing flag.
-- Severity is the highest of all detectors for that message.
+- One flag per (message, detector, rule), enforced by a unique index. A repeat detection never changes `status`; it only raises severity.
+- A flag is created or raised: the event `security.injection_suspected` is always emitted, and a notification only when the severity reaches `security.flags.notifyOnSeverity`, once per severity level reached, and only for messages within `urgency.maxAgeHours` (a backfilled old message is flagged silently).
+- A message's severity is the highest of its flags.
 - Replies to a `Sent using @claude` message that only address Claude conversationally stay `info`.
 
 ## Jobs
 
-| Job type | Trigger | Profile / model | Idempotency key | Retry |
-|---|---|---|---|---|
-| `security.scan_message` | runs inside screening for each `message.received` (no separate queue hop) | none | `security.scan:<messageId>:<rulesVersion>` | 3 |
-| `security.record_ai_flag` | intelligence result containing `suspectedInjection.detected = true` | none | `security.ai:<runId>:<messageId>` | 3 |
-| `security.record_runtime_flag` | `claude.job_completed`/`failed` with denials or unexpected tool use, for a job with untrusted content | none | `security.rt:<runId>` | 3 |
-
-No job here calls Claude.
+None. Phase 4 runs all detection inline: rule scanning inside the screening consumer's transaction, and AI and runtime flags inside the assessment and suggestion handlers' transactions. No job here calls Claude. Dedup is by the unique index on (message, detector, rule), so replays, retries and re-scans are silent.
 
 ## Events
 
-Emitted: `security.injection_suspected` (`warning`/`high` also notify), `security.flag_reviewed`.
-Consumed: `message.received`, `claude.job_completed`, `claude.job_failed`.
+Emitted: `security.injection_suspected` (on creation at any severity and on every severity raise; notifies from `security.flags.notifyOnSeverity` up), `security.flag_reviewed`.
+Consumed: none. Detection is called inline: rules by the screening consumer (itself a `message.received` consumer), AI and runtime flags by the assessment and suggestion handlers.
 
 ## Workflows
 
@@ -81,7 +81,7 @@ claude run denials / unexpected tools ───┘                              
                                        ┌─────────────────────────────────┴───────────────┐
                                  warning/high                                           info
                        Red Flags widget (grouped by person)                 person page only
-                       high → desktop notification
+                       high → in-app + desktop notification (title only)
                        auto-reply blocked for that message (ADR-033)
                                        │
                  user: acknowledged / contacted / dismissed ─▶ security.flag_reviewed
@@ -97,8 +97,8 @@ Detection and recording: allowed. Reviewing flags: user only. This module sends 
 
 ## Failure handling
 
-- Rule config invalid → keep the last valid version, raise a health warning.
-- A detector failing must not block message storage or screening. Log it and continue.
+- Rule config invalid → the newest older stored version that still parses stays in effect; if none parses, the built-in starter rules apply (reported as version 0). Either way the `security-rules` health check reports `degraded` with a content-free detail.
+- A detector failing must not block message storage or screening. Screening logs one content-free line and sets `screening.error` on the message.
 - Retention: flags and excerpts (max ~300 chars) are kept like audit records. The flag keeps `source_external_ref` after the message content expires.
 
 ## Configuration
@@ -109,6 +109,19 @@ Detection and recording: allowed. Reviewing flags: user only. This module sends 
 | `security.flags.widgetMinSeverity` | `warning` |
 | `security.flags.excerptMaxChars` | `300` |
 | `security.flags.rulesVersion` | managed by `security_flag_rules` |
+
+## Implementation notes (Phase 4)
+
+- **Where it runs.** `SecurityFlagsService` (`modules/security-flags`) is called by the screening consumer for rules, and by the assessment and suggestion handlers for AI and runtime flags. Every flag carries the message id. `security_flags.rule_id` is `NOT NULL`: AI flags use the sentinel `ai` and runtime flags `runtime`.
+- **Starter rules** are seeded as version 1 at startup (`init()`). The rules in the table above are a snapshot: any change to the starter set needs a version bump. Verbs in `exfil.*` and `override.*` need word boundaries to limit false positives (for example "I'll share the API keys doc" is at most `warning`). The `hidden.blob` comment pattern is linear and the scan reads at most the first 40,000 characters.
+- **Excerpt hygiene.** Every stored excerpt (rule match, AI quote, runtime reason) and the AI reason is rendered visible (zero-width, bidi, soft-hyphen and tag characters become `\u{...}` escapes) and capped at `security.flags.excerptMaxChars` by code point without cutting an escape. Events, audit rows, notifications and logs never carry message text; the notification title is "Red flag: message from <sender name>" (the Slack user id when the name is unknown).
+- **AI flags** come from `suspectedInjection` in assessment and suggestion output, **runtime flags** from permission denials and any non-`ToolSearch` tool result in those runs (`high` when a write or send tool is involved, otherwise `warning`, reason lists tool names only).
+- **Runtime flags from failed runs (R16).** A run that throws (provider error, timeout, max turns) returns no result, but the orchestrator still stores `permission_denials` on the `claude_runs` row. The assess and suggest handlers read this attempt's row and raise the same runtime flag from those denials. A run stopped by `--max-turns` (CLI result subtype `error_max_turns`, surfaced as `provider_error` with `details.maxTurns`) adds the reason `max_turns reached` at `warning` (or `high` with a write/send denial). This covers the attack case where an injected message drives the model into denied tool calls until it runs out of turns.
+- **Old messages (R15).** `scanMessage(tx, message, { notify })`: the screening consumer passes `notify = sent_at ≥ now − urgency.maxAgeHours`. An old (backfilled) message still gets its flags and `security.injection_suspected` events and shows in the Red Flags widget, but never notifies. AI and runtime flags always come from recent messages (only those are assessed) and notify as usual. Desktop popups are additionally rate-limited by `NotificationService` (5 per rolling minute, then one summary; see `urgency-engine.md`).
+- **Review.** `acknowledged`, `contacted` and `dismissed` are user actions; a reviewed flag stays reviewed on re-detection. The widget shows `warning` and above by default (`security.flags.widgetMinSeverity`), grouped by person; the per-person history shows every severity.
+- **Routes.** `GET /api/security/flags?includeReviewed` (grouped by person), `GET /api/security/flags/person/:slackUserId` (full history, newest first), `POST /api/security/flags/:id/review` (404 for an unknown flag).
+- **Auto-reply hook.** `hasOpenFlag(messageId, "warning")` exists for the Phase 6 auto-reply policy; nothing sends in Phase 4.
+- **Out of scope.** The seeded rules are a snapshot, not user-editable in the UI yet. Desktop notifications go through the `notify-send` adapter (see `urgency-engine.md`, Notifications).
 
 ## Tests
 

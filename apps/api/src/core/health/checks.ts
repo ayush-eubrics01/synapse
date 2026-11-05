@@ -179,3 +179,32 @@ export function claudeCheck(
     return inflight;
   });
 }
+
+/** Degraded while the stored security rules are unusable and the starter rules stand in. */
+export function securityRulesCheck(rules: { rulesFallbackActive(): boolean }): HealthCheck {
+  return guarded(async () =>
+    rules.rulesFallbackActive()
+      ? { status: "degraded", detail: "stored security rules invalid; fallback rules in effect" }
+      : { status: "ok" },
+  );
+}
+
+/** Degraded when `notify-send` is missing or the last desktop notification failed. */
+export function desktopNotifierCheck(n: {
+  health(): { ok: boolean; detail?: string };
+}): HealthCheck {
+  return guarded(async () => {
+    const h = n.health();
+    return h.ok ? { status: "ok" } : { status: "degraded", detail: h.detail ?? "unavailable" };
+  });
+}
+
+/** Degraded while any user-edited screening keyword regex is invalid and skipped. */
+export function screeningRulesCheck(rules: { invalidKeywordIds(): string[] }): HealthCheck {
+  return guarded(async () => {
+    const n = rules.invalidKeywordIds().length;
+    return n > 0
+      ? { status: "degraded", detail: `${n} screening keyword rule(s) invalid and skipped` }
+      : { status: "ok" };
+  });
+}

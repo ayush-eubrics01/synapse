@@ -18,11 +18,11 @@ Also found while running it: the orchestrator and auth tests never removed their
 
 | # | Item | Why it matters for Phase 4 |
 |---|---|---|
-| Q1 | **Recovery for a fail-closed parse stall.** One Slack message whose text contains a literal `### Result k of N` line makes every incremental poll fail with `parse_failed` at the same checkpoint (R41). Add a user action to skip the page or advance the checkpoint by 1 s, audited | Screening depends on the inbox staying current |
-| Q2 | **Count searches on failed runs.** `searchesToday` only counts successful runs, so the daily-limit case it exists for is under-counted. Count `tool_use` calls for the search tool on every run | Needed to learn the real daily search limit |
+| Q1 | **DONE.** Done in Phase 4 (Task 8): `POST /api/slack/incremental/skip` and the "Skip unreadable page" button. **Recovery for a fail-closed parse stall.** One Slack message whose text contains a literal `### Result k of N` line makes every incremental poll fail with `parse_failed` at the same checkpoint (R41). Add a user action to skip the page or advance the checkpoint by 1 s, audited | Screening depends on the inbox staying current |
+| Q2 | **DONE.** Done in Phase 4 (Task 8): failed `collect` runs carry `details.searches`; the worker counts them. **Count searches on failed runs.** `searchesToday` only counts successful runs, so the daily-limit case it exists for is under-counted. Count `tool_use` calls for the search tool on every run | Needed to learn the real daily search limit |
 | Q3 | **Measure Slack search index latency** (open question). The 300 s lag (R61) is a guess | Too small an overlap silently drops messages; too large wastes search results |
-| Q4 | **Provider-level integration tests for every Claude-calling path.** Tests against a fake orchestrator hid the I1 mismatch. New intelligence and screening paths should each have one fake-binary test through the real `ClaudeCliProvider` | Screening adds new request shapes |
-| Q5 | **Track Slack message edits and deletes**, or document that the stored copy is first-seen | Screening and commitments read stored text |
+| Q4 | **DONE.** Done in Phase 4 (Tasks 5 and 6): fake-binary tests through the real provider and orchestrator for assessment and suggestion. **Provider-level integration tests for every Claude-calling path.** Tests against a fake orchestrator hid the I1 mismatch. New intelligence and screening paths should each have one fake-binary test through the real `ClaudeCliProvider` | Screening adds new request shapes |
+| Q5 | **DONE.** Done in Phase 4 (Task 8): documented in `docs/modules/slack.md`; the stored copy is first-seen, edits and deletes are not tracked. **Track Slack message edits and deletes**, or document that the stored copy is first-seen | Screening and commitments read stored text |
 
 ## Deferred minors (polish)
 

@@ -1,11 +1,40 @@
-import type { NewDomainEvent } from "@synapse/contracts";
+import { flagSeveritySchema, type NewDomainEvent, urgencyLevelSchema } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { DEFAULT_KEYWORDS } from "../../intelligence/screening/rules";
 import { DEFAULT_KNOWN_SERVERS, SERVER_NAME_RE } from "../orchestrator/tool-catalog";
 
+const keywordRuleSchema = z.object({
+  id: z.string().min(1),
+  pattern: z.string().min(1),
+  weight: z.number(),
+  level: urgencyLevelSchema,
+  signal: z.boolean(),
+});
+
 const settingSchemas = {
+  "slack.selfUserId": z
+    .string()
+    .regex(/^[UW][A-Z0-9]+$/)
+    .nullable()
+    .default(null),
+  "urgency.rules.keywords": z
+    .array(keywordRuleSchema)
+    .default(() => DEFAULT_KEYWORDS.map((k) => ({ ...k }))),
+  "urgency.assess.batchWindowSeconds": z.number().int().positive().default(120),
+  "urgency.assess.batchMax": z.number().int().positive().max(10).default(10),
+  "urgency.notify.levels": z.array(urgencyLevelSchema).default(["critical", "high"]),
+  "urgency.model": z.string().min(1).default("haiku"),
+  "urgency.suggest.model": z.string().min(1).default("haiku"),
+  "urgency.maxAgeHours": z.number().positive().default(24),
+  "urgency.candidateThreshold": z.number().default(2),
+  "notifications.desktop.enabled": z.boolean().default(true),
+  "notifications.desktop.minSeverity": flagSeveritySchema.default("warning"),
+  "security.flags.notifyOnSeverity": flagSeveritySchema.default("high"),
+  "security.flags.widgetMinSeverity": flagSeveritySchema.default("warning"),
+  "security.flags.excerptMaxChars": z.number().int().positive().default(300),
   "slack.collection.intervalSeconds": z.number().int().positive().default(600),
   "slack.collection.enabled": z.boolean().default(true),
   // R61: the incremental checkpoint is stored at most now - this, so the last N seconds are re-read (index latency).

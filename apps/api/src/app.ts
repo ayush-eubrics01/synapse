@@ -9,8 +9,11 @@ import { healthRoutes } from "./routes/health";
 import { inboxRoutes } from "./routes/inbox";
 import { jobRoutes } from "./routes/jobs";
 import { notificationRoutes } from "./routes/notifications";
+import { peopleRoutes } from "./routes/people";
+import { securityRoutes } from "./routes/security";
 import { slackRoutes } from "./routes/slack";
 import { streamRoutes } from "./routes/stream";
+import { urgentRoutes } from "./routes/urgent";
 
 export function createApp(c: Container): Hono {
   const app = new Hono();
@@ -22,6 +25,9 @@ export function createApp(c: Container): Hono {
   app.route("/", notificationRoutes(c));
   app.route("/", inboxRoutes(c));
   app.route("/", slackRoutes(c));
+  app.route("/", urgentRoutes(c));
+  app.route("/", securityRoutes(c));
+  app.route("/", peopleRoutes(c));
   app.route("/", streamRoutes(c));
   app.onError((err, ctx) => {
     if (err instanceof InvalidApprovalTransition) {

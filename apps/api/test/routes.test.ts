@@ -64,10 +64,13 @@ test("health ready is 200 with a report", async () => {
     "bun",
     "claude",
     "database",
+    "desktop-notifier",
     "events",
     "heartbeat",
     "jobs",
     "linger",
+    "screening-rules",
+    "security-rules",
   ]);
 });
 

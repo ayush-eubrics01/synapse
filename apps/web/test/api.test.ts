@@ -1,12 +1,21 @@
 import { expect, test } from "bun:test";
 import {
+  confirmSlackIdentity,
   decideApproval,
   getClaudeRuns,
   getClaudeStatus,
   getHealth,
   getInboxMessages,
   getJobs,
+  getPeople,
+  getPersonFlags,
+  getSecurityFlags,
+  getSlackIdentity,
   getSlackStatus,
+  getUrgent,
+  reviewFlag,
+  setPersonPriority,
+  setUrgentStatus,
   startBackfill,
 } from "../lib/api";
 
@@ -74,4 +83,49 @@ test("inbox and slack API URLs", async () => {
   await startBackfill(bf.impl);
   expect(bf.calls[0]?.url).toBe("/api/slack/backfill");
   expect(bf.calls[0]?.init?.method).toBe("POST");
+});
+
+test("urgency, security, people and identity API URLs", async () => {
+  const body = (c: { init?: RequestInit }) => JSON.parse(String(c.init?.body));
+  const u = fake(200, []);
+  await getUrgent("open", u.impl);
+  expect(u.calls[0]?.url).toBe("/api/urgent?status=open");
+  const st = fake(200, {});
+  await setUrgentStatus("m 1", "resolved", st.impl);
+  expect(st.calls[0]?.url).toBe("/api/urgent/m%201/status");
+  expect(st.calls[0]?.init?.method).toBe("POST");
+  expect(body(st.calls[0] as Call)).toEqual({ status: "resolved" });
+  const f = fake(200, []);
+  await getSecurityFlags(false, f.impl);
+  await getPersonFlags("U1", f.impl);
+  expect(f.calls.map((x) => x.url)).toEqual([
+    "/api/security/flags?includeReviewed=false",
+    "/api/security/flags/person/U1",
+  ]);
+  const r = fake(200, {});
+  await reviewFlag("f1", "contacted", r.impl);
+  expect(r.calls[0]?.url).toBe("/api/security/flags/f1/review");
+  expect(body(r.calls[0] as Call)).toEqual({ status: "contacted" });
+  const p = fake(200, []);
+  await getPeople(p.impl);
+  expect(p.calls[0]?.url).toBe("/api/people");
+  const sp = fake(200, {});
+  await setPersonPriority(
+    "U1",
+    { priority: "high", rationale: "", extraAttention: false },
+    sp.impl,
+  );
+  expect(sp.calls[0]?.url).toBe("/api/people/U1/priority");
+  expect(sp.calls[0]?.init?.method).toBe("PUT");
+  expect(body(sp.calls[0] as Call)).toEqual({
+    priority: "high",
+    rationale: "",
+    extraAttention: false,
+  });
+  const id = fake(200, { selfUserId: null, suggestion: null, suggestionName: null });
+  await getSlackIdentity(id.impl);
+  await confirmSlackIdentity("U1", id.impl);
+  expect(id.calls.map((x) => x.url)).toEqual(["/api/slack/identity", "/api/slack/identity"]);
+  expect(id.calls[1]?.init?.method).toBe("PUT");
+  expect(body(id.calls[1] as Call)).toEqual({ selfUserId: "U1" });
 });

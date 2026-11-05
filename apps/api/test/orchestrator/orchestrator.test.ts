@@ -531,6 +531,38 @@ describe("final-review fixes", () => {
     expect((await fails(run(req()))).classified.details).toBeUndefined();
   });
 
+  test("R16: a max_turns failure keeps details.maxTurns and the row keeps the denials", async () => {
+    provider.next = () =>
+      result({
+        status: "failed",
+        permissionDenials: ["Bash"],
+        error: {
+          kind: "provider_error",
+          message: "claude reached max turns",
+          details: { maxTurns: true, stderrBytes: 12 },
+        },
+      });
+    const e = await fails(run(req()));
+    expect(e.classified).toEqual({
+      kind: "provider_error",
+      message: "claude reached max turns",
+      details: { maxTurns: true },
+    });
+    const row = runs().at(-1);
+    expect(row?.permissionDenials).toEqual(["Bash"]);
+    expect(row?.error).toEqual({ kind: "provider_error", message: "claude reached max turns" });
+    // Send runs keep both markers.
+    provider.next = () =>
+      result({
+        status: "failed",
+        error: { kind: "provider_error", message: "m", details: { maxTurns: true } },
+      });
+    expect((await fails(run(sendReq()))).classified.details).toEqual({
+      maxTurns: true,
+      uncertain: true,
+    });
+  });
+
   test("I6: an aborted waiter frees its queue spot and writes no run row", async () => {
     settings.set("orchestrator.maxConcurrent", 1);
     const gate = deferred();

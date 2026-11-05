@@ -113,6 +113,10 @@ Analyze conversations and generate recommendations: allowed. Create or update a 
 | `people.models.initial` | `sonnet` |
 | `people.models.update` | `haiku` |
 
+## Phase 4 note (priority only)
+
+Phase 4 implements only the priority part of this module: a `people` row is created for a Slack user when it is first needed (a red flag is recorded for them, or the user sets their priority), not on first sight of every Slack user (`GET /api/people` lists every stored Slack user, with priority `normal` where no setting exists), and `people_priority_settings` holds the priority (`normal`, `high`, `critical`), an optional rationale and the extra-attention flag. Screening reads them as signals (+1 each, and a lower candidate threshold). The user sets them from the dashboard (`GET /api/people`, `PUT /api/people/:slackUserId/priority`, which replaces the whole setting). Priority never comes from AI: no schema accepts it. The user's own Slack identity (`slack.selfUserId`) is confirmed through `/api/slack/identity`; a suggestion is offered but never applied automatically, and without a suggestion the dashboard offers a manual pick from `GET /api/people`. While no identity is confirmed, urgent notifications and suggested replies are paused (see `urgency-engine.md`). Profiles, recommendations and temporary contacts are not built yet.
+
 ## Tests
 
 - Profile recommendation rejected → no profile change, rejection recorded.

@@ -16,6 +16,27 @@ const MAX_ATTEMPTS_ERROR: ClassifiedError = {
 /** Reaper period. Must stay well below the worker lease (60 s) so orphans are reclaimed quickly. */
 export const REAP_INTERVAL_MS = 30_000;
 
+/**
+ * A module's recovery hook, registered by the container so core never imports workers. Runs inside
+ * the recovery transaction (startup and every reaper pass) in its own savepoint: a failure is
+ * logged by name, rolled back, and never aborts recovery.
+ */
+export interface RecoverySweep {
+  name: string;
+  run: (tx: Tx) => void;
+}
+
+function runSweeps(tx: Tx, sweeps: readonly RecoverySweep[] | undefined): void {
+  for (const sweep of sweeps ?? []) {
+    try {
+      tx.transaction((sp) => sweep.run(sp));
+    } catch {
+      // Name only: an error message could carry SQL values.
+      console.error(`recovery sweep ${sweep.name} failed`);
+    }
+  }
+}
+
 export interface RecoveredJobs {
   requeued: number;
   needsAttention: number;
@@ -69,6 +90,7 @@ export function recoverOnStartup(deps: {
   clock: Clock;
   leases: LeaseService;
   audit: AuditLogger;
+  sweeps?: readonly RecoverySweep[];
 }): { requeued: number; needsAttention: number; leasesReleased: number } {
   const { db, clock, audit } = deps;
   const now = isoNow(clock);
@@ -88,6 +110,7 @@ export function recoverOnStartup(deps: {
         result: "ok",
         details: result,
       });
+      runSweeps(tx, deps.sweeps);
       return result;
     },
     { behavior: "immediate" },
@@ -95,7 +118,12 @@ export function recoverOnStartup(deps: {
 }
 
 /** Periodic in-process recovery of expired RUNNING jobs. Audits only when it reclaimed something. */
-export function reapExpiredJobs(deps: { db: Db; clock: Clock; audit: AuditLogger }): RecoveredJobs {
+export function reapExpiredJobs(deps: {
+  db: Db;
+  clock: Clock;
+  audit: AuditLogger;
+  sweeps?: readonly RecoverySweep[];
+}): RecoveredJobs {
   const { db, clock, audit } = deps;
   const now = isoNow(clock);
   return db.transaction(
@@ -110,6 +138,7 @@ export function reapExpiredJobs(deps: { db: Db; clock: Clock; audit: AuditLogger
           details: { ...result },
         });
       }
+      runSweeps(tx, deps.sweeps);
       return result;
     },
     { behavior: "immediate" },

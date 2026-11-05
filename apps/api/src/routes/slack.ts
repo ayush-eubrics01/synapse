@@ -1,6 +1,10 @@
+import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
+import { z } from "zod";
 import type { Container } from "../container";
+import { skipUnreadablePage } from "../modules/inbox/skip-page";
 import type { SyncState } from "../modules/inbox/sync-state";
+import { UnknownSlackUserError } from "../modules/people/service";
 
 export function slackRoutes(c: Container): Hono {
   const app = new Hono();
@@ -15,6 +19,38 @@ export function slackRoutes(c: Container): Hono {
       searchesToday: searches(incremental) + searches(backfill),
     });
   });
+  app.get("/api/slack/identity", (ctx) => {
+    const suggestion = c.people.suggestSelfUserId();
+    const suggestionName = suggestion
+      ? (c.people.listPeople().find((p) => p.slackUserId === suggestion)?.name ?? null)
+      : null;
+    return ctx.json({
+      selfUserId: c.settings.get("slack.selfUserId"),
+      suggestion,
+      suggestionName,
+    });
+  });
+  app.put(
+    "/api/slack/identity",
+    zValidator("json", z.object({ selfUserId: z.string().regex(/^[UW][A-Z0-9]+$/) })),
+    (ctx) => {
+      const { selfUserId } = ctx.req.valid("json");
+      try {
+        c.people.confirmSelfUserId(selfUserId);
+      } catch (e) {
+        if (e instanceof UnknownSlackUserError) {
+          return ctx.json({ error: "unknown slack user" }, 400);
+        }
+        throw e;
+      }
+      return ctx.json({ selfUserId });
+    },
+  );
   app.post("/api/slack/backfill", (ctx) => ctx.json(c.slack.startBackfill()));
+  // Q1: only while the incremental stream is stalled on an unreadable page.
+  app.post("/api/slack/incremental/skip", (ctx) => {
+    const r = skipUnreadablePage({ db: c.db, sync: c.sync, audit: c.audit, queue: c.queue });
+    return r.ok ? ctx.json({ checkpoint: r.checkpoint }) : ctx.json({ error: r.reason }, 409);
+  });
   return app;
 }
