@@ -51,14 +51,14 @@ export const STARTER_RULES: FlagRule[] = [
     id: "exfil.secrets",
     severity: "high",
     patterns: [
-      "(send|share|give|show|paste|reveal|print|cat)\\b.{0,40}(\\.env\\b|\\b(private keys?|secret keys?|ssh keys?|credentials\\.json))",
+      "\\b(send|share|give|show|paste|reveal|print|cat)\\b.{0,40}(\\.env(?![\\w.])|\\b(private keys?|secret keys?|ssh keys?|credentials\\.json))",
     ],
   },
   {
     id: "exfil.secrets_generic",
     severity: "warning",
     patterns: [
-      "(send|share|give|show|paste|reveal)\\b.{0,40}\\b(tokens?|api keys?|passwords?|credentials)\\b",
+      "\\b(send|share|give|show|paste|reveal)\\b.{0,40}\\b(tokens?|api keys?|passwords?|credentials)\\b",
     ],
   },
   { id: "hidden.unicode", severity: "high", patterns: [HIDDEN_CHAR_CLASS] },

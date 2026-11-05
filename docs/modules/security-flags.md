@@ -50,7 +50,7 @@ Non-responsibilities:
 | `action.command` | "run this command", "git push", "delete", "merge this", "deploy" addressed to Claude | warning |
 | `address.claude` | addresses Claude/AI directly ("Claude, …", "hey AI") | info, raised to warning if combined with an action verb |
 
-Matching is case-insensitive unless a rule sets `caseSensitive` (`tools.named`). Only the first 20,000 characters of a message are scanned, and Slack-escaped text (`&lt; &gt; &amp;`) is also scanned unescaped.
+Matching is case-insensitive unless a rule sets `caseSensitive` (`tools.named`). Only the first 40,000 characters (Slack's maximum message length) of a message are scanned, and Slack-escaped text (`&lt; &gt; &amp;`) is also scanned unescaped.
 
 **Custom rules must be linear.** Rule validation only checks that patterns compile, not that they are cheap. Avoid nested or adjacent unbounded quantifiers (for example `<!--[\s\S]*?\S[\s\S]*?-->` is cubic and froze the API on 8 KB of input). The starter set has a timing regression test.
 

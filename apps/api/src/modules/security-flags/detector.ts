@@ -10,7 +10,7 @@ export interface Detection {
 const CONTEXT_CHARS = 60;
 const DEFAULT_EXCERPT_MAX = 300;
 /** Defence in depth against pathological input: only this prefix is scanned. */
-export const MAX_SCAN_CHARS = 20_000;
+export const MAX_SCAN_CHARS = 40_000;
 const HIDDEN_CHARS = new RegExp(HIDDEN_CHAR_CLASS, "gu");
 
 const compiled = new WeakMap<FlagRule, RegExp[]>();
@@ -68,8 +68,12 @@ export function scanText(
       for (const re of regexes) {
         const m = re.exec(t);
         if (!m) continue;
-        const start = Math.max(0, m.index - CONTEXT_CHARS);
-        const raw = t.slice(start, m.index + m[0].length + CONTEXT_CHARS);
+        let start = Math.max(0, m.index - CONTEXT_CHARS);
+        let end = Math.min(t.length, m.index + m[0].length + CONTEXT_CHARS);
+        // Snap to code-point boundaries so a surrogate pair is never split.
+        if (start > 0 && isLowSurrogate(t.charCodeAt(start))) start -= 1;
+        if (end < t.length && isLowSurrogate(t.charCodeAt(end))) end += 1;
+        const raw = t.slice(start, end);
         found = { ruleId: rule.id, severity: rule.severity, excerpt: renderExcerpt(raw, max) };
         break;
       }
@@ -84,4 +88,8 @@ export function scanText(
     }
   }
   return out;
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
 }
