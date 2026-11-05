@@ -164,6 +164,8 @@ export class SecurityFlagsService {
       externalRef: string;
       text: string;
     },
+    /** R15: false for messages older than `urgency.maxAgeHours` (flags and events, no notification). */
+    opts: { notify: boolean },
   ): { flagged: boolean; maxSeverity: FlagSeverity | null } {
     const { version, rules } = this.activeRules(tx);
     const hits = scanText(m.text, rules, {
@@ -183,6 +185,7 @@ export class SecurityFlagsService {
         reason: `rule ${h.ruleId}`,
         runId: null,
         rulesVersion: version,
+        notify: opts.notify,
       });
       if (maxSeverity === null || RANK[h.severity] > RANK[maxSeverity]) maxSeverity = h.severity;
     }
@@ -204,6 +207,7 @@ export class SecurityFlagsService {
       reason: renderExcerpt(s.reason, max),
       runId,
       rulesVersion: null,
+      notify: true,
     });
   }
 
@@ -230,6 +234,7 @@ export class SecurityFlagsService {
         reason: safe,
         runId,
         rulesVersion: null,
+        notify: true,
       });
     }
   }
@@ -374,7 +379,8 @@ export class SecurityFlagsService {
   /**
    * One row per (message, detector, rule). Re-detection keeps `status` and only raises severity.
    * Emits the event (and, from the notify level up, the notification) only when the flag is new
-   * or its severity rises, so replays and retries stay silent.
+   * or its severity rises, so replays and retries stay silent. `notify: false` (old messages, R15)
+   * keeps the row and the event but never notifies.
    */
   private upsert(
     tx: DbOrTx,
@@ -390,6 +396,7 @@ export class SecurityFlagsService {
       reason: string;
       runId: string | null;
       rulesVersion: number | null;
+      notify: boolean;
     },
   ): void {
     const now = isoNow(this.deps.clock);
@@ -449,7 +456,10 @@ export class SecurityFlagsService {
       correlationId: newId(),
       payload: { flagId, messageId: f.messageId, severity: f.severity },
     });
-    if (RANK[f.severity] >= RANK[this.deps.settings.get("security.flags.notifyOnSeverity")]) {
+    if (
+      f.notify &&
+      RANK[f.severity] >= RANK[this.deps.settings.get("security.flags.notifyOnSeverity")]
+    ) {
       const user = tx
         .select({ name: slackUsers.name })
         .from(slackUsers)

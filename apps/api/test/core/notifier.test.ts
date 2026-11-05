@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import type { DesktopNotifier } from "@synapse/contracts";
 import { type Db, openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
@@ -145,4 +145,82 @@ test("a title that looks like an option is passed after --, never parsed as a fl
   const argv = seen[0] ?? [];
   expect(argv.indexOf("--")).toBe(argv.length - 2);
   expect(argv.at(-1)).toBe("--hint=int:transient:1");
+});
+
+describe("desktop rate limit (R15)", () => {
+  let clock: FakeClock;
+  let timers: { fn: () => void; ms: number }[];
+  let limited: NotificationService;
+
+  beforeEach(() => {
+    clock = new FakeClock("2026-11-05T12:00:00.000Z");
+    timers = [];
+    const notifier: DesktopNotifier = {
+      notify: async (n) => {
+        calls.push(n);
+      },
+    };
+    limited = new NotificationService(db, clock, new LiveBus(), {
+      notifier,
+      settings,
+      schedule: (fn, ms) => {
+        timers.push({ fn, ms });
+      },
+    });
+  });
+
+  const burst = (n: number, severity: "warning" | "high" = "warning") => {
+    for (let i = 0; i < n; i++) {
+      limited.notify(db, { kind: "k", severity, title: `n${calls.length}-${i}` });
+    }
+  };
+
+  test("12 rapid notifications: 5 popups, then 1 summary when the window frees", async () => {
+    burst(11);
+    limited.notify(db, { kind: "k", severity: "high", title: "the high one" });
+    await tick();
+    expect(calls).toHaveLength(5);
+    expect(db.select().from(schema.notifications).all()).toHaveLength(12); // in-app rows all stay
+    expect(timers).toHaveLength(1);
+    expect(timers[0]?.ms).toBe(60_000);
+
+    clock.advance(60_000);
+    timers[0]?.fn();
+    await tick();
+    expect(calls).toHaveLength(6);
+    expect(calls[5]).toEqual({ title: "Synapse: 7 more notifications", severity: "high" });
+  });
+
+  test("the window is rolling: a popup is allowed again once the oldest is 60 s old", async () => {
+    burst(5);
+    await tick();
+    expect(calls).toHaveLength(5);
+    clock.advance(59_999);
+    burst(1);
+    await tick();
+    expect(calls).toHaveLength(5);
+    clock.advance(1);
+    timers.at(-1)?.fn();
+    await tick();
+    expect(calls).toHaveLength(6);
+    expect(calls[5]?.title).toBe("Synapse: 1 more notifications");
+    // After the summary the suppressed count is reset; later traffic within capacity pops normally.
+    clock.advance(60_000);
+    burst(1);
+    await tick();
+    expect(calls).toHaveLength(7);
+    expect(calls[6]?.title).not.toContain("more notifications");
+  });
+
+  test("the summary timer re-arms when the window is still full", async () => {
+    burst(6);
+    await tick();
+    expect(timers).toHaveLength(1);
+    clock.advance(30_000); // too early: the window is still full
+    timers[0]?.fn();
+    await tick();
+    expect(calls).toHaveLength(5);
+    expect(timers).toHaveLength(2);
+    expect(timers[1]?.ms).toBe(30_000);
+  });
 });

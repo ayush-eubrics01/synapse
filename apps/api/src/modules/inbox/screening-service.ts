@@ -131,18 +131,25 @@ export class ScreeningService {
 
     const mentionsSelf = selfId !== null && mentionsUser(m.text, selfId);
     const inThreadWithSelf = selfId !== null && this.inThreadWithSelf(tx, m, selfId);
+    const cutoff = clock.now().getTime() - settings.get("urgency.maxAgeHours") * 3_600_000;
+    // R15: old (backfilled) messages are flagged, never notified. Unparseable dates count as old.
+    const recent = Date.parse(m.sentAt) >= cutoff;
 
     // A detector failure must not stop screening; the savepoint drops its partial writes.
     let securityFlag = false;
     try {
       securityFlag = tx.transaction((t) =>
-        this.deps.securityFlags.scanMessage(t, {
-          messageId: m.id,
-          slackUserId: m.senderRef,
-          conversationId: m.conversationId,
-          externalRef: `${m.conversationRef}:${m.ts}`,
-          text: m.text as string,
-        }),
+        this.deps.securityFlags.scanMessage(
+          t,
+          {
+            messageId: m.id,
+            slackUserId: m.senderRef,
+            conversationId: m.conversationId,
+            externalRef: `${m.conversationRef}:${m.ts}`,
+            text: m.text as string,
+          },
+          { notify: recent },
+        ),
       ).flagged;
     } catch {
       console.error(`security scan failed for message ${messageId}`);
@@ -164,11 +171,10 @@ export class ScreeningService {
       },
     );
 
-    const cutoff = clock.now().getTime() - settings.get("urgency.maxAgeHours") * 3_600_000;
     let route: ScreeningRecord["route"] = "batch";
     let skipReason: ScreeningRecord["skipReason"];
     if (result.candidate) {
-      if (Date.parse(m.sentAt) >= cutoff) route = "assess";
+      if (recent) route = "assess";
       else {
         route = "skip";
         skipReason = "too_old";
