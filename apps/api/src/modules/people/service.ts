@@ -1,6 +1,6 @@
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
-import { countDistinct, desc, eq } from "drizzle-orm";
+import { countDistinct, desc, eq, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { SettingsService } from "../../core/config/settings";
@@ -68,7 +68,17 @@ export class PeopleService {
       ...(user?.email ? { email: user.email } : {}),
     };
     if (Object.keys(refresh).length > 0) {
-      insert.onConflictDoUpdate({ target: people.slackUserId, set: refresh }).run();
+      insert
+        .onConflictDoUpdate({
+          target: people.slackUserId,
+          set: refresh,
+          // Skip the write when nothing differs.
+          setWhere: or(
+            user?.name ? sql`${people.name} IS NOT ${user.name}` : undefined,
+            user?.email ? sql`${people.email} IS NOT ${user.email}` : undefined,
+          ),
+        })
+        .run();
     } else {
       insert.onConflictDoNothing({ target: people.slackUserId }).run();
     }

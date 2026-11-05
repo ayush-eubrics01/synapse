@@ -186,7 +186,7 @@ test("unknown sender becomes one temporary contact, one event, count increments"
   const rows = db.select().from(schema.temporaryContacts).all();
   expect(rows).toHaveLength(1);
   expect(rows[0]?.messageCount).toBe(2);
-  expect(rows[0]?.expiresAt).toBe(new Date(clock.now().getTime() + 30 * 86_400_000).toISOString());
+  expect(rows[0]?.expiresAt).toBe(new Date(Date.parse(daysAgo(1)) + 30 * 86_400_000).toISOString());
   expect(discovered()).toHaveLength(1);
   expect(discovered()[0]?.payload).toEqual({ slackUserId: "UNEW000001" });
 });
@@ -279,4 +279,66 @@ test("G3: setPriority patches; null rationale clears", () => {
   expect(get()).toMatchObject({ rationale: null, extraAttention: true });
   people.setPriority("UANN000001", { priority: "normal", extraAttention: false });
   expect(get()).toMatchObject({ priority: "normal", extraAttention: false });
+});
+
+test("a backfilled message does not extend an existing temporary contact's ttl", () => {
+  addUser("UNEW000001");
+  addConv("ch", "channel");
+  received(addMsg("ch", "UNEW000001"));
+  const before = db.select().from(schema.temporaryContacts).get();
+  received(addMsg("ch", "UNEW000001", { sentAt: daysAgo(60) }));
+  const after = db.select().from(schema.temporaryContacts).get();
+  expect(after?.messageCount).toBe(2);
+  expect(after?.expiresAt).toBe(before?.expiresAt ?? "");
+  expect(after?.lastSeenAt).toBe(before?.lastSeenAt ?? "");
+});
+
+test("a malformed sentAt is ignored", () => {
+  addUser("UBAD0000001");
+  addConv("ch", "channel");
+  received(addMsg("ch", "UBAD0000001", { sentAt: "not-a-date" }));
+  expect(db.select().from(schema.temporaryContacts).all()).toHaveLength(0);
+});
+
+test("perf: ranks 100k messages (500 users, 200 conversations, a third thread replies) fast", () => {
+  const mk = (n: number) => `U${String(n).padStart(9, "0")}`;
+  const now = clock.now().toISOString();
+  db.transaction((tx) => {
+    for (let u = 1; u <= 500; u++)
+      tx.insert(schema.slackUsers)
+        .values({ id: `su-${mk(u)}`, externalId: mk(u), name: mk(u) })
+        .run();
+    const types = ["im", "mpim", "channel"] as const;
+    for (let c = 0; c < 200; c++)
+      tx.insert(schema.slackConversations)
+        .values({ id: `c${c}`, externalId: `ec${c}`, type: types[c % 3] as "im" })
+        .run();
+    const rows: (typeof schema.slackMessages.$inferInsert)[] = [];
+    for (let c = 0; c < 200; c++) {
+      for (let i = 0; i < 500; i++) {
+        const sender = i % 7 === 0 ? SELF : mk(1 + ((c * 31 + i) % 500));
+        rows.push({
+          id: `p${c}-${i}`,
+          conversationId: `c${c}`,
+          ts: `${2000 + i}.000`,
+          threadTs: i % 3 === 0 ? `${2000 + (i - (i % 21))}.000` : null,
+          senderUserId: `su-${sender}`,
+          text: i % 11 === 0 ? `hi <@${SELF}>` : "some text here",
+          sentAt: now,
+          collectedAt: now,
+        });
+      }
+    }
+    for (let i = 0; i < rows.length; i += 500)
+      tx.insert(schema.slackMessages)
+        .values(rows.slice(i, i + 500))
+        .run();
+  });
+  discovery.listContactCandidates(); // warm
+  const t0 = performance.now();
+  const list = discovery.listContactCandidates();
+  const ms = performance.now() - t0;
+  console.log(`perf listContactCandidates: ${ms.toFixed(1)} ms`);
+  expect(list).toHaveLength(50);
+  expect(ms).toBeLessThan(1000);
 });

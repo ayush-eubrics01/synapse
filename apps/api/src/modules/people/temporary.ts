@@ -47,7 +47,9 @@ export class TemporaryContacts {
     if (!m || m.senderRef === selfId) return;
     const now = clock.now().getTime();
     // A backfill of old messages must not create stale temporary contacts.
-    if (Date.parse(m.sentAt) < now - settings.get("people.history.days") * DAY_MS) return;
+    const sentMs = Date.parse(m.sentAt);
+    if (Number.isNaN(sentMs)) return;
+    if (sentMs < now - settings.get("people.history.days") * DAY_MS) return;
     const known = tx
       .select({ id: people.id })
       .from(people)
@@ -55,12 +57,16 @@ export class TemporaryContacts {
       .get();
     if (known) return;
 
-    const nowIso = new Date(now).toISOString();
-    const expiresAt = new Date(
-      now + settings.get("people.temporaryContact.ttlDays") * DAY_MS,
-    ).toISOString();
+    const ttlMs = settings.get("people.temporaryContact.ttlDays") * DAY_MS;
+    // Seen-at and expiry follow the message's own time, so a backfilled message never acts fresh.
+    const seenAt = new Date(Math.min(sentMs, now)).toISOString();
+    const expiresAt = new Date(sentMs + ttlMs).toISOString();
     const existing = tx
-      .select({ id: temporaryContacts.id })
+      .select({
+        id: temporaryContacts.id,
+        lastSeenAt: temporaryContacts.lastSeenAt,
+        expiresAt: temporaryContacts.expiresAt,
+      })
       .from(temporaryContacts)
       .where(eq(temporaryContacts.slackUserId, m.senderRef))
       .get();
@@ -68,8 +74,8 @@ export class TemporaryContacts {
       tx.update(temporaryContacts)
         .set({
           messageCount: sql`${temporaryContacts.messageCount} + 1`,
-          lastSeenAt: nowIso,
-          expiresAt,
+          lastSeenAt: seenAt > existing.lastSeenAt ? seenAt : existing.lastSeenAt,
+          expiresAt: expiresAt > existing.expiresAt ? expiresAt : existing.expiresAt,
         })
         .where(eq(temporaryContacts.id, existing.id))
         .run();
@@ -79,8 +85,8 @@ export class TemporaryContacts {
       .values({
         id: newId(),
         slackUserId: m.senderRef,
-        firstSeenAt: nowIso,
-        lastSeenAt: nowIso,
+        firstSeenAt: seenAt,
+        lastSeenAt: seenAt,
         messageCount: 1,
         expiresAt,
       })

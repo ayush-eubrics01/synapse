@@ -48,6 +48,15 @@ export class ContactDiscovery {
     const m2 = `<@${selfId}|`;
     const m3 = `&lt;@${selfId}&gt;`;
     const rows = db.all<Row>(sql`
+      WITH self_user(id) AS (SELECT id FROM slack_users WHERE external_id = ${selfId}),
+      -- Threads self took part in: self's replies (thread_ts) and self's own messages as roots (ts).
+      self_threads(conversation_id, thread_key) AS (
+        SELECT conversation_id, thread_ts FROM slack_messages
+          WHERE sender_user_id IN (SELECT id FROM self_user) AND thread_ts IS NOT NULL
+        UNION
+        SELECT conversation_id, ts FROM slack_messages
+          WHERE sender_user_id IN (SELECT id FROM self_user)
+      )
       SELECT u.external_id AS slack_user_id,
         u.name AS name,
         SUM(CASE WHEN c.type = 'im' THEN 3 ELSE 0 END)
@@ -55,13 +64,9 @@ export class ContactDiscovery {
           + SUM(CASE WHEN instr(coalesce(m.text, ''), ${m1}) > 0
                        OR instr(coalesce(m.text, ''), ${m2}) > 0
                        OR instr(coalesce(m.text, ''), ${m3}) > 0 THEN 2 ELSE 0 END)
-          + SUM(CASE WHEN m.thread_ts IS NOT NULL AND m.thread_ts <> m.ts AND EXISTS (
-                SELECT 1 FROM slack_messages r
-                JOIN slack_users ru ON ru.id = r.sender_user_id
-                WHERE r.conversation_id = m.conversation_id
-                  AND ru.external_id = ${selfId}
-                  AND (r.thread_ts = m.thread_ts OR r.ts = m.thread_ts)
-              ) THEN 1 ELSE 0 END) AS score,
+          + SUM(CASE WHEN m.thread_ts IS NOT NULL AND m.thread_ts <> m.ts
+                       AND (m.conversation_id, m.thread_ts) IN (SELECT conversation_id, thread_key FROM self_threads)
+                     THEN 1 ELSE 0 END) AS score,
         COUNT(*) AS message_count,
         EXISTS (SELECT 1 FROM people p JOIN people_profiles pp ON pp.person_id = p.id
                 WHERE p.slack_user_id = u.external_id) AS has_profile,
