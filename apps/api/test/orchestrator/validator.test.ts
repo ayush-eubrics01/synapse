@@ -6,6 +6,7 @@ import {
   classifyTool,
   connectorServerOf,
   DEFAULT_KNOWN_SERVERS,
+  KNOWN_WRITE_TOOLS,
 } from "../../src/core/orchestrator/tool-catalog";
 import { validateRequest } from "../../src/core/orchestrator/validator";
 
@@ -33,11 +34,13 @@ function make(over: Partial<AIExecutionRequest> & { allowed?: string[] } = {}): 
     ...over,
   };
 }
+const ASSEMBLY = { instructions: "go", boundary: "BND" };
+const v = (r: AIExecutionRequest, a = ASSEMBLY) => validateRequest(r, DEFAULT_KNOWN_SERVERS, a);
 const reason = (r: ReturnType<typeof validateRequest>) => (r.ok ? "ok" : r.reason);
 
 describe("validateRequest", () => {
   test("valid collector", () => {
-    expect(validateRequest(make(), DEFAULT_KNOWN_SERVERS)).toEqual({ ok: true });
+    expect(v(make())).toEqual({ ok: true });
   });
   test("valid engineering without untrusted", () => {
     const r = make({
@@ -48,79 +51,104 @@ describe("validateRequest", () => {
         { provenance: "user_approved", content: "y" },
       ],
     });
-    expect(validateRequest(r, DEFAULT_KNOWN_SERVERS)).toEqual({ ok: true });
+    expect(v(r)).toEqual({ ok: true });
   });
   test("valid send run", () => {
     const r = make({
       allowed: [SEND, "ToolSearch"],
       promptParts: [{ provenance: "user_approved", content: "t" }],
     });
-    expect(validateRequest(r, DEFAULT_KNOWN_SERVERS)).toEqual({ ok: true });
+    expect(v(r)).toEqual({ ok: true });
   });
   test("rule 0 profile", () => {
     const r = make({ allowed: ["Bash"], promptParts: [] });
-    expect(reason(validateRequest(r, DEFAULT_KNOWN_SERVERS))).toBe(
-      "profile collector may not use Bash",
-    );
+    expect(reason(v(r))).toBe("profile collector may not use Bash");
     const i = make({ workerProfile: "intelligence", allowed: ["WebFetch"], promptParts: [] });
-    expect(reason(validateRequest(i, DEFAULT_KNOWN_SERVERS))).toBe(
-      "profile intelligence may not use WebFetch",
-    );
+    expect(reason(v(i))).toBe("profile intelligence may not use WebFetch");
   });
   test("rule 1 untrusted with write tool", () => {
     const r = make({ workerProfile: "intelligence", allowed: [SEARCH, SEND, "ToolSearch"] });
-    expect(reason(validateRequest(r, DEFAULT_KNOWN_SERVERS))).toBe(
-      `untrusted content with write-capable tool ${SEND}`,
-    );
+    expect(reason(v(r))).toBe(`untrusted content with write-capable tool ${SEND}`);
   });
-  test("rule 1 counts network tools on engineering", () => {
-    const r = make({ workerProfile: "engineering", allowed: ["WebFetch"] });
-    expect(reason(validateRequest(r, DEFAULT_KNOWN_SERVERS))).toBe(
-      "untrusted content with write-capable tool WebFetch",
-    );
+  test("R22 network rejected in every profile, even engineering", () => {
+    const r = make({ workerProfile: "engineering", allowed: ["WebFetch"], promptParts: [] });
+    expect(reason(v(r))).toBe("profile engineering may not use WebFetch");
+    expect(buildDenylist(["WebFetch"], DEFAULT_KNOWN_SERVERS, "engineering")).toContain("WebFetch");
   });
   test("rule 2 engineering untrusted", () => {
     const r = make({ workerProfile: "engineering", allowed: ["Read"] });
-    expect(reason(validateRequest(r, DEFAULT_KNOWN_SERVERS))).toBe(
-      "engineering run with untrusted content",
-    );
+    expect(reason(v(r))).toBe("engineering run with untrusted content");
   });
   test("rule 3 ToolSearch", () => {
     const r = make({ allowed: [SEARCH] });
-    expect(reason(validateRequest(r, DEFAULT_KNOWN_SERVERS))).toBe(
-      "ToolSearch required for connector tools",
-    );
+    expect(reason(v(r))).toBe("ToolSearch required for connector tools");
   });
   test("rule 4 denylist", () => {
     const r = make({ disallowedTools: ["Bash"] });
-    expect(reason(validateRequest(r, DEFAULT_KNOWN_SERVERS))).toBe(
-      "denylist missing mcp__claude_ai_Atlassian",
-    );
+    expect(reason(v(r))).toBe("denylist missing mcp__claude_ai_Atlassian");
   });
-  test("rule 5 send run with untrusted in prompt", () => {
+  test("R20 engineering may not use connector tools", () => {
     const r = make({
-      allowed: [SEND, "ToolSearch"],
-      promptParts: [{ provenance: "user_approved", content: "t" }],
-      prompt: assemblePrompt("go", [untrusted], "BND"),
+      workerProfile: "engineering",
+      allowed: ["Bash", SEARCH, "ToolSearch"],
+      promptParts: [],
     });
-    expect(reason(validateRequest(r, DEFAULT_KNOWN_SERVERS))).toBe(
-      "send run with untrusted content",
-    );
+    expect(reason(v(r))).toBe(`profile engineering may not use connector tool ${SEARCH}`);
+  });
+  test("R21 write tool only with ToolSearch", () => {
+    const r = make({ allowed: [SEARCH, SEND, "ToolSearch"], promptParts: [] });
+    expect(reason(v(r))).toBe(`send run may only allow ${SEND} and ToolSearch`);
+  });
+  test("R23 specifier stripped", () => {
+    const r = make({ allowed: ["Bash(curl:*)"], promptParts: [] });
+    expect(reason(v(r))).toBe("profile collector may not use Bash");
+  });
+  test.each(["Monitor", "Task", "MultiEdit"])("R23 collector may not use %s", (t) => {
+    const r = make({ allowed: [t], promptParts: [] });
+    expect(reason(v(r))).toBe(`profile collector may not use ${t}`);
+  });
+  test("R23 unknown builtin fails closed", () => {
+    const r = make({ workerProfile: "engineering", allowed: ["Foo"], promptParts: [] });
+    expect(reason(v(r))).toBe("unknown built-in tool Foo");
+  });
+  test("R24 prompt must match parts", () => {
+    const r = make({ prompt: "tampered" });
+    expect(reason(v(r))).toBe("prompt does not match declared parts");
+  });
+  test("R24 empty boundary", () => {
+    expect(v(make(), { instructions: "go", boundary: "  " }).ok).toBe(false);
+    expect(v(make(), { instructions: "go", boundary: "" }).ok).toBe(false);
   });
   test("rule 6 boundary collision", () => {
     const parts: PromptPart[] = [{ provenance: "untrusted", source: "s", content: "xx BND yy" }];
     expect(
-      reason(
-        validateRequest(
-          make({ promptParts: parts, prompt: assemblePrompt("go", parts, "BND") }),
-          DEFAULT_KNOWN_SERVERS,
-        ),
-      ),
+      reason(v(make({ promptParts: parts, prompt: assemblePrompt("go", parts, "BND") }))),
     ).toBe("boundary collision");
   });
 });
 
 describe("tool catalog", () => {
+  test("R25 new servers denied", () => {
+    const d = buildDenylist([SEARCH, "ToolSearch"], DEFAULT_KNOWN_SERVERS, "collector");
+    for (const s of [
+      "mcp__claude_ai_Apollo_io",
+      "mcp__claude_ai_Exa",
+      "mcp__claude_ai_n8n",
+      "mcp__rea",
+      "mcp__plugin_postman_postman",
+      "mcp__claude_ai_monday_com",
+    ]) {
+      expect(d).toContain(s);
+    }
+  });
+  test("R25 listJiraIssueComments is read", () => {
+    expect(classifyTool("mcp__claude_ai_Atlassian_MCP__listJiraIssueComments")).toBe("read");
+  });
+  test("every KNOWN_WRITE_TOOLS entry classifies as write", () => {
+    for (const [server, tools] of Object.entries(KNOWN_WRITE_TOOLS)) {
+      for (const t of tools) expect(classifyTool(`${server}__${t}`)).toBe("write");
+    }
+  });
   test("classify", () => {
     expect(classifyTool(SEARCH)).toBe("read");
     expect(classifyTool(SEND)).toBe("write");

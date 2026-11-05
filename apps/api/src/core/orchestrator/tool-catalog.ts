@@ -2,10 +2,10 @@ import type { WorkerProfile } from "@synapse/contracts";
 
 export type ToolClass = "read" | "write" | "builtin_read" | "builtin_write";
 
-export const BUILTIN_WRITE = ["Bash", "Edit", "Write", "NotebookEdit"];
+export const BUILTIN_WRITE = ["Bash", "Edit", "Write", "NotebookEdit", "MultiEdit", "Monitor"];
 export const BUILTIN_READ = ["Read", "Grep", "Glob", "ToolSearch"];
 /** Network-capable built-ins; classified as write. */
-export const BUILTIN_NETWORK = ["WebFetch", "WebSearch", "Agent"];
+export const BUILTIN_NETWORK = ["WebFetch", "WebSearch", "Agent", "Task"];
 
 export const DEFAULT_KNOWN_SERVERS = [
   "mcp__claude_ai_Slack",
@@ -24,6 +24,20 @@ export const DEFAULT_KNOWN_SERVERS = [
   "mcp__claude_ai_Figma",
   "mcp__claude_ai_Asana",
   "mcp__claude_ai_Box",
+  "mcp__claude_ai_Apollo_io",
+  "mcp__claude_ai_Clay",
+  "mcp__claude_ai_Exa",
+  "mcp__claude_ai_Fathom_Your_Meeting_Intelligence_Layer",
+  "mcp__claude_ai_Intercom",
+  "mcp__claude_ai_Mixpanel",
+  "mcp__claude_ai_Semrush",
+  "mcp__claude_ai_Wispr_Flow",
+  "mcp__claude_ai_Zoho_Desk",
+  "mcp__claude_ai_bigin_zohomcp_com",
+  "mcp__claude_ai_monday_com",
+  "mcp__claude_ai_n8n",
+  "mcp__rea",
+  "mcp__plugin_postman_postman",
 ];
 
 const SLACK_PREFIX = "mcp__claude_ai_Slack__";
@@ -46,11 +60,16 @@ const SLACK_READ = new Set([
   "slack_get_reactions",
 ]);
 
-const ATLASSIAN_READ_EXACT = new Set(["atlassianUserInfo", "fetch", "executeRead"]);
+const ATLASSIAN_READ_EXACT = new Set([
+  "atlassianUserInfo",
+  "fetch",
+  "executeRead",
+  "listJiraIssueComments",
+]);
 const ATLASSIAN_READ_PREFIXES = ["get", "search", "lookup"];
 
 /** Known write-class tools per server, so they can be denied individually when the server is used. */
-const KNOWN_WRITE_TOOLS: Record<string, string[]> = {
+export const KNOWN_WRITE_TOOLS: Record<string, string[]> = {
   mcp__claude_ai_Slack: [
     "slack_add_list_record",
     "slack_add_reaction",
@@ -95,7 +114,14 @@ const KNOWN_WRITE_TOOLS: Record<string, string[]> = {
   ],
 };
 
-export function classifyTool(name: string): ToolClass {
+/** Strip a permission specifier, e.g. `Bash(curl:*)` -> `Bash`. */
+export function normalizeTool(name: string): string {
+  const i = name.indexOf("(");
+  return (i === -1 ? name : name.slice(0, i)).trim();
+}
+
+export function classifyTool(rawName: string): ToolClass {
+  const name = normalizeTool(rawName);
   if (BUILTIN_WRITE.includes(name)) return "builtin_write";
   if (BUILTIN_READ.includes(name)) return "builtin_read";
   if (name.startsWith(SLACK_PREFIX)) {
@@ -125,11 +151,11 @@ export function buildDenylist(
   knownServers: string[],
   profile: WorkerProfile,
 ): string[] {
-  const allowedSet = new Set(allowed);
+  const allowedSet = new Set(allowed.map(normalizeTool));
   const deny = new Set<string>(BUILTIN_NETWORK);
   if (profile !== "engineering") for (const t of BUILTIN_WRITE) deny.add(t);
   const used = new Set<string>();
-  for (const t of allowed) {
+  for (const t of allowed.map(normalizeTool)) {
     const s = connectorServerOf(t);
     if (s) used.add(s);
   }
@@ -137,5 +163,6 @@ export function buildDenylist(
   for (const s of used) {
     for (const t of KNOWN_WRITE_TOOLS[s] ?? []) deny.add(`${s}__${t}`);
   }
-  return [...deny].filter((t) => !allowedSet.has(t)).sort();
+  // Network tools are always denied (no profile may allow them); everything else never overlaps allowed.
+  return [...deny].filter((t) => BUILTIN_NETWORK.includes(t) || !allowedSet.has(t)).sort();
 }
