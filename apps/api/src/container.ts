@@ -184,7 +184,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     linger: lingerCheck(run),
     bun: bunVersionCheck(),
     auth: authCheck(auth, clock),
-    claude: claudeCheck(provider),
+    claude: claudeCheck(provider, clock),
   });
 
   return {

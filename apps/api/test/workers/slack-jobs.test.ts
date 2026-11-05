@@ -107,10 +107,10 @@ const ctx = {
   checkpoint() {},
   getCheckpoint: () => undefined,
 };
-const run = (type: string, input: unknown = null) => {
+const run = (type: string, input: unknown = null, attempts = 1, maxAttempts = 3) => {
   const h = handlers.get(type);
   if (!h) throw new Error(`no handler ${type}`);
-  return h.handler({ type, input } as unknown as Job, ctx as never);
+  return h.handler({ type, input, attempts, maxAttempts } as unknown as Job, ctx as never);
 };
 const jobs = (type?: string) =>
   db
@@ -392,6 +392,7 @@ test("R50: three stalled runs -> error, collection.failed unknown, no further jo
   const s = sync.get("slack.backfill");
   expect(s.status).toBe("error");
   expect(s.stallCount).toBe(3);
+  expect(s.lastError).toEqual({ kind: "unknown", message: "no progress after 3 runs" });
   expect(jobs("slack.backfill")).toHaveLength(3);
   expect(evts("collection.failed")[0]?.payload).toEqual({
     stream: "slack.backfill",

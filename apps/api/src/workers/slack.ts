@@ -253,7 +253,7 @@ export function registerSlackJobs(deps: SlackJobDeps): {
           stallCount,
           backoffMinutes: 0,
           lastSuccessAt: isoNow(clock),
-          lastError: null,
+          lastError: stalled ? { kind: "unknown", message: "no progress after 3 runs" } : null,
           status: complete ? "complete" : stalled ? "error" : "running",
         });
         events.publish(tx, {

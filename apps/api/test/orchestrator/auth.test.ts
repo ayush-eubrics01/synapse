@@ -204,3 +204,24 @@ test("claudeCheck wraps provider health and never throws", async () => {
     ).status,
   ).toBe("down");
 });
+
+test("claudeCheck caches health for the TTL, then refreshes", async () => {
+  let calls = 0;
+  const provider: AIProvider = {
+    execute: async () => {
+      throw new Error("unused");
+    },
+    getHealth: async () => {
+      calls++;
+      return { status: "ok", version: String(calls) };
+    },
+  };
+  const clock = new FakeClock("2026-11-05T12:00:00.000Z");
+  const check = claudeCheck(provider, clock, 60_000);
+  expect((await check()).detail).toBe("1");
+  clock.advance(59_000);
+  expect((await check()).detail).toBe("1");
+  clock.advance(2_000);
+  expect((await check()).detail).toBe("2");
+  expect(calls).toBe(2);
+});

@@ -95,3 +95,48 @@ export function getClaudeRuns(limit = 10, fetchImpl: typeof fetch = fetch): Prom
 export function getClaudeStatus(fetchImpl: typeof fetch = fetch): Promise<ClaudeStatus> {
   return request("/api/claude/status", undefined, fetchImpl);
 }
+
+export interface SlackSyncState {
+  stream: string;
+  checkpoint: string | null;
+  upperBound: string | null;
+  status: "idle" | "running" | "paused" | "complete" | "error";
+  pagesDone: number;
+  lastSuccessAt: string | null;
+  lastError: { kind: string; message: string } | null;
+  nextRunAfter: string | null;
+}
+
+export interface SlackStatusDto {
+  incremental: SlackSyncState;
+  backfill: SlackSyncState;
+  searchesToday: number;
+}
+
+export interface InboxMessageDto {
+  id: string;
+  conversation: { id: string; name: string | null; type: string };
+  sender: { id: string; name: string | null };
+  sentAt: string;
+  text: string | null;
+  permalink: string | null;
+  threadTs: string | null;
+  replyCount: number;
+}
+
+export function getInboxMessages(
+  limit = 50,
+  fetchImpl: typeof fetch = fetch,
+): Promise<InboxMessageDto[]> {
+  return request(`/api/inbox/messages?limit=${limit}`, undefined, fetchImpl);
+}
+
+export function getSlackStatus(fetchImpl: typeof fetch = fetch): Promise<SlackStatusDto> {
+  return request("/api/slack/status", undefined, fetchImpl);
+}
+
+export function startBackfill(
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ started: boolean; state: SlackSyncState }> {
+  return request("/api/slack/backfill", { method: "POST" }, fetchImpl);
+}

@@ -1,5 +1,14 @@
 import { expect, test } from "bun:test";
-import { decideApproval, getClaudeRuns, getClaudeStatus, getHealth, getJobs } from "../lib/api";
+import {
+  decideApproval,
+  getClaudeRuns,
+  getClaudeStatus,
+  getHealth,
+  getInboxMessages,
+  getJobs,
+  getSlackStatus,
+  startBackfill,
+} from "../lib/api";
 
 type Call = { url: string; init?: RequestInit };
 
@@ -52,4 +61,17 @@ test("getClaudeStatus and getClaudeRuns call the claude routes", async () => {
   const runs = fake(200, []);
   expect(await getClaudeRuns(10, runs.impl)).toEqual([]);
   expect(runs.calls[0]?.url).toBe("/api/claude/runs?limit=10");
+});
+
+test("inbox and slack API URLs", async () => {
+  const msgs = fake(200, []);
+  await getInboxMessages(50, msgs.impl);
+  expect(msgs.calls[0]?.url).toBe("/api/inbox/messages?limit=50");
+  const status = fake(200, { incremental: {}, backfill: {}, searchesToday: 0 });
+  await getSlackStatus(status.impl);
+  expect(status.calls[0]?.url).toBe("/api/slack/status");
+  const bf = fake(200, { started: true, state: {} });
+  await startBackfill(bf.impl);
+  expect(bf.calls[0]?.url).toBe("/api/slack/backfill");
+  expect(bf.calls[0]?.init?.method).toBe("POST");
 });
