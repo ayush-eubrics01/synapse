@@ -35,6 +35,8 @@ interface Script {
   denials?: string[];
   tools?: string[];
   throws?: Error;
+  /** permission_denials persisted on the claude_runs row (the orchestrator does this even for failed runs). */
+  runDenials?: string[];
   onRun?: () => void;
   raw?: string;
 }
@@ -76,8 +78,9 @@ beforeEach(() => {
           id: `run-${calls}`,
           jobId: req.jobId ?? null,
           workerProfile: "intelligence",
-          status: "succeeded",
+          status: script.throws ? "failed" : "succeeded",
           startedAt: NOW,
+          permissionDenials: script.runDenials ?? null,
         })
         .run();
       script.onRun?.();
@@ -340,4 +343,28 @@ test("content expiring during the run stores no draft", async () => {
   await run(a);
   expect(calls).toBe(1);
   expect(drafts()).toHaveLength(0);
+});
+
+test("R16: a suggest run that records denials and then throws raises a high runtime flag", async () => {
+  const a = add();
+  script.runDenials = ["mcp__claude_ai_Slack__slack_send_message"];
+  script.throws = new JobError({ kind: "timeout", message: "claude run exceeded 360000ms" });
+  await expect(run(a)).rejects.toMatchObject({ classified: { kind: "timeout" } });
+  const f = flags().filter((x) => x.detector === "runtime");
+  expect(f).toHaveLength(1);
+  expect(f[0]).toMatchObject({ messageId: a, severity: "high", claudeRunId: "run-1" });
+  expect(drafts()).toHaveLength(0);
+});
+
+test("R16: a suggest max_turns failure raises a warning runtime flag", async () => {
+  const a = add();
+  script.throws = new JobError({
+    kind: "provider_error",
+    message: "claude reached max turns",
+    details: { maxTurns: true },
+  });
+  await expect(run(a)).rejects.toBeInstanceOf(JobError);
+  const f = flags().filter((x) => x.detector === "runtime");
+  expect(f).toHaveLength(1);
+  expect(f[0]).toMatchObject({ messageId: a, severity: "warning", reason: "max_turns reached" });
 });

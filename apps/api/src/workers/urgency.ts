@@ -59,11 +59,23 @@ interface BatchRow extends AssessBatchItem {
 const conversationLabel = (type: "im" | "mpim" | "channel", name: string | null, ref: string) =>
   type === "im" ? "a DM" : type === "mpim" ? "a group DM" : `#${name ?? ref}`;
 
+/** Flag bookkeeping on a failure path must never replace the original error. */
+const safely = (fn: () => void) => {
+  try {
+    fn();
+  } catch {
+    console.error("urgency: runtime flag recording failed");
+  }
+};
+
 const isUrgent = (l: UrgencyLevel): l is "critical" | "high" => l === "critical" || l === "high";
 
 export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
   const { db, settings, events, queue, notifications, orchestrator, securityFlags } = deps;
-  const { latestRunId, runtimeFlags } = createRunHelpers(db, securityFlags);
+  const { latestRunId, runIdBefore, runtimeFlags, failedRunFlags } = createRunHelpers(
+    db,
+    securityFlags,
+  );
 
   const eligibleWhere = sql`json_extract(${slackMessages.screening}, '$.route') = 'assess'
     and coalesce(json_extract(${slackMessages.screening}, '$.assessed'), 0) = 0
@@ -251,9 +263,12 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
     if (batch.length === 0) return { assessed: 0 };
     const byId = new Map(batch.map((m) => [m.messageId, m]));
 
+    const before = runIdBefore(job.id);
+    let ran = false;
     try {
       const req = buildAssessRequest(batch, job.id, settings.get("urgency.model"));
       const result = await orchestrator.run(req, ctx.signal);
+      ran = true;
       runtimeFlags(
         job.id,
         batch.map((b) => b.messageId),
@@ -295,6 +310,16 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
       return { assessed: seen.size, fallbacks };
     } catch (err) {
       const { classified, rethrow } = wrapFailure(err);
+      if (!ran) {
+        safely(() =>
+          failedRunFlags(
+            job.id,
+            batch.map((b) => b.messageId),
+            classified,
+            before,
+          ),
+        );
+      }
       const decision = retryDecision(classified.kind);
       if (decision === "defer") onDeferral(batch);
       else if (
@@ -375,6 +400,8 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
         sentAt: r.sentAt,
       }));
 
+    const before = runIdBefore(job.id);
+    let ran = false;
     try {
       const req = buildSuggestRequest(
         {
@@ -389,6 +416,7 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
         settings.get("urgency.suggest.model"),
       );
       const result = await orchestrator.run(req, ctx.signal);
+      ran = true;
       runtimeFlags(job.id, [messageId], result);
       const parsed = parseStructured(result.finalText, suggestedResponseSchema);
       if (!parsed.ok) {
@@ -431,7 +459,9 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): void {
         { behavior: "immediate" },
       );
     } catch (err) {
-      throw wrapFailure(err).rethrow;
+      const { classified, rethrow } = wrapFailure(err);
+      if (!ran) safely(() => failedRunFlags(job.id, [messageId], classified, before));
+      throw rethrow;
     }
   };
 

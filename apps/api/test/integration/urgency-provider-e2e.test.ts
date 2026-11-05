@@ -205,6 +205,30 @@ describe("urgency.assess through the real provider", () => {
     expect(db.select().from(schema.notifications).all()).toHaveLength(0);
   });
 
+  test("R16: a max_turns run with a denied send tool -> high runtime flags, run row failed", async () => {
+    const { db, run } = build("max_turns");
+    const err = await run().catch((e) => e);
+    expect(err).toBeInstanceOf(JobError);
+    expect((err as JobError).classified).toMatchObject({
+      kind: "provider_error",
+      details: { maxTurns: true },
+    });
+    const runs = db.select().from(schema.claudeRuns).all();
+    expect(runs[0]).toMatchObject({
+      status: "failed",
+      permissionDenials: ["mcp__claude_ai_Slack__slack_send_message"],
+    });
+    const f = db.select().from(schema.securityFlags).all();
+    expect(f.map((x) => x.messageId).sort()).toEqual(["m-urg-1", "m-urg-2"]);
+    for (const x of f) {
+      expect(x).toMatchObject({ detector: "runtime", severity: "high", claudeRunId: runs[0]?.id });
+      expect(x.reason).toBe(
+        "denied tools: mcp__claude_ai_Slack__slack_send_message; max_turns reached",
+      );
+    }
+    expect(JSON.stringify(f)).not.toContain(BODY);
+  });
+
   test("10 messages of 8000 CJK chars pass the real validator", async () => {
     const texts = Array.from({ length: 10 }, () => "漢".repeat(8000));
     const { db, run } = build("urgency_ok", texts);

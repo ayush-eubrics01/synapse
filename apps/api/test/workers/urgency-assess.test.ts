@@ -48,6 +48,10 @@ interface Script {
   denials?: string[];
   tools?: string[];
   throws?: Error;
+  /** permission_denials persisted on the claude_runs row (the orchestrator does this even for failed runs). */
+  runDenials?: string[];
+  /** The orchestrator rejected before inserting a claude_runs row (quota gate, invalid request). */
+  noRow?: boolean;
   raw?: string;
 }
 let script: Script;
@@ -83,15 +87,17 @@ beforeEach(() => {
     async run(req: ClaudeJobRequest): Promise<AIExecutionResult> {
       calls++;
       requests.push(req);
-      db.insert(schema.claudeRuns)
-        .values({
-          id: `run-${calls}`,
-          jobId: req.jobId ?? null,
-          workerProfile: "intelligence",
-          status: "succeeded",
-          startedAt: NOW,
-        })
-        .run();
+      if (!script.noRow)
+        db.insert(schema.claudeRuns)
+          .values({
+            id: `run-${calls}`,
+            jobId: req.jobId ?? null,
+            workerProfile: "intelligence",
+            status: script.throws ? "failed" : "succeeded",
+            startedAt: NOW,
+            permissionDenials: script.runDenials ?? null,
+          })
+          .run();
       if (script.throws) throw script.throws;
       const finalText =
         script.raw ??
@@ -538,4 +544,72 @@ test("the stored reason is sanitised and capped", async () => {
   const r = msg(a).urgencyReason as string;
   expect(r).not.toContain("\u202e");
   expect(r.length).toBeLessThanOrEqual(300);
+});
+
+test("R16: a run that records denials and then throws still raises high runtime flags", async () => {
+  const a = add();
+  const b = add();
+  script.runDenials = ["mcp__claude_ai_Slack__slack_send_message"];
+  script.throws = new JobError({
+    kind: "provider_error",
+    message: "claude reported an error result",
+  });
+  await expect(run(1, 3)).rejects.toMatchObject({ classified: { kind: "provider_error" } });
+  const f = flags().filter((x) => x.detector === "runtime");
+  expect(f.map((x) => x.messageId).sort()).toEqual([a, b]);
+  expect(f.every((x) => x.severity === "high" && x.claudeRunId === "run-1")).toBe(true);
+  expect(f[0]?.reason).toBe("denied tools: mcp__claude_ai_Slack__slack_send_message");
+  expect(JSON.stringify(f)).not.toContain(SECRET);
+  // The retry is still a plain retry: nothing assessed, nothing notified.
+  expect(msg(a).screening.assessed).toBe(false);
+});
+
+test("R16: a max_turns failure raises a warning runtime flag with a content-free reason", async () => {
+  const a = add();
+  script.throws = new JobError({
+    kind: "provider_error",
+    message: "claude reached max turns",
+    details: { maxTurns: true },
+  });
+  await expect(run(1, 3)).rejects.toBeInstanceOf(JobError);
+  const f = flags().filter((x) => x.detector === "runtime");
+  expect(f).toHaveLength(1);
+  expect(f[0]).toMatchObject({ messageId: a, severity: "warning", reason: "max_turns reached" });
+});
+
+test("R16: denials plus max_turns: one high flag naming both", async () => {
+  add();
+  script.runDenials = ["Bash"];
+  script.throws = new JobError({
+    kind: "provider_error",
+    message: "claude reached max turns",
+    details: { maxTurns: true },
+  });
+  await expect(run(1, 3)).rejects.toBeInstanceOf(JobError);
+  const f = flags().filter((x) => x.detector === "runtime");
+  expect(f).toHaveLength(1);
+  expect(f[0]?.severity).toBe("high");
+  expect(f[0]?.reason).toBe("denied tools: Bash; max_turns reached");
+});
+
+test("R16: a failure before this attempt's run row exists reuses no earlier run's denials", async () => {
+  const a = add();
+  // Attempt 1: a denial on a run that then fails -> one high flag.
+  script.runDenials = ["Bash"];
+  script.throws = new JobError({ kind: "provider_error", message: "x" });
+  const jobId = db.transaction(
+    (tx) => queue.enqueue(tx, { type: "urgency.assess", idempotencyKey: "same-job" }).id,
+  );
+  const job = (attempts: number) =>
+    ({ id: jobId, type: "urgency.assess", attempts, maxAttempts: 3 }) as unknown as Job;
+  const h = handlers.get("urgency.assess")?.handler as (j: Job, c: unknown) => Promise<unknown>;
+  await expect(h(job(1), ctx)).rejects.toBeInstanceOf(JobError);
+  expect(flags().filter((x) => x.detector === "runtime")).toHaveLength(1);
+  db.delete(schema.securityFlags).run();
+  // Attempt 2: the quota gate rejects before any row: attempt 1's row must not be re-read.
+  script.noRow = true;
+  script.runDenials = undefined;
+  script.throws = new JobError({ kind: "quota_exhausted", message: "q" });
+  await expect(h(job(2), ctx)).rejects.toBeInstanceOf(JobError);
+  expect(flags().filter((x) => x.detector === "runtime" && x.messageId === a)).toHaveLength(0);
 });

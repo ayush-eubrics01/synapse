@@ -71,6 +71,17 @@ describe("ClaudeCliProvider.execute", () => {
     expect(r.status).toBe("succeeded");
   });
 
+  test("R16: an error_max_turns result is provider_error with details.maxTurns and its denials", async () => {
+    const r = await provider({ FAKE_CLAUDE_MODE: "max_turns" }).execute(req(), sig());
+    expect(r.status).toBe("failed");
+    expect(r.error).toMatchObject({
+      kind: "provider_error",
+      message: "claude reached max turns",
+      details: { maxTurns: true },
+    });
+    expect(r.permissionDenials).toEqual(["mcp__claude_ai_Slack__slack_send_message"]);
+  });
+
   test("rate_rejected is quota_exhausted with retryAfter", async () => {
     const r = await provider({ FAKE_CLAUDE_MODE: "rate_rejected" }).execute(req(), sig());
     expect(r.status).toBe("failed");
