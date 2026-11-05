@@ -179,3 +179,12 @@ export function claudeCheck(
     return inflight;
   });
 }
+
+/** Degraded while the stored security rules are unusable and the starter rules stand in. */
+export function securityRulesCheck(rules: { rulesFallbackActive(): boolean }): HealthCheck {
+  return guarded(async () =>
+    rules.rulesFallbackActive()
+      ? { status: "degraded", detail: "stored security rules invalid; fallback rules in effect" }
+      : { status: "ok" },
+  );
+}

@@ -21,6 +21,7 @@ import {
   heartbeatCheck,
   jobsCheck,
   lingerCheck,
+  securityRulesCheck,
 } from "./core/health/checks";
 import { HealthService } from "./core/health/health";
 import { JobQueue } from "./core/jobs/queue";
@@ -39,6 +40,7 @@ import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
 import { PeopleService } from "./modules/people/service";
+import { SecurityFlagsService } from "./modules/security-flags/service";
 import { registerSlackJobs } from "./workers/slack";
 
 export interface Container {
@@ -66,6 +68,7 @@ export interface Container {
   inbox: InboxStore;
   sync: SyncStateService;
   people: PeopleService;
+  securityFlags: SecurityFlagsService;
   slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
@@ -165,6 +168,15 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   const sync = new SyncStateService(db, clock);
   const inbox = new InboxStore({ db, clock, events, queue, sync });
   const people = new PeopleService({ db, clock, events, audit, settings });
+  const securityFlags = new SecurityFlagsService({
+    db,
+    clock,
+    events,
+    audit,
+    settings,
+    notifications,
+    people,
+  });
   const slack = registerSlackJobs({
     db,
     clock,
@@ -188,6 +200,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     bun: bunVersionCheck(),
     auth: authCheck(auth, clock),
     claude: claudeCheck(provider, clock),
+    "security-rules": securityRulesCheck(securityFlags),
   });
 
   return {
@@ -215,6 +228,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     inbox,
     sync,
     people,
+    securityFlags,
     slack: { startBackfill: slack.startBackfill, backfillResumable: slack.backfillResumable },
   };
 }

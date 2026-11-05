@@ -68,6 +68,7 @@ test("health ready is 200 with a report", async () => {
     "heartbeat",
     "jobs",
     "linger",
+    "security-rules",
   ]);
 });
 
