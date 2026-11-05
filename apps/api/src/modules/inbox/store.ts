@@ -74,6 +74,8 @@ export class InboxStore {
               type: "slack.fetch_thread",
               input: { conversationId: m.conversationId, parentTs: m.threadTs },
               idempotencyKey: `slack.thread:${m.conversationId}:${m.threadTs}`,
+              concurrencyGroup: "slack.threads",
+              priority: 50,
             });
             if (r.created) threadFetches++;
           }

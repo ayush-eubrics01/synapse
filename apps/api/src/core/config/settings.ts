@@ -7,6 +7,9 @@ import { DEFAULT_KNOWN_SERVERS, SERVER_NAME_RE } from "../orchestrator/tool-cata
 
 const settingSchemas = {
   "slack.collection.intervalSeconds": z.number().int().positive().default(600),
+  "slack.collection.enabled": z.boolean().default(true),
+  "slack.backfill.minMinutesBetweenRuns": z.number().int().positive().default(3),
+  "slack.backfill.maxBackoffMinutes": z.number().int().positive().default(30),
   "slack.backfill.days": z.number().int().positive().default(90),
   "slack.collector.pagesPerRun": z.number().int().positive().default(5),
   "retention.slackContentDays": z.number().int().positive().default(180),

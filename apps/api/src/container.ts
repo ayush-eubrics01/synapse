@@ -35,6 +35,10 @@ import { SchedulerService } from "./core/scheduler/scheduler";
 import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
+import { SlackConnectorSource } from "./integrations/slack/connector-source";
+import { InboxStore } from "./modules/inbox/store";
+import { SyncStateService } from "./modules/inbox/sync-state";
+import { registerSlackJobs } from "./workers/slack";
 
 export interface Container {
   config: AppConfig;
@@ -58,6 +62,9 @@ export interface Container {
   auth: AuthMonitor;
   orchestrator: ClaudeOrchestrator;
   health: HealthService;
+  inbox: InboxStore;
+  sync: SyncStateService;
+  slack: { startBackfill: ReturnType<typeof registerSlackJobs>["startBackfill"] };
 }
 
 export interface ContainerDeps {
@@ -153,6 +160,22 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     scratchDir,
   });
 
+  const sync = new SyncStateService(db, clock);
+  const inbox = new InboxStore({ db, clock, events, queue, sync });
+  const slack = registerSlackJobs({
+    db,
+    clock,
+    source: new SlackConnectorSource({ orchestrator, clock }),
+    store: inbox,
+    sync,
+    queue,
+    settings,
+    events,
+    audit,
+    scheduler,
+    handlers,
+  });
+
   const health = new HealthService({
     database: databaseCheck(sqlite),
     jobs: jobsCheck(db, clock),
@@ -186,5 +209,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     auth,
     orchestrator,
     health,
+    inbox,
+    sync,
+    slack: { startBackfill: slack.startBackfill },
   };
 }
