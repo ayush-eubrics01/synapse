@@ -10,7 +10,7 @@ This list amends the phase plan in `pre-project-concept-document/concept.md`. Wh
 | 3 | Slack collector | Done |
 | 4 | Urgency engine and inbox | Done |
 | 5 | People Memory | Built; PR #6 open for merge |
-| 6 | Commitments, follow-ups and approved sending | In progress |
+| 6 | Commitments, follow-ups and approved sending | Built; PR open (stacked on Phase 5) |
 | 6b | Away-mode auto-replies (ADR-033) and the return digest | Planned. Split out of Phase 6; it builds on Phase 6's send path |
 | 7 | **Design revamp** | Planned. Inserted at the user's request (2026-11-06), before the Jira integration |
 | 8 | Jira integration | Planned. Was Phase 7 |
