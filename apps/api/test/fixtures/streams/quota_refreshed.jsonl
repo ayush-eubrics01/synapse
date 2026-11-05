@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","tools":["ToolSearch"],"mcp_servers":[{"name":"claude.ai Slack","status":"pending"}]}
+{"type": "result", "subtype": "success", "is_error": true, "num_turns": 1, "duration_ms": 300, "total_cost_usd": 0, "usage": {"input_tokens": 0, "output_tokens": 0}, "permission_denials": [], "result": "The quota was refreshed"}

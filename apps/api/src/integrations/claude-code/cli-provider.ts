@@ -16,7 +16,7 @@ const TESTED_VERSION = "2.1.318";
 const HEALTH_TIMEOUT_MS = 5000;
 const CLOSE_CAP_MS = 500;
 const AUTH_RE = /login|oauth token|authentication|unauthori[sz]ed/i;
-const QUOTA_TEXT_RE = /usage limit|rate limit|quota/i;
+const QUOTA_TEXT_RE = /usage limit|rate limit|quota (exceeded|exhausted|reached)/i;
 
 /** A spawn failure message by errno code; never includes paths or arguments. */
 export function spawnErrorMessage(code: string | undefined): string {

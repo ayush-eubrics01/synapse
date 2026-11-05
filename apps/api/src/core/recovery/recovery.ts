@@ -115,3 +115,21 @@ export function reapExpiredJobs(deps: { db: Db; clock: Clock; audit: AuditLogger
     { behavior: "immediate" },
   );
 }
+
+/**
+ * Marks every claude_runs row still `running` as failed. Called once at startup: no run can
+ * outlive the process that spawned it. Returns the number of rows swept.
+ */
+export function recoverOrphanRuns(db: Db, clock: Clock): number {
+  const rows = db
+    .update(schema.claudeRuns)
+    .set({
+      status: "failed",
+      error: { kind: "unknown", message: "interrupted by restart" },
+      finishedAt: isoNow(clock),
+    })
+    .where(eq(schema.claudeRuns.status, "running"))
+    .returning({ id: schema.claudeRuns.id })
+    .all();
+  return rows.length;
+}

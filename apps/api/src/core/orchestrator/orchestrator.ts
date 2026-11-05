@@ -17,6 +17,7 @@ import type { ZodType } from "zod";
 import type { AuditLogger } from "../audit/audit";
 import type { SettingsService } from "../config/settings";
 import type { EventPublisher } from "../events/publisher";
+import type { NotificationService } from "../notifications/notifications";
 import type { AuthMonitor } from "./auth";
 import { assemblePrompt } from "./prompt";
 import { clampQuotaRetry, decideQuota, quotaLevel, thresholdsFromSettings } from "./quota-gate";
@@ -41,6 +42,7 @@ export interface OrchestratorDeps {
   events: EventPublisher;
   audit: AuditLogger;
   auth: AuthMonitor;
+  notifications: NotificationService;
   scratchDir: string;
   /** Boundary generator (16 hex chars); injectable for tests. */
   random?: () => string;
@@ -55,6 +57,9 @@ const SAFE_MESSAGE_KINDS = new Set<string>([
   "connector_not_ready",
   "incomplete_ai_output",
 ]);
+
+const AUTH_PAUSE_RETRY_MS = 15 * 60_000;
+const AUTH_PROBE_AFTER_MS = 30 * 60_000;
 
 const defaultBoundary = () => crypto.randomUUID().replace(/-/g, "").slice(0, 16);
 
@@ -118,12 +123,81 @@ function errName(e: unknown): string {
 export class ClaudeOrchestrator {
   private readonly semaphore = new Semaphore();
   private readonly random: () => string;
+  /** True while one run is acting as the auth probe (in-process; one probe at a time). */
+  private probing = false;
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.random = deps.random ?? defaultBoundary;
   }
 
   async run(req: ClaudeJobRequest, signal: AbortSignal): Promise<AIExecutionResult> {
+    const probe = this.authGate();
+    try {
+      const result = await this.runInner(req, signal);
+      if (probe) this.clearAuthPause();
+      return result;
+    } catch (e) {
+      if (e instanceof JobError && e.classified.kind === "auth_failed") this.pauseAuth();
+      throw e;
+    } finally {
+      if (probe) this.probing = false;
+    }
+  }
+
+  /**
+   * ADR-037 §4. Throws auth_paused while paused, unless this run is the single probe (pause is
+   * 30+ min old, or the credentials refresh expiry changed). Returns true for the probe.
+   */
+  private authGate(): boolean {
+    const { settings, clock, auth } = this.deps;
+    const pausedAt = settings.get("auth.pausedAt");
+    if (pausedAt === null) return false;
+    const now = clock.now();
+    const exp = auth.currentExpiry();
+    const changed =
+      !("error" in exp) && exp.refreshExpiresAt !== settings.get("auth.pausedRefreshExpiresAt");
+    const old = now.getTime() - Date.parse(pausedAt) >= AUTH_PROBE_AFTER_MS;
+    if ((old || changed) && !this.probing) {
+      this.probing = true; // claimed synchronously: no await between check and set
+      return true;
+    }
+    throw new JobError({
+      kind: "auth_paused",
+      message: "Claude authentication is paused until re-login",
+      retryAfter: new Date(now.getTime() + AUTH_PAUSE_RETRY_MS).toISOString(),
+    });
+  }
+
+  private clearAuthPause(): void {
+    this.bestEffort("auth pause clear", "-", () => {
+      this.deps.settings.clear("auth.pausedAt");
+      this.deps.settings.clear("auth.pausedRefreshExpiresAt");
+    });
+  }
+
+  /** Sets the pause. The notification is raised once, when the pause starts; a failed probe re-arms the timer. */
+  private pauseAuth(): void {
+    this.bestEffort("auth pause", "-", () => {
+      const { settings, clock, db, notifications, auth } = this.deps;
+      const wasPaused = settings.get("auth.pausedAt") !== null;
+      const exp = auth.currentExpiry();
+      settings.set("auth.pausedAt", isoNow(clock), { emit: false });
+      if ("error" in exp) settings.clear("auth.pausedRefreshExpiresAt");
+      else settings.set("auth.pausedRefreshExpiresAt", exp.refreshExpiresAt, { emit: false });
+      if (!wasPaused) {
+        db.transaction((tx) => {
+          notifications.notify(tx, {
+            kind: "claude.auth_paused",
+            severity: "high",
+            title: "Claude authentication failed",
+            body: "Claude runs are paused. Log in to Claude again; runs resume automatically.",
+          });
+        });
+      }
+    });
+  }
+
+  private async runInner(req: ClaudeJobRequest, signal: AbortSignal): Promise<AIExecutionResult> {
     const { db, clock, settings, events, audit, provider } = this.deps;
 
     const parsed = claudeJobRequestSchema.safeParse(req);

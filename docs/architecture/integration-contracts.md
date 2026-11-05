@@ -269,6 +269,7 @@ type ErrorKind =
   | 'rate_limited'           // Slack/Jira/Claude rate limit: retry after delay
   | 'quota_exhausted'        // Claude five-hour/seven-day window: defer until resetsAt
   | 'auth_failed'            // NEEDS_ATTENTION, no retry
+  | 'auth_paused'            // Claude auth paused after auth_failed (ADR-037 §4): defer, no attempt consumed
   | 'permission_denied'      // NEEDS_ATTENTION, no retry
   | 'invalid_input'          // fail, no retry
   | 'incomplete_ai_output'   // retry (counts toward max attempts)

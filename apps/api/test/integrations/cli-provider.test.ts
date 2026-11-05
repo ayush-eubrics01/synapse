@@ -256,6 +256,11 @@ describe("final-review fixes", () => {
     expect(r.error?.message).toBe("Claude usage quota exhausted");
   });
 
+  test("P3: 'the quota was refreshed' is not quota_exhausted", async () => {
+    const r = await provider({ FAKE_CLAUDE_MODE: "quota_refreshed" }).execute(req(), sig());
+    expect(r.error?.kind).not.toBe("quota_exhausted");
+  });
+
   test("I2: resetsAt 1e20 neither throws nor kills the process", async () => {
     const r = await provider({ FAKE_CLAUDE_MODE: "rate_huge_reset" }).execute(req(), sig());
     expect(r.status).toBe("succeeded");

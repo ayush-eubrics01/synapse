@@ -30,6 +30,8 @@ const settingSchemas = {
     .array(z.string().regex(SERVER_NAME_RE))
     .default(() => [...DEFAULT_KNOWN_SERVERS]),
   "auth.lastExpiryWarningAt": z.string().nullable().default(null),
+  "auth.pausedAt": z.string().nullable().default(null),
+  "auth.pausedRefreshExpiresAt": z.string().nullable().default(null),
 };
 
 export type SettingKey = keyof typeof settingSchemas;
@@ -51,6 +53,11 @@ export class SettingsService {
       .where(eq(schema.appSettings.key, key))
       .get();
     return settingSchemas[key].parse(row?.value) as SettingValue<K>;
+  }
+
+  /** Removes a stored value so the key reads as its default (a JSON null cannot be stored). */
+  clear(key: SettingKey): void {
+    this.db.delete(schema.appSettings).where(eq(schema.appSettings.key, key)).run();
   }
 
   set<K extends SettingKey>(key: K, value: SettingValue<K>, opts: { emit?: boolean } = {}): void {

@@ -6,6 +6,7 @@ export type ErrorKind =
   | "rate_limited"
   | "quota_exhausted"
   | "auth_failed"
+  | "auth_paused"
   | "permission_denied"
   | "invalid_input"
   | "incomplete_ai_output"
@@ -20,6 +21,7 @@ export const errorKindSchema = z.enum([
   "rate_limited",
   "quota_exhausted",
   "auth_failed",
+  "auth_paused",
   "permission_denied",
   "invalid_input",
   "incomplete_ai_output",
@@ -61,6 +63,7 @@ const DECISIONS: Record<ErrorKind, RetryDecision> = {
   parse_failed: "needs_attention",
   invalid_input: "fail",
   quota_exhausted: "defer",
+  auth_paused: "defer",
 };
 
 export function retryDecision(kind: ErrorKind): RetryDecision {

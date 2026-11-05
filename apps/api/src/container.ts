@@ -149,6 +149,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     events,
     audit,
     auth,
+    notifications,
     scratchDir,
   });
 

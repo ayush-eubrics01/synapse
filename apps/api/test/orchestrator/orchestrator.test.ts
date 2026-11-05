@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type AIExecutionRequest,
   type AIExecutionResult,
@@ -13,9 +16,12 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { AuditLogger } from "../../src/core/audit/audit";
 import { SettingsService } from "../../src/core/config/settings";
+import { LiveBus } from "../../src/core/events/live-bus";
 import { EventPublisher } from "../../src/core/events/publisher";
+import { NotificationService } from "../../src/core/notifications/notifications";
 import { AuthMonitor } from "../../src/core/orchestrator/auth";
 import { ClaudeOrchestrator } from "../../src/core/orchestrator/orchestrator";
+import { recoverOrphanRuns } from "../../src/core/recovery/recovery";
 
 const START = "2026-11-05T12:00:00.000Z";
 const SEARCH = "mcp__claude_ai_Slack__slack_search_public";
@@ -77,8 +83,20 @@ let clock: FakeClock;
 let settings: SettingsService;
 let provider: FakeProvider;
 let orch: ClaudeOrchestrator;
+let credsPath: string;
+
+function writeCreds(refreshExpiresAt: number) {
+  writeFileSync(
+    credsPath,
+    JSON.stringify({
+      claudeAiOauth: { expiresAt: Date.now() + 3_600_000, refreshTokenExpiresAt: refreshExpiresAt },
+    }),
+  );
+}
 
 beforeEach(() => {
+  credsPath = join(mkdtempSync(join(tmpdir(), "synapse-creds-")), "creds.json");
+  writeCreds(1_900_000_000_000);
   ({ db, sqlite } = openDatabase(":memory:"));
   runMigrations(db);
   clock = new FakeClock(START);
@@ -91,7 +109,8 @@ beforeEach(() => {
     settings,
     events: new EventPublisher(clock),
     audit: new AuditLogger(clock),
-    auth: new AuthMonitor(db, clock, settings, new EventPublisher(clock), "/nonexistent/creds"),
+    auth: new AuthMonitor(db, clock, settings, new EventPublisher(clock), credsPath),
+    notifications: new NotificationService(db, clock, new LiveBus()),
     scratchDir: "/scratch",
     random: () => "0123456789abcdef",
   });
@@ -588,5 +607,94 @@ describe("runStructured", () => {
     provider.next = () => result({ finalText: '{"n":"x"}' });
     const e = await fails(orch.runStructured(req(), schemaT, S()));
     expect(e.classified.kind).toBe("incomplete_ai_output");
+  });
+});
+
+describe("auth pause (ADR-037 §4)", () => {
+  const authFailed = () =>
+    result({ status: "failed", error: { kind: "auth_failed", message: "login needed" } });
+  const notes = () => db.select().from(schema.notifications).all();
+
+  test("auth_failed sets the pause, notifies once, and the next run defers without a provider call", async () => {
+    provider.next = authFailed;
+    expect((await fails(run(req()))).classified.kind).toBe("auth_failed");
+    expect(settings.get("auth.pausedAt")).toBe(START);
+    expect(settings.get("auth.pausedRefreshExpiresAt")).toBe(
+      new Date(1_900_000_000_000).toISOString(),
+    );
+    expect(notes()).toHaveLength(1);
+    expect(notes()[0]).toMatchObject({ kind: "claude.auth_paused", severity: "high" });
+    const calls = provider.requests.length;
+    const e = await fails(run(req()));
+    expect(e.classified.kind).toBe("auth_paused");
+    expect(e.classified.retryAfter).toBe("2026-11-05T12:15:00.000Z");
+    expect(provider.requests.length).toBe(calls);
+    expect(notes()).toHaveLength(1);
+  });
+
+  test("after 30 min one probe goes through; success clears the pause", async () => {
+    provider.next = authFailed;
+    await fails(run(req()));
+    provider.next = () => result();
+    clock.advance(29 * 60_000);
+    expect((await fails(run(req()))).classified.kind).toBe("auth_paused");
+    clock.advance(60_000);
+    await run(req());
+    expect(settings.get("auth.pausedAt")).toBeNull();
+    expect(settings.get("auth.pausedRefreshExpiresAt")).toBeNull();
+    await run(req());
+  });
+
+  test("a changed refresh expiry lets a probe through immediately", async () => {
+    provider.next = authFailed;
+    await fails(run(req()));
+    provider.next = () => result();
+    expect((await fails(run(req()))).classified.kind).toBe("auth_paused");
+    writeCreds(1_950_000_000_000);
+    await run(req());
+    expect(settings.get("auth.pausedAt")).toBeNull();
+  });
+
+  test("only one concurrent run probes", async () => {
+    provider.next = authFailed;
+    await fails(run(req()));
+    writeCreds(1_950_000_000_000);
+    let release!: () => void;
+    provider.next = () => new Promise((r) => (release = () => r(result())));
+    const first = run(req());
+    const second = await fails(run(req()));
+    expect(second.classified.kind).toBe("auth_paused");
+    await Promise.resolve();
+    release();
+    await first;
+  });
+
+  test("a failed probe keeps the pause and restarts the timer", async () => {
+    provider.next = authFailed;
+    await fails(run(req()));
+    clock.advance(31 * 60_000);
+    await fails(run(req()));
+    expect(settings.get("auth.pausedAt")).toBe("2026-11-05T12:31:00.000Z");
+    expect(notes()).toHaveLength(1);
+    expect((await fails(run(req()))).classified.kind).toBe("auth_paused");
+  });
+});
+
+describe("recoverOrphanRuns", () => {
+  test("marks running rows failed and leaves other rows untouched", () => {
+    const row = (id: string, status: string) =>
+      db
+        .insert(schema.claudeRuns)
+        .values({ id, workerProfile: "collector", model: "haiku", status, startedAt: START })
+        .run();
+    row("r1", "running");
+    row("r2", "succeeded");
+    expect(recoverOrphanRuns(db, clock)).toBe(1);
+    const byId = Object.fromEntries(runs().map((r) => [r.id, r]));
+    expect(byId.r1?.status).toBe("failed");
+    expect(byId.r1?.error).toEqual({ kind: "unknown", message: "interrupted by restart" });
+    expect(byId.r1?.finishedAt).toBe(START);
+    expect(byId.r2?.status).toBe("succeeded");
+    expect(byId.r2?.error).toBeNull();
   });
 });

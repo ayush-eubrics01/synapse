@@ -14,6 +14,7 @@ test.each([
   ["parse_failed", "needs_attention"],
   ["invalid_input", "fail"],
   ["quota_exhausted", "defer"],
+  ["auth_paused", "defer"],
 ])("%s -> %s", (k, d) => expect(retryDecision(k as ErrorKind)).toBe(d));
 
 test("JobError carries the classified error", () => {
