@@ -158,7 +158,7 @@ The stored copy of a message is the first one seen. Edits and deletes in Slack a
 
 ### Search counting (Q2)
 
-`searchesToday` counts every search result the connector saw, including runs that failed: each `JobError` thrown by `SlackConnectorSource.collect` carries `details.searches`, and the worker adds it to the day's count on failure. A successful run is counted from `CollectResult.searches` as before.
+`searchesToday` counts the search results of every run that returned a result, including runs that then failed validation: a `JobError` thrown by `SlackConnectorSource.collect` after the Claude run returned (no tool result, rate-limited result, parse failure) carries `details.searches`, and the worker adds it to the day's count on failure. A run that fails inside the orchestrator (provider error, timeout, max turns, quota or auth) returns no tool results, so its searches are not counted and `searchesToday` can under-count. A successful run is counted from `CollectResult.searches` as before.
 
 ### Dev smoke
 
@@ -166,7 +166,7 @@ The stored copy of a message is the first one seen. Edits and deletes in Slack a
 
 ## Events
 
-Emitted: `message.received`, `message.thread_updated`, `message.screened`, `message.urgent_detected` (after the urgency result is stored), `collection.completed`, `collection.failed`.
+Emitted: `message.received`, `message.thread_updated` (no consumer yet; screening listens to `message.received` only), `message.screened`, `message.urgent_detected` (after the urgency result is stored), `collection.completed`, `collection.failed`.
 
 Consumed: `approval.approved` / `approval.rejected` / `approval.expired` (sends), `settings.changed` (frequency, retention), `claude.job_completed` / `claude.job_failed` (collector runs).
 

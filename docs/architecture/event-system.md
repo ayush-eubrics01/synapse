@@ -35,7 +35,7 @@ Events that are purely for live UI updates (SSE) may skip the outbox and are mar
 | Event | Emitted by | Typical consumers | Notes |
 |---|---|---|---|
 | `message.received` | inbox | screening, people, commitments | Payload `{ messageId }`. New message stored after dedup |
-| `message.thread_updated` | inbox | screening, commitments | Payload `{ messageId }`. New reply in a known thread |
+| `message.thread_updated` | inbox | commitments (planned) | Payload `{ messageId }`. New reply in a known thread. Screening does not consume it: the reply also emits `message.received` |
 | `message.screened` | inbox | urgency (if candidate), batch analysis | Rule-based screening result |
 | `message.urgent_detected` | inbox | notifications, dashboard | Critical/High after assessment |
 | `collection.completed` | inbox / jira-tracking | health, dashboard | Payload `{ stream, pages, inserted, duplicates, rejected }`. Per collector run |
