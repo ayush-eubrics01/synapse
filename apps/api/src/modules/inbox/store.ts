@@ -38,7 +38,6 @@ export class InboxStore {
   persistPage(
     stream: SyncStream,
     page: MessagePage,
-    opts: { maxThreadFetches: number },
   ): { inserted: number; duplicates: number; threadFetches: number } {
     const { db, sync } = this.deps;
     return db.transaction(
@@ -70,7 +69,7 @@ export class InboxStore {
             .get();
           if (parent) {
             this.deps.events.publish(tx, this.event("message.thread_updated", id, correlationId));
-          } else if (threadFetches < opts.maxThreadFetches) {
+          } else {
             const r = this.deps.queue.enqueue(tx, {
               type: "slack.fetch_thread",
               input: { conversationId: m.conversationId, parentTs: m.threadTs },
@@ -82,12 +81,14 @@ export class InboxStore {
 
         if (page.messages.length > 0) {
           const state = sync.get(stream, tx);
-          let next = state.checkpoint;
-          for (const m of page.messages) {
-            if (next === null || Number(m.ts) > Number(next)) next = m.ts;
-          }
+          let pageMax = page.messages[0]?.ts as string;
+          for (const m of page.messages) if (Number(m.ts) > Number(pageMax)) pageMax = m.ts;
           const nowTs = (this.deps.clock.now().getTime() / 1000).toFixed(6);
-          if (next !== null && Number(next) > Number(nowTs)) next = nowTs;
+          const capped = Number(pageMax) > Number(nowTs) ? nowTs : pageMax;
+          const next =
+            state.checkpoint !== null && Number(state.checkpoint) >= Number(capped)
+              ? state.checkpoint
+              : capped;
           if (next !== state.checkpoint) sync.update(tx, stream, { checkpoint: next });
         }
 

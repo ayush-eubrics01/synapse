@@ -45,7 +45,6 @@ function msg(ts: string, over: Partial<SourceMessage> = {}): SourceMessage {
   };
 }
 const page = (...messages: SourceMessage[]): MessagePage => ({ messages, rejected: 0 });
-const opts = { maxThreadFetches: 5 };
 const T1 = "1793870000.000100";
 const T2 = "1793870100.000200";
 const T3 = "1793870200.000300";
@@ -55,42 +54,42 @@ const jobs = () => db.select().from(schema.jobs).all();
 
 test("same page twice: second time all duplicates, no duplicate events", () => {
   const p = page(msg(T1), msg(T2));
-  expect(store.persistPage("slack.messages", p, opts)).toEqual({
+  expect(store.persistPage("slack.messages", p)).toEqual({
     inserted: 2,
     duplicates: 0,
     threadFetches: 0,
   });
-  expect(store.persistPage("slack.messages", p, opts).inserted).toBe(0);
-  expect(store.persistPage("slack.messages", p, opts).duplicates).toBe(2);
+  expect(store.persistPage("slack.messages", p).inserted).toBe(0);
+  expect(store.persistPage("slack.messages", p).duplicates).toBe(2);
   expect(events().filter((e) => e.type === "message.received")).toHaveLength(2);
 });
 
 test("checkpoint advances to max ts and never moves backwards", () => {
-  store.persistPage("slack.messages", page(msg(T2), msg(T1)), opts);
+  store.persistPage("slack.messages", page(msg(T2), msg(T1)));
   expect(sync.get("slack.messages").checkpoint).toBe(T2);
-  store.persistPage("slack.messages", page(msg(T1, { conversationId: "C2" })), opts);
+  store.persistPage("slack.messages", page(msg(T1, { conversationId: "C2" })));
   expect(sync.get("slack.messages").checkpoint).toBe(T2);
-  store.persistPage("slack.messages", page(msg(T3)), opts);
+  store.persistPage("slack.messages", page(msg(T3)));
   expect(sync.get("slack.messages").checkpoint).toBe(T3);
 });
 
 test("checkpoint is capped at now", () => {
   const future = "4102444800.000000";
-  store.persistPage("slack.messages", page(msg(future)), opts);
+  store.persistPage("slack.messages", page(msg(future)));
   const expected = (clock.now().getTime() / 1000).toFixed(6);
   expect(sync.get("slack.messages").checkpoint).toBe(expected);
 });
 
 test("empty page leaves checkpoint unchanged", () => {
-  store.persistPage("slack.messages", page(msg(T1)), opts);
-  store.persistPage("slack.messages", page(), opts);
+  store.persistPage("slack.messages", page(msg(T1)));
+  store.persistPage("slack.messages", page());
   expect(sync.get("slack.messages").checkpoint).toBe(T1);
 });
 
 test("reply with unknown parent: stored with thread_ts, exactly one fetch job across polls", () => {
   const reply = msg(T2, { threadTs: T1 });
-  expect(store.persistPage("slack.messages", page(reply), opts).threadFetches).toBe(1);
-  expect(store.persistPage("slack.messages", page(reply), opts).threadFetches).toBe(0);
+  expect(store.persistPage("slack.messages", page(reply)).threadFetches).toBe(1);
+  expect(store.persistPage("slack.messages", page(reply)).threadFetches).toBe(0);
   const row = db.select().from(schema.slackMessages).get();
   expect(row?.threadTs).toBe(T1);
   const j = jobs();
@@ -101,25 +100,44 @@ test("reply with unknown parent: stored with thread_ts, exactly one fetch job ac
   expect(events().some((e) => e.type === "message.thread_updated")).toBe(false);
 });
 
-test("maxThreadFetches caps jobs per page", () => {
+test("every reply with a missing parent enqueues a job; re-persist adds none", () => {
+  const replies = Array.from({ length: 7 }, (_, i) =>
+    msg(`17938701${String(i).padStart(2, "0")}.000000`, {
+      threadTs: `17938600${String(i).padStart(2, "0")}.000000`,
+    }),
+  );
+  expect(store.persistPage("slack.messages", page(...replies)).threadFetches).toBe(7);
+  expect(jobs()).toHaveLength(7);
+  expect(store.persistPage("slack.messages", page(...replies)).threadFetches).toBe(0);
+  expect(jobs()).toHaveLength(7);
+});
+
+test("threadFetches counts only newly created jobs", () => {
+  store.persistPage("slack.messages", page(msg(T2, { threadTs: T1 })));
   const r = store.persistPage(
     "slack.messages",
-    page(msg(T2, { threadTs: T1 }), msg(T3, { threadTs: "1793879000.000000" })),
-    { maxThreadFetches: 1 },
+    page(msg(T3, { threadTs: T1 }), msg("1793870300.000000", { threadTs: "1793860000.000000" })),
   );
   expect(r.threadFetches).toBe(1);
-  expect(jobs()).toHaveLength(1);
+  expect(jobs()).toHaveLength(2);
+});
+
+test("checkpoint later than now stays unchanged on a non-empty page", () => {
+  store.persistPage("slack.messages", page(msg(T2)));
+  clock.set("2026-11-04T00:00:00.000Z");
+  store.persistPage("slack.messages", page(msg("1793700000.000000")));
+  expect(sync.get("slack.messages").checkpoint).toBe(T2);
 });
 
 test("reply whose parent exists emits message.thread_updated", () => {
-  store.persistPage("slack.messages", page(msg(T1)), opts);
-  store.persistPage("slack.messages", page(msg(T2, { threadTs: T1 })), opts);
+  store.persistPage("slack.messages", page(msg(T1)));
+  store.persistPage("slack.messages", page(msg(T2, { threadTs: T1 })));
   expect(events().filter((e) => e.type === "message.thread_updated")).toHaveLength(1);
   expect(jobs()).toHaveLength(0);
 });
 
 test("events carry no text, names or emails", () => {
-  store.persistPage("slack.messages", page(msg(T1), msg(T2, { threadTs: T1 })), opts);
+  store.persistPage("slack.messages", page(msg(T1), msg(T2, { threadTs: T1 })));
   const dump = JSON.stringify(events());
   expect(dump).not.toContain("secret text");
   expect(dump).not.toContain("Ann");
@@ -127,11 +145,10 @@ test("events carry no text, names or emails", () => {
 });
 
 test("conversation type is kept; empty name does not overwrite", () => {
-  store.persistPage("slack.messages", page(msg(T1)), opts);
+  store.persistPage("slack.messages", page(msg(T1)));
   store.persistPage(
     "slack.messages",
     page(msg(T2, { conversationType: "im", conversationName: "" })),
-    opts,
   );
   const c = db.select().from(schema.slackConversations).get();
   expect(c?.type).toBe("channel");
@@ -139,7 +156,7 @@ test("conversation type is kept; empty name does not overwrite", () => {
 });
 
 test("storeThread: known conversation dedups, emits, keeps checkpoint; unknown is a no-op", () => {
-  store.persistPage("slack.messages", page(msg(T3)), opts);
+  store.persistPage("slack.messages", page(msg(T3)));
   const before = sync.get("slack.messages").checkpoint;
   expect(store.storeThread("C1", [msg(T1), msg(T2, { threadTs: T1 })])).toEqual({ inserted: 2 });
   expect(store.storeThread("C1", [msg(T1)])).toEqual({ inserted: 0 });
@@ -157,7 +174,7 @@ test("storeThread: known conversation dedups, emits, keeps checkpoint; unknown i
 
 test("expireContent clears text but keeps ts and permalink", () => {
   const old = msg("1790000000.000000"); // 2026-09-21
-  store.persistPage("slack.messages", page(old, msg(T1)), opts);
+  store.persistPage("slack.messages", page(old, msg(T1)));
   expect(store.expireContent(30)).toBe(1);
   expect(store.expireContent(30)).toBe(0);
   const rows = db.select().from(schema.slackMessages).all();
@@ -173,7 +190,6 @@ test("listMessages: newest first, filter, limit clamp, shape", () => {
   store.persistPage(
     "slack.messages",
     page(msg(T1), msg(T2), msg(T3, { conversationId: "C2", conversationName: "other" })),
-    opts,
   );
   const all = store.listMessages({ limit: 10 });
   expect(all.map((m) => m.sentAt)).toEqual(
