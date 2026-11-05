@@ -3,12 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DbOrTx } from "@synapse/database";
-import { openDatabase, runMigrations } from "@synapse/database";
+import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
 import { SettingsService } from "../../src/core/config/settings";
 import {
   bunVersionCheck,
   databaseCheck,
+  eventsCheck,
   heartbeatCheck,
   jobsCheck,
   lingerCheck,
@@ -107,7 +108,7 @@ test("heartbeat handler writes without emitting; heartbeat check goes stale", as
 
 test("jobs check flags stale pending and expired running", async () => {
   const q = new JobQueue(db, clock);
-  const check = jobsCheck(q, clock);
+  const check = jobsCheck(db, clock);
   expect((await check()).status).toBe("ok");
   q.enqueue(db, { type: "t", idempotencyKey: "k" });
   clock.advance(14 * 60_000);
@@ -118,4 +119,60 @@ test("jobs check flags stale pending and expired running", async () => {
   expect((await check()).status).toBe("ok");
   clock.advance(1000);
   expect((await check()).status).toBe("degraded");
+});
+
+test("jobs check reports NEEDS_ATTENTION jobs with a count", async () => {
+  const q = new JobQueue(db, clock);
+  const check = jobsCheck(db, clock);
+  for (const key of ["a", "b"]) {
+    const { id } = q.enqueue(db, { type: "t", idempotencyKey: key });
+    q.claim("w", 60_000, ["t"]);
+    q.fail(id, "w", { kind: "auth_failed", message: "no" });
+  }
+  expect(await check()).toEqual({ status: "degraded", detail: "2 job(s) need attention" });
+});
+
+test("jobs check lists every problem it finds", async () => {
+  const q = new JobQueue(db, clock);
+  const parked = q.enqueue(db, { type: "t", idempotencyKey: "parked" }).id;
+  q.claim("w", 60_000, ["t"]);
+  q.fail(parked, "w", { kind: "auth_failed", message: "no" });
+  q.enqueue(db, { type: "t", idempotencyKey: "stuck" });
+  q.claim("w", 1000, ["t"]);
+  q.enqueue(db, { type: "t", idempotencyKey: "waiting" });
+  clock.advance(16 * 60_000);
+  expect(await jobsCheck(db, clock)()).toEqual({
+    status: "degraded",
+    detail:
+      "oldest due pending job is from 2026-11-05T12:00:00.000Z; " +
+      "1 running job(s) with expired lease; 1 job(s) need attention",
+  });
+});
+
+test("events check is degraded while any consumer has failed an event", async () => {
+  const check = eventsCheck(db);
+  expect(await check()).toEqual({ status: "ok" });
+  for (const id of ["e1", "e2"]) {
+    db.insert(schema.domainEvents)
+      .values({
+        id,
+        type: "settings.changed",
+        aggregateType: "settings",
+        aggregateId: "k",
+        payload: { key: "k" },
+        occurredAt: "2026-11-05T12:00:00.000Z",
+      })
+      .run();
+  }
+  const consumption = (consumer: string, eventId: string, status: string) =>
+    db
+      .insert(schema.eventConsumptions)
+      .values({ id: `${consumer}-${eventId}`, consumer, eventId, status })
+      .run();
+  consumption("a", "e1", "done");
+  consumption("a", "e2", "pending");
+  expect(await check()).toEqual({ status: "ok" });
+  consumption("b", "e1", "failed");
+  consumption("b", "e2", "failed");
+  expect(await check()).toEqual({ status: "degraded", detail: "2 failed event consumption(s)" });
 });

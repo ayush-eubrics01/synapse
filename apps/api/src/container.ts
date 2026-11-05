@@ -12,6 +12,7 @@ import { EventPublisher } from "./core/events/publisher";
 import {
   bunVersionCheck,
   databaseCheck,
+  eventsCheck,
   heartbeatCheck,
   jobsCheck,
   lingerCheck,
@@ -112,7 +113,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
 
   const health = new HealthService({
     database: databaseCheck(sqlite),
-    jobs: jobsCheck(queue, clock),
+    jobs: jobsCheck(db, clock),
+    events: eventsCheck(db),
     heartbeat: heartbeatCheck(settings, clock),
     linger: lingerCheck(run),
     bun: bunVersionCheck(),

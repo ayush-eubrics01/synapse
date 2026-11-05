@@ -48,6 +48,7 @@ test("health ready is 200 with a report", async () => {
   expect(Object.keys(body.checks).sort()).toEqual([
     "bun",
     "database",
+    "events",
     "heartbeat",
     "jobs",
     "linger",
