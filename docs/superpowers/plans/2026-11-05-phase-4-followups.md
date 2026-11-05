@@ -4,7 +4,16 @@ Phase 4 (Urgency Engine and Inbox) passed per-task reviews, a final whole-branch
 
 ## Smoke result
 
-_Filled in after the controller smoke run._
+Run on 2026-11-06: `bun scripts/dev/urgency-smoke.ts --pages 1`. It used the real CLI and Slack connector on a temp DB, which was deleted afterwards. Desktop popups were off (no-op notifier), and the output was counts only.
+
+| Messages | Screened | Candidates | Flags | Assessed | Fallback | Run |
+|---|---|---|---|---|---|---|
+| 20 | 20 | 2 | 1 warning | 1 high, 1 medium | 0 | collect ok, assess ok |
+
+This confirmed real-format end-to-end behaviour:
+- screening ran without AI;
+- one batched haiku assessment passed the real validator;
+- the output was parsed and validated, with no fallback needed.
 
 ## Product decisions made during the phase (user may revisit)
 
@@ -39,6 +48,10 @@ _Filled in after the controller smoke run._
   - Missing tests: suggest retry-success, a discarded draft not regenerated, and the e2e context part count.
   - Context for a non-threaded message includes replies from other threads in the conversation.
 - **Routes and web:** no pagination on the urgent list. The identity GET loads all people. No render test for the skip button.
+- **Recovery and limits:**
+  - `skipStale` scans every old row on each assess run. Bound it to a recent range.
+  - The recover job is limited to one per clock hour (controller fix), so a deterministic crash loop costs at most 3 runs an hour.
+  - `error_max_turns` is classified for every profile. That is unchanged in practice, because the CLI already sets `is_error`.
 - **Slack:** searches are not counted when `orchestrator.run` itself throws (Q2 covers failures after a result).
 
 ## Controller rulings made during execution (Phase 4)
