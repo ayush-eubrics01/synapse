@@ -98,6 +98,7 @@ function build(mode: string, count = 2) {
     orchestrator,
     securityFlags,
     store: new CommitmentStore({ db, clock, settings, events }),
+    guidelinesFor: () => ({ name: "Priya GUIDENAME", texts: ["GUIDELINE-SECRET-abc"] }),
     events,
     stall: new StallService({ db, clock, settings, events, queue, notifications }),
     handlers,
@@ -235,6 +236,17 @@ describe("commitments.draft_followup through the real provider and validator", (
         createdAt: NOW,
       })
       .run();
+    db.insert(schema.commitmentUpdates)
+      .values({
+        id: "u1",
+        commitmentId: "c1",
+        actor: "user",
+        field: "review_status",
+        fromValue: "pending_review",
+        toValue: "accepted",
+        createdAt: NOW,
+      })
+      .run();
     // Past due, so the deterministic check stalls it.
     await handlers.get("commitments.check_stalled")?.handler({} as Job, ctxOf());
     const job = db
@@ -275,6 +287,9 @@ describe("commitments.draft_followup through the real provider and validator", (
     const outside = prompt.replace(/<<<UNTRUSTED[\s\S]*?<<<END \w+>>>/g, "");
     expect(outside).not.toContain(BODY);
     expect(outside).toContain("DESCRIPTION-SECRET-xyz");
+    // Guidelines reach the real provider as trusted text, without the Slack name.
+    expect(outside).toContain("GUIDELINE-SECRET-abc");
+    expect(prompt).not.toContain("GUIDENAME");
   });
 });
 

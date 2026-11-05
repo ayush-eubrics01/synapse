@@ -135,10 +135,18 @@ describe("review", () => {
     expect(ev?.payload).toEqual({ commitmentId: id, reviewStatus: "accepted" });
   });
 
-  test("accept without edits writes no update; unchanged values write none", () => {
+  test("accept without edits writes only the review_status decision row; unchanged values write none", () => {
     const id = seed({ reviewStatus: "pending_review" });
     lc.review(id, "accept", { counterparty: PRIYA });
-    expect(updates(id)).toHaveLength(0);
+    expect(updates(id).map((u) => [u.actor, u.field, u.fromValue, u.toValue, u.reason])).toEqual([
+      ["user", "review_status", "pending_review", "accepted", null],
+    ]);
+  });
+
+  test("reject records a review_status rejected row (never accepted)", () => {
+    const id = seed({ reviewStatus: "pending_review" });
+    lc.review(id, "reject");
+    expect(updates(id).map((u) => [u.field, u.toValue])).toEqual([["review_status", "rejected"]]);
   });
 
   test("an offset dueAt is stored as UTC ISO", () => {

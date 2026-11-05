@@ -94,6 +94,9 @@ type UpdateRow = typeof commitmentUpdates.$inferSelect;
  * The user's side of commitments: review, status lifecycle with history, proposal decisions and
  * the list views. No AI. Events carry ids and enums only; no commitment text leaves the tables.
  */
+/** `commitment_updates.field` of the user's review decision (`to_value` accepted or rejected). */
+export const REVIEW_STATUS_FIELD = "review_status";
+
 export class CommitmentLifecycle {
   constructor(private readonly deps: CommitmentLifecycleDeps) {}
 
@@ -112,6 +115,18 @@ export class CommitmentLifecycle {
         this.writeUpdate(tx, row.id, "user", field, change.from, change.to, null, now);
       }
       const reviewStatus = decision === "accept" ? "accepted" : "rejected";
+      // The user's decision is recorded (content-free): drafting treats a description as
+      // user-approved only when this row exists.
+      this.writeUpdate(
+        tx,
+        row.id,
+        "user",
+        REVIEW_STATUS_FIELD,
+        row.reviewStatus,
+        reviewStatus,
+        null,
+        now,
+      );
       tx.update(commitments)
         .set({ ...patch.set, reviewStatus, updatedAt: now })
         .where(eq(commitments.id, id))

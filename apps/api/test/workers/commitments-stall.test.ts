@@ -150,9 +150,14 @@ function msg(
 
 /** A theirs commitment (owner Priya) sourced from `sourceId`. */
 function commitment(
-  o: Partial<typeof schema.commitments.$inferInsert> & { sourceId?: string | null } = {},
+  o: Partial<typeof schema.commitments.$inferInsert> & {
+    sourceId?: string | null;
+    /** The user accepted it through review (default); false is an auto-accepted detection. */
+    reviewed?: boolean;
+    conv?: string;
+  } = {},
 ) {
-  const { sourceId, ...rest } = o;
+  const { sourceId, reviewed = true, conv = "c-dm", ...rest } = o;
   const id = `c${++seq}`;
   db.insert(schema.commitments)
     .values({
@@ -177,7 +182,20 @@ function commitment(
         commitmentId: id,
         messageId: src ?? null,
         sourceExternalRef: `D1:${id}`,
-        conversationId: "c-dm",
+        conversationId: conv,
+        createdAt: ago(26),
+      })
+      .run();
+  }
+  if (reviewed) {
+    db.insert(schema.commitmentUpdates)
+      .values({
+        id: `u${id}`,
+        commitmentId: id,
+        actor: "user",
+        field: "review_status",
+        fromValue: "pending_review",
+        toValue: "accepted",
         createdAt: ago(26),
       })
       .run();
@@ -378,8 +396,11 @@ describe("commitments.reminders", () => {
 });
 
 describe("commitments.draft_followup", () => {
-  async function stalled(src: string | null = msg({ from: "self", text: `${SECRET} src` })) {
-    const id = commitment({ sourceId: src });
+  async function stalled(
+    src: string | null = msg({ from: "self", text: `${SECRET} src` }),
+    o: Parameters<typeof commitment>[0] = {},
+  ) {
+    const id = commitment({ sourceId: src, ...o });
     await call("commitments.check_stalled");
     const job = draftJobs()[0];
     return { id, input: job?.input as Record<string, unknown> };
@@ -538,5 +559,76 @@ describe("commitments.draft_followup", () => {
     expect(flags.length).toBeGreaterThan(0);
     expect(flags.every((f) => f.messageId === theirs)).toBe(true);
     expect(JSON.stringify(db.select().from(schema.domainEvents).all())).not.toContain(SECRET);
+  });
+
+  test("R12: an auto-accepted description is an untrusted part, not user_approved", async () => {
+    const src = msg({ from: "self" });
+    const { input } = await stalled(src, { reviewed: false });
+    await call("commitments.draft_followup", input);
+    const req = requests[0] as ClaudeJobRequest & { parts: PromptPart[] };
+    expect(req.parts.map((p) => p.provenance)).not.toContain("user_approved");
+    const withDesc = req.parts.filter((p) => p.content.includes(DESC));
+    expect(withDesc.map((p) => p.provenance)).toEqual(["untrusted"]);
+    expect(req.instructions).not.toContain(DESC);
+  });
+
+  test("R12: no identity skips the job and clears the stall so it can stall again", async () => {
+    const src = msg({ from: "self" });
+    const { id, input } = await stalled(src);
+    settings.clear("slack.selfUserId");
+    expect(await call("commitments.draft_followup", input)).toEqual({ skipped: "no_identity" });
+    expect(get(id).stalledAt).toBeNull();
+    expect(requests).toHaveLength(0);
+    settings.set("slack.selfUserId", SELF);
+    clock.set(new Date(Date.parse(NOW) + H));
+    await call("commitments.check_stalled");
+    expect(get(id).stalledAt).not.toBeNull();
+    expect(
+      draftJobs().filter((j) => j.idempotencyKey.startsWith("commitments.draft:")),
+    ).toHaveLength(2);
+  });
+
+  test("a job for an older stall is skipped when the commitment re-stalled since", async () => {
+    const src = msg({ from: "self" });
+    const { id, input } = await stalled(src);
+    db.update(schema.commitments)
+      .set({ stalledAt: new Date(Date.parse(NOW) + H).toISOString() })
+      .where(eq(schema.commitments.id, id))
+      .run();
+    expect(await call("commitments.draft_followup", input)).toEqual({ skipped: "not_stalled" });
+    expect(requests).toHaveLength(0);
+    expect(followups()).toHaveLength(0);
+  });
+
+  describe("R11 thread placement", () => {
+    const draftThread = async (src: string, o: Parameters<typeof commitment>[0] = {}) => {
+      const { input } = await stalled(src, o);
+      const r = await call("commitments.draft_followup", input);
+      expect(r).toMatchObject({ drafted: true, noThread: false });
+      return followups()[0]?.threadTs;
+    };
+
+    test("DM, top-level source: top-level follow-up (not noThread)", async () => {
+      expect(await draftThread(msg({ from: "self" }))).toBeNull();
+      const history = db.select().from(schema.followupHistory).all();
+      expect(history.map((h) => h.event)).not.toContain("noThread");
+    });
+
+    test("DM, thread-reply source: that thread", async () => {
+      expect(await draftThread(msg({ from: "self", thread: "555.000000" }))).toBe("555.000000");
+    });
+
+    test("channel: threads under the source ts, or its thread", async () => {
+      db.insert(schema.slackConversations)
+        .values({ id: "c-ch", externalId: "C1", type: "channel", name: "x" })
+        .run();
+      const src = msg({ from: "self", conv: "c-ch" });
+      const ts = db
+        .select()
+        .from(schema.slackMessages)
+        .where(eq(schema.slackMessages.id, src))
+        .get()?.ts;
+      expect(await draftThread(src, { conv: "c-ch" })).toBe(ts as string);
+    });
   });
 });

@@ -21,6 +21,7 @@ import { buildFollowupRequest } from "../intelligence/commitments/followup-promp
 import { type BatchMessage, validateCandidates } from "../intelligence/commitments/validate";
 import { conversationLabel, type HistoryItem } from "../intelligence/people/history";
 import { EXTRACT_JOB, EXTRACT_PRIORITY } from "../modules/commitments/extraction-queue";
+import { REVIEW_STATUS_FIELD } from "../modules/commitments/lifecycle";
 import {
   DRAFT_JOB,
   REMINDERS_JOB,
@@ -46,6 +47,7 @@ const {
   jobs,
   commitments,
   commitmentSources,
+  commitmentUpdates,
   followups,
   followupHistory,
 } = schema;
@@ -365,7 +367,14 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
       throw new JobError({ kind: "invalid_input", message: "commitmentId is required" });
     }
     const selfId = settings.get("slack.selfUserId");
-    if (!selfId) return { skipped: "no_identity" };
+    if (!selfId) {
+      // Clear the stall so the commitment can stall again (and be drafted) once identity is set.
+      db.update(commitments)
+        .set({ stalledAt: null, updatedAt: deps.clock.now().toISOString() })
+        .where(eq(commitments.id, commitmentId))
+        .run();
+      return { skipped: "no_identity" };
+    }
 
     const prepared = db.transaction((tx) => {
       const c = tx.select().from(commitments).where(eq(commitments.id, commitmentId)).get();
@@ -400,6 +409,33 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
       const fallback = [...sources].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
       const conversationId = newest?.conversationId ?? fallback?.conversationId ?? null;
       if (conversationId === null) return { skipped: "no_source" as const };
+      const sourceConv = newest
+        ? tx
+            .select({ type: slackConversations.type })
+            .from(slackConversations)
+            .where(eq(slackConversations.id, newest.conversationId))
+            .get()
+        : undefined;
+      const approved =
+        tx
+          .select({ id: commitmentUpdates.id })
+          .from(commitmentUpdates)
+          .where(
+            and(
+              eq(commitmentUpdates.commitmentId, commitmentId),
+              eq(commitmentUpdates.actor, "user"),
+              eq(commitmentUpdates.field, REVIEW_STATUS_FIELD),
+              eq(commitmentUpdates.toValue, "accepted"),
+            ),
+          )
+          .limit(1)
+          .get() !== undefined;
+      // R11: a DM nudge is top-level unless the source was itself in a thread.
+      const threadTs = !newest
+        ? null
+        : sourceConv?.type === "im"
+          ? newest.threadTs
+          : (newest.threadTs ?? newest.ts);
       const convIds = [...new Set(sources.map((s) => s.conversationId))];
       const threads = new Set(
         sources.flatMap((s) => [s.threadTs, s.ts].filter((t): t is string => t != null)),
@@ -439,7 +475,8 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
         description: c.description,
         owner: c.ownerSlackUserId,
         conversationId,
-        threadTs: newest ? (newest.threadTs ?? newest.ts) : null,
+        threadTs,
+        approved,
         noThread: !newest,
         context: picked.map(
           (m): HistoryItem => ({
@@ -470,6 +507,7 @@ export function registerCommitmentJobs(deps: CommitmentJobDeps): void {
       const { request, used } = buildFollowupRequest(
         {
           description: prepared.description,
+          descriptionApproved: prepared.approved,
           guidelines: deps.guidelinesFor?.(prepared.owner) ?? null,
           context: prepared.context,
         },
