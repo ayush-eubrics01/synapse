@@ -1,0 +1,466 @@
+import { beforeEach, expect, test } from "bun:test";
+import {
+  type AIExecutionResult,
+  type ClaudeJobRequest,
+  type Job,
+  JobError,
+  type ScreeningRecord,
+  type UrgencyAssessment,
+  type UrgencyLevel,
+} from "@synapse/contracts";
+import { openDatabase, runMigrations, schema } from "@synapse/database";
+import { FakeClock } from "@synapse/shared";
+import { eq } from "drizzle-orm";
+import { AuditLogger } from "../../src/core/audit/audit";
+import { SettingsService } from "../../src/core/config/settings";
+import { LiveBus } from "../../src/core/events/live-bus";
+import { EventPublisher } from "../../src/core/events/publisher";
+import { JobQueue } from "../../src/core/jobs/queue";
+import type { HandlerRegistration } from "../../src/core/jobs/worker";
+import { NotificationService } from "../../src/core/notifications/notifications";
+import { PeopleService } from "../../src/modules/people/service";
+import { SecurityFlagsService } from "../../src/modules/security-flags/service";
+import { registerUrgencyJobs } from "../../src/workers/urgency";
+
+const NOW = "2026-11-05T12:00:00.000Z";
+const SECRET = "SECRET-BODY-TEXT-xyz";
+const signal = new AbortController().signal;
+const ctx = { signal, checkpoint() {}, getCheckpoint: () => undefined } as never;
+
+let db: ReturnType<typeof openDatabase>["db"];
+let queue: JobQueue;
+let settings: SettingsService;
+let handlers: Map<string, HandlerRegistration>;
+let seq = 0;
+
+type Entry = Partial<UrgencyAssessment["assessments"][number]> & { messageId: string };
+interface Script {
+  entries?: Entry[];
+  denials?: string[];
+  tools?: string[];
+  throws?: JobError;
+}
+let script: Script;
+let requests: ClaudeJobRequest[];
+let calls: number;
+
+const inj = { detected: false, severity: "info" as const, quote: "", reason: "" };
+
+beforeEach(() => {
+  db = openDatabase(":memory:").db;
+  runMigrations(db);
+  const clock = new FakeClock(NOW);
+  const events = new EventPublisher(clock);
+  settings = new SettingsService(db, clock, events.publish.bind(events));
+  queue = new JobQueue(db, clock);
+  const notifications = new NotificationService(db, clock, new LiveBus());
+  const people = new PeopleService({ db, clock, events, audit: new AuditLogger(clock), settings });
+  const securityFlags = new SecurityFlagsService({
+    db,
+    clock,
+    events,
+    audit: new AuditLogger(clock),
+    settings,
+    notifications,
+    people,
+  });
+  securityFlags.init();
+  script = {};
+  requests = [];
+  calls = 0;
+  handlers = new Map();
+  const orchestrator = {
+    async runStructured(req: ClaudeJobRequest, schemaT: { parse(v: unknown): unknown }) {
+      calls++;
+      requests.push(req);
+      db.insert(schema.claudeRuns)
+        .values({
+          id: `run-${calls}`,
+          jobId: req.jobId ?? null,
+          workerProfile: "intelligence",
+          status: "succeeded",
+          startedAt: NOW,
+        })
+        .run();
+      if (script.throws) throw script.throws;
+      const value = schemaT.parse({
+        assessments: (script.entries ?? []).map((e) => ({
+          level: "low",
+          reason: "r",
+          suspectedInjection: inj,
+          ...e,
+        })),
+      }) as UrgencyAssessment;
+      const result = {
+        permissionDenials: script.denials ?? [],
+        toolResults: (script.tools ?? []).map((toolName) => ({ toolName })),
+      } as unknown as AIExecutionResult;
+      return { value, result };
+    },
+  };
+  registerUrgencyJobs({
+    db,
+    clock,
+    settings,
+    events,
+    queue,
+    notifications,
+    orchestrator: orchestrator as never,
+    securityFlags,
+    handlers,
+  });
+  seq = 0;
+  db.insert(schema.slackUsers).values({ id: "su1", externalId: "UPRIYA0001", name: "Priya" }).run();
+  db.insert(schema.slackConversations)
+    .values({ id: "c-ch", externalId: "C1", type: "channel", name: "payments" })
+    .run();
+  db.insert(schema.slackConversations).values({ id: "c-dm", externalId: "D1", type: "im" }).run();
+});
+
+function add(
+  o: {
+    route?: ScreeningRecord["route"];
+    ruleLevel?: UrgencyLevel;
+    text?: string | null;
+    conv?: string;
+    extra?: Partial<ScreeningRecord>;
+    status?: string;
+  } = {},
+) {
+  seq += 1;
+  const id = `m${seq}`;
+  db.insert(schema.slackMessages)
+    .values({
+      id,
+      conversationId: o.conv ?? "c-ch",
+      ts: `${1000 + seq}.000000`,
+      senderUserId: "su1",
+      text: o.text === undefined ? `${SECRET} ${seq}` : o.text,
+      sentAt: new Date(Date.parse(NOW) - 60_000 + seq * 1000).toISOString(),
+      collectedAt: NOW,
+      urgencyStatus: o.status ?? null,
+      screening: {
+        version: 1,
+        candidate: true,
+        score: 3,
+        ruleLevel: o.ruleLevel ?? "medium",
+        matchedRules: ["kw:prod"],
+        urgencySignals: [],
+        route: o.route ?? "assess",
+        assessed: false,
+        ...o.extra,
+      } satisfies ScreeningRecord,
+    })
+    .run();
+  return id;
+}
+
+const msg = (id: string) =>
+  db.select().from(schema.slackMessages).where(eq(schema.slackMessages.id, id)).get() as {
+    urgencyLevel: string | null;
+    urgencyReason: string | null;
+    urgencyStatus: string | null;
+    screening: ScreeningRecord;
+  };
+
+function run(attempts = 1, maxAttempts = 3) {
+  const jobId = db.transaction(
+    (tx) => queue.enqueue(tx, { type: "urgency.assess", idempotencyKey: `t${Math.random()}` }).id,
+  );
+  const job = { id: jobId, type: "urgency.assess", attempts, maxAttempts } as unknown as Job;
+  return handlers.get("urgency.assess")?.handler(job, ctx) as Promise<unknown>;
+}
+
+const notifs = () => db.select().from(schema.notifications).all();
+const urgentEvents = () =>
+  db
+    .select()
+    .from(schema.domainEvents)
+    .all()
+    .filter((e) => e.type === "message.urgent_detected");
+const jobsOf = (type: string) =>
+  db
+    .select()
+    .from(schema.jobs)
+    .all()
+    .filter((j) => j.type === type);
+const flags = () => db.select().from(schema.securityFlags).all();
+
+test("registers urgency.assess with a 360 s timeout", () => {
+  expect(handlers.get("urgency.assess")?.timeoutMs).toBe(360_000);
+});
+
+test("batch of 3 writes all three levels, reasons and status", async () => {
+  const a = add();
+  const b = add();
+  const c = add({ status: "acknowledged" });
+  script.entries = [
+    { messageId: a, level: "critical", reason: "prod down" },
+    { messageId: b, level: "medium" },
+    { messageId: c, level: "low" },
+  ];
+  await run();
+  expect(msg(a)).toMatchObject({ urgencyLevel: "critical", urgencyReason: "prod down" });
+  expect(msg(b).urgencyLevel).toBe("medium");
+  expect(msg(c).urgencyLevel).toBe("low");
+  expect(msg(a).urgencyStatus).toBe("new");
+  expect(msg(c).urgencyStatus).toBe("acknowledged"); // never reset
+  for (const id of [a, b, c]) {
+    expect(msg(id).screening).toMatchObject({
+      assessed: true,
+      fallback: false,
+      route: "assess",
+      matchedRules: ["kw:prod"],
+    });
+  }
+});
+
+test("request is built from the batch: untrusted parts, ToolSearch only, model setting", async () => {
+  const a = add();
+  script.entries = [{ messageId: a }];
+  await run();
+  const req = requests[0] as ClaudeJobRequest;
+  expect(req.allowedTools).toEqual(["ToolSearch"]);
+  expect(req.workerProfile).toBe("intelligence");
+  expect(req.priorityClass).toBe("urgent");
+  expect(req.model).toBe("haiku");
+  expect(req.maxTurns).toBe(3);
+  const untrusted = (req.parts ?? []).filter((p) => p.provenance === "untrusted");
+  expect(untrusted).toHaveLength(1);
+  expect(untrusted[0]?.source).toBe(`slack message ${a} from Priya`);
+  expect(req.instructions).not.toContain(SECRET);
+});
+
+test("non-candidates, other routes, assessed and expired messages are never selected", async () => {
+  const cand = add();
+  add({ route: "batch" });
+  add({ route: "skip" });
+  add({ extra: { assessed: true } });
+  add({ text: null });
+  script.entries = [{ messageId: cand }];
+  await run();
+  const req = requests[0] as ClaudeJobRequest;
+  expect((req.parts ?? []).filter((p) => p.provenance === "untrusted")).toHaveLength(1);
+});
+
+test("empty batch completes without a Claude call", async () => {
+  add({ route: "batch" });
+  expect(await run()).toEqual({ assessed: 0 });
+  expect(calls).toBe(0);
+});
+
+test("an id outside the batch fails the run and writes nothing", async () => {
+  const a = add();
+  script.entries = [{ messageId: a, level: "critical" }, { messageId: "stranger" }];
+  await expect(run()).rejects.toMatchObject({ classified: { kind: "incomplete_ai_output" } });
+  expect(msg(a).urgencyLevel).toBeNull();
+  expect(msg(a).screening.assessed).toBe(false);
+  expect(notifs()).toHaveLength(0);
+});
+
+test("a duplicate id fails the run and writes nothing", async () => {
+  const a = add();
+  script.entries = [
+    { messageId: a, level: "critical" },
+    { messageId: a, level: "low" },
+  ];
+  await expect(run()).rejects.toMatchObject({ classified: { kind: "incomplete_ai_output" } });
+  expect(msg(a).urgencyLevel).toBeNull();
+});
+
+test("a missing id falls back to its rule level while the others are assessed", async () => {
+  const a = add();
+  const b = add();
+  const miss = add({ ruleLevel: "high" });
+  script.entries = [
+    { messageId: a, level: "low" },
+    { messageId: b, level: "medium" },
+  ];
+  await run();
+  expect(msg(a).screening.fallback).toBe(false);
+  expect(msg(b).urgencyLevel).toBe("medium");
+  expect(msg(miss)).toMatchObject({
+    urgencyLevel: "high",
+    urgencyReason: "Rule-based (assessment unavailable)",
+    urgencyStatus: "new",
+  });
+  expect(msg(miss).screening).toMatchObject({ assessed: true, fallback: true });
+  expect(notifs()).toHaveLength(1); // the fallback high level notifies
+});
+
+test("critical result: one notification, one event, one suggest job; re-run adds nothing", async () => {
+  const a = add();
+  script.entries = [{ messageId: a, level: "critical" }];
+  await run();
+  const n = notifs();
+  expect(n).toHaveLength(1);
+  expect(n[0]).toMatchObject({
+    kind: "urgency.urgent",
+    severity: "high",
+    title: "Critical: message from Priya in #payments",
+    ref: a,
+  });
+  expect(JSON.stringify(n)).not.toContain(SECRET);
+  expect(urgentEvents()).toHaveLength(1);
+  expect(urgentEvents()[0]?.payload).toEqual({
+    messageId: a,
+    level: "critical",
+    assessed: true,
+  });
+  expect(msg(a).screening.notified).toBe(true);
+  const suggest = jobsOf("urgency.suggest_response");
+  expect(suggest).toHaveLength(1);
+  expect(suggest[0]).toMatchObject({ idempotencyKey: `urgency.suggest:${a}`, priority: 150 });
+
+  // replay: the message is assessed, so nothing is selected; force re-selection too
+  await run();
+  db.update(schema.slackMessages)
+    .set({ screening: { ...msg(a).screening, assessed: false } })
+    .run();
+  script.entries = [{ messageId: a, level: "critical" }];
+  await run();
+  expect(notifs()).toHaveLength(1);
+  expect(urgentEvents()).toHaveLength(1);
+  expect(jobsOf("urgency.suggest_response")).toHaveLength(1);
+});
+
+test("high is a warning; DM and group DM labels; medium never notifies", async () => {
+  const a = add({ conv: "c-dm" });
+  db.insert(schema.slackConversations).values({ id: "c-g", externalId: "G1", type: "mpim" }).run();
+  const b = add({ conv: "c-g" });
+  const c = add();
+  script.entries = [
+    { messageId: a, level: "high" },
+    { messageId: b, level: "critical" },
+    { messageId: c, level: "medium" },
+  ];
+  await run();
+  const titles = notifs().map((n) => [n.title, n.severity]);
+  expect(titles).toContainEqual(["High: message from Priya in a DM", "warning"]);
+  expect(titles).toContainEqual(["Critical: message from Priya in a group DM", "high"]);
+  expect(notifs()).toHaveLength(2);
+  expect(jobsOf("urgency.suggest_response")).toHaveLength(2);
+});
+
+test("suspectedInjection.detected records an AI flag against the run", async () => {
+  const a = add();
+  script.entries = [
+    {
+      messageId: a,
+      level: "low",
+      suspectedInjection: { detected: true, severity: "warning", quote: "do x", reason: "asks AI" },
+    },
+  ];
+  await run();
+  const f = flags().filter((x) => x.detector === "ai");
+  expect(f).toHaveLength(1);
+  expect(f[0]?.claudeRunId).toBe("run-1");
+});
+
+test("denied Slack send tool raises high runtime flags for every batch message", async () => {
+  const a = add();
+  const b = add();
+  script.entries = [{ messageId: a }, { messageId: b }];
+  script.denials = ["mcp__claude_ai_Slack__slack_send_message"];
+  await run();
+  const f = flags().filter((x) => x.detector === "runtime");
+  expect(f.map((x) => x.messageId).sort()).toEqual([a, b]);
+  expect(f.every((x) => x.severity === "high")).toBe(true);
+  expect(f[0]?.excerpt).toContain("mcp__claude_ai_Slack__slack_send_message");
+  expect(JSON.stringify(f)).not.toContain(SECRET);
+});
+
+test("a denied read tool or an unexpected read tool result is a warning flag", async () => {
+  const a = add();
+  script.entries = [{ messageId: a }];
+  script.tools = ["mcp__claude_ai_Slack__slack_read_channel", "ToolSearch"];
+  await run();
+  const f = flags().filter((x) => x.detector === "runtime");
+  expect(f).toHaveLength(1);
+  expect(f[0]?.severity).toBe("warning");
+});
+
+test("ToolSearch alone raises no runtime flag", async () => {
+  const a = add();
+  script.entries = [{ messageId: a }];
+  script.tools = ["ToolSearch"];
+  await run();
+  expect(flags()).toHaveLength(0);
+});
+
+test("quota deferral: critical-rule message gets a not-yet-assessed notification, stays unassessed", async () => {
+  const crit = add({ ruleLevel: "critical" });
+  const med = add({ ruleLevel: "medium" });
+  script.throws = new JobError({ kind: "quota_exhausted", message: "q" });
+  await expect(run()).rejects.toMatchObject({ classified: { kind: "quota_exhausted" } });
+  const n = notifs();
+  expect(n).toHaveLength(1);
+  expect(n[0]?.title).toBe("Likely incident (not yet assessed): message from Priya in #payments");
+  expect(n[0]?.ref).toBe(crit);
+  expect(urgentEvents()).toHaveLength(1);
+  expect(urgentEvents()[0]?.payload).toMatchObject({
+    level: "critical",
+    assessed: false,
+  });
+  expect(msg(crit).screening).toMatchObject({ assessed: false, notified: true });
+  expect(msg(crit).urgencyLevel).toBeNull();
+  expect(msg(med).screening.notified).toBeUndefined();
+
+  // the retry after the deferral does not notify twice
+  await expect(run()).rejects.toBeInstanceOf(JobError);
+  expect(notifs()).toHaveLength(1);
+});
+
+test("auth_paused defers the same way", async () => {
+  add({ ruleLevel: "critical" });
+  script.throws = new JobError({ kind: "auth_paused", message: "a" });
+  await expect(run()).rejects.toMatchObject({ classified: { kind: "auth_paused" } });
+  expect(notifs()).toHaveLength(1);
+});
+
+test("a retryable failure before the last attempt changes nothing", async () => {
+  const a = add({ ruleLevel: "critical" });
+  script.throws = new JobError({ kind: "incomplete_ai_output", message: "bad" });
+  await expect(run(2, 3)).rejects.toBeInstanceOf(JobError);
+  expect(msg(a).screening.assessed).toBe(false);
+  expect(notifs()).toHaveLength(0);
+});
+
+test("third failing attempt falls back to the rule level, notifies and rethrows", async () => {
+  const a = add({ ruleLevel: "high" });
+  const b = add({ ruleLevel: "low" });
+  script.throws = new JobError({ kind: "incomplete_ai_output", message: "bad" });
+  await expect(run(3, 3)).rejects.toMatchObject({ classified: { kind: "incomplete_ai_output" } });
+  expect(msg(a)).toMatchObject({
+    urgencyLevel: "high",
+    urgencyReason: "Rule-based (assessment unavailable)",
+    urgencyStatus: "new",
+  });
+  expect(msg(a).screening).toMatchObject({ assessed: true, fallback: true, notified: true });
+  expect(msg(b).urgencyLevel).toBe("low");
+  expect(notifs()).toHaveLength(1);
+  expect(notifs()[0]?.title).toBe("High: message from Priya in #payments");
+});
+
+test("a non-retryable failure falls back immediately", async () => {
+  const a = add({ ruleLevel: "medium" });
+  script.throws = new JobError({ kind: "invalid_input", message: "no" });
+  await expect(run(1, 3)).rejects.toBeInstanceOf(JobError);
+  expect(msg(a).screening).toMatchObject({ assessed: true, fallback: true });
+});
+
+test("12 eligible with batchMax 10: 10 oldest assessed, follow-up job enqueued", async () => {
+  const ids = Array.from({ length: 12 }, () => add());
+  script.entries = ids.slice(0, 10).map((messageId) => ({ messageId }));
+  const out = (await run()) as { assessed: number };
+  expect(out.assessed).toBe(10);
+  expect(msg(ids[9] as string).screening.assessed).toBe(true);
+  expect(msg(ids[10] as string).screening.assessed).toBe(false);
+  const next = jobsOf("urgency.assess").filter((j) => j.idempotencyKey.endsWith(":next"));
+  expect(next).toHaveLength(1);
+  expect(next[0]?.priority).toBe(200);
+  // second run takes the remaining two
+  script.entries = ids.slice(10).map((messageId) => ({ messageId }));
+  await run();
+  expect(msg(ids[11] as string).screening.assessed).toBe(true);
+});

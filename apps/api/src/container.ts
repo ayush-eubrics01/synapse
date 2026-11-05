@@ -44,6 +44,7 @@ import { SyncStateService } from "./modules/inbox/sync-state";
 import { PeopleService } from "./modules/people/service";
 import { SecurityFlagsService } from "./modules/security-flags/service";
 import { registerSlackJobs } from "./workers/slack";
+import { registerUrgencyJobs } from "./workers/urgency";
 
 export interface Container {
   config: AppConfig;
@@ -203,6 +204,17 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     events,
     audit,
     scheduler,
+    handlers,
+  });
+  registerUrgencyJobs({
+    db,
+    clock,
+    settings,
+    events,
+    queue,
+    notifications,
+    orchestrator,
+    securityFlags,
     handlers,
   });
 
