@@ -55,6 +55,7 @@ import { UrgentInbox } from "./modules/inbox/urgent";
 import { OutgoingService } from "./modules/outgoing/service";
 import { replyStates, UrgentReplies } from "./modules/outgoing/urgent-reply";
 import { ContactDiscovery } from "./modules/people/discovery";
+import { PostSendSuggestions } from "./modules/people/post-send";
 import { ProfileService } from "./modules/people/profiles";
 import { ProfileRecommendations } from "./modules/people/recommendations";
 import { PeopleService } from "./modules/people/service";
@@ -318,6 +319,15 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   const followupService = new FollowupService({ db, clock, audit, events, queue, outgoing });
   dispatcher.subscribe("followup.sent", "commitments.followup_sent", (event, tx) =>
     followupService.onFollowupSent(event, tx),
+  );
+  const postSend = new PostSendSuggestions({
+    settings,
+    people,
+    recommendations: profiles,
+    recipientOf: (tx, followupId) => followupService.recipientOf(tx, followupId),
+  });
+  dispatcher.subscribe("followup.sent", "people.post_send", (event, tx) =>
+    postSend.onFollowupSent(event, tx),
   );
   const extractionQueue = new ExtractionQueue({ db, clock, settings, queue });
   dispatcher.subscribe("message.received", "commitments.queue", (event, tx) =>

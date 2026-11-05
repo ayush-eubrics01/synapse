@@ -1,5 +1,5 @@
 import type { FollowupAction, FollowupStatus, FollowupView } from "@synapse/contracts";
-import { type Db, schema, type Tx } from "@synapse/database";
+import { type Db, type DbOrTx, schema, type Tx } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { AuditLogger } from "../../core/audit/audit";
@@ -143,7 +143,11 @@ export class FollowupService {
       const conv = convOf(r.conversationId);
       const live = o !== undefined && (LIVE_OUTGOING as readonly string[]).includes(o.status);
       const actions: FollowupAction[] = [];
-      if (SENDABLE.includes(r.status) && !live) actions.push("send", "discard");
+      if (SENDABLE.includes(r.status) && !live) {
+        // Sending needs a resolvable conversation; discarding never does.
+        if (conv) actions.push("send");
+        actions.push("discard");
+      }
       return {
         id: r.id,
         commitmentId: r.commitmentId,
@@ -320,6 +324,17 @@ export class FollowupService {
         `commitments followup_sent failed followup=${followupId} error=${e instanceof Error ? e.name : "unknown"}`,
       );
     }
+  }
+
+  /** The Slack user a follow-up is addressed to (null when it has none); for `people.post_send`. */
+  recipientOf(tx: DbOrTx, followupId: string): string | null {
+    return (
+      tx
+        .select({ recipient: followups.recipientSlackUserId })
+        .from(followups)
+        .where(eq(followups.id, followupId))
+        .get()?.recipient ?? null
+    );
   }
 
   private load(tx: Tx, id: string): FollowupRow {
