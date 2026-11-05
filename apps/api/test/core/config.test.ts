@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
+import { homedir } from "node:os";
 import type { NewDomainEvent } from "@synapse/contracts";
 import { type DbOrTx, openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock, isoNow, newId } from "@synapse/shared";
 import { eq } from "drizzle-orm";
-import { loadConfig } from "../../src/core/config/config";
+import { loadConfig, resolveHome } from "../../src/core/config/config";
 import { SettingsService } from "../../src/core/config/settings";
 
 function setup() {
@@ -41,6 +42,18 @@ test("loadConfig defaults", () => {
   expect(c.api).toEqual({ host: "127.0.0.1", port: 7400 });
   expect(c.web).toEqual({ host: "127.0.0.1", port: 7401 });
   expect(c.workerConcurrency).toBe(2);
+  expect(c.claudeBinary).toBe("/h/.local/bin/claude");
+  expect(c.credentialsPath).toBe("/h/.claude/.credentials.json");
+});
+
+test("loadConfig claude overrides", () => {
+  const c = loadConfig({
+    SYNAPSE_DB_PATH: "/d.db",
+    SYNAPSE_CLAUDE_BIN: "/bin/c",
+    SYNAPSE_CLAUDE_CREDENTIALS: "/cred.json",
+  });
+  expect(c.claudeBinary).toBe("/bin/c");
+  expect(c.credentialsPath).toBe("/cred.json");
 });
 
 test("loadConfig honours XDG_DATA_HOME and overrides", () => {
@@ -89,4 +102,23 @@ test("invalid value throws and writes nothing", () => {
   expect(() => settings.set("jobs.maxAttempts", -1)).toThrow();
   expect(settings.get("jobs.maxAttempts")).toBe(3);
   expect(eventCount(db)).toBe(0);
+});
+
+test("resolveHome: HOME, else os.homedir(); loadConfig and the container share it", () => {
+  expect(resolveHome({ HOME: "/h" })).toBe("/h");
+  expect(resolveHome({})).toBe(homedir());
+  expect(resolveHome({ HOME: "" })).toBe(homedir());
+  expect(loadConfig({ XDG_DATA_HOME: "/x" }).claudeBinary).toBe(`${homedir()}/.local/bin/claude`);
+});
+
+test("knownServers entries must match the R31 server-name rule", () => {
+  const { settings } = setup();
+  for (const bad of ["mcp__", "mcp_____", "Slack", "mcp__a,b", "mcp__a__b(", "mcp__a b"]) {
+    expect(() =>
+      settings.set("orchestrator.knownServers", ["mcp__claude_ai_Slack", bad]),
+    ).toThrow();
+  }
+  expect(settings.get("orchestrator.knownServers")).toContain("mcp__claude_ai_Gmail");
+  settings.set("orchestrator.knownServers", ["mcp__claude_ai_Slack", "mcp__a_1"]);
+  expect(settings.get("orchestrator.knownServers")).toEqual(["mcp__claude_ai_Slack", "mcp__a_1"]);
 });

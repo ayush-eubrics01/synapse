@@ -1,0 +1,501 @@
+import {
+  type AIExecutionRequest,
+  type AIExecutionResult,
+  type AIProvider,
+  type ClassifiedError,
+  type ClaudeJobRequest,
+  claudeJobRequestSchema,
+  JobError,
+  type QuotaSnapshot,
+  type QuotaWindow,
+  type WorkerProfile,
+} from "@synapse/contracts";
+import { type Db, schema } from "@synapse/database";
+import { type Clock, isoNow, newId } from "@synapse/shared";
+import { desc, eq, sql } from "drizzle-orm";
+import type { ZodType } from "zod";
+import type { AuditLogger } from "../audit/audit";
+import type { SettingsService } from "../config/settings";
+import type { EventPublisher } from "../events/publisher";
+import type { AuthMonitor } from "./auth";
+import { assemblePrompt } from "./prompt";
+import { clampQuotaRetry, decideQuota, quotaLevel, thresholdsFromSettings } from "./quota-gate";
+import { parseStructured } from "./structured";
+import { buildDenylist, classifyTool, SERVER_NAME_RE } from "./tool-catalog";
+import { validateRequest } from "./validator";
+
+export const DEFAULT_SYSTEM_PROMPTS: Record<WorkerProfile, string> = {
+  collector:
+    "You are a read-only data collection worker. Call only the tools you are told to, with the exact arguments given. Never send or modify anything.",
+  intelligence:
+    "You are an analysis worker. Use only the tools you are given, which are read-only. Reply with exactly the JSON the instructions ask for.",
+  engineering:
+    "You are an engineering worker operating only inside the given repository and only within the approved task.",
+};
+
+export interface OrchestratorDeps {
+  db: Db;
+  clock: Clock;
+  provider: AIProvider;
+  settings: SettingsService;
+  events: EventPublisher;
+  audit: AuditLogger;
+  auth: AuthMonitor;
+  scratchDir: string;
+  /** Boundary generator (16 hex chars); injectable for tests. */
+  random?: () => string;
+}
+
+// Provider messages for these kinds are generic by design (Task 5); others never echo content.
+const SAFE_MESSAGE_KINDS = new Set<string>([
+  "provider_error",
+  "timeout",
+  "quota_exhausted",
+  "auth_failed",
+  "connector_not_ready",
+  "incomplete_ai_output",
+]);
+
+const defaultBoundary = () => crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+
+/** True when any allowed tool is a connector write-class tool (a send run). */
+function hasWriteTool(tools: string[]): boolean {
+  return tools.some((t) => t.startsWith("mcp__") && classifyTool(t) === "write");
+}
+
+export function connectorToServer(name: string): string {
+  return `mcp__${name.replace(/^claude\.ai /, "claude_ai_").replace(/[^A-Za-z0-9]/g, "_")}`;
+}
+
+const cancelledWaiting = () =>
+  new JobError({ kind: "timeout", message: "cancelled while waiting for a Claude slot" });
+
+class Semaphore {
+  private active = 0;
+  private waiters: Array<() => void> = [];
+
+  /** Waits for a slot; an abort removes the waiter from the queue and throws a timeout JobError. */
+  async acquire(max: () => number, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) throw cancelledWaiting();
+    while (this.active >= max()) {
+      await new Promise<void>((resolve, reject) => {
+        const wake = (): void => {
+          signal.removeEventListener("abort", onAbort);
+          resolve();
+        };
+        const onAbort = (): void => {
+          const i = this.waiters.indexOf(wake);
+          if (i >= 0) this.waiters.splice(i, 1);
+          reject(cancelledWaiting());
+        };
+        this.waiters.push(wake);
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+      if (signal.aborted) {
+        // Woken and aborted in the same turn: pass the wake-up on so no slot is stranded.
+        this.waiters.shift()?.();
+        throw cancelledWaiting();
+      }
+    }
+    this.active++;
+  }
+
+  release(): void {
+    this.active--;
+    this.waiters.shift()?.();
+  }
+}
+
+function genericMessage(kind: string): string {
+  return `claude run failed (${kind})`;
+}
+
+/** Error class name only: never messages, which may carry SQL values or content. */
+function errName(e: unknown): string {
+  return e instanceof Error ? e.name : "non-error value thrown";
+}
+
+export class ClaudeOrchestrator {
+  private readonly semaphore = new Semaphore();
+  private readonly random: () => string;
+
+  constructor(private readonly deps: OrchestratorDeps) {
+    this.random = deps.random ?? defaultBoundary;
+  }
+
+  async run(req: ClaudeJobRequest, signal: AbortSignal): Promise<AIExecutionResult> {
+    const { db, clock, settings, events, audit, provider } = this.deps;
+
+    const parsed = claudeJobRequestSchema.safeParse(req);
+    if (!parsed.success) {
+      const paths = parsed.error.issues.map((i) => i.path.join(".") || "(root)").join(", ");
+      throw new JobError({ kind: "invalid_input", message: `invalid claude request: ${paths}` });
+    }
+    const request = parsed.data as ClaudeJobRequest;
+
+    // Quota gate (checked again after the slot is acquired)
+    const thresholds = thresholdsFromSettings(settings);
+    this.checkQuota(request, thresholds);
+
+    // Build the execution request
+    const profile = request.workerProfile;
+    const parts = request.parts ?? [];
+    const boundary = this.random();
+    const allowedTools = [...request.allowedTools];
+    if (allowedTools.some((t) => t.startsWith("mcp__")) && !allowedTools.includes("ToolSearch")) {
+      allowedTools.push("ToolSearch");
+    }
+    const knownServers = settings.get("orchestrator.knownServers");
+    const runId = newId();
+    const execReq: AIExecutionRequest = {
+      runId,
+      jobId: request.jobId ?? null,
+      workerProfile: profile,
+      model: request.model ?? settings.get(`orchestrator.models.${profile}`),
+      systemPrompt: request.systemPrompt ?? DEFAULT_SYSTEM_PROMPTS[profile],
+      prompt: assemblePrompt(request.instructions, parts, boundary),
+      promptParts: parts,
+      allowedTools,
+      disallowedTools: buildDenylist(allowedTools, knownServers, profile),
+      maxTurns: request.maxTurns,
+      timeoutMs: request.timeoutMs ?? settings.get(`orchestrator.timeouts.${profile}`) * 1000,
+      workingDirectory: request.workingDirectory ?? this.deps.scratchDir,
+      ...(request.expectedToolNames ? { expectedToolNames: request.expectedToolNames } : {}),
+    };
+
+    const verdict = validateRequest(execReq, knownServers, {
+      instructions: request.instructions,
+      boundary,
+    });
+    if (!verdict.ok) {
+      db.transaction((tx) => {
+        audit.record(tx, {
+          actor: "system",
+          module: "orchestrator",
+          action: "claude.request_rejected",
+          workerProfile: profile,
+          result: "rejected",
+          details: { reason: verdict.reason },
+        });
+      });
+      throw new JobError({ kind: "invalid_input", message: verdict.reason });
+    }
+    const sendsExternally = hasWriteTool(allowedTools);
+
+    await this.semaphore.acquire(() => settings.get("orchestrator.maxConcurrent"), signal);
+    try {
+      // The quota may have risen while this request waited for a slot.
+      this.checkQuota(request, thresholds);
+
+      const startedAt = isoNow(clock);
+      db.transaction((tx) => {
+        tx.insert(schema.claudeRuns)
+          .values({
+            id: runId,
+            jobId: execReq.jobId,
+            workerProfile: profile,
+            model: execReq.model,
+            status: "running",
+            startedAt,
+          })
+          .run();
+        events.publish(tx, {
+          type: "claude.job_started",
+          aggregateType: "claude_run",
+          aggregateId: runId,
+          correlationId: newId(),
+          payload: { runId, jobId: execReq.jobId },
+        });
+      });
+
+      let result: AIExecutionResult;
+      let providerThrew = false;
+      try {
+        result = await provider.execute(execReq, signal);
+      } catch {
+        providerThrew = true;
+        result = {
+          status: "failed",
+          toolResults: [],
+          finalText: "",
+          numTurns: 0,
+          durationMs: 0,
+          usage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+            costUsdEquivalent: 0,
+          },
+          permissionDenials: [],
+          connectors: [],
+          availableTools: [],
+          exitCode: null,
+          error: { kind: "provider_error", message: "provider execution failed" },
+        };
+      }
+
+      // A send run that actually spawned may have written externally whatever the failure.
+      const spawned = providerThrew || result.error?.details?.notSpawned !== true;
+      const error = this.classify(result, providerThrew, sendsExternally && spawned);
+
+      // Everything below is best-effort bookkeeping: it never changes the outcome.
+      const r = result;
+      const updated = this.bestEffort("run update", runId, () =>
+        db.transaction((tx) => {
+          tx.update(schema.claudeRuns)
+            .set({
+              status: r.status,
+              numTurns: r.numTurns,
+              durationMs: r.durationMs,
+              inputTokens: r.usage.inputTokens,
+              outputTokens: r.usage.outputTokens,
+              cacheReadTokens: r.usage.cacheReadInputTokens,
+              cacheCreationTokens: r.usage.cacheCreationInputTokens,
+              costUsdEquivalent: r.usage.costUsdEquivalent,
+              permissionDenials: r.permissionDenials,
+              error: error ? { kind: error.kind, message: error.message } : null,
+              finishedAt: isoNow(clock),
+            })
+            .where(eq(schema.claudeRuns.id, runId))
+            .run();
+        }),
+      );
+      if (!updated) {
+        // Never leave the row `running`: retry with the status alone.
+        this.bestEffort("run status update", runId, () =>
+          db
+            .update(schema.claudeRuns)
+            .set({ status: r.status, finishedAt: isoNow(clock) })
+            .where(eq(schema.claudeRuns.id, runId))
+            .run(),
+        );
+      }
+      const q = r.quota;
+      if (q) this.bestEffort("store quota", runId, () => this.storeQuota(q, runId, thresholds));
+      this.bestEffort("learn connectors", runId, () => this.learnConnectors(r));
+      this.bestEffort("auth record", runId, () => this.deps.auth.record(runId));
+      this.bestEffort("completion event", runId, () =>
+        db.transaction((tx) => {
+          if (error) {
+            events.publish(tx, {
+              type: "claude.job_failed",
+              aggregateType: "claude_run",
+              aggregateId: runId,
+              correlationId: newId(),
+              payload: { runId, kind: error.kind },
+            });
+          } else {
+            events.publish(tx, {
+              type: "claude.job_completed",
+              aggregateType: "claude_run",
+              aggregateId: runId,
+              correlationId: newId(),
+              payload: { runId },
+            });
+          }
+        }),
+      );
+
+      if (error) throw new JobError(error);
+      return result;
+    } finally {
+      this.semaphore.release();
+    }
+  }
+
+  async runStructured<T>(
+    req: ClaudeJobRequest,
+    schemaT: ZodType<T>,
+    signal: AbortSignal,
+  ): Promise<{ value: T; result: AIExecutionResult }> {
+    const result = await this.run(req, signal);
+    const p = parseStructured(result.finalText, schemaT);
+    if (!p.ok) {
+      throw new JobError({
+        kind: "incomplete_ai_output",
+        message: p.reason,
+        ...(hasWriteTool(req.allowedTools) ? { details: { uncertain: true } } : {}),
+      });
+    }
+    return { value: p.value, result };
+  }
+
+  private checkQuota(
+    request: ClaudeJobRequest,
+    thresholds: ReturnType<typeof thresholdsFromSettings>,
+  ): void {
+    const now = this.deps.clock.now();
+    const decision = quotaLevel(this.latestSnapshot(), thresholds, now);
+    if (!decideQuota(decision.level, request.priorityClass)) {
+      throw new JobError({
+        kind: "quota_exhausted",
+        message: `quota level ${decision.level}: ${request.priorityClass} work deferred`,
+        retryAfter: clampQuotaRetry(decision.resetsAt ?? undefined, now),
+      });
+    }
+  }
+
+  /** Runs one bookkeeping step; a failure is logged as one content-free line. */
+  private bestEffort(step: string, runId: string, fn: () => void): boolean {
+    try {
+      fn();
+      return true;
+    } catch (e) {
+      console.error(`orchestrator: ${step} failed`, runId, errName(e));
+      return false;
+    }
+  }
+
+  private classify(
+    result: AIExecutionResult,
+    providerThrew: boolean,
+    uncertain: boolean,
+  ): ClassifiedError | null {
+    if (result.status === "succeeded") return null;
+    const extra = uncertain ? { details: { uncertain: true } } : {};
+    if (providerThrew) {
+      return { kind: "provider_error", message: "provider execution failed", ...extra };
+    }
+    const e = result.error;
+    const kind =
+      result.status === "timed_out" || result.status === "cancelled"
+        ? "timeout"
+        : (e?.kind ?? "provider_error");
+    const message =
+      e && e.kind === kind && SAFE_MESSAGE_KINDS.has(kind) ? e.message : genericMessage(kind);
+    const safeRetry = SAFE_MESSAGE_KINDS.has(kind) ? e?.retryAfter : undefined;
+    const retryAfter =
+      kind === "quota_exhausted" ? clampQuotaRetry(safeRetry, this.deps.clock.now()) : safeRetry;
+    return { kind, message, ...(retryAfter ? { retryAfter } : {}), ...extra };
+  }
+
+  latestSnapshot(): QuotaSnapshot | null {
+    const row = this.deps.db
+      .select()
+      .from(schema.quotaSnapshots)
+      .orderBy(desc(schema.quotaSnapshots.observedAt), sql`rowid desc`)
+      .limit(1)
+      .get();
+    if (!row) return null;
+    return this.rowToSnapshot(row);
+  }
+
+  private rowToSnapshot(row: typeof schema.quotaSnapshots.$inferSelect): QuotaSnapshot {
+    const window = (
+      utilization: number | null,
+      status: string,
+      resetsAt: string | null,
+    ): QuotaWindow => ({
+      utilization: utilization ?? 0,
+      status,
+      // A missing resetsAt stays absent; the gate applies observedAt + 1h (R30).
+      ...(resetsAt !== null ? { resetsAt } : {}),
+    });
+    const five = row.fiveHourUtilization ?? 0;
+    const seven = row.sevenDayUtilization ?? 0;
+    if (row.fiveHourStatus !== null || row.sevenDayStatus !== null) {
+      // Per-window row (R30): a window with no status was absent from the event.
+      return {
+        observedAt: row.observedAt,
+        ...(row.fiveHourStatus !== null
+          ? {
+              fiveHour: window(row.fiveHourUtilization, row.fiveHourStatus, row.fiveHourResetsAt),
+            }
+          : {}),
+        ...(row.sevenDayStatus !== null
+          ? {
+              sevenDay: window(row.sevenDayUtilization, row.sevenDayStatus, row.sevenDayResetsAt),
+            }
+          : {}),
+      };
+    }
+    let fiveStatus: string;
+    let sevenStatus: string;
+    if (row.status === "rejected") {
+      // Legacy row (no per-window statuses): attribute to the higher-utilization window.
+      fiveStatus = seven > five ? "allowed" : "rejected";
+      sevenStatus = seven > five ? "rejected" : "allowed";
+    } else {
+      fiveStatus = row.status;
+      sevenStatus = row.status;
+    }
+    return {
+      observedAt: row.observedAt,
+      fiveHour: window(row.fiveHourUtilization, fiveStatus, row.fiveHourResetsAt),
+      sevenDay: window(row.sevenDayUtilization, sevenStatus, row.sevenDayResetsAt),
+    };
+  }
+
+  private storeQuota(
+    q: QuotaSnapshot,
+    runId: string,
+    thresholds: ReturnType<typeof thresholdsFromSettings>,
+  ): void {
+    const { db, clock, events } = this.deps;
+    const present = [q.fiveHour, q.sevenDay].filter((w): w is QuotaWindow => w !== undefined);
+    const status = present.some((w) => w.status === "rejected")
+      ? "rejected"
+      : (present.find((w) => w.status !== "allowed")?.status ?? "allowed");
+    db.transaction(
+      (tx) => {
+        const prevRow = tx
+          .select()
+          .from(schema.quotaSnapshots)
+          .orderBy(desc(schema.quotaSnapshots.observedAt), sql`rowid desc`)
+          .limit(1)
+          .get();
+        const now = clock.now();
+        const prev = quotaLevel(prevRow ? this.rowToSnapshot(prevRow) : null, thresholds, now);
+        tx.insert(schema.quotaSnapshots)
+          .values({
+            id: newId(),
+            observedAt: q.observedAt,
+            fiveHourUtilization: q.fiveHour?.utilization ?? null,
+            fiveHourResetsAt: q.fiveHour?.resetsAt ?? null,
+            sevenDayUtilization: q.sevenDay?.utilization ?? null,
+            sevenDayResetsAt: q.sevenDay?.resetsAt ?? null,
+            status,
+            fiveHourStatus: q.fiveHour?.status ?? null,
+            sevenDayStatus: q.sevenDay?.status ?? null,
+            claudeRunId: runId,
+          })
+          .run();
+        const next = quotaLevel(q, thresholds, now);
+        const rank = { ok: 0, soft: 1, hard: 2, stop: 3 } as const;
+        if (
+          rank[next.level] > rank[prev.level] &&
+          next.level !== "ok" &&
+          next.window &&
+          next.resetsAt
+        ) {
+          events.publish(tx, {
+            type: "quota.threshold_reached",
+            aggregateType: "quota",
+            aggregateId: "claude",
+            correlationId: newId(),
+            payload: { window: next.window, level: next.level, resetsAt: next.resetsAt },
+          });
+        }
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  private learnConnectors(result: AIExecutionResult): void {
+    if (result.connectors.length === 0) return;
+    const { settings } = this.deps;
+    const known = settings.get("orchestrator.knownServers");
+    const fresh = [
+      ...new Set(
+        result.connectors
+          .map((c) => connectorToServer(c.name))
+          .filter((s) => SERVER_NAME_RE.test(s))
+          .filter((s) => !known.includes(s)),
+      ),
+    ];
+    if (fresh.length > 0) {
+      settings.set("orchestrator.knownServers", [...known, ...fresh], { emit: false });
+    }
+  }
+}

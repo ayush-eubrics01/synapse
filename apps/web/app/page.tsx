@@ -2,10 +2,20 @@
 
 import type { Approval, HealthReport, Job } from "@synapse/contracts";
 import { useCallback, useEffect, useState } from "react";
-import { decideApproval, getApprovals, getHealth, getJobs } from "../lib/api";
+import {
+  type ClaudeRun,
+  type ClaudeStatus,
+  decideApproval,
+  getApprovals,
+  getClaudeRuns,
+  getClaudeStatus,
+  getHealth,
+  getJobs,
+} from "../lib/api";
 import { decideThenRefresh } from "../lib/decide";
 import { LIVE_EVENT_TYPES } from "../lib/live-events";
 import { ApprovalsList } from "./components/ApprovalsList";
+import { ClaudePanel } from "./components/ClaudePanel";
 import { HealthBadge } from "./components/HealthBadge";
 import { JobsTable } from "./components/JobsTable";
 
@@ -13,16 +23,26 @@ export default function Dashboard() {
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [claudeStatus, setClaudeStatus] = useState<ClaudeStatus | null>(null);
+  const [claudeRuns, setClaudeRuns] = useState<ClaudeRun[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const [h, a, j] = await Promise.allSettled([getHealth(), getApprovals(), getJobs(20)]);
+    const [h, a, j, cs, cr] = await Promise.allSettled([
+      getHealth(),
+      getApprovals(),
+      getJobs(20),
+      getClaudeStatus(),
+      getClaudeRuns(10),
+    ]);
     if (h.status === "fulfilled") setHealth(h.value);
     else setHealth(null);
     if (a.status === "fulfilled") setApprovals(a.value);
     if (j.status === "fulfilled") setJobs(j.value);
-    const failed = [h, a, j].find((r) => r.status === "rejected");
+    if (cs.status === "fulfilled") setClaudeStatus(cs.value);
+    if (cr.status === "fulfilled") setClaudeRuns(cr.value);
+    const failed = [h, a, j, cs, cr].find((r) => r.status === "rejected");
     const message = failed?.status === "rejected" ? String(failed.reason) : null;
     setLoadError(message);
     return message;
@@ -61,6 +81,8 @@ export default function Dashboard() {
       <ApprovalsList approvals={approvals} onDecide={decide} />
       <h2>Latest jobs</h2>
       <JobsTable jobs={jobs} />
+      <h2>Claude</h2>
+      <ClaudePanel status={claudeStatus} runs={claudeRuns} />
     </main>
   );
 }

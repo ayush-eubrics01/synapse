@@ -61,11 +61,11 @@ Events that are purely for live UI updates (SSE) may skip the outbox and are mar
 | `engineering.task_completed` | engineering-tasks | dashboard, commitments | PR merged, lock released |
 | `engineering.task_failed` | engineering-tasks | notifications | Lock released after cleanup, or NEEDS_ATTENTION |
 | `claude.job_created` | orchestrator | dashboard (ephemeral) | |
-| `claude.job_started` | orchestrator | dashboard (ephemeral) | |
-| `claude.job_completed` | orchestrator | requesting module | Carries runId; result loaded from run log |
-| `claude.job_failed` | orchestrator | requesting module, health | ClassifiedError |
-| `quota.threshold_reached` | orchestrator | notifications, scheduler | Non-urgent jobs paused until resetsAt |
-| `auth.expiry_warning` | health | notifications | Refresh token < 48 h from expiry |
+| `claude.job_started` | orchestrator | dashboard (ephemeral) | Payload `{ runId, jobId: string \| null }` |
+| `claude.job_completed` | orchestrator | requesting module | Payload `{ runId }`; result loaded from run log |
+| `claude.job_failed` | orchestrator | requesting module, health | Payload `{ runId, kind: ErrorKind }`; full ClassifiedError in the run log |
+| `quota.threshold_reached` | orchestrator | notifications, scheduler | Payload `{ window: 'five_hour' \| 'seven_day', level: 'soft' \| 'hard' \| 'stop', resetsAt }`. Non-urgent jobs paused until resetsAt |
+| `auth.expiry_warning` | health | notifications | Payload `{ refreshExpiresAt }`. Refresh token < 48 h from expiry |
 | `autoreply.sent` | inbox / commitments | audit, dashboard (return digest) | ADR-033; only after verified send |
 | `autoreply.skipped` | inbox / commitments | approvals, dashboard | Policy check failed; reason recorded; draft queued |
 | `away_mode.changed` | settings | dashboard (digest on turning off) | |

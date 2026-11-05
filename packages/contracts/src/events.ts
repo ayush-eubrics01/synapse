@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { errorKindSchema } from "./errors";
 
 const approvalPayload = z.object({ approvalId: z.string() });
 
@@ -11,6 +12,15 @@ export const eventCatalog = {
   "approval.executed": approvalPayload,
   "settings.changed": z.object({ key: z.string() }),
   "system.heartbeat": z.object({ at: z.string() }),
+  "claude.job_started": z.object({ runId: z.string(), jobId: z.string().nullable() }),
+  "claude.job_completed": z.object({ runId: z.string() }),
+  "claude.job_failed": z.object({ runId: z.string(), kind: errorKindSchema }),
+  "quota.threshold_reached": z.object({
+    window: z.enum(["five_hour", "seven_day"]),
+    level: z.enum(["soft", "hard", "stop"]),
+    resetsAt: z.string(),
+  }),
+  "auth.expiry_warning": z.object({ refreshExpiresAt: z.string() }),
 };
 
 export type EventType = keyof typeof eventCatalog;

@@ -29,6 +29,13 @@
       "when": 1793884431812,
       "tag": "0003_job_external_write",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1793889024265,
+      "tag": "0004_quota_window_status",
+      "breakpoints": true
     }
   ]
 }

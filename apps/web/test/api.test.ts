@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { decideApproval, getHealth, getJobs } from "../lib/api";
+import { decideApproval, getClaudeRuns, getClaudeStatus, getHealth, getJobs } from "../lib/api";
 
 type Call = { url: string; init?: RequestInit };
 
@@ -43,4 +43,13 @@ test("getJobs passes the limit; getHealth reads the report", async () => {
   const health = fake(200, { status: "ok", checks: {} });
   expect((await getHealth(health.impl)).status).toBe("ok");
   expect(health.calls[0]?.url).toBe("/health/ready");
+});
+
+test("getClaudeStatus and getClaudeRuns call the claude routes", async () => {
+  const status = fake(200, { quota: null, auth: { refreshExpiresAt: null, slides: null } });
+  expect((await getClaudeStatus(status.impl)).quota).toBeNull();
+  expect(status.calls[0]?.url).toBe("/api/claude/status");
+  const runs = fake(200, []);
+  expect(await getClaudeRuns(10, runs.impl)).toEqual([]);
+  expect(runs.calls[0]?.url).toBe("/api/claude/runs?limit=10");
 });

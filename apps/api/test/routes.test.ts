@@ -1,7 +1,16 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import type { AIProvider } from "@synapse/contracts";
+import { schema } from "@synapse/database";
 import { createApp } from "../src/app";
 import { type Container, createContainer } from "../src/container";
 import { loadConfig } from "../src/core/config/config";
+
+const fakeProvider: AIProvider = {
+  execute: async () => {
+    throw new Error("fake provider must not execute");
+  },
+  getHealth: async () => ({ status: "ok", version: "fake" }),
+};
 
 let c: Container;
 let app: ReturnType<typeof createApp>;
@@ -9,6 +18,7 @@ let app: ReturnType<typeof createApp>;
 beforeEach(() => {
   c = createContainer(loadConfig({ SYNAPSE_DB_PATH: ":memory:" }), {
     run: async () => "Linger=yes",
+    provider: fakeProvider,
   });
   app = createApp(c);
 });
@@ -50,7 +60,9 @@ test("health ready is 200 with a report", async () => {
   expect(res.status).toBe(200);
   const body = (await res.json()) as { status: string; checks: Record<string, unknown> };
   expect(Object.keys(body.checks).sort()).toEqual([
+    "auth",
     "bun",
+    "claude",
     "database",
     "events",
     "heartbeat",
@@ -103,6 +115,7 @@ test("jobs are listed newest first", async () => {
 test("worker pushes job.updated with id and status after a job settles", async () => {
   const t = createContainer(loadConfig({ SYNAPSE_DB_PATH: ":memory:" }), {
     run: async () => "Linger=yes",
+    provider: fakeProvider,
     testHandlers: true,
   });
   try {
@@ -143,7 +156,7 @@ test("unexpected errors are 500 with a generic body", async () => {
   }
   expect(res.status).toBe(500);
   expect(await res.json()).toEqual({ error: "internal error" });
-  c = createContainer(loadConfig({ SYNAPSE_DB_PATH: ":memory:" }));
+  c = createContainer(loadConfig({ SYNAPSE_DB_PATH: ":memory:" }), { provider: fakeProvider });
 });
 
 test("SSE stream forwards notification events", async () => {
@@ -214,4 +227,78 @@ test("a foreign Origin on POST is 403; loopback web and API origins are allowed"
   expect(fromApi.status).toBe(200);
   // GET is not origin-checked (a cross-origin page cannot read the response without CORS).
   expect((await req("/api/jobs", { headers: { origin: "http://evil.example" } })).status).toBe(200);
+});
+
+test("/api/claude/runs is newest first, limited, and has no content fields", async () => {
+  for (const [i, status] of ["succeeded", "failed"].entries()) {
+    c.db
+      .insert(schema.claudeRuns)
+      .values({
+        id: `run-${i}`,
+        workerProfile: "collector",
+        model: "haiku",
+        status,
+        inputTokens: 5,
+        permissionDenials: i === 1 ? ["Bash", "Write"] : [],
+        error: i === 1 ? { kind: "timeout", message: "x" } : null,
+        startedAt: `2026-01-01T00:00:0${i}.000Z`,
+      })
+      .run();
+  }
+  const rows = (await (await req("/api/claude/runs")).json()) as Record<string, unknown>[];
+  expect(rows.map((r) => r.id)).toEqual(["run-1", "run-0"]);
+  expect(Object.keys(rows[0] ?? {}).sort()).toEqual(
+    [
+      "id",
+      "jobId",
+      "workerProfile",
+      "model",
+      "status",
+      "numTurns",
+      "durationMs",
+      "tokens",
+      "costUsdEquivalent",
+      "permissionDenialCount",
+      "errorKind",
+      "startedAt",
+      "finishedAt",
+    ].sort(),
+  );
+  expect(rows[0]?.permissionDenialCount).toBe(2);
+  expect(rows[0]?.errorKind).toBe("timeout");
+  expect(rows[1]?.errorKind).toBeNull();
+  const one = (await (await req("/api/claude/runs?limit=1")).json()) as unknown[];
+  expect(one).toHaveLength(1);
+  expect((await req("/api/claude/runs?limit=0")).status).toBe(400);
+  expect((await req("/api/claude/runs?limit=101")).status).toBe(400);
+});
+
+test("/api/claude/status is null quota on an empty db, computed level after a snapshot", async () => {
+  const empty = (await (await req("/api/claude/status")).json()) as {
+    quota: unknown;
+    auth: { refreshExpiresAt: string | null; slides: boolean | null };
+  };
+  expect(empty.quota).toBeNull();
+  expect(empty.auth.refreshExpiresAt).toBeNull();
+  const future = new Date(Date.now() + 3_600_000).toISOString();
+  c.db
+    .insert(schema.quotaSnapshots)
+    .values({
+      id: "q1",
+      observedAt: new Date().toISOString(),
+      fiveHourUtilization: 0.7,
+      fiveHourResetsAt: future,
+      sevenDayUtilization: 0.1,
+      sevenDayResetsAt: future,
+      status: "allowed",
+      fiveHourStatus: "allowed",
+      sevenDayStatus: "allowed",
+    })
+    .run();
+  const body = (await (await req("/api/claude/status")).json()) as {
+    quota: { level: string; window: string; fiveHour: { utilization: number } };
+  };
+  expect(body.quota.level).toBe("soft");
+  expect(body.quota.window).toBe("five_hour");
+  expect(body.quota.fiveHour.utilization).toBe(0.7);
 });

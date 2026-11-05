@@ -1,8 +1,12 @@
+import { homedir } from "node:os";
+
 export interface AppConfig {
   dbPath: string;
   api: { host: string; port: number };
   web: { host: string; port: number };
   workerConcurrency: number;
+  claudeBinary: string;
+  credentialsPath: string;
 }
 
 const LOOPBACK_HOSTS = ["127.0.0.1", "::1", "localhost"];
@@ -23,6 +27,19 @@ function defaultDbPath(env: Record<string, string | undefined>): string {
   return `${env.HOME}/.local/share/synapse/synapse.db`;
 }
 
+/** The user's home: $HOME, else os.homedir(). Shared with the container's provider env. */
+export function resolveHome(env: Record<string, string | undefined>): string {
+  return env.HOME || homedir();
+}
+
+function homePath(
+  env: Record<string, string | undefined>,
+  override: string | undefined,
+  rel: string,
+): string {
+  return override || `${resolveHome(env)}/${rel}`;
+}
+
 export function loadConfig(env: Record<string, string | undefined>): AppConfig {
   const apiHost = env.SYNAPSE_API_HOST || "127.0.0.1";
   if (!LOOPBACK_HOSTS.includes(apiHost)) {
@@ -35,5 +52,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     api: { host: apiHost, port: parsePort("SYNAPSE_API_PORT", env.SYNAPSE_API_PORT, 7400) },
     web: { host: "127.0.0.1", port: parsePort("SYNAPSE_WEB_PORT", env.SYNAPSE_WEB_PORT, 7401) },
     workerConcurrency: 2,
+    claudeBinary: homePath(env, env.SYNAPSE_CLAUDE_BIN, ".local/bin/claude"),
+    credentialsPath: homePath(env, env.SYNAPSE_CLAUDE_CREDENTIALS, ".claude/.credentials.json"),
   };
 }

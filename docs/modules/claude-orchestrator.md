@@ -40,7 +40,7 @@ Non-responsibilities:
 
 ```bash
 claude -p "<prompt naming exact tools and arguments>" \
-  --setting-sources "" --disable-slash-commands \
+  --setting-sources user --settings "$OVERRIDE" --disable-slash-commands \
   --system-prompt "<short worker-specific prompt>" \
   --allowedTools "ToolSearch,<job tools>" \
   --disallowedTools "<explicit denylist>" \
@@ -48,6 +48,7 @@ claude -p "<prompt naming exact tools and arguments>" \
   --no-session-persistence --output-format stream-json --verbose < /dev/null
 ```
 
+- `$OVERRIDE` is `{"enabledPlugins":{"<each plugin name from ~/.claude/settings.json>":false},"hooks":{}}`: plugin names only, read once at startup; `{"enabledPlugins":{},"hooks":{}}` if the file can't be read. Since CLI 2.1.318, `--setting-sources ""` loads no claude.ai connectors; `user` loads them, and the override drops the user's plugins and hooks (R34, 2026-11-05).
 - `--bare` can't be used (API key only; connectors need claude.ai OAuth).
 - Never `--tools` (it hides MCP tools). Restrict via allow/deny lists.
 - `ToolSearch` is always allowed when connector tools are needed (they are deferred).
@@ -212,6 +213,19 @@ Threshold and timeout defaults are proposals to tune with real usage.
 - Session in an unregistered folder → ignored.
 - Refresh token < 48 h → `auth.expiry_warning`.
 - stream-json parser fixtures: init (pending/connected), tool_use/tool_result pairing, rate_limit_event, result.
+
+## Implementation notes (Phase 2)
+
+- **Per-claim owner token (G1).** A job claim stores a unique owner token (worker id plus a fresh id per claim), so a reaper requeue followed by a re-claim from the same worker id cannot let the stale run complete or release the job.
+- **Narrowed `AIProvider`.** The interface is `execute` and `getHealth` only; `getCapabilities()` is deferred until a consumer needs it. `AIExecutionResult` also carries `availableTools` (tool names from the `system/init` event, never content).
+- **`knownServers` learning.** The orchestrator learns connector names from the init event's `mcp_servers` and adds them to the known-server set used for the server-level denylist. Names are validated before being learned, so a hostile or malformed name cannot inject a denylist entry or tool pattern.
+- **Strict tool-name grammar (R26/R27).** Allowed and expected tool names must match the strict grammar (built-ins, or `mcp__<server>__<tool>` with normalized segments); anything else is rejected before spawning.
+- **Per-window quota status (R30).** The quota gate evaluates the five-hour and seven-day windows separately from the `rate_limit_event`; a `rejected` status on either window blocks runs until that window's `resetsAt`.
+- **Quota fail-closed (R33/I1).** Each `rate_limit_event` window is kept independently; a missing, non-positive or out-of-range `resetsAt` is treated as absent (never 1970). A `rejected` window whose `resetsAt` is missing or already past still stops work until `observedAt + 1h`; stale `allowed` windows are ignored. Every `quota_exhausted` `retryAfter` is `max(resetsAt, now + 15 min)`. An error result whose text mentions a usage limit, rate limit or quota is classified `quota_exhausted` even without an event.
+- **Filesystem readers (R33/I4).** `Read`, `Grep` and `Glob` are engineering-only until Phase 8 adds path scoping; collector and intelligence runs may not allow them and always deny them. Prompts are capped at 100 KiB (UTF-8) and may not start with `-`.
+- **Best-effort bookkeeping and uncertain sends (R33/I3).** After the provider returns, the run-row update, quota storage, connector learning, auth record and completion events each run best-effort (one content-free log line on failure) and never change the outcome; a failed run-row update is retried with the status alone. When a run allows a connector write tool and the process spawned, any failure carries `details.uncertain = true`, and the worker parks an external-write job with such a failure (or a timeout) in `NEEDS_ATTENTION`.
+- **Calling from a job (R33/I6).** `run(req, signal)` and `runStructured(req, schema, signal)` require the job's `AbortSignal`. A request waiting for a slot is removed from the queue when the signal aborts and fails with `timeout` ("cancelled while waiting for a Claude slot") without a run row. The quota gate is checked again after the slot is acquired. **Handler timeout rule:** a job handler that calls the orchestrator must register `timeoutMs` ≥ orchestrator timeout for its profile + kill grace (5 s) + 1 s + the expected wait for a Claude slot; otherwise the worker times the job out while the run is still being recorded.
+- **Smoke script.** `bun scripts/dev/claude-smoke.ts [--no-tools|--deny-check]` runs one real request on a temp DB and prints only ids, statuses and counts. `--deny-check` prints PASS only if the `claude.ai Gmail` connector is `connected` at init and no `mcp__claude_ai_Gmail` tool is listed (R34); FAIL if any Gmail tool is listed; otherwise INCONCLUSIVE (connector not connected at init). It exits non-zero on FAIL or when the run did not succeed.
 
 ## Open questions
 

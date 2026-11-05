@@ -1,8 +1,10 @@
 import type { Database } from "bun:sqlite";
+import type { AIProvider } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { type Clock, isoNow } from "@synapse/shared";
 import { and, count, eq, lte, min } from "drizzle-orm";
 import type { SettingsService } from "../config/settings";
+import type { AuthMonitor } from "../orchestrator/auth";
 import type { HealthCheck } from "./health";
 
 const { jobs, eventConsumptions } = schema;
@@ -117,4 +119,31 @@ export function bunVersionCheck(version: string = Bun.version): HealthCheck {
       ? { status: "down", detail: `bun ${version} < required ${MIN_BUN}` }
       : { status: "ok", detail: version },
   );
+}
+
+const AUTH_DOWN_MS = 2 * 3_600_000;
+const AUTH_DEGRADED_MS = 48 * 3_600_000;
+
+export function authCheck(monitor: AuthMonitor, clock: Clock): HealthCheck {
+  return guarded(async () => {
+    const st = monitor.status();
+    if (st.readError !== null) return { status: "degraded", detail: st.readError };
+    if (st.refreshExpiresAt === null) {
+      return { status: "degraded", detail: "no auth snapshot recorded" };
+    }
+    const left = Date.parse(st.refreshExpiresAt) - clock.now().getTime();
+    const slides = st.slides === null ? "unknown" : st.slides ? "yes" : "no";
+    const detail = `refresh token expires ${st.refreshExpiresAt}; slides: ${slides}`;
+    if (left < AUTH_DOWN_MS) return { status: "down", detail };
+    if (left < AUTH_DEGRADED_MS) return { status: "degraded", detail };
+    return { status: "ok", detail };
+  });
+}
+
+export function claudeCheck(provider: AIProvider): HealthCheck {
+  return guarded(async () => {
+    const h = await provider.getHealth();
+    const detail = [h.detail, h.version].filter((x) => x !== undefined).join(" ");
+    return detail ? { status: h.status, detail } : { status: h.status };
+  });
 }

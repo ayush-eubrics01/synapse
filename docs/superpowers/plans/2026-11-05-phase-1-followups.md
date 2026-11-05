@@ -8,13 +8,13 @@ These are harmless in Phase 1, where only heartbeat jobs exist and there are no 
 
 | # | Item | Where | Why it matters in Phase 2 |
 |---|---|---|---|
-| G1 | Per-claim lease owner token (`${workerId}:${newId()}` or match `attempts` in `owned()`) | `core/jobs/queue.ts`, `worker.ts` | After laptop suspend or a clock step, the reaper can requeue a job and the same worker id re-claims it, so a non-external job could run twice |
-| G2 | Persist handler-level `externalWrite` on the job at claim time | `worker.ts` / `queue.claim` | Today only the enqueue flag survives a crash; a crashed external write whose handler declares it could be retried |
+| G1 (done in Phase 2) | Per-claim lease owner token (`${workerId}:${newId()}` or match `attempts` in `owned()`) | `core/jobs/queue.ts`, `worker.ts` | After laptop suspend or a clock step, the reaper can requeue a job and the same worker id re-claims it, so a non-external job could run twice |
+| G2 (done in Phase 2) | Persist handler-level `externalWrite` on the job at claim time | `worker.ts` / `queue.claim` | Today only the enqueue flag survives a crash; a crashed external write whose handler declares it could be retried |
 | G3 | Boundary test misses `export … from`, side-effect `import "…"`, dynamic `import()`, bare `…/integrations` | `tests/boundaries.test.ts` | Becomes live once `apps/api/src/modules/` exists |
 | G4 | Scheduler `tick` per-task isolation + cap `intervalSeconds` | `core/scheduler/scheduler.ts` | One bad user-set interval (e.g. huge) throws and stops every later schedule, including heartbeat |
 | G5 | Don't store raw executor error messages; surface approvals left claimed by a crash | `core/approvals/approvals.ts`, health | Executor errors may contain message content; stuck claims are invisible |
 | G6 | Timeout (or cache) for the `loginctl` linger check | `container.ts` `runCommand` | A hung `loginctl` hangs `/health/ready` and the dashboard badge |
-| G7 | Throttle "worker: claim failed" logging | `worker.ts` | About one line per second during a DB outage |
+| G7 (done in Phase 2) | Throttle "worker: claim failed" logging | `worker.ts` | About one line per second during a DB outage |
 | G8 | Decide event ordering within an aggregate during consumer retries | `core/events/dispatcher.ts` | Later events are delivered while an earlier one is in backoff |
 
 ## Deferred minors (polish; fix opportunistically)

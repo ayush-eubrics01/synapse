@@ -4,6 +4,7 @@ import type { Container } from "./container";
 import { InvalidApprovalTransition } from "./core/approvals/approvals";
 import { localOnly } from "./middleware/local-only";
 import { approvalRoutes } from "./routes/approvals";
+import { claudeRoutes } from "./routes/claude";
 import { healthRoutes } from "./routes/health";
 import { jobRoutes } from "./routes/jobs";
 import { notificationRoutes } from "./routes/notifications";
@@ -15,6 +16,7 @@ export function createApp(c: Container): Hono {
   app.route("/", healthRoutes(c));
   app.route("/", approvalRoutes(c));
   app.route("/", jobRoutes(c));
+  app.route("/", claudeRoutes(c));
   app.route("/", notificationRoutes(c));
   app.route("/", streamRoutes(c));
   app.onError((err, ctx) => {

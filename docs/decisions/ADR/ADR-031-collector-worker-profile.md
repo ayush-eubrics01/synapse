@@ -11,9 +11,12 @@ Add a third profile, **Collector**, alongside Intelligence and Engineering:
 - Tools: read-only connector tools for the job only (for example `slack_search_public_and_private`, `slack_read_thread`, `searchJiraIssuesUsingJql`), plus `ToolSearch`. Send and write tools are explicitly denied.
 - Model: Haiku (ADR-028).
 - Run size: ~5 pages per run, checkpointed per page. Context grows per page within a run, so long runs are disproportionately expensive.
-- Invocation flags: `--setting-sources ""`, `--disable-slash-commands`, a short `--system-prompt`, `--allowedTools` / `--disallowedTools`, `--max-turns <calls + 3>`, `--no-session-persistence`, `--output-format stream-json --verbose`, stdin from `/dev/null`.
+- Invocation flags: `--setting-sources ""` (superseded on 2026-11-05 by `--setting-sources user --settings <override>`; see the update below), `--disable-slash-commands`, a short `--system-prompt`, `--allowedTools` / `--disallowedTools`, `--max-turns <calls + 3>`, `--no-session-persistence`, `--output-format stream-json --verbose`, stdin from `/dev/null`.
 - Never `--tools` (it hides MCP connector tools). Never `--bare` (API key only; connectors need claude.ai OAuth). Always allow `ToolSearch` (connector tools are deferred).
 - Prompts name exact tool names and arguments.
+
+## Update 2026-11-05 (R34)
+On Claude Code 2.1.318, `--setting-sources ""` no longer loads any claude.ai connectors (no Slack, no Jira). The invocation now uses `--setting-sources user --settings <override>`, where the override is `{"enabledPlugins":{<each plugin name in ~/.claude/settings.json>:false},"hooks":{}}`. Only plugin names are read, once at startup. If the file can't be read, the override is `{"enabledPlugins":{},"hooks":{}}`. The controller verified that this loads the connectors with no hook events and about 25k context tokens. A server-level `--disallowedTools mcp__claude_ai_Gmail` still removes every Gmail tool from the init tool list.
 
 ## Consequences
 - Positive: per-run context drops to ~36k tokens; predictable cost.
