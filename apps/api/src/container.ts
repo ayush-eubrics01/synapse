@@ -177,6 +177,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     notifications,
     people,
   });
+  securityFlags.init();
   const slack = registerSlackJobs({
     db,
     clock,

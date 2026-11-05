@@ -43,13 +43,18 @@ Non-responsibilities:
 | `override.ignore_instructions` | "ignore (all\|previous\|your) instructions", "disregard the above", "forget your rules" | high |
 | `override.role` | "you are now", "act as", "system prompt", "developer mode" | high |
 | `tools.named` | `mcp__`, `slack_send_message`, `Bash`, `Edit`, tool-call syntax (`<invoke`, `<function`) | high |
-| `exfil.secrets` | asks for `.env`, tokens, keys, passwords, credentials | high |
+| `exfil.secrets` | asks to send/show `.env`, private or SSH keys, credentials.json | high |
+| `exfil.secrets_generic` | asks to send/show tokens, API keys, passwords, credentials | warning |
 | `hidden.unicode` | zero-width or bidi control characters | high |
 | `hidden.blob` | long base64/hex blobs, HTML/markdown comments containing text | warning |
 | `action.command` | "run this command", "git push", "delete", "merge this", "deploy" addressed to Claude | warning |
 | `address.claude` | addresses Claude/AI directly ("Claude, …", "hey AI") | info, raised to warning if combined with an action verb |
 
-Matching is case-insensitive. Messages from the user themselves are excluded.
+Matching is case-insensitive unless a rule sets `caseSensitive` (`tools.named`). Only the first 20,000 characters of a message are scanned, and Slack-escaped text (`&lt; &gt; &amp;`) is also scanned unescaped.
+
+**Custom rules must be linear.** Rule validation only checks that patterns compile, not that they are cheap. Avoid nested or adjacent unbounded quantifiers (for example `<!--[\s\S]*?\S[\s\S]*?-->` is cubic and froze the API on 8 KB of input). The starter set has a timing regression test.
+
+Messages from the user themselves are excluded.
 
 ## Severity and dedup
 
@@ -69,7 +74,7 @@ No job here calls Claude.
 
 ## Events
 
-Emitted: `security.injection_suspected` (`warning`/`high` also notify), `security.flag_reviewed`.
+Emitted: `security.injection_suspected` (on creation at any severity and on every severity raise; notifies from `security.flags.notifyOnSeverity` up), `security.flag_reviewed`.
 Consumed: `message.received`, `claude.job_completed`, `claude.job_failed`.
 
 ## Workflows
