@@ -379,7 +379,10 @@ describe("SlackSender.findSent", () => {
   test("true on an exact match; collect is an incremental 2-page search from floor(since) - 1", async () => {
     const { sender, collects, seen } = setup({ collect: async () => pages([msg()]) });
     expect(await sender.findSent(cmd(), SINCE)).toBe(true);
-    expect(collects).toEqual([{ afterTs: "1793872999", maxPages: 2 }]);
+    // R19: only the user's own messages, so other workspace traffic cannot saturate the 2 pages.
+    expect(collects).toEqual([
+      { afterTs: "1793872999", maxPages: 2, queryTerms: [`from:<@${SELF}>`] },
+    ]);
     expect(seen).toHaveLength(0); // never runs a send
   });
 
@@ -388,6 +391,40 @@ describe("SlackSender.findSent", () => {
       collect: async () => pages([msg({ text: `\n SYNTH-APPROVED-TEXT:   deploy\nis done ` })]),
     });
     expect(await sender.findSent(cmd(), SINCE)).toBe(true);
+  });
+
+  test("R19: Slack entities and link markup are decoded before comparing (URL and '&')", async () => {
+    const text = "Notes: https://example.com/a?b=1&c=2 & more <soon> see example.org";
+    const { sender } = setup({
+      collect: async () =>
+        pages([
+          msg({
+            text: "Notes: <https://example.com/a?b=1&amp;c=2> &amp; more &lt;soon&gt; see <http://example.org|example.org>",
+          }),
+        ]),
+    });
+    expect(await sender.findSent(cmd({ text }), SINCE)).toBe(true);
+  });
+
+  test("R19: decoding is applied to the approved text too; mentions are left as they are", async () => {
+    const text = "<@U0SYNTH0002> done &amp; <https://example.com|the doc>";
+    const { sender } = setup({
+      collect: async () => pages([msg({ text: "<@U0SYNTH0002> done & the doc" })]),
+    });
+    expect(await sender.findSent(cmd({ text }), SINCE)).toBe(true);
+    const other = setup({
+      collect: async () => pages([msg({ text: "U0SYNTH0002 done & the doc" })]),
+    });
+    expect(await other.sender.findSent(cmd({ text }), SINCE)).toBe(false);
+  });
+
+  test("R19: a different link label is a different text", async () => {
+    const { sender } = setup({
+      collect: async () => pages([msg({ text: "see <https://example.com|other>" })]),
+    });
+    expect(await sender.findSent(cmd({ text: "see <https://example.com|doc>" }), SINCE)).toBe(
+      false,
+    );
   });
 
   test("false on a different text", async () => {

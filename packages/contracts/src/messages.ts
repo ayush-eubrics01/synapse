@@ -38,6 +38,11 @@ export interface CollectRequest {
   afterTs: string;
   beforeTs?: string;
   maxPages: number;
+  /**
+   * R19: extra search query terms appended to the day modifiers (for example `from:<@U…>`). Each is
+   * one term: no whitespace or quotes. They are part of every expected page input.
+   */
+  queryTerms?: string[];
   /** The queue job driving this run; recorded as claude_runs.job_id (R60 M3). */
   jobId?: string;
 }

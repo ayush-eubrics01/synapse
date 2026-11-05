@@ -103,7 +103,23 @@ function matchesCommand(input: unknown, cmd: SendMessageCommand): boolean {
   return typeof a.message === "string" && a.message.trimEnd() === cmd.text.trimEnd();
 }
 
-const normalise = (s: string) => s.replace(/\s+/g, " ").trim();
+/**
+ * R19: Slack stores `&`, `<` and `>` as entities and links as `<url>` or `<url|label>`, so both the
+ * approved text and the found text are decoded the same way before whitespace normalisation. Only
+ * link markup (a target with a URL scheme, such as `https:` or `mailto:`) is decoded: mentions,
+ * channel and special references (`<@…>`, `<#…>`, `<!…>`) and other `<…>` text stay as they are.
+ * `&amp;` is decoded last so `&amp;lt;` becomes `&lt;`, never `<`.
+ */
+export function decodeSlackText(s: string): string {
+  return s
+    .replace(/<([a-z][a-z0-9+.-]*:[^<>|\s]*)\|([^<>]*)>/gi, "$2")
+    .replace(/<([a-z][a-z0-9+.-]*:[^<>|\s]*)>/gi, "$1")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+const normalise = (s: string) => decodeSlackText(s).replace(/\s+/g, " ").trim();
 
 /**
  * The only code path that posts to Slack. Success is never read from the tool's result text (its
@@ -160,9 +176,9 @@ export class SlackSender implements MessageSink {
   }
 
   /**
-   * R2: one incremental search (afterTs floor(sinceTs) - 1, at most 2 pages) through the verified
-   * collector; a match is a message in the conversation, from self, at or after sinceTs, whose
-   * whitespace-normalised text equals the command's. Null when it cannot tell: no self id, a
+   * R2: one incremental search (afterTs floor(sinceTs) - 1, at most 2 pages, R19 `from:<@self>`)
+   * through the verified collector; a match is a message in the conversation, from self, at or
+   * after sinceTs, whose decoded (R19), whitespace-normalised text equals the command's. Null when it cannot tell: no self id, a
    * failed search, or no match in an incomplete search. R18: an auth pause, quota stop or Slack
    * rate limit is rethrown instead (the JobError, never content). Never sends.
    */
@@ -174,7 +190,12 @@ export class SlackSender implements MessageSink {
     let found: Awaited<ReturnType<Deps["searchSource"]["collect"]>>;
     try {
       found = await this.deps.searchSource.collect(
-        { afterTs: String(Math.floor(since) - 1), maxPages: FIND_MAX_PAGES },
+        {
+          afterTs: String(Math.floor(since) - 1),
+          maxPages: FIND_MAX_PAGES,
+          // R19: only the user's own messages, so other traffic in the window cannot fill the pages.
+          queryTerms: [`from:<@${self}>`],
+        },
         new AbortController().signal,
       );
     } catch (e) {

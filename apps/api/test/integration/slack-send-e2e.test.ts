@@ -220,8 +220,9 @@ describe("send through the real provider and validator", () => {
 });
 
 describe("findSent through the real provider", () => {
-  // slack_search_page: message 1793872910.000400 in C0SYNTHCHN1 from U0SYNTH0001,
-  // text "synthetic channel message two", top level; the request args match afterTs 1793872800.
+  // slack_search_self: message 1793872910.000400 in C0SYNTHCHN1 from U0SYNTH0001,
+  // text "synthetic channel message two", top level; the request args match afterTs 1793872800
+  // and the R19 query term from:<@U0SYNTH0001>. slack_search_page is the same run without the term.
   const since = "1793872801.000000";
   const topLevel = (cmd: SendMessageCommand, text: string): SendMessageCommand => {
     const { threadTs: _t, ...rest } = cmd;
@@ -229,24 +230,30 @@ describe("findSent through the real provider", () => {
   };
 
   test("true when the self-authored message is found", async () => {
-    const { sender, cmd, settings } = build("slack_search_page");
+    const { sender, cmd, settings } = build("slack_search_self");
     settings.set("slack.selfUserId", "U0SYNTH0001");
     const found = await sender.findSent(topLevel(cmd, " synthetic channel\nmessage  two "), since);
     expect(found).toBe(true);
   });
 
   test("false for a different text", async () => {
-    const { sender, cmd, settings } = build("slack_search_page");
+    const { sender, cmd, settings } = build("slack_search_self");
     settings.set("slack.selfUserId", "U0SYNTH0001");
     expect(await sender.findSent(topLevel(cmd, "something else"), since)).toBe(false);
   });
 
   test("false for the same text when a thread reply was intended", async () => {
-    const { sender, cmd, settings } = build("slack_search_page");
+    const { sender, cmd, settings } = build("slack_search_self");
     settings.set("slack.selfUserId", "U0SYNTH0001");
     expect(await sender.findSent({ ...cmd, text: "synthetic channel message two" }, since)).toBe(
       false,
     );
+  });
+
+  test("R19: null when the run's first search dropped the from: term (page input mismatch)", async () => {
+    const { sender, cmd, settings } = build("slack_search_page");
+    settings.set("slack.selfUserId", "U0SYNTH0001");
+    expect(await sender.findSent(topLevel(cmd, "synthetic channel message two"), since)).toBeNull();
   });
 
   test("null on a search error", async () => {

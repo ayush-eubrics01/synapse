@@ -22,6 +22,8 @@ const SKEW_SECONDS = 300;
 const RATE_RE = /ratelimit|rate.limit|\b429\b/i;
 const MAX_RETRY_SECONDS = 24 * 60 * 60;
 const DAY_SECONDS = 86400;
+/** R19: one search query term: no whitespace or quotes (they would change the query's meaning). */
+const QUERY_TERM_RE = /^[^\s"]+$/;
 
 interface Deps {
   orchestrator: { run(req: ClaudeJobRequest, signal: AbortSignal): Promise<AIExecutionResult> };
@@ -60,11 +62,17 @@ export class SlackConnectorSource implements MessageSource {
   async collect(req: CollectRequest, signal: AbortSignal): Promise<CollectResult> {
     const afterSec = Math.floor(Number(req.afterTs));
     const beforeSec = req.beforeTs ? Math.floor(Number(req.beforeTs)) : undefined;
+    const terms = req.queryTerms ?? [];
+    // R19: each extra term is one token, so the query stays exactly what every page must repeat.
+    if (terms.some((t) => !QUERY_TERM_RE.test(t))) {
+      throw new JobError({ kind: "invalid_input", message: "invalid search query term" });
+    }
     const base: Args = {
       query:
         // R44: day modifiers are padded by 2 days; the unix args and the R42 window filter exactly.
         `after:${isoDay(afterSec - 2 * DAY_SECONDS)}` +
-        (beforeSec !== undefined ? ` before:${isoDay(beforeSec + 2 * DAY_SECONDS)}` : ""),
+        (beforeSec !== undefined ? ` before:${isoDay(beforeSec + 2 * DAY_SECONDS)}` : "") +
+        terms.map((t) => ` ${t}`).join(""),
       after: String(afterSec),
       ...(beforeSec !== undefined ? { before: String(beforeSec) } : {}),
       sort: "timestamp",
