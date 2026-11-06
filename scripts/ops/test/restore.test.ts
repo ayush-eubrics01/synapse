@@ -321,3 +321,24 @@ test("a copy failure leaves the live set in place and no tmp file", async () => 
   ).toEqual([]);
   expect(e.logs.join("\n")).not.toContain("ENOSPC");
 });
+
+test("a corrupt live database is moved aside and replaced", async () => {
+  const e = setup();
+  e.live.close();
+  rmSync(`${e.dbPath}-wal`, { force: true });
+  rmSync(`${e.dbPath}-shm`, { force: true });
+  const garbage = "this is not a database".repeat(300);
+  writeFileSync(e.dbPath, garbage);
+  expect(await restore([e.backup, "--yes"], e.deps)).toEqual({ ok: true });
+  expect(e.logs).toContain("live database is corrupt; it will be moved aside");
+  expect(readFileSync(join(e.dir, ASIDE), "utf8")).toBe(garbage);
+  expect(rows(e.dbPath)).toEqual([SENTINEL]);
+});
+
+test("a corrupt live database is still refused while the API answers", async () => {
+  const e = setup();
+  e.live.close();
+  writeFileSync(e.dbPath, "garbage".repeat(500));
+  e.deps.probe = async () => "up";
+  expect(await restore([e.backup, "--yes"], e.deps)).toEqual({ ok: false, refusal: "api_running" });
+});

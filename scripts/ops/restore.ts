@@ -77,8 +77,8 @@ function healthUrl(host: string, port: number): string {
   return `http://${h}:${port}/health/live`;
 }
 
-/** True when the live DB can take a write lock and a full TRUNCATE checkpoint right now. */
-function liveIsFree(dbPath: string): boolean {
+/** "free" when the live DB can take a write lock and a full TRUNCATE checkpoint right now; "corrupt" only for NOTADB/CORRUPT. */
+function liveState(dbPath: string): "free" | "busy" | "corrupt" {
   let live: Database | null = null;
   try {
     live = new Database(dbPath, { readwrite: true, create: false });
@@ -90,9 +90,10 @@ function liveIsFree(dbPath: string): boolean {
       log: number;
       checkpointed: number;
     } | null;
-    return !!r && r.busy === 0 && r.log === r.checkpointed;
-  } catch {
-    return false;
+    return r && r.busy === 0 && r.log === r.checkpointed ? "free" : "busy";
+  } catch (e) {
+    const code = (e as { code?: unknown } | null)?.code;
+    return code === "SQLITE_NOTADB" || code === "SQLITE_CORRUPT" ? "corrupt" : "busy";
   } finally {
     live?.close();
   }
@@ -138,6 +139,19 @@ function fsyncFile(p: string): void {
   }
 }
 
+function fsyncDir(dir: string): void {
+  try {
+    const fd = openSync(dir, "r");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // best effort
+  }
+}
+
 export async function restore(args: string[], deps: RestoreDeps): Promise<RestoreResult> {
   const refuse = (refusal: RestoreRefusal): RestoreResult => {
     deps.log(`restore refused: ${refusal}`);
@@ -171,7 +185,11 @@ async function run(
   if (probed === "unknown") return refuse("api_state_unknown");
 
   const { dbPath } = deps;
-  if (existsSync(dbPath) && !liveIsFree(dbPath)) return refuse("database_busy");
+  if (existsSync(dbPath)) {
+    const state = liveState(dbPath);
+    if (state === "busy") return refuse("database_busy");
+    if (state === "corrupt") deps.log("live database is corrupt; it will be moved aside");
+  }
 
   const verdict = checkBackup(backup, deps.knownHashes);
   if (verdict !== "ok") return refuse(verdict);
@@ -217,6 +235,7 @@ async function run(
       deps.log(`moved aside: ${basename(to)} (${statSync(to).size} bytes)`);
     }
     renameSync(tmp, dbPath);
+    fsyncDir(dirname(dbPath));
   } catch (e) {
     rollback();
     return refuse(
@@ -228,15 +247,9 @@ async function run(
   return { ok: true };
 }
 
-if (import.meta.main) {
+async function main(): Promise<boolean> {
   process.umask(0o077);
-  let config: ReturnType<typeof loadConfig>;
-  try {
-    config = loadConfig(process.env);
-  } catch {
-    console.log("restore refused: restore_failed");
-    process.exit(1);
-  }
+  const config = loadConfig(process.env);
   const res = await restore(process.argv.slice(2), {
     dbPath: config.dbPath,
     host: config.api.host,
@@ -254,5 +267,15 @@ if (import.meta.main) {
     now: () => new Date(),
     log: (l) => console.log(l),
   });
-  process.exit(res.ok ? 0 : 1);
+  return res.ok;
+}
+
+if (import.meta.main) {
+  let ok = false;
+  try {
+    ok = await main();
+  } catch {
+    console.log("restore refused: restore_failed");
+  }
+  process.exit(ok ? 0 : 1);
 }
