@@ -5,9 +5,12 @@ import {
   type MessageSink,
   type MessageSource,
   type RawToolResult,
+  type RunOptions,
   type SendMessageCommand,
+  type SendOptions,
   type SendResult,
 } from "@synapse/contracts";
+import { sendInputSha256 } from "../claude-code/send-guard";
 
 export const SEND = "mcp__claude_ai_Slack__slack_send_message";
 
@@ -44,7 +47,9 @@ const SEND_INSTRUCTION = [
 ].join("\n");
 
 interface Deps {
-  orchestrator: { run(req: ClaudeJobRequest, signal: AbortSignal): Promise<AIExecutionResult> };
+  orchestrator: {
+    run(req: ClaudeJobRequest, signal: AbortSignal, opts?: RunOptions): Promise<AIExecutionResult>;
+  };
   /** The verified Phase 3 search collector (`SlackConnectorSource`), reused by `findSent`. */
   searchSource: Pick<MessageSource, "collect">;
   /** `slack.selfUserId`; `findSent` cannot attribute a message without it. */
@@ -63,12 +68,16 @@ function sendArgs(cmd: SendMessageCommand): Record<string, string> {
 }
 
 /**
- * The narrow send run (ADR-032, validator rules F and I): the send tool plus ToolSearch, a system
- * part and the approved arguments as the only `user_approved` part, no untrusted parts. No
- * expectedToolNames: the provider would turn a refused or failed send into an opaque failure, and
- * this adapter classifies the raw tool results itself. The model is the collector default.
+ * The narrow send run (ADR-032, validator rules F, I and K): the send tool plus ToolSearch, a
+ * system part and the approved arguments as the only approved part, no untrusted parts. That part
+ * is `user_approved`, or `policy_approved` when a policy authorised the text (J1, ADR-033). Every
+ * send carries a send guard (J2): a PreToolUse hook blocks the call unless its input equals these
+ * arguments; `classify` below stays as the after-the-fact check. No expectedToolNames: the
+ * provider would turn a refused or failed send into an opaque failure, and this adapter classifies
+ * the raw tool results itself. The model is the collector default.
  */
 export function buildSendRequest(cmd: SendMessageCommand): ClaudeJobRequest {
+  const args = sendArgs(cmd);
   return {
     ...(cmd.jobId !== undefined ? { jobId: cmd.jobId } : {}),
     workerProfile: "collector",
@@ -77,10 +86,14 @@ export function buildSendRequest(cmd: SendMessageCommand): ClaudeJobRequest {
     instructions: "Perform the single approved Slack send described below.",
     parts: [
       { provenance: "system", content: SEND_INSTRUCTION },
-      { provenance: "user_approved", content: JSON.stringify(sendArgs(cmd)) },
+      {
+        provenance: cmd.authorisedBy === "policy" ? "policy_approved" : "user_approved",
+        content: JSON.stringify(args),
+      },
     ],
     allowedTools: [SEND, "ToolSearch"],
     maxTurns: 3,
+    sendGuard: { toolName: SEND, expectedInputSha256: sendInputSha256(args) },
   };
 }
 
@@ -88,8 +101,10 @@ export function buildSendRequest(cmd: SendMessageCommand): ClaudeJobRequest {
  * True when the tool_use input carries exactly the approved arguments: channel_id and thread_ts
  * exact (both absent matches), message exact after trimEnd on both sides. The only extra key
  * tolerated is `unfurl_app_links: false`; anything else (reply_broadcast, draft_id, ...) mismatches.
+ * The J2 send guard (`normaliseSendInput` + `sendInputSha256`) accepts exactly the same inputs; a
+ * parity test keeps the two in step.
  */
-function matchesCommand(input: unknown, cmd: SendMessageCommand): boolean {
+export function matchesCommand(input: unknown, cmd: SendMessageCommand): boolean {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return false;
   const a = input as Record<string, unknown>;
   for (const k of Object.keys(a)) {
@@ -140,7 +155,12 @@ export const normaliseSentText = (s: string) =>
 export class SlackSender implements MessageSink {
   constructor(private readonly deps: Deps) {}
 
-  async send(cmd: SendMessageCommand, signal: AbortSignal): Promise<SendResult> {
+  /** `opts.beforeSpawn` reaches the orchestrator; its cancel is rethrown (nothing was sent). */
+  async send(
+    cmd: SendMessageCommand,
+    signal: AbortSignal,
+    opts?: SendOptions,
+  ): Promise<SendResult> {
     const jobId = cmd.jobId;
     const before = jobId !== undefined ? this.runIdOf(jobId) : null;
     const withRun = (r: SendResult): SendResult => {
@@ -150,7 +170,7 @@ export class SlackSender implements MessageSink {
 
     let result: AIExecutionResult;
     try {
-      result = await this.deps.orchestrator.run(buildSendRequest(cmd), signal);
+      result = await this.deps.orchestrator.run(buildSendRequest(cmd), signal, opts);
     } catch (e) {
       // After spawn the tool may have run (timeout, crash): never rethrown, so never retried.
       if (e instanceof JobError && e.classified.details?.uncertain === true) {

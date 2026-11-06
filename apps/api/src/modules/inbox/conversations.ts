@@ -81,6 +81,7 @@ export class InboxConversations {
         text: schema.outgoingMessages.text,
         status: schema.outgoingMessages.status,
         at: schema.outgoingMessages.sendingAt,
+        auto: sql<number>`exists (select 1 from auto_replies ar where ar.outgoing_id = outgoing_messages.id)`,
       })
       .from(schema.outgoingMessages)
       .where(
@@ -94,6 +95,7 @@ export class InboxConversations {
       .map((o) => ({
         norm: this.deps.normalise(o.text),
         status: o.status,
+        auto: Boolean(o.auto),
         at: Date.parse(o.at as string),
       }));
 
@@ -106,7 +108,11 @@ export class InboxConversations {
         const hit = outgoing.find(
           (o) => o.norm === norm && sent >= o.at && sent - o.at <= SENT_WINDOW_MS,
         );
-        if (hit) sentViaSynapse = { status: hit.status as "sent" | "sent_unverified" };
+        if (hit)
+          sentViaSynapse = {
+            status: hit.status as "sent" | "sent_unverified",
+            auto: hit.auto,
+          };
       }
       return {
         id: r.id,

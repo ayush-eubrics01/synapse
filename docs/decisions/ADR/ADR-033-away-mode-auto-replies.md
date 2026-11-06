@@ -72,9 +72,21 @@ When away mode is switched off, the dashboard shows a digest of everything auto-
 | `autoReply.minMinutesBetweenInThread` | 30 |
 | `autoReply.minConfidence` | 0.75 (proposal; tune with use) |
 
+## Implementation (Phase 6b)
+
+Built in Phase 6b; details in [`docs/modules/auto-reply.md`](../../modules/auto-reply.md).
+
+- **J1, provenance.** A policy-authorised text carries the new provenance `policy_approved`, never `user_approved`. Validator rule K allows it only in a send run. `ApprovalEngine.recordPolicyApproval` approves `slack.auto_reply` (permission default `policy_gated`) with `decided_by = 'policy'`; any other action throws.
+- **J2, send guard.** Every send run (user and policy) carries a per-run PreToolUse hook that blocks the send call unless its canonical arguments hash to the approved ones. Any run that allows a connector write tool must carry the guard. Real-CLI proof on 2026-11-06: `hook-smoke` blocked a wrong hash and `--allow` let the matching call through. Residual risk: if the hook times out the call may proceed, so the after-the-fact argument check stays as the backstop.
+- **Caps.** Rolling 24 h per recipient (not a calendar day), counted from `auto_replies` rows with `decision = 'sent'`, plus a 30 minute gap per thread (per conversation for DMs).
+- **Acknowledgement.** A fixed first-person template with no model text. It replaces low-confidence follow-up questions only; a low-confidence stalled reminder is just held.
+- **Extra checks (final review).** An acknowledgement goes only to a message addressed to the user (a DM or group DM, a mention of the user, or a thread the user posted in before it). Nothing is sent about a message from before the away session or one the user already answered. A draft is held when its drafting run suspected injection, or when an open warning-or-higher flag touches any message fed into its prompt. Drafts that contain a link or mention people or a group are held. An auto-send not started within `autoReply.maxSendDelayMinutes` (default 15) of its decision is cancelled as `stale`.
+- **Deviations from this ADR.** The tag is the `AUTO_REPLY_TAG` constant, not the `autoReply.tag` setting listed above. `code_answer` is an allowed kind name with no producer until Phases 9-10. When a check fails, Synapse publishes `autoreply.held {autoReplyId, reason}` and leaves the follow-up as a plain draft in Needs you; there is no `autoreply.skipped` event and no extra approval-queue entry (the draft is sent, if at all, through the normal user approval).
+
 ## Related
 
 - [ADR-013](ADR-013-manual-approval-for-external-writes.md): the approval rule this amends
 - [ADR-032](ADR-032-untrusted-content-isolation.md): the drafting run has no send tool; the send run receives no untrusted text
 - [ADR-014](ADR-014-people-memory-requires-approval.md): priority is set by the user only
+- [`auto-reply` module](../../modules/auto-reply.md)
 - `../../architecture/security-model.md`, `../../modules/claude-orchestrator.md`, `../../modules/commitments.md`, `../../modules/urgency-engine.md`

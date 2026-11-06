@@ -40,3 +40,21 @@ test("stricter override takes effect and can be replaced", () => {
   expect(perms.check("slack.send")).toBe("explicit_approval_required");
   expect(db.select().from(schema.permissions).all()).toHaveLength(1);
 });
+
+test("slack.auto_reply defaults to policy_gated; overrides can only tighten it", () => {
+  const { perms } = setup();
+  expect(perms.check("slack.auto_reply")).toBe("policy_gated");
+  perms.setOverride("slack.auto_reply", "allowed");
+  expect(perms.check("slack.auto_reply")).toBe("policy_gated");
+  perms.setOverride("slack.auto_reply", "approval_required");
+  expect(perms.check("slack.auto_reply")).toBe("approval_required");
+  // An override replaces the previous one, and is never looser than the default.
+  perms.setOverride("slack.auto_reply", "allowed");
+  expect(perms.check("slack.auto_reply")).toBe("policy_gated");
+});
+
+test("policy_gated is never looser-overridable on other actions", () => {
+  const { perms } = setup();
+  perms.setOverride("slack.send", "policy_gated");
+  expect(perms.check("slack.send")).toBe("approval_required");
+});

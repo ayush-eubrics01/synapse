@@ -79,8 +79,7 @@ test("People header and subtitles", () => {
     "Profiles exist only for people you choose. Claude never changes priority.",
   );
   expect(html).toContain("Ranked by how much you talk to them");
-  expect(html).toContain("Extra attention screens a person&#x27;s messages more carefully.");
-  expect(html).not.toMatch(/away|auto-repl/i);
+  expect(html).toContain("High priority + away mode = auto-reply tagged “Sent using @claude”");
   expect(html).toContain('aria-label="Filter people"');
 });
 

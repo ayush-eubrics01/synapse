@@ -6,7 +6,10 @@ import {
   confirmSlackIdentity,
   decideApproval,
   discardRecommendation,
+  dismissAwayDigest,
   evaluatePerson,
+  getAway,
+  getAwayDigest,
   getCandidates,
   getClaudeRuns,
   getClaudeStatus,
@@ -26,6 +29,7 @@ import {
   getUrgent,
   retryApply,
   reviewFlag,
+  setAway,
   setPersonPriority,
   setUrgentStatus,
   startBackfill,
@@ -233,4 +237,29 @@ test("getClaudeStatus exposes the quota thresholds", async () => {
     auth: { refreshExpiresAt: null, slides: null },
   });
   expect((await getClaudeStatus(impl)).thresholds).toEqual(thresholds);
+});
+
+test("away API URLs", async () => {
+  const g = fake(200, { on: false, sessionId: null, startedAt: null });
+  expect((await getAway(g.impl)).on).toBe(false);
+  expect(g.calls[0]?.url).toBe("/api/away");
+  const p = fake(200, { on: true, sessionId: "S1", startedAt: "2026-11-06T08:00:00Z" });
+  await setAway(true, p.impl);
+  expect(p.calls[0]?.url).toBe("/api/away");
+  expect(p.calls[0]?.init?.method).toBe("PUT");
+  expect(JSON.parse(String(p.calls[0]?.init?.body))).toEqual({ on: true });
+  const d = fake(200, null);
+  expect(await getAwayDigest(d.impl)).toBeNull();
+  expect(d.calls[0]?.url).toBe("/api/away/digest");
+  // The route answers 204 with no body: no JSON parse, no throw, resolves undefined.
+  const calls: Call[] = [];
+  const noContent = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    return new Response(null, { status: 204 });
+  }) as unknown as typeof fetch;
+  expect(await dismissAwayDigest("S 1", noContent)).toBeUndefined();
+  expect(calls[0]?.url).toBe("/api/away/digest/S%201/dismiss");
+  expect(calls[0]?.init?.method).toBe("POST");
+  const bad = fake(500, { error: "boom" });
+  await expect(setAway(true, bad.impl)).rejects.toThrow("failed with 500");
 });

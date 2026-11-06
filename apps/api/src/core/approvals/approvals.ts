@@ -1,4 +1,4 @@
-import type { Approval, ApprovalStatus, Operation, RiskLevel } from "@synapse/contracts";
+import type { Approval, ApprovalStatus, Operation, Policy, RiskLevel } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { and, asc, eq, inArray, isNotNull, lte } from "drizzle-orm";
@@ -38,6 +38,28 @@ export class InvalidApprovalTransition extends Error {
   }
 }
 
+/** Only `slack.auto_reply` may be approved by a deterministic policy (ADR-033). */
+export class PolicyApprovalNotAllowed extends Error {
+  constructor(readonly action: Operation) {
+    super(`Operation ${action} cannot be approved by a policy`);
+    this.name = "PolicyApprovalNotAllowed";
+  }
+}
+
+/**
+ * The user tightened `slack.auto_reply` (effective policy is no longer `policy_gated`), so the
+ * auto-reply policy may not approve anything. Nothing falls back to a pending user approval.
+ */
+export class AutoReplyDisabledByPermission extends Error {
+  constructor(readonly policy: Policy) {
+    super(`auto-reply disabled by permission (policy ${policy})`);
+    this.name = "AutoReplyDisabledByPermission";
+  }
+}
+
+/** The only operation a policy may approve. */
+const POLICY_APPROVABLE: Operation = "slack.auto_reply";
+
 // Stored expiry is compared as text with isoNow(), so it must have the same canonical shape.
 const CANONICAL_ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
 
@@ -72,6 +94,12 @@ function toApproval(r: Row): Approval {
   };
 }
 
+function assertCanonicalExpiry(expiresAt: string | undefined): void {
+  if (expiresAt !== undefined && !CANONICAL_ISO.test(expiresAt)) {
+    throw new Error(`expiresAt must be canonical UTC ISO (YYYY-MM-DDTHH:mm:ss.sssZ): ${expiresAt}`);
+  }
+}
+
 type EventName =
   | "approval.approved"
   | "approval.rejected"
@@ -99,21 +127,16 @@ export class ApprovalEngine {
   }
 
   request(tx: DbOrTx, r: ApprovalRequest): Approval {
-    const existing = tx
-      .select()
-      .from(schema.approvals)
-      .where(eq(schema.approvals.idempotencyKey, r.idempotencyKey))
-      .get();
-    if (existing) return toApproval(existing);
-    if (r.expiresAt !== undefined && !CANONICAL_ISO.test(r.expiresAt)) {
+    // Checked before the idempotency lookup, so a policy approval is never returned from here.
+    if (r.action === POLICY_APPROVABLE) {
       throw new Error(
-        `expiresAt must be canonical UTC ISO (YYYY-MM-DDTHH:mm:ss.sssZ): ${r.expiresAt}`,
+        `Operation ${r.action} cannot be requested for approval (policy-approved only)`,
       );
     }
-    const policy = this.permissions.check(r.action);
-    if (policy === "denied" || policy === "user_only") {
-      throw new Error(`Operation ${r.action} cannot be requested for approval (policy ${policy})`);
-    }
+    const existing = this.findByKey(tx, r.idempotencyKey);
+    if (existing) return toApproval(existing);
+    assertCanonicalExpiry(r.expiresAt);
+    this.permissions.requireRequestable(r.action);
     const row = tx
       .insert(schema.approvals)
       .values({
@@ -153,6 +176,71 @@ export class ApprovalEngine {
     return toApproval(row);
   }
 
+  /**
+   * A12: records an approval decided by the deterministic auto-reply policy, inside the caller's
+   * transaction. It is inserted `approved` (never `pending`), so `approval.approved` drives the
+   * normal execute path. Only `slack.auto_reply`, and only while its effective policy is exactly
+   * `policy_gated`: a tightened override throws `AutoReplyDisabledByPermission`.
+   */
+  recordPolicyApproval(tx: DbOrTx, r: ApprovalRequest, decidedBy: "auto_reply_policy"): Approval {
+    if (r.action !== POLICY_APPROVABLE) throw new PolicyApprovalNotAllowed(r.action);
+    const policy = this.permissions.check(r.action);
+    if (policy !== "policy_gated") throw new AutoReplyDisabledByPermission(policy);
+    const existing = this.findByKey(tx, r.idempotencyKey);
+    if (existing) {
+      if (existing.action !== r.action || existing.decidedBy !== "policy") {
+        throw new PolicyApprovalNotAllowed(r.action);
+      }
+      return toApproval(existing);
+    }
+    assertCanonicalExpiry(r.expiresAt);
+    const now = isoNow(this.clock);
+    const row = tx
+      .insert(schema.approvals)
+      .values({
+        id: newId(),
+        action: r.action,
+        targetIntegration: r.targetIntegration,
+        targetRef: r.targetRef,
+        payload: r.payload,
+        riskLevel: r.riskLevel,
+        status: "approved",
+        decidedBy: "policy",
+        decidedAt: now,
+        expiresAt: r.expiresAt,
+        idempotencyKey: r.idempotencyKey,
+        requestedByModule: r.requestedByModule,
+        requestedByWorker: r.requestedByWorker,
+        createdAt: now,
+      })
+      .returning()
+      .get();
+    this.events.publish(tx, {
+      type: "approval.approved",
+      aggregateType: "approval",
+      aggregateId: row.id,
+      correlationId: newId(),
+      payload: { approvalId: row.id },
+    });
+    this.audit.record(tx, {
+      actor: "system",
+      module: "approvals",
+      action: "approval.policy_approved",
+      workerProfile: r.requestedByWorker,
+      targetIntegration: r.targetIntegration,
+      targetRef: r.targetRef,
+      approvalId: row.id,
+      result: "approved",
+      details: {
+        operation: r.action,
+        riskLevel: r.riskLevel,
+        decidedBy,
+        requestedByModule: r.requestedByModule,
+      },
+    });
+    return toApproval(row);
+  }
+
   approve(id: string): Approval {
     return this.transition(id, "approved", "approval.approved", "user");
   }
@@ -163,6 +251,23 @@ export class ApprovalEngine {
 
   revoke(id: string, reason: string): Approval {
     return this.transition(id, "revoked", "approval.revoked", "user", reason);
+  }
+
+  /**
+   * Revokes an approved, unclaimed approval as `system`, inside the caller's transaction (an
+   * executor's revalidation found it may no longer run). Throws InvalidApprovalTransition otherwise.
+   */
+  revokeAsSystem(tx: DbOrTx, id: string, reason: string): Approval {
+    const row = tx.select().from(schema.approvals).where(eq(schema.approvals.id, id)).get();
+    if (!row || !ALLOWED[row.status].includes("revoked") || row.executionStartedAt !== null) {
+      throw new InvalidApprovalTransition(id, row?.status ?? "missing", "revoked");
+    }
+    return this.apply(tx, row, "revoked", "approval.revoked", "system", reason);
+  }
+
+  /** Whether a policy (not the user) may approve `action` right now: effective policy policy_gated. */
+  policyGateOpen(action: Operation): boolean {
+    return this.permissions.policyGateOpen(action);
   }
 
   expireDue(): number {
@@ -226,6 +331,16 @@ export class ApprovalEngine {
         if (!row) return { reason: "missing" };
         const reason = this.skipReason(row);
         if (reason) return { reason };
+        // A policy approval runs only while the policy gate is still open. Its executor's
+        // revalidate normally catches this first; here the gate shut in between. It can never run
+        // later, so it is revoked and the revoke consumers clean up.
+        if (
+          row.decidedBy === "policy" &&
+          !this.permissions.policyGateOpen(row.action as Operation)
+        ) {
+          this.apply(tx, row, "revoked", "approval.revoked", "system", "policy_disabled");
+          return { reason: "policy_disabled" };
+        }
         tx.update(schema.approvals)
           .set({ executionStartedAt: isoNow(this.clock) })
           .where(eq(schema.approvals.id, id))
@@ -253,6 +368,10 @@ export class ApprovalEngine {
     // propagates and the row stays claimed (execution_started_at set), so it can never re-run.
     this.finish(id, "executed", result);
     return { status: "executed", result };
+  }
+
+  private findByKey(tx: DbOrTx, key: string): Row | undefined {
+    return tx.select().from(schema.approvals).where(eq(schema.approvals.idempotencyKey, key)).get();
   }
 
   private load(id: string): Row {
@@ -354,7 +473,14 @@ export class ApprovalEngine {
   ): Approval {
     const updated = tx
       .update(schema.approvals)
-      .set({ status: to, decidedAt: isoNow(this.clock) })
+      .set({
+        status: to,
+        decidedAt: isoNow(this.clock),
+        // The user's own decision; revoke/expiry keep who approved it.
+        ...((to === "approved" || to === "rejected") && actor === "user"
+          ? { decidedBy: "user" as const }
+          : {}),
+      })
       .where(eq(schema.approvals.id, row.id))
       .returning()
       .get();

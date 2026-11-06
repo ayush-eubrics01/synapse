@@ -64,9 +64,15 @@ test("spec clarity output is strict", () => {
     clear: false,
     missing: ["steps"],
     questions: ["What are the steps?"],
+    confidence: 0.8,
     suspectedInjection: noInjection,
   };
   expect(specClarityOutputSchema.safeParse(ok).success).toBe(true);
+  // A7: confidence is required and within 0..1.
+  const { confidence: _omit, ...noConfidence } = ok;
+  expect(specClarityOutputSchema.safeParse(noConfidence).success).toBe(false);
+  expect(specClarityOutputSchema.safeParse({ ...ok, confidence: -0.1 }).success).toBe(false);
+  expect(specClarityOutputSchema.safeParse({ ...ok, confidence: 1.1 }).success).toBe(false);
   expect(specClarityOutputSchema.safeParse({ ...ok, missing: ["vibes"] }).success).toBe(false);
   expect(specClarityOutputSchema.safeParse({ ...ok, extra: 1 }).success).toBe(false);
 });

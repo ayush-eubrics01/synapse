@@ -7,6 +7,7 @@
       "!**/.next",
       "!**/node_modules",
       "!.superpowers",
+      "!.claude",
       "!docs",
       "!pre-project-concept-document",
       "!**/*.md"

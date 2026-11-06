@@ -194,3 +194,19 @@ test("urgency.assess.batchMax is capped at 10 so the prompt byte budget always h
   settings.set("urgency.assess.batchMax", 5);
   expect(settings.get("urgency.assess.batchMax")).toBe(5);
 });
+
+test("auto-reply settings have the Phase 6b defaults", () => {
+  const { settings } = setup();
+  expect(settings.get("autoReply.allowedKinds")).toEqual([
+    "code_answer",
+    "stalled_reminder",
+    "followup_question",
+    "acknowledgement",
+  ]);
+  expect(settings.get("autoReply.maxPerPersonPerDay")).toBe(3);
+  expect(settings.get("autoReply.minMinutesBetweenInThread")).toBe(30);
+  expect(settings.get("autoReply.minConfidence")).toBe(0.75);
+  expect(settings.get("autoReply.maxSendDelayMinutes")).toBe(15);
+  expect(() => settings.set("autoReply.allowedKinds", ["bogus"] as never)).toThrow();
+  expect(() => settings.set("autoReply.minConfidence", 2)).toThrow();
+});

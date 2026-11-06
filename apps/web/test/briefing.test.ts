@@ -24,6 +24,7 @@ function overview(
       conversations: 0,
       ...counts,
     },
+    away: { on: false, highPriorityCount: 0 },
     lastSlackSyncAt: synced,
     health: { status: "ok", issues: [] },
     pipeline: [],

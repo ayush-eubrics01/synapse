@@ -48,6 +48,14 @@ const settingSchemas = {
   "orchestrator.maxConcurrent": z.number().int().positive().default(2),
   "health.authExpiryWarningHours": z.number().positive().default(48),
   "autoReply.awayMode": z.boolean().default(false),
+  "autoReply.allowedKinds": z
+    .array(z.enum(["code_answer", "stalled_reminder", "followup_question", "acknowledgement"]))
+    .default(["code_answer", "stalled_reminder", "followup_question", "acknowledgement"]),
+  "autoReply.maxPerPersonPerDay": z.number().int().positive().default(3),
+  "autoReply.minMinutesBetweenInThread": z.number().int().nonnegative().default(30),
+  "autoReply.minConfidence": z.number().min(0).max(1).default(0.75),
+  // M8: an auto-send not started this long after its decision is cancelled as `stale`.
+  "autoReply.maxSendDelayMinutes": z.number().int().positive().default(15),
   "system.lastHeartbeatAt": z.string().nullable().default(null),
   "orchestrator.quota.fiveHour.soft": z.number().min(0).max(1).default(0.6),
   "orchestrator.quota.fiveHour.hard": z.number().min(0).max(1).default(0.85),
@@ -115,25 +123,30 @@ export class SettingsService {
   }
 
   set<K extends SettingKey>(key: K, value: SettingValue<K>, opts: { emit?: boolean } = {}): void {
+    this.db.transaction((tx) => this.setIn(tx, key, value, opts), { behavior: "immediate" });
+  }
+
+  /** `set` inside the caller's transaction, so the value commits (or rolls back) with it. */
+  setIn<K extends SettingKey>(
+    tx: DbOrTx,
+    key: K,
+    value: SettingValue<K>,
+    opts: { emit?: boolean } = {},
+  ): void {
     const parsed = settingSchemas[key].parse(value);
     const updatedAt = isoNow(this.clock);
-    this.db.transaction(
-      (tx) => {
-        tx.insert(schema.appSettings)
-          .values({ key, value: parsed, updatedAt })
-          .onConflictDoUpdate({ target: schema.appSettings.key, set: { value: parsed, updatedAt } })
-          .run();
-        if (opts.emit ?? true) {
-          this.publish(tx, {
-            type: "settings.changed",
-            aggregateType: "settings",
-            aggregateId: key,
-            correlationId: newId(),
-            payload: { key },
-          });
-        }
-      },
-      { behavior: "immediate" },
-    );
+    tx.insert(schema.appSettings)
+      .values({ key, value: parsed, updatedAt })
+      .onConflictDoUpdate({ target: schema.appSettings.key, set: { value: parsed, updatedAt } })
+      .run();
+    if (opts.emit ?? true) {
+      this.publish(tx, {
+        type: "settings.changed",
+        aggregateType: "settings",
+        aggregateId: key,
+        correlationId: newId(),
+        payload: { key },
+      });
+    }
   }
 }

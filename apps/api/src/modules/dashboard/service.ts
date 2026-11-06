@@ -1,7 +1,7 @@
 import type { DashboardOverview, HealthReport } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import type { Clock } from "@synapse/shared";
-import { and, count, countDistinct, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, count, countDistinct, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
 import type { ApprovalEngine } from "../../core/approvals/approvals";
 import type { SettingsService } from "../../core/config/settings";
 import type { FollowupService } from "../commitments/followups";
@@ -98,6 +98,10 @@ export class DashboardService {
             .from(schema.slackMessages)
             .get()?.n ?? 0,
       },
+      away: {
+        on: settings.get("autoReply.awayMode"),
+        highPriorityCount: this.highPriorityCount(selfId),
+      },
       lastSlackSyncAt: incremental.lastSuccessAt,
       health: {
         status: report.status,
@@ -129,6 +133,23 @@ export class DashboardService {
       ),
       engineeringLock: null,
     };
+  }
+
+  /** People the away policy can reply to: priority high or critical, never the user. */
+  private highPriorityCount(selfId: string | null): number {
+    const { people, peoplePrioritySettings: ps } = schema;
+    const cond = and(
+      inArray(ps.priority, ["high", "critical"]),
+      selfId === null ? undefined : ne(people.slackUserId, selfId),
+    );
+    return (
+      this.deps.db
+        .select({ n: count() })
+        .from(ps)
+        .innerJoin(people, eq(ps.personId, people.id))
+        .where(cond)
+        .get()?.n ?? 0
+    );
   }
 
   private nameOf(slackUserId: string): string | null {

@@ -378,6 +378,23 @@ export class SecurityFlagsService {
     return row !== undefined;
   }
 
+  /** An open flag of at least `minSeverity` recorded against this Claude run. */
+  hasOpenRunFlag(claudeRunId: string, minSeverity: "warning"): boolean {
+    const row = this.deps.db
+      .select({ id: securityFlags.id })
+      .from(securityFlags)
+      .where(
+        and(
+          eq(securityFlags.claudeRunId, claudeRunId),
+          eq(securityFlags.status, "open"),
+          inArray(securityFlags.severity, atLeast(minSeverity)),
+        ),
+      )
+      .limit(1)
+      .get();
+    return row !== undefined;
+  }
+
   private messageContext(tx: DbOrTx, messageId: string) {
     const r = tx
       .select({

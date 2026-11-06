@@ -6,12 +6,19 @@ import {
   type CollectResult,
   JobError,
   type RawToolResult,
+  type RunOptions,
   type SendMessageCommand,
   type SourceMessage,
 } from "@synapse/contracts";
 import { createContainer } from "../../src/container";
 import { loadConfig } from "../../src/core/config/config";
-import { buildSendRequest, SEND, SlackSender } from "../../src/integrations/slack/sender";
+import { sendInputSha256 } from "../../src/integrations/claude-code/send-guard";
+import {
+  buildSendRequest,
+  matchesCommand,
+  SEND,
+  SlackSender,
+} from "../../src/integrations/slack/sender";
 
 const signal = new AbortController().signal;
 const TEXT = "SYNTH-APPROVED-TEXT: deploy is done";
@@ -63,7 +70,7 @@ const result = (toolResults: RawToolResult[]): AIExecutionResult => ({
 });
 
 interface Setup {
-  run?: (req: ClaudeJobRequest) => Promise<AIExecutionResult>;
+  run?: (req: ClaudeJobRequest, opts?: RunOptions) => Promise<AIExecutionResult>;
   collect?: (req: CollectRequest) => Promise<CollectResult>;
   self?: string | null;
   runIds?: (string | null)[];
@@ -76,9 +83,9 @@ function setup(o: Setup = {}) {
   const runIds = [...(o.runIds ?? [null, "run-1"])];
   const sender = new SlackSender({
     orchestrator: {
-      run: async (req) => {
+      run: async (req, _signal, opts) => {
         seen.push(req);
-        return (o.run ?? (async () => result([tr(args)])))(req);
+        return (o.run ?? (async () => result([tr(args)])))(req, opts);
       },
     },
     searchSource: {
@@ -132,6 +139,51 @@ describe("buildSendRequest", () => {
       JSON.stringify({ channel_id: "C0SYNTHCHN1", message: TEXT }),
     );
     expect("jobId" in req).toBe(false);
+  });
+
+  test("J2: carries a send guard whose sha256 is that of the exact JSON args", () => {
+    const req = buildSendRequest(cmd());
+    expect(req.sendGuard).toEqual({ toolName: SEND, expectedInputSha256: sendInputSha256(args) });
+    const sent = JSON.parse(req.parts?.[1]?.content ?? "null");
+    expect(req.sendGuard?.expectedInputSha256).toBe(sendInputSha256(sent));
+    const noThread = buildSendRequest(cmd({ threadTs: undefined, text: `${TEXT} \n` }));
+    expect(noThread.sendGuard?.expectedInputSha256).toBe(
+      sendInputSha256({ channel_id: "C0SYNTHCHN1", message: TEXT }),
+    );
+  });
+
+  test("J1: authorisedBy policy gives a policy_approved part; default and user give user_approved", () => {
+    const provenances = (c: SendMessageCommand) =>
+      (buildSendRequest(c).parts ?? []).map((p) => p.provenance);
+    expect(provenances(cmd({ authorisedBy: "policy" }))).toEqual(["system", "policy_approved"]);
+    expect(provenances(cmd({ authorisedBy: "user" }))).toEqual(["system", "user_approved"]);
+    expect(provenances(cmd())).toEqual(["system", "user_approved"]);
+    const policy = buildSendRequest(cmd({ authorisedBy: "policy" }));
+    expect(policy.parts?.[1]?.content).toBe(JSON.stringify(args));
+    expect(policy.sendGuard).toEqual(buildSendRequest(cmd()).sendGuard);
+  });
+});
+
+describe("J2 parity: the send guard accepts exactly what matchesCommand accepts", () => {
+  const noThread = { channel_id: "C0SYNTHCHN1", message: TEXT };
+  test.each([
+    ["exact args", cmd(), args, true],
+    ["unfurl_app_links false", cmd(), { ...args, unfurl_app_links: false }, true],
+    ["trailing spaces in message", cmd(), { ...args, message: `${TEXT}  ` }, true],
+    ["approved text with trailing spaces", cmd({ text: `${TEXT} \n` }), args, true],
+    ["unfurl_app_links true", cmd(), { ...args, unfurl_app_links: true }, false],
+    ["reply_broadcast true", cmd(), { ...args, reply_broadcast: true }, false],
+    ["other channel", cmd(), { ...args, channel_id: "C0OTHER" }, false],
+    ["leading space in message", cmd(), { ...args, message: ` ${TEXT}` }, false],
+    ["thread_ts dropped", cmd(), noThread, false],
+    ["thread_ts added", cmd({ threadTs: undefined }), args, false],
+    ["no thread, exact", cmd({ threadTs: undefined }), noThread, true],
+    ["message not a string", cmd(), { ...args, message: 7 }, false],
+  ])("%s", (_n, c, input, expected) => {
+    const guardAllows =
+      sendInputSha256(input) === buildSendRequest(c).sendGuard?.expectedInputSha256;
+    expect(matchesCommand(input, c)).toBe(expected);
+    expect(guardAllows).toBe(expected);
   });
 });
 
@@ -328,6 +380,28 @@ describe("SlackSender.send", () => {
       },
     });
     await expect(sender.send(cmd(), signal)).rejects.toBe(quota);
+  });
+
+  test("I2: beforeSpawn reaches the orchestrator; a cancel before spawn is rethrown, never uncertain", async () => {
+    const cancelled = new JobError({
+      kind: "cancelled_before_spawn",
+      message: "cancelled before spawn",
+      details: { notSpawned: true },
+    });
+    let seenOpts: RunOptions | undefined;
+    const { sender } = setup({
+      run: async (_req, opts) => {
+        seenOpts = opts;
+        if (opts?.beforeSpawn?.() === false) throw cancelled;
+        return result([tr(args)]);
+      },
+    });
+    const beforeSpawn = () => false;
+    await expect(sender.send(cmd(), signal, { beforeSpawn })).rejects.toBe(cancelled);
+    expect(seenOpts?.beforeSpawn).toBe(beforeSpawn);
+    // Without options nothing is passed.
+    await sender.send(cmd(), signal);
+    expect(seenOpts?.beforeSpawn).toBeUndefined();
   });
 
   test("a non-JobError is rethrown", async () => {

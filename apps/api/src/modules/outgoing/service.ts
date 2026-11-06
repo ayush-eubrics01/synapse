@@ -1,13 +1,15 @@
 import {
   type Approval,
+  AUTO_REPLY_TAG,
   JobError,
   type MessageSink,
   type SendMessageCommand,
+  type SendOptions,
   type SendResult,
 } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
-import { and, eq, inArray, isNotNull, lt, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, ne, or } from "drizzle-orm";
 import { z } from "zod";
 import type { ApprovalEngine } from "../../core/approvals/approvals";
 import { APPROVAL_EXECUTE_JOB, registerIntegrationExecutor } from "../../core/approvals/execution";
@@ -19,7 +21,16 @@ import type { JobQueue } from "../../core/jobs/queue";
 import type { NotificationService } from "../../core/notifications/notifications";
 import type { SecurityFlagsService } from "../security-flags/service";
 
-const { outgoingMessages, followups, followupHistory, approvals: approvalsTable, jobs } = schema;
+const {
+  outgoingMessages,
+  followups,
+  followupHistory,
+  approvals: approvalsTable,
+  jobs,
+  autoReplies,
+  awaySessions,
+  auditEvents,
+} = schema;
 
 export const OUTGOING_VERIFY_JOB = "outgoing.verify";
 export const OUTGOING_VERIFY_PRIORITY = 170;
@@ -40,8 +51,14 @@ const MISMATCH_TITLE = "Send went out with changed arguments — check Slack for
 const MISMATCH_REASON = "send tool called with changed arguments";
 
 const payloadSchema = z.object({ outgoingId: z.string().min(1) });
+const autoPayloadSchema = payloadSchema.extend({ autoReplyId: z.string().min(1) });
+const AUTO_SEND_MODULE = "auto-reply";
 
 type Row = typeof schema.outgoingMessages.$inferSelect;
+type AutoReplyRow = typeof schema.autoReplies.$inferSelect;
+type AuthorisedBy = NonNullable<SendMessageCommand["authorisedBy"]>;
+/** A13, the permission gate and M8 staleness: why a policy auto-send may no longer go out. */
+type AutoSendBlock = "away_off" | "policy_disabled" | "stale";
 export type OutgoingStatus = Row["status"];
 type FollowupStatus = (typeof schema.followups.$inferSelect)["status"];
 export type ResolveDecision = "mark_sent" | "resend" | "discard";
@@ -53,6 +70,15 @@ export interface SendRequest {
   /** The exact text the user approves; only trailing whitespace is trimmed. */
   text: string;
   requestedByModule: string;
+}
+
+/** A policy-approved auto-reply (ADR-033). `text` already carries the tag (A10). */
+export interface AutoSendRequest {
+  autoReplyId: string;
+  conversationExternalId: string;
+  threadTs: string | null;
+  text: string;
+  followupId: string | null;
 }
 
 export interface SendRequested {
@@ -82,6 +108,53 @@ export class InvalidOutgoingText extends Error {
   constructor() {
     super(`outgoing text must be 1..${MAX_TEXT} characters`);
     this.name = "InvalidOutgoingText";
+  }
+}
+
+export class MissingAutoReplyTag extends Error {
+  constructor() {
+    super("auto-reply text must end with the auto-reply tag");
+    this.name = "MissingAutoReplyTag";
+  }
+}
+
+export class AutoReplyNotFound extends Error {
+  constructor(readonly autoReplyId: string) {
+    super("auto-reply not found");
+    this.name = "AutoReplyNotFound";
+  }
+}
+
+/** I1: a request field differs from its `auto_replies` row. Fixed message; ids only. */
+export class AutoSendMismatch extends Error {
+  constructor(
+    readonly autoReplyId: string,
+    readonly field: "conversationExternalId" | "threadTs" | "text" | "followupId",
+  ) {
+    super("auto-send request does not match its auto-reply");
+    this.name = "AutoSendMismatch";
+  }
+}
+
+/**
+ * M2: away is off, or the auto-reply's session is no longer the open one, when the send is
+ * requested. Nothing is recorded. (A shut permission gate is `AutoReplyDisabledByPermission`.)
+ */
+export class AutoSendBlocked extends Error {
+  constructor(
+    readonly autoReplyId: string,
+    readonly reason: "away_off",
+  ) {
+    super(`auto-send blocked: ${reason}`);
+    this.name = "AutoSendBlocked";
+  }
+}
+
+/** The auto-reply was held, or a send was already requested for it. */
+export class AutoReplyNotSendable extends Error {
+  constructor(readonly autoReplyId: string) {
+    super("auto-reply cannot be sent");
+    this.name = "AutoReplyNotSendable";
   }
 }
 
@@ -116,7 +189,10 @@ export type SendFailure =
   | "not_started"
   | "outcome_unrecorded"
   | "invalid_payload"
-  | "not_found";
+  | "not_found"
+  | "cancelled_away_off"
+  | "cancelled_policy_disabled"
+  | "cancelled_stale";
 
 export class OutgoingSendError extends Error {
   constructor(readonly failure: SendFailure) {
@@ -133,7 +209,10 @@ export interface OutgoingServiceDeps {
   queue: Pick<JobQueue, "enqueue">;
   settings: SettingsService;
   notifications: Pick<NotificationService, "notify">;
-  approvals: Pick<ApprovalEngine, "request">;
+  approvals: Pick<
+    ApprovalEngine,
+    "request" | "recordPolicyApproval" | "revokeAsSystem" | "policyGateOpen"
+  >;
   securityFlags: Pick<SecurityFlagsService, "recordRuntimeFlag">;
   sink: MessageSink;
 }
@@ -141,9 +220,10 @@ export interface OutgoingServiceDeps {
 const errorName = (e: unknown) => (e instanceof Error ? e.name : "unknown");
 
 /**
- * Approved Slack sends (Phase 6). A message is sent only by the `slack.send` executor for its own
- * approval, at most once: it is marked `sending` before the sink is called, and nothing ever moves
- * it back to `pending`. Uncertain outcomes are verified by searching Slack, never by re-sending; a
+ * Approved Slack sends (Phase 6). A message is sent only by the `slack.send` executor (user
+ * approval) or the `slack.auto_reply` executor (ADR-033 policy approval) for its own approval; both
+ * share one claim, send, outcome and verify path. It is sent at most once: it is marked `sending`
+ * before the sink is called, and nothing ever moves it back to `pending`. Uncertain outcomes are verified by searching Slack, never by re-sending; a
  * second send only happens when the user picks `resend`, which needs a new approval.
  *
  * Text lives only in `outgoing_messages.text`. Audit rows, events, notifications, follow-up history,
@@ -159,11 +239,18 @@ export class OutgoingService {
 
   constructor(private readonly deps: OutgoingServiceDeps) {}
 
-  /** Wires the `slack.send`/`slack` executor and the revoke/reject/expiry consumers. */
+  /**
+   * Wires the `slack.send`/`slack` and `slack.auto_reply`/`slack` executors and the
+   * revoke/reject/expiry consumers.
+   */
   register(engine: ApprovalEngine, dispatcher: Pick<OutboxDispatcher, "subscribe">): void {
     // R7 (f): bound privately; only the engine (after its own claim) can run a send.
     registerIntegrationExecutor(engine, "slack.send", "slack", {
-      execute: async (a, signal) => this.#execute(a, signal),
+      execute: async (a, signal) => this.#execute(a, signal, "user"),
+    });
+    registerIntegrationExecutor(engine, "slack.auto_reply", "slack", {
+      execute: async (a, signal) => this.#execute(a, signal, "policy"),
+      revalidate: async (a) => this.#revalidateAutoSend(a),
     });
     const reasons = {
       "approval.revoked": "revoked",
@@ -190,6 +277,77 @@ export class OutgoingService {
   /** Records a send and requests its approval, inside the caller's transaction. */
   requestSend(tx: DbOrTx, input: SendRequest): SendRequested {
     const { clock, approvals } = this.deps;
+    return this.#record(tx, input, "send_requested", (outgoingId) =>
+      approvals.request(tx, {
+        action: "slack.send",
+        targetIntegration: "slack",
+        targetRef: input.conversationExternalId,
+        payload: { outgoingId },
+        riskLevel: "medium",
+        idempotencyKey: `outgoing:${outgoingId}`,
+        requestedByModule: input.requestedByModule,
+        expiresAt: new Date(clock.now().getTime() + APPROVAL_TTL_MS).toISOString(),
+      }),
+    );
+  }
+
+  /**
+   * ADR-033: records a policy-approved auto-reply send, inside the caller's transaction, and links
+   * it to its `auto_replies` row. The approval is `approved` at once (`decided_by = 'policy'`), so it
+   * never pends for the user. Throws `AutoReplyDisabledByPermission` (from the engine) when the user
+   * tightened `slack.auto_reply`; the caller's transaction then records nothing.
+   */
+  requestAutoSend(tx: DbOrTx, input: AutoSendRequest): SendRequested {
+    const { clock, approvals } = this.deps;
+    if (!input.text.trimEnd().endsWith(AUTO_REPLY_TAG)) throw new MissingAutoReplyTag();
+    const ar = tx.select().from(autoReplies).where(eq(autoReplies.id, input.autoReplyId)).get();
+    if (!ar) throw new AutoReplyNotFound(input.autoReplyId);
+    if (ar.decision !== "sent" || ar.outgoingId !== null) {
+      throw new AutoReplyNotSendable(input.autoReplyId);
+    }
+    // I1: the auto_replies row is what the policy decided on; the request must be exactly it.
+    const mismatch = autoSendMismatch(input, ar);
+    if (mismatch !== null) throw new AutoSendMismatch(input.autoReplyId, mismatch);
+    // M2: away off / another session blocks up front. A shut permission gate is left to
+    // recordPolicyApproval, which throws AutoReplyDisabledByPermission (the controller's ruling).
+    if (this.autoSendBlock(tx, ar) === "away_off") {
+      throw new AutoSendBlocked(input.autoReplyId, "away_off");
+    }
+    const requested = this.#record(
+      tx,
+      { ...input, requestedByModule: AUTO_SEND_MODULE },
+      "auto_send_requested",
+      (outgoingId) =>
+        approvals.recordPolicyApproval(
+          tx,
+          {
+            action: "slack.auto_reply",
+            targetIntegration: "slack",
+            targetRef: input.conversationExternalId,
+            payload: { outgoingId, autoReplyId: input.autoReplyId },
+            riskLevel: "medium",
+            idempotencyKey: `auto-reply:${input.autoReplyId}`,
+            requestedByModule: AUTO_SEND_MODULE,
+            expiresAt: new Date(clock.now().getTime() + APPROVAL_TTL_MS).toISOString(),
+          },
+          "auto_reply_policy",
+        ),
+    );
+    tx.update(autoReplies)
+      .set({ outgoingId: requested.outgoingId, approvalId: requested.approvalId })
+      .where(eq(autoReplies.id, input.autoReplyId))
+      .run();
+    return requested;
+  }
+
+  /** The outgoing row and follow-up link shared by user and policy sends. */
+  #record(
+    tx: DbOrTx,
+    input: SendRequest,
+    historyEvent: "send_requested" | "auto_send_requested",
+    approve: (outgoingId: string) => Approval,
+  ): SendRequested {
+    const { clock } = this.deps;
     const text = input.text.trimEnd();
     if (text.length < 1 || text.length > MAX_TEXT) throw new InvalidOutgoingText();
     const followupId = input.followupId;
@@ -211,16 +369,7 @@ export class OutgoingService {
     }
     const outgoingId = newId();
     const now = isoNow(clock);
-    const approval = approvals.request(tx, {
-      action: "slack.send",
-      targetIntegration: "slack",
-      targetRef: input.conversationExternalId,
-      payload: { outgoingId },
-      riskLevel: "medium",
-      idempotencyKey: `outgoing:${outgoingId}`,
-      requestedByModule: input.requestedByModule,
-      expiresAt: new Date(clock.now().getTime() + APPROVAL_TTL_MS).toISOString(),
-    });
+    const approval = approve(outgoingId);
     tx.insert(outgoingMessages)
       .values({
         id: outgoingId,
@@ -240,48 +389,129 @@ export class OutgoingService {
         .set({ status: "awaiting_approval", approvalId: approval.id, outgoingId, updatedAt: now })
         .where(eq(followups.id, followupId))
         .run();
-      this.followupEvent(tx, followupId, "awaiting_approval", "send_requested", outgoingId);
+      this.followupEvent(tx, followupId, "awaiting_approval", historyEvent, outgoingId);
     }
     return { outgoingId, approvalId: approval.id };
   }
 
   /**
-   * The `slack.send` executor. Throws only `OutgoingSendError` (fixed messages), and only when
-   * nothing was sent or the outcome could not be recorded; the engine then fails the approval.
+   * A13: the `slack.auto_reply` revalidation, before the engine's claim. False (and nothing is
+   * sent) unless away mode is on, the auto-reply's session is the open one, and the policy gate is
+   * open. On false the approval is revoked and the auto-reply held, in one transaction.
+   */
+  #revalidateAutoSend(a: Approval): boolean {
+    const payload = autoPayloadSchema.safeParse(a.payload);
+    // Never run an auto-send whose approval does not name its auto-reply.
+    if (!payload.success) return false;
+    return this.deps.db.transaction(
+      (tx) => {
+        const row = tx
+          .select()
+          .from(outgoingMessages)
+          .where(eq(outgoingMessages.id, payload.data.outgoingId))
+          .get();
+        if (!row) return true;
+        const ar = this.autoReplyFor(tx, row.id);
+        // I1: the approval must name the auto-reply linked to its message.
+        if (!ar || ar.id !== payload.data.autoReplyId) return false;
+        const block = this.autoSendBlock(tx, ar);
+        if (block === null) return true;
+        this.deps.approvals.revokeAsSystem(tx, a.id, block);
+        this.holdAutoSend(tx, row, ar, block);
+        return false;
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  /**
+   * The `slack.send` (authorisedBy user) and `slack.auto_reply` (authorisedBy policy) executor.
+   * Throws only `OutgoingSendError` (fixed messages), and only when nothing was sent or the outcome
+   * could not be recorded; the engine then fails the approval.
    * `signal` is the `approval.execute` job's: an abort before spawn (still waiting for a Claude
    * slot) makes the sink throw, which is the safe `not_started` outcome.
    */
-  async #execute(approval: Approval, signal?: AbortSignal): Promise<SendOutcome> {
+  async #execute(
+    approval: Approval,
+    signal: AbortSignal | undefined,
+    authorisedBy: AuthorisedBy,
+  ): Promise<SendOutcome> {
     const { db } = this.deps;
     const payload = payloadSchema.safeParse(approval.payload);
     if (!payload.success) throw new OutgoingSendError("invalid_payload");
     const { outgoingId } = payload.data;
 
     // 1. Claim: pending -> sending, committed before the sink is called.
-    const claim = db.transaction((tx) => this.claim(tx, approval.id, outgoingId), {
+    const claim = db.transaction((tx) => this.claim(tx, approval.id, outgoingId, authorisedBy), {
       behavior: "immediate",
     });
     if ("skip" in claim) return { outgoingId, status: "skipped", reason: claim.skip };
-    const { row, jobId } = claim;
+    // The auto-send was cancelled (and the auto-reply held) at the claim: nothing was sent.
+    if ("cancel" in claim) throw new OutgoingSendError(claim.cancel);
+    const { row, jobId, autoReply } = claim;
     this.#inFlight.add(outgoingId);
     try {
-      return await this.#send(row, jobId, signal ?? new AbortController().signal);
+      return await this.#send(
+        row,
+        jobId,
+        signal ?? new AbortController().signal,
+        authorisedBy,
+        autoReply,
+      );
     } finally {
       this.#inFlight.delete(outgoingId);
     }
   }
 
-  async #send(row: Row, jobId: string | undefined, signal: AbortSignal): Promise<SendOutcome> {
+  async #send(
+    row: Row,
+    jobId: string | undefined,
+    signal: AbortSignal,
+    authorisedBy: AuthorisedBy,
+    autoReply: AutoReplyRow | undefined,
+  ): Promise<SendOutcome> {
     const { db, sink } = this.deps;
     const outgoingId = row.id;
+    // I2: a policy send re-checks A13 and the gate once it has a Claude slot, just before spawn.
+    const gate: { blocked: AutoSendBlock | null } = { blocked: null };
+    const opts: SendOptions | undefined = autoReply
+      ? {
+          beforeSpawn: () => {
+            gate.blocked = this.autoSendBlock(db, autoReply);
+            return gate.blocked === null;
+          },
+        }
+      : undefined;
     // 2. Send.
     let result: SendResult;
     try {
       result = await sink.send(
-        { ...this.command(row), ...(jobId !== undefined ? { jobId } : {}) },
+        { ...this.command(row), authorisedBy, ...(jobId !== undefined ? { jobId } : {}) },
         signal,
+        opts,
       );
     } catch (e) {
+      const blocked = gate.blocked;
+      if (
+        autoReply &&
+        blocked !== null &&
+        e instanceof JobError &&
+        e.classified.kind === "cancelled_before_spawn"
+      ) {
+        // Not spawned, so certainly not sent: cancelled and held, never uncertain. If even this
+        // write fails, the row stays `sending` and the sweep hands it to the user.
+        try {
+          db.transaction(
+            (tx) => this.holdAutoSend(tx, row, autoReply, blocked, { allowSending: true }),
+            { behavior: "immediate" },
+          );
+        } catch (w) {
+          console.error(
+            `outgoing outcome not recorded outgoing=${outgoingId} error=${errorName(w)}`,
+          );
+        }
+        throw new OutgoingSendError(`cancelled_${blocked}`);
+      }
       // The sink rethrows only failures before spawn: nothing was sent. The engine fails the
       // approval for any thrown error, so this send can never run under it again: not_started,
       // and the draft goes back for a new request. If even this write fails, the row stays
@@ -352,6 +582,7 @@ export class OutgoingService {
             .where(eq(outgoingMessages.id, outgoingId))
             .run();
           this.statusChanged(tx, outgoingId, "sent");
+          if (cur.status !== "sent_unverified") this.autoReplyDelivered(tx, outgoingId);
           this.markFollowupSent(tx, cur, "verified");
           this.auditSend(tx, cur, "slack.verified", "sent");
           return { outgoingId, status: "sent" };
@@ -421,6 +652,7 @@ export class OutgoingService {
         if (decision === "mark_sent") {
           status = "sent";
           set(status, null);
+          if (row.status !== "sent_unverified") this.autoReplyDelivered(tx, outgoingId);
           this.markFollowupSent(tx, row, "marked_sent");
         } else if (decision === "discard") {
           status = "failed";
@@ -461,6 +693,28 @@ export class OutgoingService {
       },
       { behavior: "immediate" },
     );
+  }
+
+  /**
+   * Retention (final review, item 6): blanks the text of `sent` and `failed` messages created more
+   * than `olderThanDays` ago (the column is NOT NULL, so it becomes ''). Other statuses may still
+   * be sent, verified or resent, so they are never touched. Returns the number cleared.
+   */
+  expireText(olderThanDays: number): number {
+    const { db, clock } = this.deps;
+    const cutoff = new Date(clock.now().getTime() - olderThanDays * 86_400_000).toISOString();
+    return db
+      .update(outgoingMessages)
+      .set({ text: "" })
+      .where(
+        and(
+          inArray(outgoingMessages.status, ["sent", "failed"]),
+          lt(outgoingMessages.createdAt, cutoff),
+          ne(outgoingMessages.text, ""),
+        ),
+      )
+      .returning({ id: outgoingMessages.id })
+      .all().length;
   }
 
   /**
@@ -524,21 +778,44 @@ export class OutgoingService {
     tx: DbOrTx,
     approvalId: string,
     outgoingId: string,
-  ): { skip: string } | { row: Row; jobId: string | undefined } {
+    authorisedBy: AuthorisedBy,
+  ):
+    | { skip: string }
+    | { cancel: SendFailure }
+    | { row: Row; jobId: string | undefined; autoReply?: AutoReplyRow } {
     const row = tx.select().from(outgoingMessages).where(eq(outgoingMessages.id, outgoingId)).get();
     if (!row) throw new OutgoingSendError("not_found");
     if (row.approvalId !== approvalId) return { skip: "approval_mismatch" };
     // R7 (f): only an approved approval that the engine has claimed for execution.
     const approval = tx
-      .select({ status: approvalsTable.status, startedAt: approvalsTable.executionStartedAt })
+      .select({
+        status: approvalsTable.status,
+        startedAt: approvalsTable.executionStartedAt,
+        decidedBy: approvalsTable.decidedBy,
+      })
       .from(approvalsTable)
       .where(eq(approvalsTable.id, approvalId))
       .get();
     if (approval?.status !== "approved" || approval.startedAt === null) {
       return { skip: "approval_not_claimed" };
     }
+    // A policy send needs a policy approval; a user send never runs on one.
+    if ((authorisedBy === "policy") !== (approval.decidedBy === "policy")) {
+      return { skip: "approval_kind_mismatch" };
+    }
     // Defence in depth on top of the engine's claim: only a pending message is ever sent.
     if (row.status !== "pending") return { skip: `status_${row.status}` };
+    let autoReply: AutoReplyRow | undefined;
+    if (authorisedBy === "policy") {
+      // A13 again, serialised with the away toggle: the user's return wins even after revalidate.
+      autoReply = this.autoReplyFor(tx, outgoingId);
+      if (!autoReply) return { skip: "auto_reply_missing" };
+      const block = this.autoSendBlock(tx, autoReply);
+      if (block !== null) {
+        this.holdAutoSend(tx, row, autoReply, block);
+        return { cancel: `cancelled_${block}` };
+      }
+    }
     const now = isoNow(this.deps.clock);
     tx.update(outgoingMessages)
       .set({ status: "sending", sendingAt: now, updatedAt: now })
@@ -551,7 +828,11 @@ export class OutgoingService {
       .from(jobs)
       .where(eq(jobs.idempotencyKey, `${APPROVAL_EXECUTE_JOB}:${approvalId}`))
       .get();
-    return { row: { ...row, status: "sending", sendingAt: now }, jobId: job?.id };
+    return {
+      row: { ...row, status: "sending", sendingAt: now },
+      jobId: job?.id,
+      ...(autoReply ? { autoReply } : {}),
+    };
   }
 
   private recordOutcome(
@@ -620,6 +901,8 @@ export class OutgoingService {
     if (!open) return { status: cur.status };
     if (result.status === "sent_unverified") {
       set("sent_unverified", null, { sentAt: now });
+      // `open` is sending/needs_attention: never delivered before, so this is the first time.
+      this.autoReplyDelivered(tx, row.id);
       // Idempotent key: a verify the sweep already queued for this attempt is reused.
       this.enqueueVerify(tx, row.id, cur.verifyAttempts + 1);
       this.markFollowupSent(tx, cur, "sent");
@@ -660,20 +943,44 @@ export class OutgoingService {
     this.auditSend(tx, row, "slack.send_failed", "failed", { failure: "not_started" });
   }
 
-  /** revoke/reject/expiry of a slack.send approval whose message has not started. */
+  /**
+   * revoke/reject/expiry of a slack.send or slack.auto_reply approval whose message has not
+   * started. An auto-send whose gate is shut (away off, new session, permission tightened) is held
+   * with that reason; otherwise (user revoke, expiry) the message just fails with the decision.
+   */
   private cancel(tx: DbOrTx, approvalId: string, reason: "revoked" | "rejected" | "expired"): void {
     const a = tx
       .select({ action: approvalsTable.action, integration: approvalsTable.targetIntegration })
       .from(approvalsTable)
       .where(eq(approvalsTable.id, approvalId))
       .get();
-    if (a?.action !== "slack.send" || a.integration !== "slack") return;
+    if (a?.integration !== "slack") return;
+    if (a.action !== "slack.send" && a.action !== "slack.auto_reply") return;
     const row = tx
       .select()
       .from(outgoingMessages)
       .where(eq(outgoingMessages.approvalId, approvalId))
       .get();
     if (row?.status !== "pending") return;
+    if (a.action === "slack.auto_reply") {
+      const ar = this.autoReplyFor(tx, row.id);
+      // M4: the engine revoked it because the gate shut; that stays the reason even if the gate
+      // reopened before this consumer ran.
+      const block =
+        ar === undefined
+          ? null
+          : this.revokeReason(tx, approvalId) === "policy_disabled"
+            ? "policy_disabled"
+            : this.autoSendBlock(tx, ar);
+      if (ar && block !== null) {
+        this.holdAutoSend(tx, row, ar, block);
+        return;
+      }
+      // Gates still open and within the staleness window (a prompt user revoke): the message fails
+      // below and the auto-reply keeps `decision='sent'` (decision is the policy's verdict, delivery
+      // is the outgoing status). Past the window `autoSendBlock` returned `stale` above, so an
+      // expiry or late revoke is held and stops counting towards caps.
+    }
     tx.update(outgoingMessages)
       .set({ status: "failed", failure: reason, updatedAt: isoNow(this.deps.clock) })
       .where(eq(outgoingMessages.id, row.id))
@@ -681,6 +988,117 @@ export class OutgoingService {
     this.statusChanged(tx, row.id, "failed");
     this.moveFollowup(tx, row, "draft", `approval_${reason}`);
     this.auditSend(tx, row, "outgoing.cancelled", "failed", { reason });
+  }
+
+  /** The reason recorded on this approval's revoke, if any (the engine audits it). */
+  private revokeReason(tx: DbOrTx, approvalId: string): string | undefined {
+    const row = tx
+      .select({ details: auditEvents.details })
+      .from(auditEvents)
+      .where(
+        and(eq(auditEvents.approvalId, approvalId), eq(auditEvents.action, "approval.revoked")),
+      )
+      .get();
+    const reason = (row?.details as { reason?: unknown } | null | undefined)?.reason;
+    return typeof reason === "string" ? reason : undefined;
+  }
+
+  private autoReplyFor(tx: DbOrTx, outgoingId: string): AutoReplyRow | undefined {
+    return tx.select().from(autoReplies).where(eq(autoReplies.outgoingId, outgoingId)).get();
+  }
+
+  /**
+   * A13 plus the permission gate, plus M8: more than `autoReply.maxSendDelayMinutes` since the
+   * decision (an unparseable time counts as stale). Null while the auto-send may still go out.
+   */
+  private autoSendBlock(tx: DbOrTx, ar: AutoReplyRow): AutoSendBlock | null {
+    const { settings, approvals, clock } = this.deps;
+    if (!settings.get("autoReply.awayMode")) return "away_off";
+    const open = tx
+      .select({ id: awaySessions.id })
+      .from(awaySessions)
+      .where(isNull(awaySessions.endedAt))
+      .get();
+    if (open?.id !== ar.sessionId) return "away_off";
+    if (!approvals.policyGateOpen("slack.auto_reply")) return "policy_disabled";
+    const waited = clock.now().getTime() - Date.parse(ar.createdAt);
+    const max = settings.get("autoReply.maxSendDelayMinutes") * 60_000;
+    if (!(waited <= max)) return "stale";
+    return null;
+  }
+
+  /**
+   * Cancels a pending auto-send (failure `cancelled_<block>`, follow-up back to draft) and holds its
+   * auto-reply (A16: a held row keeps no text). `autoreply.held` is published once, on the
+   * transition from `sent` to `held`.
+   *
+   * A `sending` row is cancelled only with `allowSending`, which only the pre-spawn path (I2)
+   * passes: there the process was certainly not spawned. Anywhere else a `sending` row's process
+   * may be running, so it is left alone and its auto-reply is not held (the outcome decides).
+   */
+  private holdAutoSend(
+    tx: DbOrTx,
+    row: Row,
+    ar: AutoReplyRow,
+    block: AutoSendBlock,
+    opts: { allowSending: boolean } = { allowSending: false },
+  ): void {
+    const now = isoNow(this.deps.clock);
+    const failure: SendFailure = `cancelled_${block}`;
+    const cancellable: OutgoingStatus[] = opts.allowSending ? ["pending", "sending"] : ["pending"];
+    const cancelled = tx
+      .update(outgoingMessages)
+      .set({ status: "failed", failure, updatedAt: now })
+      .where(and(eq(outgoingMessages.id, row.id), inArray(outgoingMessages.status, cancellable)))
+      .returning({ id: outgoingMessages.id })
+      .all();
+    if (cancelled.length === 0) {
+      const cur = tx
+        .select({ status: outgoingMessages.status })
+        .from(outgoingMessages)
+        .where(eq(outgoingMessages.id, row.id))
+        .get();
+      // Claimed or past it: the message may be (or is) in Slack, so the auto-reply stays `sent`.
+      if (cur && cur.status !== "pending" && cur.status !== "failed") return;
+    }
+    if (cancelled.length > 0) {
+      this.statusChanged(tx, row.id, "failed");
+      this.moveFollowup(tx, row, "draft", "auto_send_cancelled");
+      this.auditSend(tx, row, "outgoing.cancelled", "failed", {
+        reason: failure,
+        autoReplyId: ar.id,
+      });
+    }
+    const held = tx
+      .update(autoReplies)
+      .set({ decision: "held", reason: block, text: null })
+      .where(and(eq(autoReplies.id, ar.id), eq(autoReplies.decision, "sent")))
+      .returning({ id: autoReplies.id })
+      .all();
+    if (held.length === 0) return;
+    this.deps.events.publish(tx, {
+      type: "autoreply.held",
+      aggregateType: "auto_reply",
+      aggregateId: ar.id,
+      correlationId: newId(),
+      payload: { autoReplyId: ar.id, reason: block },
+    });
+  }
+
+  /**
+   * `autoreply.sent` for the auto-reply linked to this message. Callers invoke it only on the
+   * message's first transition into `sent_unverified` or `sent`, so it is emitted exactly once.
+   */
+  private autoReplyDelivered(tx: DbOrTx, outgoingId: string): void {
+    const ar = this.autoReplyFor(tx, outgoingId);
+    if (!ar) return;
+    this.deps.events.publish(tx, {
+      type: "autoreply.sent",
+      aggregateType: "auto_reply",
+      aggregateId: ar.id,
+      correlationId: newId(),
+      payload: { autoReplyId: ar.id },
+    });
   }
 
   private command(row: Row): SendMessageCommand {
@@ -797,6 +1215,18 @@ export class OutgoingService {
       details: { outgoingId: row.id, followupId: row.followupId, ...details },
     });
   }
+}
+
+/** I1: the first request field that differs from the auto_replies row, or null. */
+function autoSendMismatch(
+  input: AutoSendRequest,
+  ar: AutoReplyRow,
+): AutoSendMismatch["field"] | null {
+  if (input.conversationExternalId !== ar.conversationExternalId) return "conversationExternalId";
+  if ((input.threadTs ?? null) !== ar.threadTs) return "threadTs";
+  if (ar.text === null || input.text.trimEnd() !== ar.text.trimEnd()) return "text";
+  if (input.followupId !== ar.followupId) return "followupId";
+  return null;
 }
 
 /**

@@ -80,9 +80,13 @@ function Annotations({
       )}
       {m.sentViaSynapse && (
         <div className="syn-msg-sent">
-          {`sent via Synapse · approved by you · ${
-            m.sentViaSynapse.status === "sent" ? "delivery verified" : "delivery not yet verified"
-          }`}
+          {m.sentViaSynapse.auto
+            ? "sent via Synapse · auto-reply while away"
+            : `sent via Synapse · approved by you · ${
+                m.sentViaSynapse.status === "sent"
+                  ? "delivery verified"
+                  : "delivery not yet verified"
+              }`}
         </div>
       )}
     </>

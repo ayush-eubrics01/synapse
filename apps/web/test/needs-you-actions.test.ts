@@ -237,6 +237,12 @@ const IMMEDIATE: Array<{ name: string; run: (h: NeedsYouHandlers) => void; call:
   },
   { name: "backfill", run: (h) => h.startBackfill(), call: "startBackfill()" },
   {
+    name: "dismiss away digest",
+    run: (h) => h.dismissAwayDigest("S1"),
+    call: 'dismissAwayDigest("S1")',
+  },
+  { name: "away on", run: (h) => h.setAway(true), call: "setAway(true)" },
+  {
     name: "track commitment",
     run: (h) => h.trackCommitment("c1"),
     call: 'reviewCommitment("c1","accept",)',
@@ -298,4 +304,17 @@ test("an immediate action right after a failed deferred commit clears only immed
   await settle();
   expect(s.errors.at(-1)).toBeNull();
   expect(s.deferredErrors).toEqual(["deferred commit failed"]);
+});
+
+test("the Away toggle toasts its result, and a failure is surfaced without a toast", async () => {
+  const s = setup();
+  s.handlers.setAway(true);
+  s.handlers.setAway(false);
+  await settle();
+  expect(s.toasts.map((t) => t.text)).toEqual(["Away mode on", "Away mode off"]);
+  const failing = setup({ setAway: new Error("500 boom") });
+  failing.handlers.setAway(true);
+  await settle();
+  expect(failing.toasts).toEqual([]);
+  expect(failing.errors).toContain("500 boom");
 });

@@ -10,6 +10,7 @@ import type { Clock } from "@synapse/shared";
 import { buildClaudeArgs } from "../../core/orchestrator/cli-args";
 import { clampQuotaRetry } from "../../core/orchestrator/quota-gate";
 import { StreamParser } from "../../core/orchestrator/stream-parser";
+import { buildGuardedOverride, SEND_GUARD_HOOK_PATH } from "./send-guard";
 import { DEFAULT_SETTINGS_OVERRIDE } from "./settings-override";
 
 const TESTED_VERSION = "2.1.318";
@@ -194,8 +195,38 @@ export class ClaudeCliProvider implements AIProvider {
     const parser = new StreamParser();
     // A parser exception inside the stdout listener would be uncaught and kill the process.
     let parserFault = false;
+    const baseOverride = this.opts.settingsOverride ?? DEFAULT_SETTINGS_OVERRIDE;
+    // J2: a guarded send gets a PreToolUse hook for this run only. If the guard cannot be built the
+    // run fails closed before spawning (a thrown error would count as a spawned, uncertain send).
+    let settingsOverride = baseOverride;
+    if (r.sendGuard) {
+      try {
+        settingsOverride = buildGuardedOverride(baseOverride, r.sendGuard, [
+          process.execPath,
+          SEND_GUARD_HOOK_PATH,
+        ]);
+      } catch {
+        return {
+          status: "failed",
+          toolResults: [],
+          finalText: "",
+          numTurns: 0,
+          durationMs: 0,
+          usage: emptyUsage,
+          permissionDenials: [],
+          connectors: [],
+          availableTools: [],
+          exitCode: null,
+          error: {
+            kind: "provider_error",
+            message: "send guard could not be built",
+            details: { notSpawned: true },
+          },
+        };
+      }
+    }
     const out = await this.run({
-      args: buildClaudeArgs(r, this.opts.settingsOverride ?? DEFAULT_SETTINGS_OVERRIDE),
+      args: buildClaudeArgs(r, settingsOverride),
       cwd: r.workingDirectory,
       timeoutMs: r.timeoutMs,
       signal,

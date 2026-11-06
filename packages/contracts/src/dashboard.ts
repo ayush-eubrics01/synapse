@@ -87,6 +87,8 @@ export interface DashboardOverview {
     peopleToEvaluate: number;
     conversations: number;
   };
+  /** Away mode (ADR-033): the switch and how many people (high or critical, not self) it can reply to. */
+  away: { on: boolean; highPriorityCount: number };
   lastSlackSyncAt: string | null;
   health: {
     status: HealthStatus;
@@ -144,7 +146,8 @@ export interface ThreadMessage {
     reviewStatus: string;
     status: string;
   } | null;
-  sentViaSynapse: { status: "sent" | "sent_unverified" } | null;
+  /** `auto` is true when an away-mode auto-reply sent it (an `auto_replies` row links the message). */
+  sentViaSynapse: { status: "sent" | "sent_unverified"; auto: boolean } | null;
 }
 
 /** Messages are oldest first. */

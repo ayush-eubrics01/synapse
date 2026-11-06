@@ -801,6 +801,8 @@ const handlers: NeedsYouHandlers = {
   evaluatePerson: noop,
   seeAllPeople: noop,
   startBackfill: noop,
+  dismissAwayDigest: noop,
+  setAway: noop,
 };
 const feed = (input: NeedsYouInput) =>
   text(

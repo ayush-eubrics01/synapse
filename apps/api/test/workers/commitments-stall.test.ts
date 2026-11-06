@@ -471,7 +471,7 @@ describe("commitments.draft_followup", () => {
   test("stores the draft with the guidelines part only in this run; text stays out of trusted parts", async () => {
     guidelines = { name: "Priya SECRETNAME", texts: [GUIDE] };
     const src = msg({ from: "self", thread: "999.000000" });
-    msg({ from: "priya", text: `${SECRET} reply`, sentAt: ago(26) });
+    const reply = msg({ from: "priya", text: `${SECRET} reply`, sentAt: ago(26) });
     const { id, input } = await stalled(src);
     const r = await call("commitments.draft_followup", input);
     expect(r).toMatchObject({ drafted: true, noThread: false });
@@ -486,7 +486,10 @@ describe("commitments.draft_followup", () => {
       recipientSlackUserId: PRIYA,
       confidence: 0.8,
       draftText: "Any update on this?",
+      suspectedInjection: false,
     });
+    // Phase 6b final review: the ids of the messages fed into the prompt are kept.
+    expect([...(f[0]?.contextMessageIds ?? [])].sort()).toEqual([src, reply].sort());
     expect(evs("followup.draft_created")).toHaveLength(1);
     const req = requests[0] as ClaudeJobRequest & { parts: PromptPart[] };
     expect(req).toMatchObject({
@@ -644,6 +647,23 @@ describe("commitments.draft_followup", () => {
     expect(flags.length).toBeGreaterThan(0);
     expect(flags.every((f) => f.messageId === theirs)).toBe(true);
     expect(JSON.stringify(db.select().from(schema.domainEvents).all())).not.toContain(SECRET);
+    expect(followups()[0]).toMatchObject({ suspectedInjection: true });
+    expect(followups()[0]?.contextMessageIds).toContain(theirs);
+  });
+
+  test("suspected injection is kept on the follow-up even with no message to flag", async () => {
+    const src = msg({ from: "self", text: `${SECRET} mine` });
+    const { input } = await stalled(src);
+    script = {
+      output: {
+        draft: "Hi",
+        confidence: 0.9,
+        suspectedInjection: { detected: true, severity: "warning", quote: "", reason: "x" },
+      },
+    };
+    await call("commitments.draft_followup", input);
+    expect(db.select().from(schema.securityFlags).all()).toHaveLength(0);
+    expect(followups()[0]).toMatchObject({ suspectedInjection: true, contextMessageIds: [src] });
   });
 
   test("R12: an auto-accepted description is an untrusted part, not user_approved", async () => {

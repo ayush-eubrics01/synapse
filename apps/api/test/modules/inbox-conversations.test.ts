@@ -275,6 +275,46 @@ describe("GET /api/inbox/conversations/:id/thread", () => {
     expect(t.messages.find((m) => m.id === "m6")?.commitment).toBeNull();
   });
 
+  test("sentViaSynapse.auto is true only when an auto_replies row links the outgoing row", async () => {
+    seed();
+    const outId = c.db.transaction((tx) => {
+      const r = c.outgoing.requestSend(tx, {
+        followupId: null,
+        conversationExternalId: "C0OPS0001",
+        text: "ok Q&A sure",
+        requestedByModule: "test",
+      });
+      tx.update(schema.outgoingMessages)
+        .set({ status: "sent_unverified", sendingAt: at(2) })
+        .where(eq(schema.outgoingMessages.id, r.outgoingId))
+        .run();
+      return r.outgoingId;
+    });
+    const m6 = async () =>
+      ((await (await thread("C0OPS0001")).json()) as ConversationThread).messages.find(
+        (m) => m.id === "m6",
+      )?.sentViaSynapse;
+    expect(await m6()).toEqual({ status: "sent_unverified", auto: false });
+    c.db
+      .insert(schema.awaySessions)
+      .values({ id: "as1", startedAt: at(0), endedAt: null, dismissedAt: null })
+      .run();
+    c.db
+      .insert(schema.autoReplies)
+      .values({
+        id: "ar1",
+        sessionId: "as1",
+        kind: "acknowledgement",
+        recipientSlackUserId: "UADA000001",
+        conversationExternalId: "C0OPS0001",
+        decision: "sent",
+        outgoingId: outId,
+        createdAt: at(1),
+      })
+      .run();
+    expect(await m6()).toEqual({ status: "sent_unverified", auto: true });
+  });
+
   test("sentViaSynapse matches normalised text within an hour only", async () => {
     seed();
     const out = (text: string, status: "sent" | "pending") =>
@@ -293,7 +333,10 @@ describe("GET /api/inbox/conversations/:id/thread", () => {
     out("ok Q&A sure", "sent");
     const t = (await (await thread("C0OPS0001")).json()) as ConversationThread;
     // m6 sentAt = at(4): 2 min after sendingAt
-    expect(t.messages.find((m) => m.id === "m6")?.sentViaSynapse).toEqual({ status: "sent" });
+    expect(t.messages.find((m) => m.id === "m6")?.sentViaSynapse).toEqual({
+      status: "sent",
+      auto: false,
+    });
     expect(t.messages.find((m) => m.id === "m4")?.sentViaSynapse).toBeNull();
     c.sqlite.run(`update outgoing_messages set sending_at = '${at(4 - 120)}'`);
     const t2 = (await (await thread("C0OPS0001")).json()) as ConversationThread;

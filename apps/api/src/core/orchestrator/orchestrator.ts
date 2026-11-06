@@ -8,6 +8,7 @@ import {
   JobError,
   type QuotaSnapshot,
   type QuotaWindow,
+  type RunOptions,
   type WorkerProfile,
 } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
@@ -130,10 +131,14 @@ export class ClaudeOrchestrator {
     this.random = deps.random ?? defaultBoundary;
   }
 
-  async run(req: ClaudeJobRequest, signal: AbortSignal): Promise<AIExecutionResult> {
+  async run(
+    req: ClaudeJobRequest,
+    signal: AbortSignal,
+    opts: RunOptions = {},
+  ): Promise<AIExecutionResult> {
     const probe = this.authGate();
     try {
-      const result = await this.runInner(req, signal);
+      const result = await this.runInner(req, signal, opts);
       if (probe) this.clearAuthPause();
       return result;
     } catch (e) {
@@ -182,6 +187,23 @@ export class ClaudeOrchestrator {
     });
   }
 
+  private checkBeforeSpawn(opts: RunOptions): void {
+    if (!opts.beforeSpawn) return;
+    let ok = false;
+    try {
+      ok = opts.beforeSpawn() === true;
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      throw new JobError({
+        kind: "cancelled_before_spawn",
+        message: "run cancelled before spawn",
+        details: { notSpawned: true },
+      });
+    }
+  }
+
   private clearAuthPause(): void {
     this.bestEffort("auth pause clear", "-", () => {
       this.deps.settings.clear("auth.pausedAt");
@@ -216,7 +238,11 @@ export class ClaudeOrchestrator {
     return started;
   }
 
-  private async runInner(req: ClaudeJobRequest, signal: AbortSignal): Promise<AIExecutionResult> {
+  private async runInner(
+    req: ClaudeJobRequest,
+    signal: AbortSignal,
+    opts: RunOptions,
+  ): Promise<AIExecutionResult> {
     const { db, clock, settings, events, audit, provider } = this.deps;
 
     const parsed = claudeJobRequestSchema.safeParse(req);
@@ -254,6 +280,7 @@ export class ClaudeOrchestrator {
       timeoutMs: request.timeoutMs ?? settings.get(`orchestrator.timeouts.${profile}`) * 1000,
       workingDirectory: request.workingDirectory ?? this.deps.scratchDir,
       ...(request.expectedToolNames ? { expectedToolNames: request.expectedToolNames } : {}),
+      ...(request.sendGuard ? { sendGuard: request.sendGuard } : {}),
     };
 
     const verdict = validateRequest(execReq, knownServers, {
@@ -279,6 +306,9 @@ export class ClaudeOrchestrator {
     try {
       // The quota may have risen while this request waited for a slot.
       this.checkQuota(request, thresholds);
+      // Last word for the caller (a policy send whose user came back while it waited). Nothing
+      // below awaits before provider.execute, so the answer holds until the spawn.
+      this.checkBeforeSpawn(opts);
 
       const startedAt = isoNow(clock);
       db.transaction((tx) => {

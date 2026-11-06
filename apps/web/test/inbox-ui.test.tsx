@@ -156,11 +156,20 @@ test("commitment suggestion, tracking and hidden (pending undo)", () => {
 });
 
 test("sent badge", () => {
-  expect(withThread([msg("1", { sentViaSynapse: { status: "sent" } })])).toContain(
+  expect(withThread([msg("1", { sentViaSynapse: { status: "sent", auto: false } })])).toContain(
     "sent via Synapse · approved by you · delivery verified",
   );
-  expect(withThread([msg("1", { sentViaSynapse: { status: "sent_unverified" } })])).toContain(
-    "sent via Synapse · approved by you · delivery not yet verified",
+  expect(
+    withThread([msg("1", { sentViaSynapse: { status: "sent_unverified", auto: false } })]),
+  ).toContain("sent via Synapse · approved by you · delivery not yet verified");
+});
+
+test("auto-reply badge", () => {
+  expect(withThread([msg("1", { sentViaSynapse: { status: "sent", auto: true } })])).toContain(
+    "sent via Synapse · auto-reply while away",
+  );
+  expect(withThread([msg("1", { sentViaSynapse: { status: "sent", auto: true } })])).not.toContain(
+    "approved by you",
   );
 });
 

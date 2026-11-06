@@ -31,6 +31,8 @@ export interface NeedsYouHandlers {
   evaluatePerson: (slackUserId: string) => void;
   seeAllPeople: () => void;
   startBackfill: () => void;
+  dismissAwayDigest: (sessionId: string) => void;
+  setAway: (on: boolean) => void;
 }
 
 /** The `lib/api.ts` calls the feed uses; injectable so the routing can be tested. */
@@ -51,6 +53,8 @@ export type NeedsYouApi = Pick<
   | "confirmSlackIdentity"
   | "evaluatePerson"
   | "startBackfill"
+  | "dismissAwayDigest"
+  | "setAway"
 >;
 
 export const realNeedsYouApi: NeedsYouApi = apiModule;
@@ -66,6 +70,8 @@ export const TOASTS = {
   approvalRequested: "Approval request created · nothing is sent until you approve",
   evaluationQueued: "Evaluation queued · draft profile will appear in Needs you for approval",
   backfillQueued: "Backfill queued · runs in the background",
+  awayOn: "Away mode on",
+  awayOff: "Away mode off",
   draftDiscarded: "Draft discarded",
   notACommitment: "Marked as not a commitment",
   suggestionDismissed: "Suggestion dismissed",
@@ -192,5 +198,8 @@ export function createNeedsYouActions(d: NeedsYouActionsDeps): NeedsYouHandlers 
       ),
     seeAllPeople: d.seeAllPeople,
     startBackfill: () => void now(() => api.startBackfill(), TOASTS.backfillQueued),
+    // Immediate, never deferred: dismissing is cheap and the digest has nothing to undo.
+    dismissAwayDigest: (id) => void now(() => api.dismissAwayDigest(id)),
+    setAway: (on) => void now(() => api.setAway(on), on ? TOASTS.awayOn : TOASTS.awayOff),
   };
 }

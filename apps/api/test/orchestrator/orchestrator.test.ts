@@ -395,6 +395,55 @@ describe("run", () => {
     const e = await fails(run(req({ maxTurns: 0 })));
     expect(e.classified.kind).toBe("invalid_input");
   });
+
+  test("J2: sendGuard passes through to the provider; absent stays absent", async () => {
+    const guard = {
+      toolName: "mcp__claude_ai_Slack__slack_send_message",
+      expectedInputSha256: "b".repeat(64),
+    };
+    await run(
+      req({
+        priorityClass: "send",
+        allowedTools: ["mcp__claude_ai_Slack__slack_send_message"],
+        parts: [{ provenance: "policy_approved", content: "{}" }],
+        sendGuard: guard,
+      }),
+    );
+    expect(provider.requests[0]?.sendGuard).toEqual(guard);
+    expect(provider.requests[0]?.promptParts[0]?.provenance).toBe("policy_approved");
+    await run(req());
+    expect("sendGuard" in (provider.requests[1] ?? {})).toBe(false);
+  });
+
+  test("J2: a send run without a guard is rejected before the provider", async () => {
+    const e = await fails(
+      run(
+        req({
+          priorityClass: "send",
+          allowedTools: ["mcp__claude_ai_Slack__slack_send_message"],
+          parts: [{ provenance: "user_approved", content: "{}" }],
+        }),
+      ),
+    );
+    expect(e.classified.kind).toBe("invalid_input");
+    expect(e.classified.message).toBe("send run without a matching send guard");
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  test("J2: a malformed sendGuard is invalid_input and never reaches the provider", async () => {
+    const e = await fails(
+      run(
+        req({
+          sendGuard: {
+            toolName: "mcp__claude_ai_Slack__slack_send_message",
+            expectedInputSha256: "x; rm -rf ~",
+          },
+        }),
+      ),
+    );
+    expect(e.classified.kind).toBe("invalid_input");
+    expect(provider.requests).toHaveLength(0);
+  });
 });
 
 const SEND = "mcp__claude_ai_Slack__slack_send_message";
@@ -403,6 +452,7 @@ const sendReq = () =>
     priorityClass: "send",
     allowedTools: [SEND],
     parts: [{ provenance: "user_approved", content: "reply text" }],
+    sendGuard: { toolName: SEND, expectedInputSha256: "e".repeat(64) },
   });
 const deferred = () => {
   let release: () => void = () => {};
@@ -729,6 +779,10 @@ describe("auth pause (ADR-037 §4)", () => {
           priorityClass: "send",
           allowedTools: ["mcp__claude_ai_Slack__slack_send_message"],
           parts: [{ provenance: "user_approved", content: "reply text" }],
+          sendGuard: {
+            toolName: "mcp__claude_ai_Slack__slack_send_message",
+            expectedInputSha256: "e".repeat(64),
+          },
         }),
       ),
     );
@@ -757,5 +811,98 @@ describe("recoverOrphanRuns", () => {
     expect(byId.r1?.finishedAt).toBe(START);
     expect(byId.r2?.status).toBe("succeeded");
     expect(byId.r2?.error).toBeNull();
+  });
+});
+
+describe("beforeSpawn (Phase 6b I2)", () => {
+  test("false: the provider is never called and the error is not-spawned cancelled_before_spawn", async () => {
+    let calls = 0;
+    const e = await fails(
+      orch.run(req(), S(), {
+        beforeSpawn: () => {
+          calls++;
+          return false;
+        },
+      }),
+    );
+    expect(calls).toBe(1);
+    expect(e.classified.kind).toBe("cancelled_before_spawn");
+    expect(e.classified.details?.notSpawned).toBe(true);
+    expect(e.classified.details?.uncertain).toBeUndefined();
+    expect(provider.requests).toHaveLength(0);
+    expect(runs()).toHaveLength(0);
+    // The slot was released.
+    settings.set("orchestrator.maxConcurrent", 1);
+    await run(req());
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("a throwing callback cancels the same way", async () => {
+    const e = await fails(
+      orch.run(req(), S(), {
+        beforeSpawn: () => {
+          throw new Error("boom");
+        },
+      }),
+    );
+    expect(e.classified.kind).toBe("cancelled_before_spawn");
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  test("true: the run proceeds", async () => {
+    await orch.run(req(), S(), { beforeSpawn: () => true });
+    expect(provider.requests).toHaveLength(1);
+    expect(runs()[0]?.status).toBe("succeeded");
+  });
+
+  test("it is called only after the slot is acquired", async () => {
+    settings.set("orchestrator.maxConcurrent", 1);
+    let release: (r: AIExecutionResult) => void = () => {};
+    provider.next = () =>
+      new Promise<AIExecutionResult>((r) => {
+        release = r;
+      });
+    const first = run(req());
+    await new Promise((r) => setTimeout(r, 0));
+    let calls = 0;
+    const second = orch.run(req(), S(), {
+      beforeSpawn: () => {
+        calls++;
+        return true;
+      },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toBe(0);
+    provider.next = () => result();
+    release(result());
+    await first;
+    await second;
+    expect(calls).toBe(1);
+  });
+
+  test("it is not called when the quota re-check after the slot fails", async () => {
+    settings.set("orchestrator.maxConcurrent", 1);
+    let release: (r: AIExecutionResult) => void = () => {};
+    provider.next = () =>
+      new Promise<AIExecutionResult>((r) => {
+        release = r;
+      });
+    const first = run(req());
+    await new Promise((r) => setTimeout(r, 0));
+    let calls = 0;
+    const second = fails(
+      orch.run(req({ priorityClass: "batch" }), S(), {
+        beforeSpawn: () => {
+          calls++;
+          return true;
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    snap(0.9, "allowed", "2026-11-05T14:00:00.000Z");
+    release(result());
+    await first;
+    expect((await second).classified.kind).toBe("quota_exhausted");
+    expect(calls).toBe(0);
   });
 });

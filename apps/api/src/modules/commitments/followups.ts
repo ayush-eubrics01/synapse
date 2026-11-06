@@ -1,7 +1,7 @@
 import type { FollowupAction, FollowupStatus, FollowupView } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema, type Tx } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
-import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, lt, ne, or, sql } from "drizzle-orm";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
@@ -334,6 +334,28 @@ export class FollowupService {
         `commitments followup_sent failed followup=${followupId} error=${e instanceof Error ? e.name : "unknown"}`,
       );
     }
+  }
+
+  /**
+   * Retention (final review, item 6): clears `draft_text` on `sent`, `discarded` and `failed`
+   * follow-ups created more than `olderThanDays` ago. A live follow-up keeps its draft. Returns the
+   * number cleared.
+   */
+  expireDrafts(olderThanDays: number): number {
+    const { db, clock } = this.deps;
+    const cutoff = new Date(clock.now().getTime() - olderThanDays * 86_400_000).toISOString();
+    return db
+      .update(followups)
+      .set({ draftText: null })
+      .where(
+        and(
+          inArray(followups.status, ["sent", "discarded", "failed"]),
+          lt(followups.createdAt, cutoff),
+          isNotNull(followups.draftText),
+        ),
+      )
+      .returning({ id: followups.id })
+      .all().length;
   }
 
   /** The Slack user a follow-up is addressed to (null when it has none); for `people.post_send`. */

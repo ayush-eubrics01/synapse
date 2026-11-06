@@ -21,6 +21,24 @@ export class PermissionManager {
     return row ? stricterOf(def, row.policy as Policy) : def;
   }
 
+  /**
+   * The effective policy of an operation the user may be asked to approve. Throws for `denied` and
+   * `user_only`, and for `policy_gated`: a policy-gated operation never pends for a user decision,
+   * only `ApprovalEngine.recordPolicyApproval` may approve it (ADR-033).
+   */
+  requireRequestable(op: Operation): Policy {
+    const policy = this.check(op);
+    if (policy === "denied" || policy === "user_only" || policy === "policy_gated") {
+      throw new Error(`Operation ${op} cannot be requested for approval (policy ${policy})`);
+    }
+    return policy;
+  }
+
+  /** true only while the effective policy is exactly `policy_gated` (no tightening override). */
+  policyGateOpen(op: Operation): boolean {
+    return this.check(op) === "policy_gated";
+  }
+
   setOverride(op: Operation, policy: Policy): void {
     this.db.transaction(
       (tx) => {

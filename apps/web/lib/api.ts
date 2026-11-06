@@ -1,6 +1,7 @@
 import type {
   Approval,
   ApprovalView,
+  AwayDigest,
   CandidatesResponse,
   CommitmentFilter,
   CommitmentStatus,
@@ -61,6 +62,8 @@ async function request<T>(
       res.status,
     );
   }
+  // No Content has no body to parse.
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
@@ -543,4 +546,44 @@ export function discardFollowup(
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ ok: true }> {
   return request(`/api/followups/${encodeURIComponent(id)}/discard`, { method: "POST" }, fetchImpl);
+}
+
+/** Phase 6b away mode (A17, A18). */
+export interface AwayStatusDto {
+  on: boolean;
+  sessionId: string | null;
+  startedAt: string | null;
+}
+
+export function getAway(fetchImpl: typeof fetch = fetch): Promise<AwayStatusDto> {
+  return request("/api/away", undefined, fetchImpl);
+}
+
+export function setAway(on: boolean, fetchImpl: typeof fetch = fetch): Promise<AwayStatusDto> {
+  return request(
+    "/api/away",
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ on }),
+    },
+    fetchImpl,
+  );
+}
+
+/** The most recently ended, undismissed away session, or null. */
+export function getAwayDigest(fetchImpl: typeof fetch = fetch): Promise<AwayDigest | null> {
+  return request("/api/away/digest", undefined, fetchImpl);
+}
+
+export function dismissAwayDigest(
+  sessionId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  // The route answers 204 (no body).
+  return request<void>(
+    `/api/away/digest/${encodeURIComponent(sessionId)}/dismiss`,
+    { method: "POST" },
+    fetchImpl,
+  );
 }

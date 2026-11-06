@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AIExecutionRequest } from "@synapse/contracts";
@@ -10,6 +10,10 @@ import {
   ClaudeCliProvider,
   spawnErrorMessage,
 } from "../../src/integrations/claude-code/cli-provider";
+import {
+  buildGuardedOverride,
+  SEND_GUARD_HOOK_PATH,
+} from "../../src/integrations/claude-code/send-guard";
 import { DEFAULT_SETTINGS_OVERRIDE } from "../../src/integrations/claude-code/settings-override";
 
 const fixture = resolve(import.meta.dir, "../fixtures/fake-claude.ts");
@@ -239,6 +243,75 @@ describe("ClaudeCliProvider.execute", () => {
       settingsOverride: custom,
     }).execute(request, sig());
     expect(JSON.parse(readFileSync(argvFile, "utf8"))).toEqual(buildClaudeArgs(request, custom));
+  });
+
+  test("J2: a sendGuard adds a per-run PreToolUse hook; plugins stay disabled", async () => {
+    const argvFile = join(tmp, "argv-guard.json");
+    const custom = '{"enabledPlugins":{"x@y":false},"hooks":{}}';
+    const SEND = "mcp__claude_ai_Slack__slack_send_message";
+    const sha = "a".repeat(64);
+    const guard = { toolName: SEND, expectedInputSha256: sha };
+    const p = new ClaudeCliProvider({
+      binary: process.execPath,
+      prefixArgs: ["run", fixture],
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: process.env.HOME ?? "",
+        FAKE_CLAUDE_MODE: "success",
+        FAKE_CLAUDE_ARGV_FILE: argvFile,
+      },
+      clock: new FakeClock("2026-11-05T00:00:00Z"),
+      settingsOverride: custom,
+    });
+    const settingsOf = () => {
+      const argv: string[] = JSON.parse(readFileSync(argvFile, "utf8"));
+      return argv[argv.indexOf("--settings") + 1] ?? "";
+    };
+
+    await p.execute(req({ sendGuard: guard }), sig());
+    const o = JSON.parse(settingsOf());
+    expect(o.enabledPlugins).toEqual({ "x@y": false });
+    expect(o.hooks.PreToolUse[0].matcher).toBe(SEND);
+    expect(o.hooks.PreToolUse[0].hooks[0].command).toContain(sha);
+    expect(o.hooks.PreToolUse[0].hooks[0].command).toContain(SEND_GUARD_HOOK_PATH);
+    expect(settingsOf()).toBe(
+      buildGuardedOverride(custom, guard, [process.execPath, SEND_GUARD_HOOK_PATH]),
+    );
+
+    // per run only: the next run without a guard gets the unchanged override
+    await p.execute(req(), sig());
+    expect(settingsOf()).toBe(custom);
+  });
+
+  test("J2: a guard that cannot be built fails closed before spawning", async () => {
+    const argvFile = join(tmp, "argv-guard-bad.json");
+    const r = await new ClaudeCliProvider({
+      binary: process.execPath,
+      prefixArgs: ["run", fixture],
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: process.env.HOME ?? "",
+        FAKE_CLAUDE_MODE: "success",
+        FAKE_CLAUDE_ARGV_FILE: argvFile,
+      },
+      clock: new FakeClock("2026-11-05T00:00:00Z"),
+      settingsOverride: "[]",
+    }).execute(
+      req({
+        sendGuard: {
+          toolName: "mcp__claude_ai_Slack__slack_send_message",
+          expectedInputSha256: "c".repeat(64),
+        },
+      }),
+      sig(),
+    );
+    expect(r.status).toBe("failed");
+    expect(r.error).toEqual({
+      kind: "provider_error",
+      message: "send guard could not be built",
+      details: { notSpawned: true },
+    });
+    expect(existsSync(argvFile)).toBe(false);
   });
 });
 

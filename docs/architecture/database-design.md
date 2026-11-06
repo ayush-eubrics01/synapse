@@ -71,9 +71,9 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 | `commitments` | `description` (≤ 500), `owner_slack_user_id`, `counterparty_slack_user_id` nullable, `direction` (mine/theirs; mine when the owner is self), `status` (open/in_progress/blocked/completed/cancelled), `review_status` (pending_review/accepted/rejected), `due_at`, `next_action`, `completion_evidence`, `stalled_at`, `last_followup_at`, `closed_at`, `dedup_key` unique, timestamps. Index (`review_status`,`status`). Kept (not deleted by message retention) |
 | `commitment_sources` | Multiple per commitment: `message_id` nullable (ON DELETE SET NULL), `source_external_ref` (always kept), `conversation_id`, `claude_run_id` nullable. Unique(`commitment_id`,`source_external_ref`) |
 | `commitment_updates` | Change history: `actor` (user/system/ai), `field`, `from_value`, `to_value`, `reason` |
-| `followups` | Drafted follow-ups: `commitment_id` nullable, `origin` (stalled/spec_clarity/urgent_reply/manual), `origin_message_id` nullable, `conversation_id`, `thread_ts`, `recipient_slack_user_id`, `draft_text`, `confidence`, `status` (draft/awaiting_approval/sending/sent/needs_attention/discarded/failed; `failed` is never written, a failed send returns the follow-up to draft), `approval_id`, `outgoing_id`, `claude_run_id`. Index (`status`) |
+| `followups` | Drafted follow-ups: `commitment_id` nullable, `origin` (stalled/spec_clarity/urgent_reply/manual), `origin_message_id` nullable, `conversation_id`, `thread_ts`, `recipient_slack_user_id`, `draft_text` (nullable; cleared by retention on `sent`/`discarded`/`failed` rows), `confidence`, `suspected_injection` (boolean, default false) and `context_message_ids` (JSON, nullable; ids of the messages fed into the drafting prompt), both migration 0014, `status` (draft/awaiting_approval/sending/sent/needs_attention/discarded/failed; `failed` is never written, a failed send returns the follow-up to draft), `approval_id`, `outgoing_id`, `claude_run_id`. Index (`status`) |
 | `followup_history` | What happened to each follow-up: `event`, `detail` (content-free) |
-| `outgoing_messages` | One approved Slack send: `approval_id` unique, `followup_id` nullable, `conversation_external_id`, `thread_ts`, `text` (exactly what the user approved), `status` (pending/sending/sent_unverified/sent/failed/needs_attention), `claude_run_id`, `sending_at` (set when the executor marks it `sending`; verify searches from 5 s before it, and the recovery sweep hands a message still `sending` 10 min later to the user unless its executor is still running in this process), `sent_at`, `verified_at`, `verify_attempts` (default 0), `failure` (content-free). Index (`status`); partial unique (`followup_id`) WHERE status in (pending, sending, sent_unverified, needs_attention), migration 0011: one live send per follow-up |
+| `outgoing_messages` | One approved Slack send: `approval_id` unique, `followup_id` nullable, `conversation_external_id`, `thread_ts`, `text` (exactly what the user approved; blanked to `''` by retention on `sent`/`failed` rows), `status` (pending/sending/sent_unverified/sent/failed/needs_attention), `claude_run_id`, `sending_at` (set when the executor marks it `sending`; verify searches from 5 s before it, and the recovery sweep hands a message still `sending` 10 min later to the user unless its executor is still running in this process), `sent_at`, `verified_at`, `verify_attempts` (default 0), `failure` (content-free). Index (`status`); partial unique (`followup_id`) WHERE status in (pending, sending, sent_unverified, needs_attention), migration 0011: one live send per follow-up |
 
 `slack_messages.commitments_extracted_at` (nullable) marks messages already processed by commitment extraction.
 
@@ -85,6 +85,13 @@ Phase 6 migrations:
 | `0010_outgoing_sending_at` | `outgoing_messages.sending_at` |
 | `0011_outgoing_followup_live_uq` | Partial unique index `outgoing_messages_followup_live_uq` on (`followup_id`) for live statuses |
 | `0012_followups_conversation_internal` | Data fix, no schema change: `followups.conversation_id` is the internal `slack_conversations.id`; rewrites older `urgent_reply` rows that stored the external id. Reads still accept either form |
+
+Phase 6b migrations:
+
+| Migration | Change |
+|---|---|
+| `0013_away_mode` | `away_sessions`, `auto_replies`, `approvals.decided_by` |
+| `0014_followup_context_flags` | `followups.suspected_injection`, `followups.context_message_ids`, index `auto_replies_outgoing_idx` |
 
 ## Engineering Brain tables (owned by `engineering-brain`)
 
@@ -113,13 +120,14 @@ Phase 6 migrations:
 | `engineering_tasks` | `source_ref` (message/Jira/commitment), `repository_id` FK, `environment_id` FK nullable, `parent_branch` (user-confirmed, ADR-035), `task_branch`, `approved_description` (the only text given to the engineering worker, ADR-032), `status` (proposed/approved/in_progress/awaiting_approval/completed/failed/cancelled/needs_attention), `plan` JSON, `pr_url`, timestamps |
 | `engineering_task_steps` | Ordered steps of the Git workflow (§10.6): `step` (branch/develop/test/update_parent/merge_local/raise_pr/merge_pr), `status`, `approval_id`, `claude_run_id`, `output` JSON |
 
-## Auto-reply table (owned by `inbox`, used by `commitments`)
+## Auto-reply tables (owned by `auto-reply`)
 
 | Table | Notes |
 |---|---|
-| `auto_replies` | ADR-033 decisions: `source_message_id` FK, `recipient_person_id` FK, `kind` (code_answer/stalled_reminder/followup_question/acknowledgement), `conversation_id`, `thread_ts`, `text` (including tag), `confidence`, `policy_result` JSON (each check + outcome), `status` (sent/skipped/failed), `sent_ts`, `approval_id` (if it fell back to approval), `idempotency_key` unique, `created_at`. Index (`recipient_person_id`,`created_at`) for daily caps. Kept like audit (not deleted by message retention) |
+| `away_sessions` | `started_at`, `ended_at` (null while open; partial unique index: one open session), `dismissed_at` (digest dismissed) |
+| `auto_replies` | ADR-033 decisions: `session_id` FK, `kind` (code_answer/stalled_reminder/followup_question/acknowledgement), `recipient_slack_user_id`, `conversation_external_id`, `thread_ts`, `source_message_id`, `followup_id`, `decision` (sent/held), `reason` (hold reason), `text` (tagged; sent rows only; nulled by retention after `retention.slackContentDays`), `outgoing_id`, `approval_id`, `created_at`. Indexes (`recipient_slack_user_id`,`created_at`) for the daily cap, (`conversation_external_id`,`thread_ts`,`created_at`) for the thread gap, (`outgoing_id`). The rows themselves are kept |
 
-Away mode itself is the `autoReply.awayMode` key in `app_settings`, with changes recorded in `audit_events`.
+Away mode itself is the `autoReply.awayMode` key in `app_settings`, with changes recorded in `audit_events`. See `docs/modules/auto-reply.md`.
 
 ## Security flag tables (owned by `security-flags`)
 
@@ -142,4 +150,4 @@ Away mode itself is the `autoReply.awayMode` key in `app_settings`, with changes
 
 ## Retention
 
-Slack message content is kept for 180 days (configurable). The cleanup job sets `slack_messages.text = NULL`, deletes local attachments, and sets `content_expired_at`, keeping IDs, `ts` and permalinks. People profiles, commitments, follow-ups, Engineering Brain records, approvals and audit events are never deleted by message retention. Evidence rows keep `source_external_ref`, so the UI can show "original message no longer available locally."
+Slack message content is kept for 180 days (configurable). The cleanup job sets `slack_messages.text = NULL`, deletes local attachments, and sets `content_expired_at`, keeping IDs, `ts` and permalinks. People profiles, commitments, follow-ups, Engineering Brain records, approvals and audit events are never deleted by message retention. The same job also clears text derived from Slack content (Phase 6b): `auto_replies.text`, the text of `sent`/`failed` outgoing messages (blanked to `''`) and the draft of `sent`/`discarded`/`failed` follow-ups, for rows created before the cutoff. Rows in any other status keep their text. Evidence rows keep `source_external_ref`, so the UI can show "original message no longer available locally."

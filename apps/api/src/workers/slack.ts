@@ -31,6 +31,15 @@ export interface SlackJobDeps {
   audit: AuditLogger;
   scheduler: SchedulerService;
   handlers: Map<string, HandlerRegistration>;
+  /**
+   * Text retention for what was sent or drafted from Slack content (final review, item 6), run by
+   * the same job with the same `retention.slackContentDays`. Each returns a count.
+   */
+  textRetention?: {
+    autoReplyText(olderThanDays: number): number;
+    outgoingText(olderThanDays: number): number;
+    followupDrafts(olderThanDays: number): number;
+  };
 }
 
 const HANDLER_TIMEOUT_MS = 300_000; // R36
@@ -333,9 +342,20 @@ export function registerSlackJobs(deps: SlackJobDeps): {
     return { unavailable: true };
   };
 
-  const retention = async () => ({
-    expired: store.expireContent(settings.get("retention.slackContentDays")),
-  });
+  const retention = async () => {
+    const days = settings.get("retention.slackContentDays");
+    const t = deps.textRetention;
+    return {
+      expired: store.expireContent(days),
+      ...(t
+        ? {
+            autoReplyText: t.autoReplyText(days),
+            outgoingText: t.outgoingText(days),
+            followupDrafts: t.followupDrafts(days),
+          }
+        : {}),
+    };
+  };
 
   deps.handlers.set("slack.collect_incremental", {
     handler: incremental,

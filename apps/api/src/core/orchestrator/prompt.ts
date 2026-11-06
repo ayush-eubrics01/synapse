@@ -18,6 +18,8 @@ export function assemblePrompt(
         `<<<UNTRUSTED ${boundary} source="${source}">>>\n${p.content}\n<<<END ${boundary}>>>`,
       );
     } else {
+      // system, user_approved and policy_approved: verbatim. A send run's system part points at
+      // "the next block", so approved JSON gets no label or wrapper.
       out.push(p.content);
     }
   }

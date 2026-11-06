@@ -36,6 +36,12 @@ interface ClaudeJobRequest {
   model?: string;
   timeoutMs?: number;
   workingDirectory?: string;
+  sendGuard?: SendGuard;           // J2; toolName word characters, sha 64 lowercase hex
+}
+
+interface SendGuard {              // J2: per-run PreToolUse hook on toolName
+  toolName: string;
+  expectedInputSha256: string;     // sha256 of the canonical JSON of the normalised tool_input (drops unfurl_app_links:false, trimEnds message)
 }
 
 interface AIExecutionRequest {
@@ -52,10 +58,11 @@ interface AIExecutionRequest {
   timeoutMs: number;
   workingDirectory: string;      // registered repo path for engineering; scratch dir otherwise
   expectedToolNames?: string[];  // run fails if none of these produced a real tool_result
+  sendGuard?: SendGuard;         // passed through from the job request
 }
 
 interface PromptPart {
-  provenance: 'untrusted' | 'user_approved' | 'system';
+  provenance: 'untrusted' | 'user_approved' | 'policy_approved' | 'system'; // policy_approved: send runs only (rule K)
   source?: string;               // e.g. slack:<channel>:<ts>, jira:<key>
   content: string;
 }
@@ -193,6 +200,7 @@ interface SendMessageCommand {
   threadTs?: string;
   text: string;
   jobId?: string;            // the approval.execute job; used to find the claude_runs row
+  authorisedBy?: "user" | "policy"; // default "user"; "policy" gives the send run policy_approved (J1)
 }
 
 interface SendResult {
@@ -202,17 +210,26 @@ interface SendResult {
   runId?: string;
 }
 
+interface SendOptions {
+  /** false (or a throw) cancels the send before Claude spawns: the sink rethrows cancelled_before_spawn. */
+  beforeSpawn?: () => boolean;
+}
+
 interface MessageSink {
-  send(cmd: SendMessageCommand, signal: AbortSignal): Promise<SendResult>;
+  send(cmd: SendMessageCommand, signal: AbortSignal, opts?: SendOptions): Promise<SendResult>;
   /** true / false when found / not found after sinceTs; null when it could not be checked.
    *  Throws auth_paused / quota_exhausted / rate_limited (R18). */
   findSent(cmd: SendMessageCommand, sinceTs: string): Promise<boolean | null>;
 }
 ```
 
-**Send run (`SlackSender.send`).** One orchestrator run: profile `collector`, priority class `send`, model haiku, `maxTurns: 3`, `allowedTools: [slack_send_message, ToolSearch]`. The prompt has a system part (call the tool once with exactly the given arguments) and one `user_approved` part: the JSON of `{channel_id, message, thread_ts?}`. There are no untrusted parts and no `expectedToolNames`; the adapter classifies the raw tool results itself. The request validator rejects a send request with more than one allowed tool or with untrusted content. It cannot check the tool arguments the model will use; that check happens after the run, against the tool_use input.
+**Policy sends (`requestAutoSend`, Phase 6b).** `OutgoingService.requestAutoSend(tx, { autoReplyId, conversationExternalId, threadTs, text, followupId })` runs inside the caller's transaction. It requires `text` to end with `Sent using @claude`, an `auto_replies` row with `decision = 'sent'` and no outgoing yet, and a request that matches that row exactly. It throws `AutoSendBlocked` when away is off or another session is open, and `AutoReplyDisabledByPermission` when the user tightened `slack.auto_reply`. Otherwise it records the outgoing row plus a policy approval and links both to the row. The executor then calls `sink.send` with `authorisedBy: "policy"` and a `beforeSpawn` that re-checks away mode, the session and the gate.
 
-**Argument verification.** The check runs on the run's recorded tool calls, after the send tool ran: a mismatch is detected after the fact, not prevented, and a message with the changed arguments may already be in Slack (R20). The tool's result text is never read as success (its format is unknown). From the `tool_use` input recorded with each tool result, code checks that `channel_id` and `thread_ts` equal the approved values exactly (both absent matches) and that `message` equals the approved text after trimming trailing whitespace. The only tolerated extra key is `unfurl_app_links: false`; any other key (for example `reply_broadcast`) is a mismatch.
+**`sendGuard`.** `ClaudeJobRequest` and `AIExecutionRequest` accept `sendGuard?: { toolName, expectedInputSha256 }`. `SlackSender` sets it on every send. See `docs/modules/claude-orchestrator.md`, "Send runs".
+
+**Send run (`SlackSender.send`).** One orchestrator run: profile `collector`, priority class `send`, model haiku, `maxTurns: 3`, `allowedTools: [slack_send_message, ToolSearch]`. The prompt has a system part (call the tool once with exactly the given arguments) and one approved part, `user_approved` (or `policy_approved` when `SendMessageCommand.authorisedBy` is `"policy"`, ADR-033): the JSON of `{channel_id, message, thread_ts?}`. There are no untrusted parts and no `expectedToolNames`; the adapter classifies the raw tool results itself. The request validator rejects a send request with more than one allowed tool or with untrusted content, a `policy_approved` part anywhere else, and a send request without a `sendGuard` for its write tool (rule K). It cannot check the tool arguments the model will use. Since Phase 6b the request carries a `sendGuard`: a per-run `PreToolUse` hook blocks the send call unless its canonical `tool_input` hashes to the approved arguments' sha256 (J2; see `docs/modules/claude-orchestrator.md`). The after-the-fact check below stays as a second layer.
+
+**Argument verification.** The check runs on the run's recorded tool calls, after the send tool ran: on its own a mismatch is detected after the fact, not prevented (R20); the J2 send guard is the layer that prevents it. The tool's result text is never read as success (its format is unknown). From the `tool_use` input recorded with each tool result, code checks that `channel_id` and `thread_ts` equal the approved values exactly (both absent matches) and that `message` equals the approved text after trimming trailing whitespace. The only tolerated extra key is `unfurl_app_links: false`; any other key (for example `reply_broadcast`) is a mismatch. The J2 send guard normalises both sides the same way before hashing (drops `unfurl_app_links: false`, `trimEnd`s `message`), so it accepts exactly the inputs this check accepts.
 
 **Outcomes** (classified from the run's raw tool results):
 

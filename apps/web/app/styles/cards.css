@@ -291,3 +291,54 @@
   font-size: 12px;
   color: var(--faint);
 }
+
+/* Away mode: return digest rows (spec A17) */
+.syn-away-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.syn-away-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.syn-away-row-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.syn-away-row-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.syn-away-row-name {
+  font-weight: 600;
+}
+
+.syn-away-row-kind,
+.syn-away-row-sub {
+  font-size: 12px;
+  color: var(--muted2);
+}
+
+.syn-away-row-outcome {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.syn-away-row[data-decision="held"] .syn-away-row-outcome {
+  color: var(--amberFg);
+}
