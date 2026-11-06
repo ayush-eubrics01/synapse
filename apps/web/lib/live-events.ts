@@ -45,6 +45,10 @@ const DOMAIN_EVENTS = [
   "repo.drift_detected",
   "brain.facts_proposed",
   "brain.fact_decided",
+  "engineering.task_created",
+  "engineering.task_status_changed",
+  "engineering.step_changed",
+  "engineering.lock_changed",
 ] as const satisfies readonly EventType[];
 
 // LiveBus-only messages: job settles (worker) and notifications (NotificationService).

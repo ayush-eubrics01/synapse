@@ -755,6 +755,7 @@ export const repositories = sqliteTable("repositories", {
   trackedBranch: text("tracked_branch").notNull(),
   jiraProjectKeys: json("jira_project_keys").$type<string[]>().notNull(),
   notes: text("notes"),
+  testCommand: text("test_command"),
   headSha: text("head_sha"),
   inspectedHeadSha: text("inspected_head_sha"),
   drift: json("drift").$type<{
@@ -848,4 +849,54 @@ export const projectMilestones = sqliteTable(
     updatedAt: text("updated_at").notNull(),
   },
   (t) => [index("project_milestones_project_date_idx").on(t.projectId, t.targetDate)],
+);
+
+export const engineeringTasks = sqliteTable(
+  "engineering_tasks",
+  {
+    id: id(),
+    repositoryId: text("repository_id")
+      .notNull()
+      .references(() => repositories.id, { onDelete: "cascade" }),
+    environmentId: text("environment_id"),
+    source: text("source").notNull(),
+    sourceRef: text("source_ref"),
+    title: text("title").notNull(),
+    draftDescription: text("draft_description").notNull(),
+    approvedDescription: text("approved_description"),
+    plan: json("plan").$type<unknown>(),
+    parentBranch: text("parent_branch"),
+    taskBranch: text("task_branch"),
+    status: text("status").notNull(),
+    currentStep: text("current_step"),
+    prUrl: text("pr_url"),
+    prNumber: integer("pr_number"),
+    baseSha: text("base_sha"),
+    mergeSha: text("merge_sha"),
+    failure: text("failure"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    index("engineering_tasks_status_idx").on(t.status),
+    index("engineering_tasks_repository_idx").on(t.repositoryId),
+  ],
+);
+
+export const engineeringTaskSteps = sqliteTable(
+  "engineering_task_steps",
+  {
+    id: id(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => engineeringTasks.id, { onDelete: "cascade" }),
+    step: text("step").notNull(),
+    status: text("status").notNull(),
+    approvalId: text("approval_id"),
+    claudeRunId: text("claude_run_id"),
+    output: json("output").$type<unknown>(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [uniqueIndex("engineering_task_steps_task_step_uq").on(t.taskId, t.step)],
 );

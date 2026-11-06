@@ -248,3 +248,14 @@ test("brain settings defaults and validation", () => {
   expect(settings.get("brain.upcoming.days")).toBe(30);
   expect(() => settings.set("brain.inspect.model", "gpt" as never)).toThrow();
 });
+
+test("engineering settings defaults and bounds", () => {
+  const { settings } = setup();
+  expect(settings.get("engineering.model")).toBe("sonnet");
+  expect(settings.get("engineering.investigate.maxTurns")).toBe(30);
+  expect(settings.get("engineering.develop.maxTurns")).toBe(60);
+  expect(settings.get("engineering.develop.timeoutMinutes")).toBe(30);
+  expect(settings.get("engineering.lock.ttlMinutes")).toBe(10);
+  expect(() => settings.set("engineering.model", "gpt" as never)).toThrow();
+  expect(() => settings.set("engineering.lock.ttlMinutes", 0)).toThrow();
+});

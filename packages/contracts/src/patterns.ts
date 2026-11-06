@@ -5,3 +5,41 @@
 
 /** A Jira project key (`DEMO`, `OPS_2`): the one rule for the API schemas and the web forms. */
 export const JIRA_PROJECT_KEY_RE = /^[A-Z][A-Z0-9_]+$/;
+
+const TEST_COMMAND_RE = /^[A-Za-z0-9 ._:/=@+-]{1,120}$/;
+const TEST_COMMAND_RUNNERS = [
+  "npm",
+  "pnpm",
+  "yarn",
+  "bun",
+  "npx",
+  "uv",
+  "pytest",
+  "python",
+  "python3",
+  "make",
+  "go",
+  "cargo",
+  "deno",
+];
+
+/**
+ * E5: a test command safe to grant as `Bash(<cmd>:*)`. Safe characters only (no `;`, `&`, `|`, `>`,
+ * `<`, backquote, `$` or newline), at most 120 characters, and the first word is a known runner.
+ */
+export function isSafeTestCommand(cmd: string): boolean {
+  if (!TEST_COMMAND_RE.test(cmd)) return false;
+  const first = cmd.split(" ")[0] ?? "";
+  return TEST_COMMAND_RUNNERS.includes(first);
+}
+
+/** E-branch: `synapse/<first 8 of id>-<slug of title, at most 32>`. */
+export function taskBranchName(id: string, title: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32)
+    .replace(/-+$/g, "");
+  return `synapse/${id.slice(0, 8)}-${slug === "" ? "task" : slug}`;
+}

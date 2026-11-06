@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { holdReasonSchema } from "./auto-reply";
 import { factStatusSchema } from "./brain";
+import {
+  engineeringStepSchema,
+  engineeringStepStatusSchema,
+  engineeringTaskStatusSchema,
+} from "./engineering";
 import { errorKindSchema } from "./errors";
 import { jiraAttentionSchema } from "./jira";
 import { flagSeveritySchema, urgencyStatusSchema } from "./urgency";
@@ -85,6 +90,17 @@ export const eventCatalog = {
   "repo.drift_detected": z.object({ repositoryId: z.string() }),
   "brain.facts_proposed": z.object({ projectId: z.string(), count: z.number().int() }),
   "brain.fact_decided": z.object({ factId: z.string(), status: factStatusSchema }),
+  "engineering.task_created": z.object({ taskId: z.string() }),
+  "engineering.task_status_changed": z.object({
+    taskId: z.string(),
+    status: engineeringTaskStatusSchema,
+  }),
+  "engineering.step_changed": z.object({
+    taskId: z.string(),
+    step: engineeringStepSchema,
+    status: engineeringStepStatusSchema,
+  }),
+  "engineering.lock_changed": z.object({ held: z.boolean() }),
 };
 
 export type EventType = keyof typeof eventCatalog;

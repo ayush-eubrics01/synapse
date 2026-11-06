@@ -1,4 +1,4 @@
-import { type AIExecutionRequest, isSafeAbsolutePath } from "@synapse/contracts";
+import { type AIExecutionRequest, isSafeAbsolutePath, isSafeTestCommand } from "@synapse/contracts";
 import { assemblePrompt } from "./prompt";
 import {
   BUILTIN_FS_READ,
@@ -13,6 +13,9 @@ import {
 export type ValidationResult = { ok: true } | { ok: false; reason: string };
 
 const BUILTIN_RE = /^[A-Za-z][A-Za-z0-9_]*(\([^(),\s]*\))?$/;
+// A Bash grant is a command prefix, `Bash(<cmd>:*)`, and the command has spaces (`bun test`). Spaces
+// are accepted inside that one form only; rule L then checks the command itself (E5).
+const BASH_PREFIX_RE = /^Bash\([^(),]+:\*\)$/;
 const CONNECTOR_RE = /^mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+$/;
 
 const DENY_BUILTIN_RE = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -51,7 +54,9 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *     segments, two or more segments), and its Read/Grep/Glob must each be exactly
  *     `Tool(/<workingDirectory>/**)`: the CLI's double-slash absolute form `//abs/dir/**`. The
  *     single-slash form `/abs/dir/**` is cwd-relative on the CLI and grants nothing (final review),
- *     so it fails, as does a bare Read (C7). Last, so the other rules keep their order. Tools
+ *     so it fails, as does a bare Read (C7). Write tools: `Edit`/`Write`/`MultiEdit` must equal the same
+ *     `Tool(/<wd>/**)`, and `Bash` only as exactly `Bash(<cmd>:*)` with `isSafeTestCommand(cmd)`
+ *     (E5, E9); a bare Bash or any other specifier fails. Last, so the other rules keep their order. Tools
  *     other than the fs reads are unaffected
  * Tool names are normalised (specifier stripped) before classification.
  */
@@ -68,7 +73,9 @@ export function validateRequest(
     }
   }
   for (const t of raw) {
-    const ok = t.startsWith("mcp__") ? CONNECTOR_RE.test(t) : BUILTIN_RE.test(t);
+    const ok = t.startsWith("mcp__")
+      ? CONNECTOR_RE.test(t)
+      : BUILTIN_RE.test(t) || BASH_PREFIX_RE.test(t);
     if (!ok) return fail(`malformed tool name ${t}`);
   }
   const allowed = raw.map(normalizeTool);
@@ -186,6 +193,18 @@ export function validateRequest(
       // `dir` starts with "/", so this is `Tool(//abs/dir/**)`: the CLI's absolute form.
       if (t !== `${normalizeTool(t)}(/${dir}/**)`) {
         return fail("fs read tools must be scoped to the working directory");
+      }
+    }
+    const writeErr = "write tools must be scoped to the working directory";
+    for (const t of raw.filter((t) => BUILTIN_WRITE.includes(normalizeTool(t)))) {
+      const name = normalizeTool(t);
+      if (name === "Bash") {
+        const m = /^Bash\((.*):\*\)$/.exec(t);
+        if (!m || !isSafeTestCommand(m[1] ?? "")) return fail(writeErr);
+      } else if (name === "Edit" || name === "Write" || name === "MultiEdit") {
+        if (t !== `${name}(/${dir}/**)`) return fail(writeErr);
+      } else {
+        return fail(writeErr);
       }
     }
   }

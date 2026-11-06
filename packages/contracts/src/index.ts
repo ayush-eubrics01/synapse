@@ -4,6 +4,7 @@ export * from "./auto-reply";
 export * from "./brain";
 export * from "./commitments";
 export * from "./dashboard";
+export * from "./engineering";
 export * from "./errors";
 export * from "./events";
 export * from "./health";
