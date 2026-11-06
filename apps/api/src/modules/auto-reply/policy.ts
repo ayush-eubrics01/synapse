@@ -5,7 +5,9 @@ import { contentCheck } from "../../intelligence/auto-reply/content-checks";
 export const ACK_TEXT =
   "Thanks, I'm away at the moment. I've noted your message and will get back to you as soon as I can.";
 
-const TAG = "Sent using @claude";
+/** ADR-033: every auto-reply ends with this tag. */
+export const AUTO_REPLY_TAG = "Sent using @claude";
+const TAG = AUTO_REPLY_TAG;
 
 /** A10: the tag is added in code just before the send is requested. */
 export function withAutoReplyTag(text: string): string {

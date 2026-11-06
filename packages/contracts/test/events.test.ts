@@ -45,6 +45,9 @@ test("catalog covers the Phase 1 and 2 events", () => {
       "followup.status_changed",
       "followup.sent",
       "outgoing.status_changed",
+      "autoreply.sent",
+      "autoreply.held",
+      "away.changed",
     ].sort(),
   );
   expect(parseEventPayload("settings.changed", { key: "k" })).toEqual({ key: "k" });
@@ -76,4 +79,15 @@ test("message and collection events", () => {
   ]) {
     expect(() => parseEventPayload(t, {})).toThrow();
   }
+});
+
+test("away-mode event payloads (A16) carry ids and fixed reasons only", () => {
+  expect(parseEventPayload("autoreply.sent", { autoReplyId: "a" })).toEqual({ autoReplyId: "a" });
+  expect(
+    parseEventPayload("autoreply.held", { autoReplyId: "a", reason: "policy_disabled" }),
+  ).toEqual({ autoReplyId: "a", reason: "policy_disabled" });
+  expect(() =>
+    parseEventPayload("autoreply.held", { autoReplyId: "a", reason: "free text" }),
+  ).toThrow();
+  expect(parseEventPayload("away.changed", { on: true })).toEqual({ on: true });
 });

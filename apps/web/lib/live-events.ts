@@ -36,6 +36,9 @@ const DOMAIN_EVENTS = [
   "followup.status_changed",
   "followup.sent",
   "outgoing.status_changed",
+  "autoreply.sent",
+  "autoreply.held",
+  "away.changed",
 ] as const satisfies readonly EventType[];
 
 // LiveBus-only messages: job settles (worker) and notifications (NotificationService).

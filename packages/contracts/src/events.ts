@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { holdReasonSchema } from "./auto-reply";
 import { errorKindSchema } from "./errors";
 import { flagSeveritySchema, urgencyStatusSchema } from "./urgency";
 
@@ -73,6 +74,9 @@ export const eventCatalog = {
   "followup.status_changed": z.object({ followupId: z.string(), status: z.string() }),
   "followup.sent": z.object({ followupId: z.string(), outgoingId: z.string() }),
   "outgoing.status_changed": z.object({ outgoingId: z.string(), status: z.string() }),
+  "autoreply.sent": z.object({ autoReplyId: z.string() }),
+  "autoreply.held": z.object({ autoReplyId: z.string(), reason: holdReasonSchema }),
+  "away.changed": z.object({ on: z.boolean() }),
 };
 
 export type EventType = keyof typeof eventCatalog;
