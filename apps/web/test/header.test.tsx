@@ -25,6 +25,7 @@ function overview(
       peopleToEvaluate: 0,
       conversations: 0,
     },
+    away: { on: false, highPriorityCount: 0 },
     lastSlackSyncAt: null,
     health,
     pipeline: [],

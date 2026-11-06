@@ -4,6 +4,7 @@ import type { Container } from "./container";
 import { InvalidApprovalTransition } from "./core/approvals/approvals";
 import { localOnly } from "./middleware/local-only";
 import { approvalRoutes } from "./routes/approvals";
+import { awayRoutes } from "./routes/away";
 import { claudeRoutes } from "./routes/claude";
 import { commitmentRoutes } from "./routes/commitments";
 import { dashboardRoutes } from "./routes/dashboard";
@@ -33,6 +34,7 @@ export function createApp(c: Container): Hono {
   app.route("/", securityRoutes(c));
   app.route("/", peopleRoutes(c));
   app.route("/", commitmentRoutes(c));
+  app.route("/", awayRoutes(c));
   app.route("/", dashboardRoutes(c));
   app.route("/", streamRoutes(c));
   app.onError((err, ctx) => {
