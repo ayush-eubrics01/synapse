@@ -52,6 +52,7 @@ import { CommitmentLifecycle } from "./modules/commitments/lifecycle";
 import { StallService } from "./modules/commitments/stall";
 import { CommitmentStore } from "./modules/commitments/store";
 import { DashboardService } from "./modules/dashboard/service";
+import type { InspectionService } from "./modules/engineering-brain/inspection";
 import { RepositoryRegistry } from "./modules/engineering-brain/registry";
 import { InboxConversations } from "./modules/inbox/conversations";
 import { ScreeningService } from "./modules/inbox/screening-service";
@@ -73,6 +74,7 @@ import { PeopleViews } from "./modules/people/views";
 import { SecurityFlagsService } from "./modules/security-flags/service";
 import { registerAutoReplyJobs } from "./workers/auto-reply/evaluate";
 import { registerDriftCheck } from "./workers/brain/drift";
+import { registerInspectionJobs } from "./workers/brain/inspect";
 import { registerCommitmentJobs } from "./workers/commitments";
 import { createRunHelpers } from "./workers/intelligence-shared";
 import { registerJiraJobs } from "./workers/jira";
@@ -133,6 +135,8 @@ export interface Container {
   jira: JiraService;
   /** Repository registry (Phase 9, ADR-035): propose, register, edit and unregister. */
   repositories: RepositoryRegistry;
+  /** Repository inspection (Phase 9, C6): `requestInspection` backs "Inspect now". */
+  inspections: InspectionService;
   slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
@@ -457,6 +461,20 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     scheduler,
     handlers,
   });
+  // C6: read-only, path-scoped inspection on registration, weekly when HEAD moved, or on request.
+  const inspections = registerInspectionJobs({
+    db,
+    clock,
+    settings,
+    events,
+    audit,
+    queue,
+    provider: repositoryProvider,
+    orchestrator,
+    scheduler,
+    dispatcher,
+    handlers,
+  });
 
   const health = new HealthService({
     database: databaseCheck(sqlite),
@@ -527,6 +545,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     dashboard,
     jira,
     repositories,
+    inspections,
     handlers,
     recoverySweeps: [
       { name: "urgency.assess", run: urgency.recoverySweep },

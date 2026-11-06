@@ -375,6 +375,16 @@ describe("tool catalog", () => {
     expect(d).not.toContain("Edit");
     expect(d).toContain("WebFetch");
   });
+  test("engineering denylist denies every write built-in it does not allow", () => {
+    const d = buildDenylist(["Read(/tmp/demo/**)"], DEFAULT_KNOWN_SERVERS, "engineering");
+    for (const t of ["Bash", "Edit", "Write", "NotebookEdit", "MultiEdit", "Monitor"]) {
+      expect(d).toContain(t);
+    }
+    expect(d).not.toContain("Read");
+    const withBash = buildDenylist(["Bash(git:*)"], DEFAULT_KNOWN_SERVERS, "engineering");
+    expect(withBash).not.toContain("Bash");
+    expect(withBash).toContain("Edit");
+  });
   test("denylist never contains allowed", () => {
     const d = buildDenylist([SEND, "ToolSearch"], DEFAULT_KNOWN_SERVERS, "collector");
     expect(d).not.toContain(SEND);

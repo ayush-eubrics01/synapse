@@ -162,8 +162,10 @@ export function buildDenylist(
 ): string[] {
   const allowedSet = new Set(allowed.map(normalizeTool));
   const deny = new Set<string>(BUILTIN_NETWORK);
-  if (profile !== "engineering")
-    for (const t of [...BUILTIN_WRITE, ...BUILTIN_FS_READ]) deny.add(t);
+  // Engineering runs keep the write built-ins they allow (filtered out below) and deny the rest,
+  // so a user-level `permissions.allow` cannot widen a read-only inspection run.
+  for (const t of BUILTIN_WRITE) deny.add(t);
+  if (profile !== "engineering") for (const t of BUILTIN_FS_READ) deny.add(t);
   const used = new Set<string>();
   for (const t of allowed.map(normalizeTool)) {
     const s = connectorServerOf(t);
