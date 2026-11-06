@@ -18,17 +18,14 @@ export const SECTION_IDS: SectionId[] = [
   "system",
 ];
 
-/** Sidebar nav (spec D1) with badge counts from the overview; no counts until it loads. */
-export function sidebarItems(counts: DashboardOverview["counts"] | null): NavItem[] {
-  const needsYou = counts
-    ? counts.urgent +
-      counts.outgoingAttention +
-      counts.approvals +
-      counts.redFlags +
-      counts.followupDrafts +
-      counts.commitmentsToReview +
-      counts.profileRecommendations
-    : 0;
+/**
+ * Sidebar nav (spec D1). The Needs-you badge is the number of cards the feed shows
+ * (`buildNeedsYou`), so badge and feed always agree; the other badges come from the overview.
+ */
+export function sidebarItems(
+  counts: DashboardOverview["counts"] | null,
+  needsYou: number,
+): NavItem[] {
   return [
     { id: "overview", label: "Overview" },
     { id: "triage", label: "Needs you", count: needsYou, hot: needsYou > 0 },

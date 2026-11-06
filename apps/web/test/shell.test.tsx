@@ -127,7 +127,7 @@ test("Toasts render an empty polite live region; useToast works without a provid
   expect(() => renderToString(<Shower />)).not.toThrow();
 });
 
-test("sidebarItems sums what needs you and marks it hot", () => {
+test("sidebarItems shows the Needs-you card count and marks it hot", () => {
   const counts = {
     urgent: 1,
     approvals: 2,
@@ -139,7 +139,7 @@ test("sidebarItems sums what needs you and marks it hot", () => {
     peopleToEvaluate: 5,
     conversations: 12,
   };
-  const items = sidebarItems(counts);
+  const items = sidebarItems(counts, 8);
   expect(items.map((i) => i.id)).toEqual([
     "overview",
     "triage",
@@ -154,5 +154,9 @@ test("sidebarItems sums what needs you and marks it hot", () => {
   expect(triage?.hot).toBe(true);
   expect(items.find((i) => i.id === "commitments")?.count).toBe(3);
   expect(items.find((i) => i.id === "people")?.count).toBe(5);
-  expect(sidebarItems(null).every((i) => !i.count)).toBe(true);
+  expect(sidebarItems(null, 0).every((i) => !i.count)).toBe(true);
+  // The badge is the feed's card count, not a sum of overview counts.
+  const two = sidebarItems(counts, 2).find((i) => i.id === "triage");
+  expect(two?.count).toBe(2);
+  expect(sidebarItems(counts, 0).find((i) => i.id === "triage")?.hot).toBe(false);
 });

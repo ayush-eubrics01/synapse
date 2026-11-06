@@ -12,21 +12,14 @@ import type {
 } from "@synapse/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  acceptSuggestion,
   type ClaudeRun,
   type ClaudeStatus,
   type CommitmentEditsDto,
   type CommitmentStatusDto,
   type CommitmentViewDto,
-  confirmSlackIdentity,
-  decideApproval,
   decideProposal,
-  discardFollowup,
-  discardRecommendation,
-  dismissSuggestion,
   draftFollowup,
   evaluatePerson,
-  type FlagReviewStatus,
   type FollowupViewDto,
   type GroupedFlagsDto,
   getApprovals,
@@ -50,48 +43,36 @@ import {
   type InboxMessageDto,
   type PersonDto,
   type PersonPriorityDto,
-  type ResolveDecisionDto,
-  requestUrgentReply,
-  resolveOutgoing,
-  retryApply,
   reviewCommitment,
-  reviewFlag,
   type SecurityFlagDto,
   type SlackIdentityDto,
   type SlackStatusDto,
-  sendFollowup,
   setCommitmentStatus,
   setPersonPriority,
-  setUrgentStatus,
   skipUnreadablePage,
-  startBackfill,
-  type UrgencyStatusDto,
   type UrgentItemDto,
 } from "../lib/api";
 import { trailingDebounce } from "../lib/debounce";
-import { decideThenRefresh } from "../lib/decide";
 import { LIVE_EVENT_TYPES } from "../lib/live-events";
 import { SECTION_IDS, type SectionId, sidebarItems } from "../lib/nav";
+import { allClearRows, buildNeedsYou, type NeedsYouInput } from "../lib/needs-you";
 import type { PaletteItem } from "../lib/palette";
-import type { Decision } from "../lib/people-decision";
 import { writeTheme } from "../lib/theme";
-import { ApprovalsList } from "./components/ApprovalsList";
 import { ClaudePanel } from "./components/ClaudePanel";
 import { CommitmentsPanel } from "./components/CommitmentsPanel";
-import { FollowupDrafts } from "./components/FollowupDrafts";
 import { CommandPalette } from "./components/header/CommandPalette";
 import { Header } from "./components/header/Header";
-import { IdentitySetup } from "./components/IdentitySetup";
 import { InboxPanel } from "./components/InboxPanel";
 import { JobsTable } from "./components/JobsTable";
 import { PeopleCandidates } from "./components/PeopleCandidates";
 import { PersonProfile } from "./components/PersonProfile";
 import { PriorityPeople } from "./components/PriorityPeople";
-import { ProfileRecommendations } from "./components/ProfileRecommendations";
-import { RedFlags } from "./components/RedFlags";
 import { SlackStatus } from "./components/SlackStatus";
 import { Sidebar } from "./components/shell/Sidebar";
-import { UrgentInbox } from "./components/UrgentInbox";
+import { NeedsYou } from "./components/triage/NeedsYou";
+import { BACKFILL_CARD_ID } from "./components/triage/SetupCards";
+import { useNeedsYouActions } from "./components/triage/useNeedsYouActions";
+import { useToast } from "./components/ui/Toasts";
 
 const FOOTER = { api: "127.0.0.1:7400", web: ":7401", lock: "not in use yet" };
 
@@ -121,7 +102,7 @@ function useActiveSection(initial: SectionId): [SectionId, (id: SectionId) => vo
   return [active, setActive];
 }
 
-function scrollToSection(id: SectionId) {
+function scrollToSection(id: string) {
   const el = document.getElementById(id);
   if (!el) return;
   const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -201,6 +182,8 @@ export default function Dashboard() {
   const [followups, setFollowups] = useState<FollowupViewDto[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [backfillSignal, setBackfillSignal] = useState(0);
+  const toast = useToast();
 
   const refresh = useCallback(async () => {
     const openUser = personRef.current;
@@ -283,22 +266,6 @@ export default function Dashboard() {
     };
   }, [refresh]);
 
-  const decide = async (id: string, decision: "approve" | "reject", reason?: string) => {
-    setActionError(null);
-    const out = await decideThenRefresh(() => decideApproval(id, decision, reason), refresh);
-    setActionError(out.actionError);
-  };
-
-  const backfill = async () => {
-    setActionError(null);
-    try {
-      await startBackfill();
-    } catch (e) {
-      setActionError(String(e));
-    }
-    await refresh();
-  };
-
   const skipPage = async () => {
     setActionError(null);
     try {
@@ -351,6 +318,42 @@ export default function Dashboard() {
     scrollToSection(id);
   };
 
+  const feed = useNeedsYouActions({
+    refresh,
+    setActionError,
+    toggleHistory,
+    seeAllPeople: () => goTo("people"),
+  });
+  // Pending-undo keys are passed in, so a live refresh can't bring a hidden item back (D8).
+  const needsInput: NeedsYouInput = {
+    urgent,
+    approvals,
+    flags,
+    followups,
+    reviewQueue,
+    recommendations,
+    identity,
+    people,
+    candidates,
+    slackStatus,
+    hidden: feed.hidden,
+  };
+  const cards = buildNeedsYou(needsInput);
+  const hasBackfillCard = cards.some((c) => c.kind === "setup-backfill");
+
+  // Brings the backfill setup card into view with its confirm step open.
+  const openBackfill = () => {
+    setActive("triage");
+    setBackfillSignal((n) => n + 1);
+    scrollToSection(BACKFILL_CARD_ID);
+  };
+
+  const copy = (text: string) =>
+    navigator.clipboard.writeText(text).then(
+      () => toast.show("Copied"),
+      (e: unknown) => setActionError(String(e)),
+    );
+
   const paletteItems: PaletteItem[] = [
     ...GO_TO.map(
       (g): PaletteItem => ({
@@ -376,13 +379,17 @@ export default function Dashboard() {
         run: () => openPerson(p.slackUserId),
       }),
     ),
-    // Scrolls to the Slack card, where the backfill is started and confirmed.
-    {
-      id: "act-backfill",
-      label: "Start 90-day Slack backfill",
-      group: "action",
-      run: () => goTo("system"),
-    },
+    // Opens the backfill setup card in its confirm step; omitted once the backfill is done.
+    ...(hasBackfillCard
+      ? [
+          {
+            id: "act-backfill",
+            label: "Start 90-day Slack backfill",
+            group: "action",
+            run: openBackfill,
+          } satisfies PaletteItem,
+        ]
+      : []),
     {
       id: "act-health",
       label: "Show system health",
@@ -409,7 +416,7 @@ export default function Dashboard() {
   return (
     <div className="syn-app">
       <Sidebar
-        items={sidebarItems(overview?.counts ?? null)}
+        items={sidebarItems(overview?.counts ?? null, cards.length)}
         active={active}
         onGo={(id) => {
           const section = SECTION_IDS.find((s) => s === id);
@@ -439,50 +446,20 @@ export default function Dashboard() {
                 </button>
               </p>
             )}
-            <IdentitySetup
-              identity={identity}
-              people={people}
-              onConfirm={(u) => void act(() => confirmSlackIdentity(u))}
-            />
           </section>
           <section id="triage" className="syn-section">
-            <h2>Urgent</h2>
-            <UrgentInbox
-              items={urgent}
-              onStatus={(id: string, s: UrgencyStatusDto) => void act(() => setUrgentStatus(id, s))}
-              onReply={(id: string, text: string) => void act(() => requestUrgentReply(id, text))}
-              onResolve={(id: string, d: ResolveDecisionDto) =>
-                void act(() => resolveOutgoing(id, d))
-              }
-            />
-            <h2>Follow-up drafts</h2>
-            <FollowupDrafts
-              items={followups}
-              onSend={(id: string, text: string) => void act(() => sendFollowup(id, text))}
-              onDiscard={(id: string) => void act(() => discardFollowup(id))}
-              onResolve={(id: string, d: ResolveDecisionDto) =>
-                void act(() => resolveOutgoing(id, d))
-              }
-            />
-            <h2>Red flags</h2>
-            <RedFlags
-              groups={flags}
+            <NeedsYou
+              cards={cards}
+              allClear={allClearRows(needsInput)}
+              now={now}
+              handlers={feed.handlers}
               expanded={expanded}
               history={history}
-              onToggle={toggleHistory}
-              onReview={(id: string, s: FlagReviewStatus) => void act(() => reviewFlag(id, s))}
+              hidden={feed.hidden}
+              sevenDay={claudeStatus?.quota?.sevenDay?.utilization ?? null}
+              onCopy={copy}
+              backfillConfirmSignal={backfillSignal}
             />
-            <h2>Profile recommendations</h2>
-            <ProfileRecommendations
-              items={recommendations}
-              onDecide={(d: Decision) => void decide(d.approvalId, d.decision, d.reason)}
-              onDismiss={(id) => void act(() => dismissSuggestion(id))}
-              onDiscard={(id) => void act(() => discardRecommendation(id))}
-              onRetry={(id) => void act(() => retryApply(id))}
-              onEvaluate={(id) => void evaluate(() => acceptSuggestion(id))}
-            />
-            <h2>Pending approvals</h2>
-            <ApprovalsList approvals={approvals} onDecide={decide} />
           </section>
           <section id="inbox" className="syn-section">
             <h2>Inbox</h2>
@@ -559,11 +536,7 @@ export default function Dashboard() {
             <h2>Claude</h2>
             <ClaudePanel status={claudeStatus} runs={claudeRuns} />
             <h2>Slack</h2>
-            <SlackStatus
-              status={slackStatus}
-              onBackfill={() => void backfill()}
-              onSkip={() => void skipPage()}
-            />
+            <SlackStatus status={slackStatus} onSkip={() => void skipPage()} />
           </section>
         </div>
       </main>

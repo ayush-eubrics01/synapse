@@ -1,0 +1,293 @@
+/* Needs-you feed (spec D7): decision cards and the all-clear checklist. */
+.syn-needs-head {
+  margin-bottom: 14px;
+}
+
+.syn-needs-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.syn-needs-sub {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.syn-needs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.syn-ncard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+}
+
+.syn-ncard-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.syn-ncard-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.syn-ncard-meta {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.syn-ncard-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.syn-ncard-quote {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--subtle2);
+  color: var(--ink2);
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.syn-ncard-explainer {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.syn-ncard-faint {
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.syn-ncard-section {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.syn-ncard-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.syn-ncard-draft-label {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--amberFg);
+}
+
+.syn-ncard-textarea,
+.syn-ncard-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--btnLine);
+  border-radius: var(--r-control);
+  background: var(--surface2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+}
+
+.syn-ncard-input {
+  width: auto;
+  min-width: 180px;
+}
+
+.syn-ncard-textarea:focus,
+.syn-ncard-input:focus {
+  outline: 2px solid var(--blueLine);
+  outline-offset: 1px;
+}
+
+.syn-ncard-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.syn-ncard-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.syn-ncard-link {
+  font-size: 13px;
+  color: var(--blueFg);
+  text-decoration: none;
+}
+
+.syn-ncard-link:hover {
+  text-decoration: underline;
+}
+
+.syn-ncard-inline {
+  font-size: 14px;
+  color: var(--ink2);
+}
+
+.syn-ncard-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.syn-ncard-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--subtle2);
+}
+
+.syn-ncard-confirm p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink2);
+}
+
+.syn-ncard-sources,
+.syn-ncard-observations,
+.syn-ncard-history,
+.syn-ncard-people {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.syn-ncard-sources {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.syn-ncard-evidence summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.syn-ncard-history {
+  padding-top: 10px;
+  border-top: 1px solid var(--line2);
+}
+
+.syn-ncard-history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.syn-ncard-history-meta {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.syn-ncard-history-text {
+  flex: 1;
+  min-width: 160px;
+  color: var(--ink2);
+  overflow-wrap: anywhere;
+}
+
+.syn-ncard-history-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.syn-ncard-person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.syn-ncard-person-name {
+  flex: 1;
+  color: var(--ink);
+}
+
+/* All clear */
+.syn-allclear {
+  margin: 12px 0 0;
+  padding: 14px 20px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface2);
+  border: 1px solid var(--line2);
+  border-radius: var(--r-card);
+}
+
+.syn-allclear-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.syn-allclear-check {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--greenBg);
+  color: var(--greenFg);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.syn-allclear-label {
+  color: var(--ink2);
+}
+
+.syn-allclear-fill {
+  flex: 1;
+  border-bottom: 1px dotted var(--line);
+}
+
+.syn-allclear-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--faint);
+}

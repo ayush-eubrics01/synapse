@@ -2,7 +2,7 @@
 
 import type { PersonDetail, PersonPriority, ProfileSection } from "@synapse/contracts";
 import { PriorityControls } from "./PriorityPeople";
-import { Evidence } from "./ProfileRecommendations";
+import { Evidence } from "./triage/RecommendationCard";
 
 const SECTION_TITLES: Record<ProfileSection, string> = {
   professionalContext: "Professional context",
