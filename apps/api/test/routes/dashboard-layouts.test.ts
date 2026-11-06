@@ -213,4 +213,60 @@ describe("dashboard layouts API", () => {
     const all = await list();
     expect(all.active.id).toBe(focus.id);
   });
+
+  test("invalid JSON bodies and an empty PUT are 400 and write nothing", async () => {
+    const { active } = await list();
+    const auditBefore = c.db.select().from(schema.auditEvents).all().length;
+    const eventsBefore = changed().length;
+    const raw = (method: string, path: string) =>
+      app.request(`http://127.0.0.1:7400/api/dashboard/layouts${path}`, {
+        method,
+        headers: { "content-type": "application/json" },
+        body: "{not json",
+      });
+    const p = await raw("POST", "");
+    expect(p.status).toBe(400);
+    expect(await errorOf(p)).toBe("invalid_name");
+    const u = await raw("PUT", `/${active.id}`);
+    expect(u.status).toBe(400);
+    expect(await errorOf(u)).toBe("invalid_layout");
+    const empty = await call("PUT", `/${active.id}`, {});
+    expect(empty.status).toBe(400);
+    expect(await errorOf(empty)).toBe("invalid_layout");
+    expect(c.db.select().from(schema.auditEvents).all()).toHaveLength(auditBefore);
+    expect(changed()).toHaveLength(eventsBefore);
+  });
+
+  test("renaming onto another layout's name is name_taken", async () => {
+    const { active } = await list();
+    await post("Focus");
+    const r = await call("PUT", `/${active.id}`, { name: "FOCUS" });
+    expect(r.status).toBe(409);
+    expect(await errorOf(r)).toBe("name_taken");
+    expect((await call("PUT", `/${active.id}`, { name: "Default" })).status).toBe(200);
+  });
+
+  test("create with fromId copies that (non-active) layout", async () => {
+    const { active } = await list();
+    const focus = (await (await post("Focus")).json()) as DashboardLayoutView;
+    await call("PUT", `/${focus.id}`, {
+      layout: {
+        version: 1,
+        sections: [{ id: "jira", visible: false, collapsed: true, width: "half" }],
+      },
+    });
+    const r = await call("POST", "", { name: "Copy", fromId: focus.id });
+    expect(r.status).toBe(201);
+    const v = (await r.json()) as DashboardLayoutView;
+    expect(v.layout.sections[0]?.id).toBe("jira");
+    expect(v.layout).not.toEqual(active.layout);
+  });
+
+  test("at the limit, limit_reached wins over name_taken", async () => {
+    await list();
+    for (let i = 0; i < 9; i++) await post(`L${i}`);
+    const r = await post("L0");
+    expect(r.status).toBe(409);
+    expect(await errorOf(r)).toBe("limit_reached");
+  });
 });

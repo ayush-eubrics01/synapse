@@ -16,7 +16,7 @@ export function dashboardLayoutRoutes(c: Container): Hono {
     throw err;
   };
   const body = async (ctx: { req: { json: () => Promise<unknown> } }): Promise<unknown> =>
-    ctx.req.json().catch(() => ({}));
+    ctx.req.json().catch(() => undefined);
 
   app.get("/api/dashboard/layouts", (ctx) => ctx.json(svc.list()));
 
@@ -33,7 +33,8 @@ export function dashboardLayoutRoutes(c: Container): Hono {
 
   app.put("/api/dashboard/layouts/:id", async (ctx) => {
     const b = updateBody.safeParse(await body(ctx));
-    if (!b.success) return ctx.json({ error: "invalid_layout" }, 400);
+    if (!b.success || (b.data.name === undefined && b.data.layout === undefined))
+      return ctx.json({ error: "invalid_layout" }, 400);
     let name: string | undefined;
     if (b.data.name !== undefined) {
       const n = layoutNameSchema.safeParse(b.data.name);

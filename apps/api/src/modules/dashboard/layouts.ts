@@ -71,7 +71,7 @@ export class DashboardLayoutService {
     return this.write("updated", (tx) => {
       const rows = this.rows(tx);
       if (!rows.some((r) => r.id === id)) throw new LayoutError("not_found");
-      const set: { name?: string; layout?: string; updatedAt: string } = {
+      const set: Partial<typeof t.$inferInsert> = {
         updatedAt: isoNow(this.deps.clock),
       };
       if (patch.name !== undefined) {
@@ -81,11 +81,8 @@ export class DashboardLayoutService {
         );
         set.name = patch.name;
       }
-      if (patch.layout !== undefined) set.layout = JSON.stringify(normaliseLayout(patch.layout));
-      tx.update(t)
-        .set(set as never)
-        .where(eq(t.id, id))
-        .run();
+      if (patch.layout !== undefined) set.layout = normaliseLayout(patch.layout);
+      tx.update(t).set(set).where(eq(t.id, id)).run();
       return id;
     });
   }
@@ -162,7 +159,7 @@ export class DashboardLayoutService {
         updatedAt: t.updatedAt,
       })
       .from(t)
-      .orderBy(asc(t.createdAt), desc(t.id))
+      .orderBy(asc(t.createdAt), asc(t.id))
       .all();
   }
 
