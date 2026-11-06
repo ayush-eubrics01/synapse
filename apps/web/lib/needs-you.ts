@@ -2,12 +2,14 @@ import type {
   ApprovalView,
   AwayDigest,
   CandidatesResponse,
+  JiraIssueView,
   RecommendationView,
 } from "@synapse/contracts";
 import type {
   CommitmentViewDto,
   FollowupViewDto,
   GroupedFlagsDto,
+  JiraStatusDto,
   PersonDto,
   ResolveDecisionDto,
   SlackIdentityDto,
@@ -46,10 +48,12 @@ export type NeedsCard = CardBase &
     | { kind: "flag"; data: GroupedFlagsDto }
     | { kind: "followup"; data: FollowupViewDto }
     | { kind: "commitment"; data: CommitmentViewDto }
+    | { kind: "jira-attention"; data: { issues: JiraIssueView[] } }
     | { kind: "recommendation"; data: RecommendationView }
     | { kind: "setup-identity"; data: { identity: SlackIdentityDto; people: PersonDto[] } }
     | { kind: "setup-people"; data: { candidates: Candidate[] } }
     | { kind: "setup-backfill"; data: { backfill: SlackStatusDto["backfill"] } }
+    | { kind: "setup-jira"; data: Record<string, never> }
   );
 
 export type NeedsKind = NeedsCard["kind"];
@@ -68,6 +72,9 @@ export interface NeedsYouInput {
   slackStatus: SlackStatusDto | null;
   /** The return digest of the last away session, until dismissed (spec A17). */
   awayDigest?: AwayDigest | null;
+  /** Jira tracking status (null until loaded) and the in-scope issues; absent in older callers. */
+  jiraStatus?: JiraStatusDto | null;
+  jiraIssues?: JiraIssueView[];
   /** Keys of items pending a deferred commit (spec D8): never shown, whatever the data says. */
   hidden: Set<string>;
 }
@@ -91,10 +98,12 @@ const RANK = {
   approval: 20,
   followup: 40,
   commitment: 50,
+  jira: 55,
   recommendation: 60,
   identity: 70,
   people: 71,
   backfill: 72,
+  jiraSetup: 73,
 } as const;
 
 /** The key a flag card (and a deferred flag review) uses. */
@@ -189,6 +198,21 @@ export function buildNeedsYou(input: NeedsYouInput): NeedsCard[] {
     cards.push({ key: `commitment:${c.id}`, kind: "commitment", rank: RANK.commitment, data: c });
   }
 
+  // One card for all issues that need attention; the card shows the first few.
+  const jiraAttention = input.jiraStatus?.enabled
+    ? (input.jiraIssues ?? []).filter(
+        (i) => i.inScope && i.attention !== null && i.statusCategory !== "done",
+      )
+    : [];
+  if (jiraAttention.length > 0) {
+    cards.push({
+      key: "jira-attention",
+      kind: "jira-attention",
+      rank: RANK.jira,
+      data: { issues: jiraAttention },
+    });
+  }
+
   for (const r of input.recommendations) {
     cards.push({
       key: `recommendation:${r.id}`,
@@ -229,6 +253,10 @@ export function buildNeedsYou(input: NeedsYouInput): NeedsCard[] {
       rank: RANK.backfill,
       data: { backfill: s.backfill },
     });
+  }
+
+  if (input.jiraStatus && !input.jiraStatus.enabled) {
+    cards.push({ key: "setup:jira", kind: "setup-jira", rank: RANK.jiraSetup, data: {} });
   }
 
   // Array.prototype.sort is stable: equal ranks keep the API's order.

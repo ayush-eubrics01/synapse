@@ -8,6 +8,7 @@ import type {
   ConversationSummary,
   ConversationThread,
   DashboardOverview,
+  JiraIssueView,
   Job,
   PersonDetail,
   RecommendationView,
@@ -33,6 +34,8 @@ import {
   getCommitments,
   getConversations,
   getFollowups,
+  getJiraIssues,
+  getJiraStatus,
   getJobs,
   getOverview,
   getPeople,
@@ -44,6 +47,7 @@ import {
   getSlackStatus,
   getThread,
   getUrgent,
+  type JiraStatusDto,
   type OverviewFailure,
   type PersonDto,
   type PersonPriorityDto,
@@ -57,6 +61,7 @@ import {
 } from "../lib/api";
 import { trailingDebounce } from "../lib/debounce";
 import { conversationTitle, filterConversations, type InboxFilter } from "../lib/inbox";
+import { jiraPaletteItems, jiraRowId } from "../lib/jira";
 import { LIVE_EVENT_TYPES } from "../lib/live-events";
 import { SECTION_IDS, type SectionId, sidebarItems } from "../lib/nav";
 import {
@@ -75,6 +80,7 @@ import { AwayBanner } from "./components/header/AwayBanner";
 import { CommandPalette } from "./components/header/CommandPalette";
 import { Header } from "./components/header/Header";
 import { Inbox } from "./components/inbox/Inbox";
+import { JiraSection } from "./components/jira/JiraSection";
 import { People } from "./components/people/People";
 import { ProfileDrawer } from "./components/people/ProfileDrawer";
 import { useQueuedEvaluations } from "./components/people/useQueuedEvaluations";
@@ -148,6 +154,7 @@ const GO_TO: Array<{ id: SectionId; label: string }> = [
   { id: "triage", label: "Needs you" },
   { id: "inbox", label: "Inbox" },
   { id: "commitments", label: "Commitments" },
+  { id: "jira", label: "Jira" },
   { id: "people", label: "People" },
   { id: "system", label: "System" },
 ];
@@ -198,6 +205,8 @@ export default function Dashboard() {
   const [commitments, setCommitments] = useState<CommitmentViewDto[]>([]);
   const [reviewQueue, setReviewQueue] = useState<CommitmentViewDto[]>([]);
   const [followups, setFollowups] = useState<FollowupViewDto[]>([]);
+  const [jiraStatus, setJiraStatus] = useState<JiraStatusDto | null>(null);
+  const [jiraIssues, setJiraIssues] = useState<JiraIssueView[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionErrors, setActionErrors] = useState<ActionErrors>(NO_ACTION_ERRORS);
   // Immediate actions clear only their own channel; a deferred commit's failure stays until Dismiss.
@@ -224,7 +233,7 @@ export default function Dashboard() {
   const refresh = useCallback(async () => {
     const openUser = personRef.current;
     const threadId = threadIdRef.current;
-    const [a, j, cs, cr, ss, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv, pd, td, ad] =
+    const [a, j, cs, cr, ss, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv, pd, td, ad, js, ji] =
       await Promise.allSettled([
         getApprovals(),
         getJobs(20),
@@ -245,6 +254,8 @@ export default function Dashboard() {
         openUser ? getPersonProfile(openUser) : Promise.resolve(null),
         threadId ? getThread(threadId) : Promise.resolve(null),
         getAwayDigest(),
+        getJiraStatus(),
+        getJiraIssues("all"),
       ]);
     if (a.status === "fulfilled") setApprovals(a.value);
     if (j.status === "fulfilled") setJobs(j.value);
@@ -264,6 +275,8 @@ export default function Dashboard() {
     setOverviewFailure(ov.status === "rejected" ? classifyOverviewFailure(ov.reason) : null);
     if (cv.status === "fulfilled") setConversations(cv.value);
     if (ad.status === "fulfilled") setAwayDigest(ad.value);
+    if (js.status === "fulfilled") setJiraStatus(js.value);
+    if (ji.status === "fulfilled") setJiraIssues(ji.value);
     // The open thread is refetched with everything else; stale answers for another conversation are dropped.
     if (td.status === "fulfilled" && td.value && threadIdRef.current === threadId)
       setThread(td.value);
@@ -286,9 +299,28 @@ export default function Dashboard() {
       return next;
     });
     // A failed thread refetch surfaces like any other fetch failure.
-    const failed = [a, j, cs, cr, ss, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv, td, ad].find(
-      (r) => r.status === "rejected",
-    );
+    const failed = [
+      a,
+      j,
+      cs,
+      cr,
+      ss,
+      ug,
+      sf,
+      pp,
+      id,
+      cd,
+      rc,
+      cm,
+      rq,
+      fu,
+      ov,
+      cv,
+      td,
+      ad,
+      js,
+      ji,
+    ].find((r) => r.status === "rejected");
     const message = failed?.status === "rejected" ? String(failed.reason) : null;
     setLoadError(message);
     return message;
@@ -407,6 +439,7 @@ export default function Dashboard() {
     setDeferredError,
     toggleHistory,
     seeAllPeople: () => goTo("people"),
+    seeAllJira: () => goTo("jira"),
     onEvaluationQueued: (id) => evalQueue.markQueued([id]),
   });
   // Pending-undo keys are passed in, so a live refresh can't bring a hidden item back (D8).
@@ -422,6 +455,8 @@ export default function Dashboard() {
     candidates,
     slackStatus,
     awayDigest,
+    jiraStatus,
+    jiraIssues,
     hidden: feed.hidden,
   };
   const cards = buildNeedsYou(needsInput);
@@ -486,6 +521,13 @@ export default function Dashboard() {
         setOpenHealthSignal((n) => n + 1);
       },
     },
+    ...jiraPaletteItems(jiraIssues, jiraStatus?.enabled === true, {
+      sync: feed.handlers.syncJira,
+      open: (key) => {
+        setActive("jira");
+        scrollToSection(jiraRowId(key));
+      },
+    }),
     { id: "act-theme", label: "Toggle theme", group: "action", run: toggleTheme },
   ];
 
@@ -613,6 +655,15 @@ export default function Dashboard() {
                 })
               }
               onGoToReview={() => goTo("triage")}
+            />
+          </section>
+          <section id="jira" className="syn-section">
+            <JiraSection
+              status={jiraStatus}
+              issues={jiraIssues}
+              now={now}
+              onSync={feed.handlers.syncJira}
+              onGoToSetup={() => goTo("triage")}
             />
           </section>
           <section id="people" className="syn-section">

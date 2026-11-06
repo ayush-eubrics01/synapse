@@ -76,6 +76,7 @@ function setup(fail: Partial<Record<keyof NeedsYouApi, Error>> = {}, evalQueued 
     committing,
     toggleHistory: () => {},
     seeAllPeople: () => {},
+    seeAllJira: () => {},
     onEvaluationQueued: (id) => evaluationsQueued.push(id),
   });
   const hidden = () => new Set([...deferred.pending(), ...committing]);

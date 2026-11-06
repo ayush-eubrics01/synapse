@@ -14,6 +14,9 @@ import type {
   FollowupView,
   GroupedFlags,
   HealthReport,
+  JiraIssueView,
+  JiraIssueViewKind,
+  JiraStatusDto as JiraStatusDtoContract,
   Job,
   OutgoingResolveAction,
   PersonDetail,
@@ -584,6 +587,50 @@ export function dismissAwayDigest(
   return request<void>(
     `/api/away/digest/${encodeURIComponent(sessionId)}/dismiss`,
     { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export type JiraIssueViewDto = JiraIssueView;
+export type JiraStatusDto = JiraStatusDtoContract;
+export interface JiraSettingsDto {
+  enabled?: boolean;
+  scopeJql?: string;
+  excludedProjects?: string[];
+}
+
+export function getJiraStatus(fetchImpl: typeof fetch = fetch): Promise<JiraStatusDto> {
+  return request("/api/jira/status", undefined, fetchImpl);
+}
+
+export function getJiraIssues(
+  view: JiraIssueViewKind = "all",
+  fetchImpl: typeof fetch = fetch,
+): Promise<JiraIssueViewDto[]> {
+  return request(`/api/jira/issues?view=${view}`, undefined, fetchImpl);
+}
+
+export function getJiraIssue(
+  key: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<JiraIssueViewDto> {
+  return request(`/api/jira/issues/${encodeURIComponent(key)}`, undefined, fetchImpl);
+}
+
+/** A 409 means Jira is disabled. */
+export function requestJiraSync(
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ jobId: string; type: string; created: boolean }> {
+  return postJson("/api/jira/sync", {}, fetchImpl);
+}
+
+export function updateJiraSettings(
+  patch: JiraSettingsDto,
+  fetchImpl: typeof fetch = fetch,
+): Promise<JiraStatusDto> {
+  return request(
+    "/api/jira/settings",
+    { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(patch) },
     fetchImpl,
   );
 }

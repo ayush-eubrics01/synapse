@@ -33,6 +33,9 @@ export interface NeedsYouHandlers {
   startBackfill: () => void;
   dismissAwayDigest: (sessionId: string) => void;
   setAway: (on: boolean) => void;
+  syncJira: () => void;
+  enableJira: (setup: { scopeJql: string; excludedProjects: string[] }) => void;
+  seeAllJira: () => void;
 }
 
 /** The `lib/api.ts` calls the feed uses; injectable so the routing can be tested. */
@@ -55,6 +58,8 @@ export type NeedsYouApi = Pick<
   | "startBackfill"
   | "dismissAwayDigest"
   | "setAway"
+  | "requestJiraSync"
+  | "updateJiraSettings"
 >;
 
 export const realNeedsYouApi: NeedsYouApi = apiModule;
@@ -72,6 +77,8 @@ export const TOASTS = {
   backfillQueued: "Backfill queued · runs in the background",
   awayOn: "Away mode on",
   awayOff: "Away mode off",
+  jiraSyncQueued: "Jira sync queued · runs in the background",
+  jiraEnabled: "Jira tracking on · first sync queued",
   draftDiscarded: "Draft discarded",
   notACommitment: "Marked as not a commitment",
   suggestionDismissed: "Suggestion dismissed",
@@ -100,6 +107,7 @@ export interface NeedsYouActionsDeps {
   committing: { add(key: string): void; delete(key: string): void };
   toggleHistory: (slackUserId: string) => void;
   seeAllPeople: () => void;
+  seeAllJira: () => void;
   /** A person whose evaluation was queued: added to the session's queued set People shares. */
   onEvaluationQueued?: (slackUserId: string) => void;
 }
@@ -200,6 +208,11 @@ export function createNeedsYouActions(d: NeedsYouActionsDeps): NeedsYouHandlers 
     startBackfill: () => void now(() => api.startBackfill(), TOASTS.backfillQueued),
     // Immediate, never deferred: dismissing is cheap and the digest has nothing to undo.
     dismissAwayDigest: (id) => void now(() => api.dismissAwayDigest(id)),
+    // Immediate: both are local settings or a read-only sync, nothing external is written.
+    syncJira: () => void now(() => api.requestJiraSync(), TOASTS.jiraSyncQueued),
+    enableJira: (setup) =>
+      void now(() => api.updateJiraSettings({ enabled: true, ...setup }), TOASTS.jiraEnabled),
+    seeAllJira: d.seeAllJira,
     setAway: (on) => void now(() => api.setAway(on), on ? TOASTS.awayOn : TOASTS.awayOff),
   };
 }
