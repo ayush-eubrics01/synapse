@@ -1,4 +1,4 @@
-import { type AIExecutionRequest, REPO_PATH_RE } from "@synapse/contracts";
+import { type AIExecutionRequest, isSafeAbsolutePath } from "@synapse/contracts";
 import { assemblePrompt } from "./prompt";
 import {
   BUILTIN_FS_READ,
@@ -48,7 +48,7 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *     whose toolName is its write tool (J2), so every send is blocked by the PreToolUse hook
  *     unless its arguments are the approved ones
  *  L. engineering Read/Grep/Glob must each be exactly `Tool(<workingDirectory>/**)`, and the
- *     working directory must match REPO_PATH_RE (C7; a bare Read fails). Last, so the other
+ *     working directory must satisfy isSafeAbsolutePath (no dot or empty segments, two or more segments) (C7; a bare Read fails). Last, so the other
  *     rules keep their order. Tools other than the fs reads are unaffected
  * Tool names are normalised (specifier stripped) before classification.
  */
@@ -175,7 +175,7 @@ export function validateRequest(
   if (req.workerProfile === "engineering") {
     const scopedFs = raw.filter((t) => BUILTIN_FS_READ.includes(normalizeTool(t)));
     if (scopedFs.length > 0) {
-      if (!REPO_PATH_RE.test(req.workingDirectory)) {
+      if (!isSafeAbsolutePath(req.workingDirectory)) {
         return fail("working directory must be an absolute path of safe characters");
       }
       const dir = req.workingDirectory.replace(/\/+$/, "");

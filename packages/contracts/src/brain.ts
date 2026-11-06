@@ -4,6 +4,23 @@ import { jiraAttentionSchema } from "./jira";
 /** C2: embedded in tool permission specifiers, so no spaces, commas, parentheses or quotes. */
 export const REPO_PATH_RE = /^\/[A-Za-z0-9._/-]+$/;
 
+/**
+ * True for an absolute path that is safe to embed in a `Tool(<path>/**)` specifier: safe
+ * characters only, no empty, `.` or `..` segment (so no `//` or `/tmp/a/../..`), and at least two
+ * segments (so neither `/` nor a top-level directory like `/tmp` can become a scope). One trailing
+ * slash is tolerated.
+ */
+export function isSafeAbsolutePath(p: string): boolean {
+  if (!REPO_PATH_RE.test(p)) return false;
+  const body = p.endsWith("/") ? p.slice(0, -1) : p;
+  if (body === "") return false;
+  const segs = body.slice(1).split("/");
+  if (segs.length < 2) return false;
+  return segs.every((x) => x !== "" && x !== "." && x !== "..");
+}
+
+const safePathSchema = z.string().refine(isSafeAbsolutePath, "unsafe path");
+
 export const factKindSchema = z.enum([
   "purpose",
   "stack",
@@ -53,7 +70,7 @@ export type RepositoryDrift = z.infer<typeof repositoryDriftSchema>;
 
 /** `POST /api/repos`: re-inspected and saved in one transaction. */
 export const repositoryRegisterInputSchema = z.object({
-  path: z.string().regex(REPO_PATH_RE),
+  path: safePathSchema,
   name: z.string().min(1).max(80),
   trackedBranch: z.string().min(1).max(200),
   environments: z.array(environmentInputSchema).max(10).default([]),
@@ -183,3 +200,7 @@ export const inspectionOutputSchema = z.object({
   unknowns: z.array(z.string().max(400)).max(INSPECTION_MAX_UNKNOWNS),
 });
 export type InspectionOutput = z.infer<typeof inspectionOutputSchema>;
+
+/** `POST /api/repos/inspect` body. */
+export const repositoryInspectInputSchema = z.object({ path: safePathSchema });
+export type RepositoryInspectInput = z.infer<typeof repositoryInspectInputSchema>;

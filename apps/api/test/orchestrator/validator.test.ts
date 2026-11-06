@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { AIExecutionRequest, PromptPart } from "@synapse/contracts";
+import {
+  type AIExecutionRequest,
+  isSafeAbsolutePath,
+  type PromptPart,
+  repositoryInspectInputSchema,
+  repositoryRegisterInputSchema,
+} from "@synapse/contracts";
 import { assemblePrompt } from "../../src/core/orchestrator/prompt";
 import {
   buildDenylist,
@@ -46,7 +52,8 @@ describe("validateRequest", () => {
   test("valid engineering without untrusted", () => {
     const r = make({
       workerProfile: "engineering",
-      allowed: ["Read(/tmp/**)", "Edit", "Bash"],
+      allowed: ["Read(/tmp/demo-repo/**)", "Edit", "Bash"],
+      workingDirectory: "/tmp/demo-repo",
       promptParts: [
         { provenance: "system", content: "x" },
         { provenance: "user_approved", content: "y" },
@@ -146,7 +153,8 @@ describe("validateRequest", () => {
   test("R26 Bash(git:*) accepted on engineering", () => {
     const r = make({
       workerProfile: "engineering",
-      allowed: ["Read(/tmp/**)", "Bash(git:*)"],
+      allowed: ["Read(/tmp/demo-repo/**)", "Bash(git:*)"],
+      workingDirectory: "/tmp/demo-repo",
       promptParts: [],
     });
     expect(v(r)).toEqual({ ok: true });
@@ -276,7 +284,8 @@ describe("final-review fixes", () => {
     ).toEqual({ ok: true });
     const e = make({
       workerProfile: "engineering",
-      allowed: ["Read(/tmp/**)", "Grep(/tmp/**)", "Glob(/tmp/**)"],
+      allowed: ["Read(/tmp/demo-repo/**)", "Grep(/tmp/demo-repo/**)", "Glob(/tmp/demo-repo/**)"],
+      workingDirectory: "/tmp/demo-repo",
       promptParts: [],
     });
     expect(v(e)).toEqual({ ok: true });
@@ -419,5 +428,49 @@ describe("rule L (engineering fs reads scoped to the working directory)", () => 
       v(make({ workerProfile: "intelligence", allowed: ["ToolSearch"], promptParts: [] })),
     ).toEqual({ ok: true });
     expect(v(make())).toEqual({ ok: true });
+  });
+  test("dot, empty and shallow working directories fail", () => {
+    for (const wd of ["/tmp/a/../..", "//", "///", "/tmp/./x", "/tmp//x", "/tmp", "/"]) {
+      expect(reason(v(eng([`Read(${wd}/**)`], wd)))).toBe(
+        "working directory must be an absolute path of safe characters",
+      );
+    }
+  });
+  test("specifier variants fail", () => {
+    expect(reason(v(eng([`Read(${WD}/**/)`])))).toBe(MSG);
+    expect(reason(v(eng([`Read(${WD}/**/**)`])))).toBe(MSG);
+    expect(reason(v(eng([`read(${WD}/**)`])))).toBe("unknown built-in tool read");
+    expect(reason(v(eng([`Read(${WD}/**) `])))).toBe(`malformed tool name Read(${WD}/**) `);
+  });
+});
+
+describe("isSafeAbsolutePath", () => {
+  test("accepts and rejects", () => {
+    for (const p of ["/tmp/x", "/tmp/x/", "/home/u/proj-1/a.b"])
+      expect(isSafeAbsolutePath(p)).toBe(true);
+    for (const p of [
+      "/",
+      "//",
+      "/tmp",
+      "/tmp/",
+      "/tmp/../x",
+      "/tmp/./x",
+      "/tmp//x",
+      "tmp/x",
+      "/a b/c",
+      "",
+    ]) {
+      expect(isSafeAbsolutePath(p)).toBe(false);
+    }
+  });
+  test("register and inspect schemas reject dot segments", () => {
+    const base = { name: "n", trackedBranch: "main" };
+    expect(repositoryRegisterInputSchema.safeParse({ ...base, path: "/tmp/a/../.." }).success).toBe(
+      false,
+    );
+    expect(repositoryRegisterInputSchema.safeParse({ ...base, path: "/tmp/a/b" }).success).toBe(
+      true,
+    );
+    expect(repositoryInspectInputSchema.safeParse({ path: "/tmp/a/.." }).success).toBe(false);
   });
 });
