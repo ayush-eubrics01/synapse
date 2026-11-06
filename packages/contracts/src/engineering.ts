@@ -186,7 +186,7 @@ const CONTROL = /[\u0000-\u0008\u000B-\u001F\u007F]/;
 
 /** Whether `value` is text the commit or PR executors can pass on as one argv element. */
 export function isValidApprovalText(field: ApprovalTextField, value: string): boolean {
-  if (CONTROL.test(value)) return false;
+  if (CONTROL.test(value) || !value.isWellFormed()) return false;
   const length = [...value].length;
   switch (field) {
     case "commitMessage": {

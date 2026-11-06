@@ -1878,6 +1878,37 @@ describe("approval text edits and merge re-request (F2.1, F3.2)", () => {
     expect(row?.status).not.toBe("pending");
   });
 
+  test("not_pending: task status, current step and step-row approval each reached with a valid field", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    const before = payloadOf(a.id).message;
+    const setTask = (v: Record<string, unknown>) =>
+      db.update(schema.engineeringTasks).set(v).where(eq(schema.engineeringTasks.id, id)).run();
+    const expectRefused = async () => {
+      expect(await put(id, a.id, { commitMessage: "Fix add" })).toEqual({
+        status: 409,
+        body: { error: "not_pending" },
+      });
+      expect(payloadOf(a.id).message).toBe(before);
+    };
+    setTask({ status: "needs_attention" });
+    await expectRefused();
+    setTask({ status: "awaiting_approval", currentStep: "merge_local" });
+    await expectRefused();
+    setTask({ currentStep: "commit" });
+    db.update(schema.engineeringTaskSteps)
+      .set({ approvalId: "other" })
+      .where(
+        and(
+          eq(schema.engineeringTaskSteps.taskId, id),
+          eq(schema.engineeringTaskSteps.step, "commit"),
+        ),
+      )
+      .run();
+    await expectRefused();
+    expect(editAudits()).toHaveLength(0);
+  });
+
   test("push_pr: title and a 20000-character body reach createPr", async () => {
     const id = await developed();
     await approve("engineering.commit");

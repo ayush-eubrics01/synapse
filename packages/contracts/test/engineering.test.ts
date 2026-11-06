@@ -215,6 +215,12 @@ describe("isValidApprovalText (F2.1)", () => {
     expect(ok("prTitle", "\u{1F600}".repeat(200))).toBe(true);
     expect(ok("prTitle", "\u{1F600}".repeat(201))).toBe(false);
   });
+  test("unpaired surrogates are rejected, pairs are kept", () => {
+    expect(ok("commitMessage", "Fix \ud800")).toBe(false);
+    expect(ok("prTitle", "a\udc00")).toBe(false);
+    expect(ok("prBody", "x\ud83d")).toBe(false);
+    expect(ok("prBody", "ok \u{1F600}")).toBe(true);
+  });
   test("pr title", () => {
     expect(ok("prTitle", "Fix add")).toBe(true);
     expect(ok("prTitle", "a\nb")).toBe(false);
