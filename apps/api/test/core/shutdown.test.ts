@@ -24,7 +24,10 @@ function fakes(over: Partial<ShutdownDeps> = {}) {
       },
     },
     releaseLeases: () => calls.push("release"),
-    server: { stop: () => calls.push("server.stop") },
+    server: {
+      stop: (force?: boolean) =>
+        void calls.push(force === true ? "server.stop" : "server.stop(soft)"),
+    },
     sqlite: {
       run: ((sql: string) => {
         calls.push(sql.includes("wal_checkpoint") ? "checkpoint" : sql);
@@ -145,4 +148,35 @@ test("releaseHeldBy skips the engineering lease even when this worker holds it",
   c.leases.acquire("engineering", c.workerId, 60_000);
   expect(c.leases.releaseHeldBy(c.workerId)).toBe(0);
   expect(c.leases.get("engineering")?.holder).toBe(c.workerId);
+});
+
+test("shutdown completes promptly while a client holds /api/stream open", async () => {
+  const { createApp } = await import("../../src/app");
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: createApp(c).fetch,
+    idleTimeout: 0,
+  });
+  const res = await fetch(`http://127.0.0.1:${server.port}/api/stream`);
+  const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+  await reader.read(); // ": connected" -- the stream is live and stays open
+  const calls: string[] = [];
+  const shutdown = createShutdown({
+    intervals: [],
+    worker: { stop: async () => {} },
+    releaseLeases: () => {},
+    server,
+    sqlite: {
+      run: ((sql: string) => void calls.push(sql)) as never,
+      close: () => void calls.push("close"),
+    },
+    exit: (code) => void calls.push(`exit(${code})`),
+    log: (l) => void calls.push(`log:${l}`),
+  });
+  const started = Date.now();
+  await shutdown("SIGTERM");
+  expect(Date.now() - started).toBeLessThan(3000);
+  expect(calls).toEqual(["PRAGMA wal_checkpoint(TRUNCATE)", "close", "exit(0)"]);
+  await reader.cancel().catch(() => {});
 });

@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -277,4 +278,14 @@ test("dailyDue", () => {
     reason: "done_today",
   });
   expect(dailyDue(now, 3, "2026-11-06", lt("2026-11-07", 4)).due).toBe(true);
+});
+
+test("a pre-existing backup dir keeps its mode when chmodDir is false; a created one is 0700", () => {
+  mkdirSync(dir, { mode: 0o755 });
+  chmodSync(dir, 0o755);
+  expect(svc({ chmodDir: false }).run(7).ok).toBe(true);
+  expect(statSync(dir).mode & 0o777).toBe(0o755);
+  rmSync(dir, { recursive: true, force: true });
+  expect(svc({ chmodDir: false }).run(7).ok).toBe(true);
+  expect(statSync(dir).mode & 0o777).toBe(0o700);
 });

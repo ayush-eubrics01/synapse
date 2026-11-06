@@ -18,6 +18,8 @@ import { knownMigrationHashes } from "@synapse/database";
 import { loadConfig } from "../../apps/api/src/core/config/config";
 
 export const RESTORE_USAGE = "usage: bun scripts/ops/restore.ts <backup-file> --yes";
+export const RESTORE_REMINDER =
+  "check Outgoing and Inbox before approving anything: an older snapshot can show executed approvals as pending again";
 export const RESTORED_LINE = "restored; start the API to apply any newer migrations";
 
 export type RestoreRefusal =
@@ -244,6 +246,7 @@ async function run(
   }
   deps.log(`restored: ${basename(dbPath)} (${statSync(dbPath).size} bytes)`);
   deps.log(RESTORED_LINE);
+  deps.log(RESTORE_REMINDER);
   return { ok: true };
 }
 

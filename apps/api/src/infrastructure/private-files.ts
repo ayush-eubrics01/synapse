@@ -93,14 +93,7 @@ export function securePrivateFiles(
     }
     realDir = dir;
   } else {
-    const home = resolve(opts.home ?? homedir());
-    const cwd = resolve(opts.cwd ?? process.cwd());
-    const dedicated =
-      isAbsolute(dbPath) &&
-      realDir !== "/" &&
-      realDir !== home &&
-      !home.startsWith(`${realDir}/`) &&
-      realDir !== cwd;
+    const dedicated = isDedicatedDir(dbPath, realDir, resolve, opts);
     if (dedicated) fix(realDir, 0o700);
   }
   const name = basename(dbPath);
@@ -108,4 +101,52 @@ export function securePrivateFiles(
   for (const f of fs.readdir(realDir)) if (MANUAL_BACKUP.test(f)) targets.add(f);
   for (const f of targets) fix(join(realDir, f), 0o600);
   return { ok: failed === 0, changed, failed };
+}
+
+/** True when the data dir is not relative, "/", home, an ancestor of home, or the cwd. */
+function isDedicatedDir(
+  dbPath: string,
+  realDir: string,
+  resolve: (p: string) => string,
+  opts: { home?: string; cwd?: string },
+): boolean {
+  const home = resolve(opts.home ?? homedir());
+  const cwd = resolve(opts.cwd ?? process.cwd());
+  return (
+    isAbsolute(dbPath) &&
+    realDir !== "/" &&
+    realDir !== home &&
+    !home.startsWith(`${realDir}/`) &&
+    realDir !== cwd
+  );
+}
+
+/** Same dedicated-directory rule as `securePrivateFiles`, for callers outside this module. */
+export function isDedicatedDataDir(
+  dbPath: string,
+  opts: { home?: string; cwd?: string } = {},
+): boolean {
+  const dir = dirname(dbPath);
+  let real = dir;
+  try {
+    real = realpathSync(dir);
+  } catch {
+    // not created yet: judge the path as given
+  }
+  const resolve = (p: string): string => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  return isDedicatedDir(dbPath, real, resolve, opts);
+}
+
+/** Default backup directory: `<dataDir>/backups` only when the data dir is dedicated. */
+export function defaultBackupDir(
+  dbPath: string,
+  opts: { home?: string; cwd?: string } = {},
+): string {
+  return join(dirname(dbPath), isDedicatedDataDir(dbPath, opts) ? "backups" : "synapse-backups");
 }

@@ -3,6 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdtempSync,
   readdirSync,
@@ -14,7 +15,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { knownMigrationHashes, openDatabase, runMigrations } from "@synapse/database";
-import { RESTORE_USAGE, RESTORED_LINE, type RestoreDeps, restore } from "../restore";
+import {
+  RESTORE_REMINDER,
+  RESTORE_USAGE,
+  RESTORED_LINE,
+  type RestoreDeps,
+  restore,
+} from "../restore";
 
 const SENTINEL = "SENTINEL-ROW-7f3a";
 const ASIDE = "synapse.db.before-restore-20261107-040506-abcdef";
@@ -256,7 +263,8 @@ test("restores over a hot WAL (no connection open); the set-aside main file hold
   for (const f of [dbPath, ...aside.map((a) => join(dir, a))]) {
     expect(statSync(f).mode & 0o777).toBe(0o600);
   }
-  expect(logs.at(-1)).toBe(RESTORED_LINE);
+  expect(logs.at(-2)).toBe(RESTORED_LINE);
+  expect(logs.at(-1)).toBe(RESTORE_REMINDER);
   expect(RESTORED_LINE).toBe("restored; start the API to apply any newer migrations");
   expect(logs.join("\n")).not.toContain(SENTINEL);
   expect(
@@ -341,4 +349,42 @@ test("a corrupt live database is still refused while the API answers", async () 
   writeFileSync(e.dbPath, "garbage".repeat(500));
   e.deps.probe = async () => "up";
   expect(await restore([e.backup, "--yes"], e.deps)).toEqual({ ok: false, refusal: "api_running" });
+});
+
+test("a backup at an older migration (0020) is accepted and the migrator brings it to the latest", async () => {
+  const { dir, dbPath, deps } = setup();
+  // Build an old backup: the real migrations folder with the journal cut after 0020.
+  const migrationsDir = join(import.meta.dir, "../../../packages/database/migrations");
+  const cut = join(dir, "old-migrations");
+  cpSync(migrationsDir, cut, { recursive: true });
+  const journalPath = join(cut, "meta", "_journal.json");
+  const journal = JSON.parse(readFileSync(journalPath, "utf8")) as { entries: { idx: number }[] };
+  const total = journal.entries.length;
+  expect(total).toBeGreaterThan(21);
+  journal.entries = journal.entries.filter((e) => e.idx <= 20);
+  writeFileSync(journalPath, JSON.stringify(journal));
+  const oldBackup = join(dir, "synapse-20260101-030000.db");
+  const { db: oldDb, sqlite: old } = openDatabase(oldBackup);
+  track(old);
+  runMigrations(oldDb, cut);
+  old.run("create table t (v text)");
+  old.run("insert into t values (?)", [SENTINEL]);
+  const applied = (d: Database) =>
+    (d.query("select count(*) as n from __drizzle_migrations").get() as { n: number }).n;
+  expect(applied(old)).toBe(21);
+  old.run("pragma wal_checkpoint(TRUNCATE)");
+  old.run("pragma journal_mode = delete");
+  old.close();
+
+  const res = await restore([oldBackup, "--yes"], deps);
+  expect(res).toEqual({ ok: true });
+  expect(rows(dbPath)).toEqual([SENTINEL]);
+
+  const { db, sqlite } = openDatabase(dbPath);
+  track(sqlite);
+  expect(() => runMigrations(db)).not.toThrow();
+  expect(applied(sqlite)).toBe(total);
+  expect(
+    sqlite.query("select 1 from sqlite_master where name = 'dashboard_layouts'").get(),
+  ).not.toBeNull();
 });

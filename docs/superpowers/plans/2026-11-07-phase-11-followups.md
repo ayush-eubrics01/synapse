@@ -13,12 +13,12 @@ Items parked during Phase 11 (dashboard customisation and runtime hardening). No
 
 - **`quota_snapshots` and `auth_snapshots` are not pruned.** They grow slowly; add them to `ops.retention` with a setting if the size ever matters.
 - **Retention frees the idempotency keys of deleted jobs.** After `retention.jobsDays` (30) a job with the same key can be enqueued again. The domain state guards the known replays, but this has not been audited per job type. Two consequences seen in review: read commitment reminders are pruned with their notifications, so an overdue commitment can be reminded about again after about 30 days; and a failed repository inspection may run again after about 30 days.
-- **`reminders.ts` keeps its own local-time helper.** It is not yet folded into `core/ops/daily.ts` (`dailyDue`, `localDateString`), which the backup tick uses.
+- **`reminders.ts` keeps its own minutes helper.** It already imports `localDateString` from `core/ops/daily.ts`; only the minutes helper is still local.
 
 ## Shutdown
 
 - **No SIGKILL escalation outside systemd.** Under systemd, `TimeoutStopSec=30` ends a stuck shutdown. Run by hand, a shutdown that hangs after the first signal needs a second signal (which exits at once).
-- **`USER` unset.** `service-status.ts` falls back to `os.userInfo()` for the linger query when `USER` is not set; review parked it as a minor.
+- **`USER` unset.** `service-status.ts` falls back to `os.userInfo().username` (then `unknown`) for the linger query; fixed after the final review.
 - **Shutdown order test.** Review parked a stronger test of the shutdown step order as a minor.
 
 ## Dashboard layouts (web)

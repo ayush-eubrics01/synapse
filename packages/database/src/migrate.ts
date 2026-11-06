@@ -5,8 +5,9 @@ import type { Db } from "./types";
 
 const migrationsFolder = join(import.meta.dir, "../migrations");
 
-export function runMigrations(db: Db): void {
-  migrate(db, { migrationsFolder });
+/** `folder` is a test seam (an older copy of the migrations); production always uses the default. */
+export function runMigrations(db: Db, folder: string = migrationsFolder): void {
+  migrate(db, { migrationsFolder: folder });
 }
 
 /** sha256 of each journal entry: the same hashes `__drizzle_migrations` stores. */

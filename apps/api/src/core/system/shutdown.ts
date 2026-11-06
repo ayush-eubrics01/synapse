@@ -7,7 +7,7 @@ export interface ShutdownDeps {
   intervals: ReturnType<typeof setInterval>[];
   worker: Pick<JobWorker, "stop">;
   releaseLeases: () => void;
-  server: { stop(): void };
+  server: { stop(closeActiveConnections?: boolean): void | Promise<void> };
   sqlite: Pick<Database, "run" | "close">;
   exit: (code: number) => void;
   log?: (line: string) => void;
@@ -15,7 +15,7 @@ export interface ShutdownDeps {
 
 /**
  * R6: graceful shutdown. The first call stops the timers, waits for the worker, releases this
- * process's leases, closes the server, checkpoints the WAL and closes the database; a failing
+ * process's leases, closes the server (live SSE streams included: without `true`, Bun waits for them forever), checkpoints the WAL and closes the database; a failing
  * step is logged by name and error class only and the sequence continues. A second call while
  * the first runs exits at once.
  */
@@ -40,7 +40,7 @@ export function createShutdown(deps: ShutdownDeps): (signal: string) => Promise<
     });
     await step("worker.stop", () => deps.worker.stop(SHUTDOWN_GRACE_MS));
     await step("releaseLeases", () => deps.releaseLeases());
-    await step("server.stop", () => deps.server.stop());
+    await step("server.stop", () => deps.server.stop(true));
     await step("checkpoint", () => deps.sqlite.run("PRAGMA wal_checkpoint(TRUNCATE)"));
     await step("close", () => deps.sqlite.close());
     deps.exit(0);

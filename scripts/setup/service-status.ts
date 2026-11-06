@@ -1,3 +1,4 @@
+import { userInfo } from "node:os";
 import { loadConfig } from "../../apps/api/src/core/config/config";
 
 export const UNITS = ["synapse-api.service", "synapse-web.service"];
@@ -32,6 +33,20 @@ export async function collectServiceStatus(deps: StatusDeps): Promise<string[]> 
   return lines;
 }
 
+/** USER, else the OS account name; never an empty string. */
+export function resolveUser(
+  env: Record<string, string | undefined>,
+  osUser: () => string = () => userInfo().username,
+): string {
+  const fromEnv = env.USER?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    return osUser();
+  } catch {
+    return "unknown";
+  }
+}
+
 const TIMEOUT_MS = 5_000;
 
 async function run(cmd: string[]): Promise<{ stdout: string; code: number }> {
@@ -61,7 +76,7 @@ if (import.meta.main) {
   const lines = await collectServiceStatus({
     run,
     fetchHealth: () => fetchHealth(port),
-    user: process.env.USER ?? "",
+    user: resolveUser(process.env),
   });
   for (const l of lines) console.log(l);
   process.exit(0);

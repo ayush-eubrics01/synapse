@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { filePermissionsCheck } from "../../src/core/health/checks";
 import {
+  defaultBackupDir,
   PRIVATE_FILES_LOG_LINE,
   type PrivateFsOps,
   securePrivateFiles,
@@ -216,4 +217,25 @@ test("dir chmod failure counts as failed; a dir owned by another uid is skipped"
     failed: 0,
   });
   expect(foreign.calls).toEqual([]);
+});
+
+test("default backup dir is <dataDir>/backups only for a dedicated data dir (injected home)", () => {
+  const root = scratch();
+  const home = join(root, "home");
+  const dedicated = join(home, ".synapse");
+  mkdirSync(dedicated, { recursive: true });
+  expect(defaultBackupDir(join(dedicated, "s.db"), { home, cwd: root })).toBe(
+    join(dedicated, "backups"),
+  );
+  // db directly in home, in an ancestor of home, in the cwd, or a relative path: not dedicated
+  expect(defaultBackupDir(join(home, "s.db"), { home, cwd: root })).toBe(
+    join(home, "synapse-backups"),
+  );
+  expect(defaultBackupDir(join(root, "s.db"), { home, cwd: dedicated })).toBe(
+    join(root, "synapse-backups"),
+  );
+  expect(defaultBackupDir(join(dedicated, "s.db"), { home, cwd: dedicated })).toBe(
+    join(dedicated, "synapse-backups"),
+  );
+  expect(defaultBackupDir("s.db", { home, cwd: root })).toBe("synapse-backups");
 });

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { collectServiceStatus, type StatusDeps, UNITS } from "../service-status";
+import { collectServiceStatus, resolveUser, type StatusDeps, UNITS } from "../service-status";
 
 function deps(
   over: Partial<StatusDeps> & { out?: Record<string, { stdout: string; code: number }> },
@@ -92,4 +92,15 @@ test("only read-only commands run", async () => {
       expect(line).not.toContain(bad);
     }
   }
+});
+
+test('resolveUser falls back to the OS account when USER is unset or empty, never ""', () => {
+  expect(resolveUser({ USER: "ayush" }, () => "os")).toBe("ayush");
+  expect(resolveUser({}, () => "os")).toBe("os");
+  expect(resolveUser({ USER: "" }, () => "os")).toBe("os");
+  expect(
+    resolveUser({}, () => {
+      throw new Error("x");
+    }),
+  ).toBe("unknown");
 });

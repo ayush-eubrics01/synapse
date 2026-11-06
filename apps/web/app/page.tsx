@@ -45,7 +45,6 @@ import {
   approveTaskDescription,
   approveTaskPlan,
   type ClaudeRun,
-  type ClaudeSettingsDto,
   type ClaudeStatus,
   type CommitmentStatusDto,
   type CommitmentViewDto,

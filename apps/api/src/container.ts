@@ -52,7 +52,11 @@ import type { RecoverySweep } from "./core/recovery/recovery";
 import { SchedulerService } from "./core/scheduler/scheduler";
 import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
 import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notifier";
-import type { PrivateFilesResult } from "./infrastructure/private-files";
+import {
+  defaultBackupDir,
+  isDedicatedDataDir,
+  type PrivateFilesResult,
+} from "./infrastructure/private-files";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadUserSettings } from "./integrations/claude-code/settings-override";
 import { GitHubCliProvider } from "./integrations/github/gh-cli";
@@ -668,7 +672,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     explicitBackupDir ??
     (config.dbPath === ":memory:"
       ? join(scratchDir, "backups")
-      : join(dirname(config.dbPath), "backups"));
+      : defaultBackupDir(config.dbPath, { home }));
   if (explicitBackupDir !== null && checkBackupDir(explicitBackupDir) !== "ok") {
     throw new Error("ops.backup.dir must be an absolute path outside the repository");
   }
@@ -681,6 +685,9 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     audit,
     dir: backupDir,
     checkDir: explicitBackupDir !== null,
+    chmodDir:
+      explicitBackupDir === null &&
+      (config.dbPath === ":memory:" || isDedicatedDataDir(config.dbPath, { home })),
     dbPath: config.dbPath,
     diskFree,
   });

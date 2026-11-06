@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import {
   chmodSync,
+  existsSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -42,6 +43,8 @@ export interface BackupServiceDeps {
   fileName?: (now: Date) => string;
   /** Apply the "outside the repository" check to `dir` (true for an explicitly configured dir). */
   checkDir?: boolean;
+  /** chmod 0700 a directory that already existed (only the dedicated default dir). A directory this service creates is always 0700. */
+  chmodDir?: boolean;
   /** Test seam for the repository root used by that check. */
   repoRoot?: string;
 }
@@ -191,11 +194,12 @@ export class BackupService {
     if (this.d.checkDir !== false && checkBackupDir(this.dir, this.d.repoRoot) !== "ok")
       throw new Failure("dir_unavailable");
     try {
+      const existed = existsSync(this.dir);
       mkdirSync(this.dir, { recursive: true, mode: 0o700 });
       const s = statSync(this.dir);
       if (!s.isDirectory()) throw new Failure("dir_unavailable");
-      if (s.uid === process.getuid?.()) chmodSync(this.dir, 0o700);
-      else throw new Failure("dir_unavailable");
+      if (s.uid !== process.getuid?.()) throw new Failure("dir_unavailable");
+      if (!existed || this.d.chmodDir !== false) chmodSync(this.dir, 0o700);
     } catch (e) {
       throw e instanceof Failure ? e : new Failure("dir_unavailable");
     }
