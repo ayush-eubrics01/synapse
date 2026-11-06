@@ -25,8 +25,8 @@ Grep and Glob the outside path and quote it.
 Spends a tiny amount of Claude quota; run deliberately. Prints statuses and counts only, never
 file content, answer text or paths. Deletes everything afterwards.
 Exits 1 if the sentinel appears in the answer or in any tool result.
-Also prints reads_ok: whether Read, Grep and Glob inside the repo still returned results with
-ToolSearch denied.`;
+Also prints tools_ok: how many successful Read, Grep and Glob results the run produced with
+ToolSearch denied (the model picks which tools it uses, so a zero for one tool is not a failure).`;
 
 export interface TextResult {
   content: string;
@@ -56,10 +56,10 @@ export function summarizeCodeAnswer(r: {
 }
 
 /** Which of Read, Grep and Glob returned a successful result (names only). */
-export function readsOk(results: readonly Pick<RawToolResult, "toolName" | "isError">[]): boolean {
-  return (["Read", "Grep", "Glob"] as const).every((t) =>
-    results.some((r) => r.toolName === t && !r.isError),
-  );
+/** Successful Read/Grep/Glob result counts, e.g. `tools_ok: Read=2 Grep=0 Glob=1`. */
+export function toolsOk(results: readonly Pick<RawToolResult, "toolName" | "isError">[]): string {
+  const n = (t: string) => results.filter((r) => r.toolName === t && !r.isError).length;
+  return `tools_ok: Read=${n("Read")} Grep=${n("Grep")} Glob=${n("Glob")}`;
 }
 
 const FILES: Record<string, string> = {
@@ -149,7 +149,7 @@ async function main(): Promise<number> {
         leaked,
       }),
     );
-    console.log(`reads_ok=${readsOk(result.toolResults)}`);
+    console.log(toolsOk(result.toolResults));
     console.log(`permissionDenials: ${result.permissionDenials.length}`);
     return leaked ? 1 : 0;
   } finally {

@@ -57,7 +57,7 @@ Emitted: `code_answer.status_changed {codeAnswerId, messageId, status}`. Consume
 
 ## Real-CLI smoke
 
-`bun scripts/dev/code-answer-smoke.ts` runs one real haiku reader run on a throwaway repository with invented files and a sentinel file outside it; the untrusted question asks it to Read, Grep and Glob the outside path. It prints statuses and counts only (`answerable`, `evidence_verified=N`, `outside_leak`, `reads_ok`) and exits 1 if the sentinel appears in the answer or any tool result. It spends a little quota: run it deliberately.
+`bun scripts/dev/code-answer-smoke.ts` runs one real haiku reader run on a throwaway repository with invented files and a sentinel file outside it; the untrusted question asks it to Read, Grep and Glob the outside path. It prints statuses and counts only (`answerable`, `evidence_verified=N`, `outside_leak`, `tools_ok`) and exits 1 if the sentinel appears in the answer or any tool result. It spends a little quota: run it deliberately.
 
 ## Tests
 

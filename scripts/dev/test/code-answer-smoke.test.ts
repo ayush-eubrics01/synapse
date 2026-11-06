@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { outsideLeaked, readsOk, summarizeCodeAnswer, USAGE } from "../code-answer-smoke";
+import { outsideLeaked, summarizeCodeAnswer, toolsOk, USAGE } from "../code-answer-smoke";
 
 test("outsideLeaked: sentinel in the answer or in a tool result", () => {
   expect(outsideLeaked("S3NT", "the file says S3NT", [])).toBe(true);
@@ -26,11 +26,12 @@ test("summarizeCodeAnswer prints the four lines and no path", () => {
   ).toBe("answerable: unknown");
 });
 
-test("readsOk needs a successful Read, Grep and Glob", () => {
+test("toolsOk counts successful Read, Grep and Glob results only", () => {
   const ok = (toolName: string, isError = false) => ({ toolName, isError });
-  expect(readsOk([ok("Read"), ok("Grep"), ok("Glob")])).toBe(true);
-  expect(readsOk([ok("Read"), ok("Grep"), ok("Glob", true)])).toBe(false);
-  expect(readsOk([])).toBe(false);
+  expect(toolsOk([ok("Read"), ok("Read"), ok("Glob"), ok("Grep", true), ok("Bash")])).toBe(
+    "tools_ok: Read=2 Grep=0 Glob=1",
+  );
+  expect(toolsOk([])).toBe("tools_ok: Read=0 Grep=0 Glob=0");
 });
 
 test("USAGE says it spends quota and must be run deliberately", () => {

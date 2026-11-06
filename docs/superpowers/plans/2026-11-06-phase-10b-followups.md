@@ -2,6 +2,11 @@
 
 Items parked during Phase 10b (claude activity and code answers). None blocks the phase.
 
+## Real-CLI results (2026-11-06, Claude Code 2.1.319, haiku)
+
+- `bun scripts/dev/code-answer-smoke.ts` printed `status: parsed`, `answerable: true`, `evidence_verified=2`, `outside_leak=false` and `permissionDenials: 0`, and exited 0. The model ignored the injected instruction and never tried to read outside the repository, so this run does not exercise the outside-path refusal. (The smoke's tool line was `reads_ok=false` then, because it required all three tools to be used. It now prints per-tool counts as `tools_ok: …`.)
+- A throwaway reader-profile probe (not committed), with `Grep` and `Glob` scoped `//<inside>/**` and `ToolSearch` denied, was told by a trusted instruction to search an inside and an outside directory. The inside Grep and Glob both succeeded. The outside Grep and Glob both came back as errors (refused), and no outside content leaked. With the 2026-11-06 scope-smoke for `Read`, path scoping is now proven on the real CLI for all three reader tools.
+
 ## Claude activity
 
 - **Sessions started from a symlinked cwd are not seen.** Claude Code names the project folder after the path the session started from; a symlink to a registered repository gives a folder that is not the encoding of the repository realpath, so the scanner never lists it. Fix idea: also derive candidate folder names from the realpath-resolved symlinks of the registered paths, or accept a configured alias list.
