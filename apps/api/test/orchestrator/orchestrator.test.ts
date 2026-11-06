@@ -981,6 +981,43 @@ describe("user activity yield (ADR-036)", () => {
     expect(runs()).toHaveLength(0);
   });
 
+  test("a backfill request is deferred without spawning", async () => {
+    const e = await yielding.run(req({ priorityClass: "backfill" }), S()).catch((x) => x);
+    expect(e.classified.kind).toBe("user_active");
+    expect(provider.requests).toHaveLength(0);
+    expect(runs()).toHaveLength(0);
+  });
+
+  test("a throwing signal fails open and never-yield classes skip it", async () => {
+    let calls = 0;
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    const throwing = new ClaudeOrchestrator({
+      db,
+      clock,
+      provider,
+      settings,
+      events: new EventPublisher(clock),
+      audit: new AuditLogger(clock),
+      auth: new AuthMonitor(db, clock, settings, new EventPublisher(clock), credsPath),
+      notifications: new NotificationService(db, clock, new LiveBus()),
+      scratchDir: "/scratch",
+      random: () => "0123456789abcdef",
+      userActivity: {
+        isUserActive: () => {
+          calls++;
+          throw new Error("db down SECRET-PATH");
+        },
+      },
+    });
+    await throwing.run(req({ priorityClass: "urgent" }), S());
+    expect(calls).toBe(0);
+    await throwing.run(req({ priorityClass: "batch" }), S());
+    expect(calls).toBeGreaterThan(0);
+    expect(provider.requests).toHaveLength(2);
+    expect(JSON.stringify(spy.mock.calls)).not.toContain("SECRET-PATH");
+    spy.mockRestore();
+  });
+
   test("urgent, send and collection requests run", async () => {
     await yielding.run(req({ priorityClass: "urgent" }), S());
     await yielding.run(req({ priorityClass: "collection" }), S());

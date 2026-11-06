@@ -497,9 +497,18 @@ export class ClaudeOrchestrator {
       yieldWhenActive: settings.get("claudeActivity.yieldWhenActive"),
       yieldEngineering: settings.get("claudeActivity.yieldEngineering"),
     };
+    // Classes that can never yield do not touch the signal at all.
+    if (!shouldYield(request.priorityClass, cfg, true)) return;
     const now = clock.now();
-    const a = signal.isUserActive(now);
-    if (!shouldYield(request.priorityClass, cfg, a.active)) return;
+    let a: { active: boolean; until: string | null };
+    try {
+      a = signal.isUserActive(now);
+    } catch (e) {
+      // Fail open: a broken activity signal must never stop background work.
+      console.error("orchestrator: user activity check failed", errName(e));
+      return;
+    }
+    if (!a.active) return;
     throw new JobError({
       kind: "user_active",
       message: `user active in Claude Code: ${request.priorityClass} work deferred`,
