@@ -115,7 +115,11 @@ export class ClaudeActivityService implements UserActivitySignal {
 
   async scan(): Promise<ScanSummary> {
     const summary = emptySummary();
-    if (!this.enabled || this.scanning) return summary;
+    if (this.scanning) return summary;
+    if (!this.enabled) {
+      this.applyTransition(); // disabling while active must not leave the state stuck on active
+      return summary;
+    }
     this.scanning = true;
     try {
       await this.scanInner(summary);
@@ -155,6 +159,8 @@ export class ClaudeActivityService implements UserActivitySignal {
       throw e;
     }
     this.unreadable = false;
+    const present = new Set(candidates.map((c) => c.path));
+    for (const k of this.ignored.keys()) if (!present.has(k)) this.ignored.delete(k);
     const stored = new Map(
       db
         .select()
@@ -215,12 +221,18 @@ export class ClaudeActivityService implements UserActivitySignal {
           : null;
       const nowMs = clock.now().getTime();
       const acc = foldMeta(prev, res.deltas, nowMs);
-      if (acc.cwd === null) continue; // nothing stored; re-read from 0 next scan
+      if (acc.cwd === null) {
+        // nothing stored; re-read from 0 next scan. A rewritten file loses its stale row.
+        if (row && reset)
+          db.delete(claudeSessions).where(eq(claudeSessions.filePath, file.path)).run();
+        continue;
+      }
       let repositoryId: string | null;
-      if (row) repositoryId = row.repositoryId;
+      if (row && !reset) repositoryId = row.repositoryId;
       else {
         repositoryId = repositoryForCwd(acc.cwd, repos, this.realpath);
         if (repositoryId === null) {
+          if (row) db.delete(claudeSessions).where(eq(claudeSessions.filePath, file.path)).run();
           this.ignored.set(file.path, { size: file.size, mtimeMs: file.mtimeMs });
           summary.ignored++;
           continue;
@@ -291,9 +303,9 @@ export class ClaudeActivityService implements UserActivitySignal {
     const { db, clock, settings, events, audit } = this.deps;
     const active = this.isUserActive(clock.now()).active;
     if (active === settings.get("claudeActivity.lastActiveState")) return;
-    settings.set("claudeActivity.lastActiveState", active);
     const lastActiveAt = this.lastActiveAt();
     db.transaction((tx) => {
+      settings.setIn(tx, "claudeActivity.lastActiveState", active);
       events.publish(tx, {
         type: "claude_session.activity_changed",
         aggregateType: "claude_activity",

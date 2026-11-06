@@ -229,10 +229,10 @@ describe("scan", () => {
       lastAt: iso(50),
       fileOffset: statSync(path).size,
     });
-    // also truncating in place
+    // truncated to nothing: no cwd is left to match, so the stale row is dropped
     truncateSync(path, 0);
     await svc.scan();
-    expect(sessions()).toHaveLength(1);
+    expect(sessions()).toHaveLength(0);
   });
 
   test("a file without a cwd yet stores nothing and is re-read from 0", async () => {
@@ -469,36 +469,139 @@ describe("health", () => {
 describe("privacy sentinel", () => {
   test("session content appears in no table, event, audit row or console call", async () => {
     const spies = (["log", "warn", "error"] as const).map((m) => spyOn(console, m));
-    const lines = [
-      sessionLine("last-prompt", { lastPrompt: SENTINEL }),
-      sessionLine("user", {
-        cwd: repoPath,
-        timestamp: iso(5),
-        message: { role: "user", content: SENTINEL },
-      }),
-      sessionLine("assistant", {
-        timestamp: iso(4),
-        message: { role: "assistant", content: [{ type: "text", text: SENTINEL }] },
-      }),
-    ];
-    const path = write(ID, lines, 4);
+    try {
+      const lines = [
+        sessionLine("last-prompt", { lastPrompt: SENTINEL }),
+        sessionLine("user", {
+          cwd: repoPath,
+          gitBranch: "feature-x",
+          timestamp: iso(5),
+          message: { role: "user", content: SENTINEL },
+        }),
+        sessionLine("ai-title", { aiTitle: "Demo title" }),
+        sessionLine("assistant", {
+          timestamp: iso(4),
+          message: { role: "assistant", content: [{ type: "text", text: SENTINEL }] },
+        }),
+      ];
+      const path = write(ID, lines, 4);
+      const svc = service();
+      await svc.scan();
+      appendFileSync(
+        path,
+        `${sessionLine("assistant", { timestamp: iso(3), message: SENTINEL })}\n`,
+      );
+      await svc.scan();
+      clock.advance(30 * 60_000);
+      await svc.scan();
+      expect(sessions()).toHaveLength(1);
+      const sqlite = (db as unknown as { $client: import("bun:sqlite").Database }).$client;
+      const tables = sqlite
+        .query("select name from sqlite_master where type = 'table' and name not like 'sqlite_%'")
+        .all() as { name: string }[];
+      const dump = JSON.stringify(
+        tables.map((t) => sqlite.query(`select * from "${t.name}"`).all()),
+      );
+      expect(dump).not.toContain(SENTINEL);
+      expect(dump).toContain("claude_activity.idle");
+      const out = JSON.stringify([
+        db.select().from(schema.domainEvents).all(),
+        db.select().from(schema.auditEvents).all(),
+        spies.map((sp) => sp.mock.calls),
+      ]);
+      for (const priv of ["Demo title", "feature-x", repoPath, projects, ID]) {
+        expect(out).not.toContain(priv);
+      }
+      for (const sp of spies) expect(sp.mock.calls).toEqual([]);
+    } finally {
+      for (const sp of spies) sp.mockRestore();
+    }
+  });
+});
+
+describe("fix round 1", () => {
+  test("transition state commits with the event: a failing publish loses nothing", async () => {
+    write(ID, [sessionLine("user", { cwd: repoPath, timestamp: iso(5) })], 5);
+    let fail = true;
+    const flaky = {
+      publish: ((tx, e) => {
+        if (fail && e.type === "claude_session.activity_changed") throw new Error("boom");
+        return events.publish(tx, e);
+      }) as EventPublisher["publish"],
+    };
+    const svc = service({ events: flaky });
+    await expect(svc.scan()).rejects.toThrow();
+    expect(settings.get("claudeActivity.lastActiveState")).toBe(false);
+    fail = false;
+    await svc.scan();
+    expect(settings.get("claudeActivity.lastActiveState")).toBe(true);
+  });
+
+  test("disabling while active applies the idle transition", async () => {
+    write(ID, [sessionLine("user", { cwd: repoPath, timestamp: iso(5) })], 5);
     const svc = service();
     await svc.scan();
-    appendFileSync(path, `${sessionLine("assistant", { timestamp: iso(3), message: SENTINEL })}\n`);
+    expect(settings.get("claudeActivity.lastActiveState")).toBe(true);
+    settings.set("claudeActivity.enabled", false);
     await svc.scan();
-    clock.advance(30 * 60_000);
+    expect(settings.get("claudeActivity.lastActiveState")).toBe(false);
+    const acts = db
+      .select()
+      .from(schema.auditEvents)
+      .all()
+      .map((a) => a.action);
+    expect(acts).toEqual(["claude_activity.active", "claude_activity.idle"]);
+  });
+
+  test("the ignored map is pruned of files no longer listed", async () => {
+    const other = join(repoRoot, "demo-other");
+    mkdirSync(other);
+    const p = write(ID2, baseLines(other), 30, `${dirFor()}-wt`);
+    const svc = service();
     await svc.scan();
-    expect(sessions()).toHaveLength(1);
-    const sqlite = (db as unknown as { $client: import("bun:sqlite").Database }).$client;
-    const tables = sqlite
-      .query("select name from sqlite_master where type = 'table' and name not like 'sqlite_%'")
-      .all() as { name: string }[];
-    const dump = JSON.stringify(tables.map((t) => sqlite.query(`select * from "${t.name}"`).all()));
-    expect(dump).not.toContain(SENTINEL);
-    expect(dump).toContain("claude_activity.idle");
-    for (const s of spies) {
-      expect(s.mock.calls).toEqual([]);
-      s.mockRestore();
-    }
+    const ignored = () => (svc as unknown as { ignored: Map<string, unknown> }).ignored;
+    expect(ignored().size).toBe(1);
+    rmSync(p);
+    await svc.scan();
+    expect(ignored().size).toBe(0);
+  });
+
+  test("a concurrent scan is a no-op while one is running", async () => {
+    write(ID, baseLines(), 30);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const slow: FsOps = { ...fs, readdir: async (p) => (await gate, fs.readdir(p)) };
+    const svc = service({ fs: slow });
+    const first = svc.scan();
+    const second = await svc.scan();
+    expect(second).toMatchObject({ files: 0, sessionsUpserted: 0 });
+    release();
+    expect((await first).sessionsUpserted).toBe(1);
+  });
+
+  test("after a shrink reset the repository is re-derived from the new cwd", async () => {
+    const other = join(repoRoot, "demo-api");
+    mkdirSync(other);
+    addRepo("demo-api", other);
+    const path = write(ID, baseLines(repoPath, 60), 60);
+    const svc = service();
+    await svc.scan();
+    expect(sessions()[0]?.repositoryId).toBe(repoId);
+    const rewrite = (cwd: string) => {
+      writeFileSync(path, `${sessionLine("user", { cwd, timestamp: iso(50) })}\n`);
+      const t = new Date(nowMs - 50 * 60_000);
+      utimesSync(path, t, t);
+    };
+    rewrite(other);
+    await svc.scan();
+    expect(sessions()[0]?.repositoryId).toBe("repo-demo-api");
+    expect(sessions()[0]?.cwd).toBe(other);
+    // rewritten to a path no repository owns: the row is dropped
+    writeFileSync(path, `${sessionLine("user", { cwd: "/nowhere/else", timestamp: iso(50) })}\n`);
+    utimesSync(path, new Date(nowMs - 49 * 60_000), new Date(nowMs - 49 * 60_000));
+    await svc.scan();
+    expect(sessions()).toHaveLength(0);
   });
 });
