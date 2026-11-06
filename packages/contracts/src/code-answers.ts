@@ -81,6 +81,11 @@ export interface CodeAnswerView {
   autoReplyId: string | null;
   outgoingId: string | null;
   outgoingStatus: string | null;
+  /**
+   * The user may request a send (the backend rule): an answer that has no linked send, or whose
+   * linked send was rejected, expired or cancelled before spawn.
+   */
+  sendable: boolean;
   createdAt: string;
   updatedAt: string;
 }

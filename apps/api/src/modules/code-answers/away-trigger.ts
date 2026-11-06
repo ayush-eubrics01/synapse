@@ -3,6 +3,7 @@ import { schema, type Tx } from "@synapse/database";
 import type { Clock } from "@synapse/shared";
 import { and, eq, gt, sql } from "drizzle-orm";
 import type { SettingsService } from "../../core/config/settings";
+import { hasAutoReplyTag } from "../auto-reply/policy";
 import type { AutoReplyService } from "../auto-reply/service";
 import type { PeopleService } from "../people/service";
 import type { CodeAnswerService } from "./service";
@@ -12,11 +13,14 @@ const DAY_MS = 86_400_000;
 
 const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** Case-insensitive, literal, whole-word: not preceded or followed by a letter, digit or `_`. */
+/**
+ * Case-insensitive, literal, whole-name: not preceded or followed by a letter, digit, `_` or `-`
+ * (name characters), so `demo-app` does not match inside `demo-app-two`.
+ */
 function names(text: string, name: string): boolean {
   const n = name.trim();
   if (n === "") return false;
-  return new RegExp(`(?<![A-Za-z0-9_])${escapeRegExp(n)}(?![A-Za-z0-9_])`, "i").test(text);
+  return new RegExp(`(?<![A-Za-z0-9_-])${escapeRegExp(n)}(?![A-Za-z0-9_-])`, "i").test(text);
 }
 
 /**
@@ -77,6 +81,8 @@ export class AwayCodeAnswerTrigger {
     if (!settings.get("codeAnswer.away.enabled")) return;
     const pre = autoReply.codeAnswerPreCheck(tx, messageId);
     if (!pre.ok) return;
+    // An auto-reply (ours or another instance's) never spends a run or a cap slot.
+    if (hasAutoReplyTag(pre.text)) return;
     const { priority } = people.getPriorityBySlackUser(pre.sender);
     if (priority !== "high" && priority !== "critical") return;
     if (!pre.text.includes("?")) return;

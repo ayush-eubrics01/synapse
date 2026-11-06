@@ -26,6 +26,36 @@ const DAY_MS = 86_400_000;
 /** Same bound as `OutgoingService`: a longer reply is refused up front. */
 const MAX_REPLY_TEXT = 4000;
 const DISMISSABLE: CodeAnswerStatus[] = ["ready", "held", "not_answerable", "unverified", "failed"];
+/**
+ * A linked send that certainly did not reach Slack and was not refused for a safety reason: the
+ * user rejected it or let it expire, or an auto-send was cancelled before its process spawned.
+ */
+const RESENDABLE_FAILURES = [
+  "rejected",
+  "expired",
+  "cancelled_away_off",
+  "cancelled_policy_disabled",
+  "cancelled_stale",
+];
+
+/**
+ * Whether the user may request a send for this row: a `ready` or `held` row with no linked send,
+ * or a `held` or `sent` row whose linked send failed with a resendable failure. Never while the
+ * linked send is pending, sending, sent or otherwise unresolved.
+ */
+function sendable(
+  status: CodeAnswerStatus,
+  outgoingId: string | null,
+  outgoing: { status: string; failure: string | null } | null,
+): boolean {
+  if (outgoingId === null) return status === "ready" || status === "held";
+  if (status !== "held" && status !== "sent") return false;
+  return (
+    outgoing?.status === "failed" &&
+    outgoing.failure !== null &&
+    RESENDABLE_FAILURES.includes(outgoing.failure)
+  );
+}
 
 /** C2: the reader run for one (message, repository, trigger). Input `{codeAnswerId}`. */
 export const CODE_ANSWER_JOB = "code_answer.generate";
@@ -444,8 +474,9 @@ export class CodeAnswerService {
   private toView(
     row: Row,
     repositoryName: string | null,
-    outgoingStatus: string | null,
+    outgoing: { status: string; failure: string | null } | null,
   ): CodeAnswerView {
+    const outgoingStatus = outgoing?.status ?? null;
     return {
       id: row.id,
       messageId: row.messageId,
@@ -469,17 +500,19 @@ export class CodeAnswerService {
       autoReplyId: row.autoReplyId,
       outgoingId: row.outgoingId,
       outgoingStatus,
+      sendable: row.answer !== null && sendable(row.status, row.outgoingId, outgoing),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
   }
 
-  private views(where: ReturnType<typeof eq>): CodeAnswerView[] {
-    return this.deps.db
+  private views(where: ReturnType<typeof eq>, tx: DbOrTx = this.deps.db): CodeAnswerView[] {
+    return tx
       .select({
         row: codeAnswers,
         repoName: repositories.name,
         outStatus: schema.outgoingMessages.status,
+        outFailure: schema.outgoingMessages.failure,
       })
       .from(codeAnswers)
       .leftJoin(repositories, eq(repositories.id, codeAnswers.repositoryId))
@@ -487,7 +520,13 @@ export class CodeAnswerService {
       .where(where)
       .orderBy(desc(codeAnswers.createdAt))
       .all()
-      .map((r) => this.toView(r.row, r.repoName, r.outStatus));
+      .map((r) =>
+        this.toView(
+          r.row,
+          r.repoName,
+          r.outStatus === null ? null : { status: r.outStatus, failure: r.outFailure },
+        ),
+      );
   }
 
   /**
@@ -552,7 +591,20 @@ export class CodeAnswerService {
       (tx) => {
         const row = this.row(tx, id);
         if (!row) throw new CodeAnswerError("not_found");
-        if ((row.status !== "ready" && row.status !== "held") || row.outgoingId !== null) {
+        const linked =
+          row.outgoingId === null
+            ? null
+            : (tx
+                .select({
+                  status: schema.outgoingMessages.status,
+                  failure: schema.outgoingMessages.failure,
+                })
+                .from(schema.outgoingMessages)
+                .where(eq(schema.outgoingMessages.id, row.outgoingId))
+                .get() ?? null);
+        // A re-request (the linked send was rejected, expired or cancelled before spawn) makes a
+        // fresh approval and relinks the row; a live or delivered send is never doubled.
+        if (!sendable(row.status, row.outgoingId, linked)) {
           throw new CodeAnswerError("invalid_state");
         }
         if (row.suspectedInjection?.detected && !useAnyway) {
@@ -638,8 +690,9 @@ export class CodeAnswerService {
     if (d.status !== undefined) this.publishStatus(tx, row, d.status);
   }
 
-  get(id: string): CodeAnswerView | null {
-    return this.views(eq(codeAnswers.id, id))[0] ?? null;
+  /** With `tx`, read in the caller's transaction (the away decision does). */
+  get(id: string, tx?: DbOrTx): CodeAnswerView | null {
+    return this.views(eq(codeAnswers.id, id), tx)[0] ?? null;
   }
 
   listForMessage(messageId: string): CodeAnswerView[] {

@@ -29,18 +29,27 @@ export function codeAnswerStatusText(v: CodeAnswerView): string {
     case "failed":
       return `Failed${v.failure ? `: ${v.failure}` : ""}`;
     case "sent":
-      return "Reply requested · waiting for your approval in Needs you";
+      return v.sendable
+        ? "Reply not sent · you can request it again"
+        : "Reply requested · waiting for your approval in Needs you";
     case "dismissed":
       return "Dismissed";
   }
 }
 
+/** The answer text is shown for a ready or held row, and for a sent row whose send failed. */
+export function showsAnswerText(v: CodeAnswerView): boolean {
+  if (v.answer === null) return false;
+  return v.status === "ready" || v.status === "held" || (v.status === "sent" && v.sendable);
+}
+
 /**
- * "Use as reply" is offered for a ready or held answer, and for a suspected injection only after
+ * "Use as reply" is offered when the backend says the row is sendable (no linked send, or one that
+ * was rejected, expired or cancelled before spawn), and for a suspected injection only after
  * "Use anyway". The backend enforces the same rule when the send is requested.
  */
 export function canUseAsReply(v: CodeAnswerView, useAnyway: boolean): boolean {
-  if ((v.status !== "ready" && v.status !== "held") || v.answer === null) return false;
+  if (!v.sendable || !showsAnswerText(v)) return false;
   return !v.suspectedInjection?.detected || useAnyway;
 }
 

@@ -206,6 +206,11 @@ describe("matchRepository (Review Focus 4)", () => {
     ["demo-app and Demo Project?", "repo-app"],
     ["demo-app, demo-app again?", "repo-app"],
     ["How does it retry?", null],
+    // Fix round 1: '-' and '_' are name characters.
+    ["Does demo-app-two retry?", null],
+    ["Is demo_app_x used?", null],
+    ["Tell me about demo-app.", "repo-app"],
+    ["Is it in (demo-app)?", "repo-app"],
   ])("%p -> %p", (text, expected) => {
     expect(matchRepository(text, repos, projects)).toBe(expected);
   });
@@ -267,6 +272,13 @@ describe("away trigger (C6)", () => {
     addMessage({ sender: "u-self", text: "on it" });
     deliver(m.id);
     expect(rows()).toHaveLength(0);
+  });
+
+  test("an incoming message carrying the auto-reply tag spends no run or cap slot", () => {
+    receive({ text: "How does demo-app retry?\n\nSent using @claude" });
+    receive({ text: "How does demo-app retry? sent  USING @Claude" });
+    expect(rows()).toHaveLength(0);
+    expect(answerJobs()).toHaveLength(0);
   });
 
   test("codeAnswer.away.enabled false -> nothing", () => {
@@ -633,6 +645,17 @@ describe("generate hook (onFinished)", () => {
     expect(autoReplyJobs()).toHaveLength(1);
   });
 
+  test("an away run ending unverified queues the decision", async () => {
+    const r = runResult();
+    // The cited path was never observed in a tool result, so no evidence survives.
+    r.finalText = r.finalText.replace("src/a.ts", "src/never-read.ts");
+    c.orchestrator.run = (async () => r) as typeof c.orchestrator.run;
+    const id = create("away");
+    await runJob(id);
+    expect(row(id)?.status).toBe("unverified");
+    expect(autoReplyJobs().map((j) => j.idempotencyKey)).toEqual([`autoreply:code_answer:${id}`]);
+  });
+
   test("a failed away run records nothing", async () => {
     c.orchestrator.run = (async () => {
       throw new JobError({ kind: "unknown", message: "run failed" });
@@ -650,5 +673,143 @@ describe("generate hook (onFinished)", () => {
     await runJob(id);
     expect(row(id)?.status).toBe("ready");
     expect(autoReplyJobs()).toHaveLength(0);
+  });
+});
+
+const sessionId = () => c.autoReply.status().sessionId as string;
+function priorSent(over: { conv?: string; thread?: string | null; ago: number }): void {
+  c.db
+    .insert(schema.autoReplies)
+    .values({
+      id: newId(),
+      sessionId: sessionId(),
+      kind: "acknowledgement",
+      recipientSlackUserId: PRIO,
+      conversationExternalId: over.conv ?? DM,
+      threadTs: over.thread ?? null,
+      decision: "sent",
+      text: "placeholder",
+      createdAt: new Date(clock.now().getTime() - over.ago).toISOString(),
+    })
+    .run();
+}
+
+describe("fix round 1: caps bound only unapproved sends", () => {
+  test("thread_gap: autoSend off still creates the review approval; autoSend on holds", () => {
+    priorSent({ ago: 5 * MIN });
+    const off = seedAway();
+    expect(evaluate(off.id)).toMatchObject({ status: "held", reason: "code_answer_review" });
+    expect(approvals()).toHaveLength(1);
+    c.settings.set("codeAnswer.away.autoSend", true);
+    const on = seedAway();
+    expect(evaluate(on.id)).toMatchObject({ status: "held", reason: "thread_gap" });
+    expect(approvals()).toHaveLength(1);
+    expect(row(on.id)).toMatchObject({ status: "held", outgoingId: null });
+  });
+
+  test("daily_cap: autoSend off still creates the review approval; autoSend on holds", () => {
+    for (let i = 0; i < 3; i += 1) priorSent({ conv: "C0CHAN0001", thread: `t${i}`, ago: 2 * H });
+    const off = seedAway();
+    expect(evaluate(off.id)).toMatchObject({ status: "held", reason: "code_answer_review" });
+    expect(approvals()).toHaveLength(1);
+    c.settings.set("codeAnswer.away.autoSend", true);
+    const on = seedAway();
+    expect(evaluate(on.id)).toMatchObject({ status: "held", reason: "daily_cap" });
+    expect(approvals()).toHaveLength(1);
+    expect(outgoing()).toHaveLength(1);
+  });
+});
+
+describe("fix round 1: sessions", () => {
+  test("a row from an earlier session evaluated while a new session is open holds away_off", () => {
+    const first = sessionId();
+    const a = seedAway();
+    c.autoReply.setAway(false);
+    clock.advance(10 * MIN);
+    c.autoReply.setAway(true);
+    expect(sessionId()).not.toBe(first);
+    c.settings.set("codeAnswer.away.autoSend", true);
+    expect(evaluate(a.id)).toMatchObject({ status: "held", reason: "away_off" });
+    expect(allAr().map((x) => [x.sessionId, x.reason])).toEqual([[first, "away_off"]]);
+    expectNothingForApproval();
+    expect(row(a.id)).toMatchObject({ status: "held", outgoingId: null });
+  });
+});
+
+describe("fix round 1: re-requesting a send from the thread view", () => {
+  const view = (id: string) => c.codeAnswers.get(id);
+  const reviewed = () => {
+    const a = seedAway();
+    evaluate(a.id);
+    return a;
+  };
+
+  test("after the review approval was rejected, a re-request makes a fresh approval", () => {
+    const a = reviewed();
+    const [ap] = approvals();
+    const firstOut = row(a.id)?.outgoingId;
+    c.approvals.reject(ap?.id as string, "edit first");
+    c.dispatcher.dispatchOnce();
+    expect(outgoing()[0]).toMatchObject({ status: "failed", failure: "rejected" });
+    expect(view(a.id)?.sendable).toBe(true);
+    const r = c.codeAnswers.requestSend(a.id, "Edited: the worker retries three times.", false);
+    expect(r.outgoingId).not.toBe(firstOut);
+    expect(row(a.id)).toMatchObject({ status: "sent", outgoingId: r.outgoingId });
+    const fresh = approvals().find((x) => x.id === r.approvalId);
+    expect(fresh).toMatchObject({ action: "slack.send", status: "pending" });
+    expect(view(a.id)?.sendable).toBe(false);
+    // Only once per failed send: the new one is pending.
+    expect(() => c.codeAnswers.requestSend(a.id, ANSWER, false)).toThrow("invalid_state");
+  });
+
+  test("while the review approval is pending a re-request is refused", () => {
+    const a = reviewed();
+    expect(view(a.id)?.sendable).toBe(false);
+    expect(() => c.codeAnswers.requestSend(a.id, ANSWER, false)).toThrow("invalid_state");
+    expect(approvals()).toHaveLength(1);
+  });
+
+  test("after delivery a re-request is refused", async () => {
+    const a = reviewed();
+    c.approvals.approve(approvals()[0]?.id as string);
+    c.dispatcher.dispatchOnce();
+    while (await c.worker.runOnce()) c.dispatcher.dispatchOnce();
+    expect(sink.sends).toHaveLength(1);
+    expect(view(a.id)?.sendable).toBe(false);
+    expect(() => c.codeAnswers.requestSend(a.id, ANSWER, false)).toThrow("invalid_state");
+  });
+
+  test.each([
+    ["cancelled_away_off", true],
+    ["cancelled_policy_disabled", true],
+    ["cancelled_stale", true],
+    ["expired", true],
+    ["revoked", false],
+    ["tool_error", false],
+    ["not_started", false],
+  ])("a sent row whose send failed %s: re-request allowed=%p", (failure, allowed) => {
+    c.settings.set("codeAnswer.away.autoSend", true);
+    const a = seedAway();
+    evaluate(a.id);
+    expect(row(a.id)?.status).toBe("sent");
+    const outId = row(a.id)?.outgoingId as string;
+    c.db
+      .update(schema.outgoingMessages)
+      .set({ status: "failed", failure })
+      .where(eq(schema.outgoingMessages.id, outId))
+      .run();
+    expect(view(a.id)?.sendable).toBe(allowed);
+    if (allowed) {
+      const r = c.codeAnswers.requestSend(a.id, ANSWER, false);
+      expect(row(a.id)?.outgoingId).toBe(r.outgoingId);
+      // The fresh send is a user approval with the exact text, never a policy one.
+      expect(approvals().find((x) => x.id === r.approvalId)).toMatchObject({
+        action: "slack.send",
+        decidedBy: null,
+      });
+      expect(outgoing().find((o) => o.id === r.outgoingId)?.text).toBe(ANSWER);
+    } else {
+      expect(() => c.codeAnswers.requestSend(a.id, ANSWER, false)).toThrow("invalid_state");
+    }
   });
 });

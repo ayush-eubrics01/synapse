@@ -36,6 +36,7 @@ const view = (o: Partial<CodeAnswerView> = {}): CodeAnswerView => ({
   outgoingId: null,
   autoReplyId: null,
   outgoingStatus: null,
+  sendable: true,
   createdAt: "2026-11-06T10:00:00.000Z",
   updatedAt: "2026-11-06T10:00:00.000Z",
   ...o,
@@ -63,7 +64,11 @@ test("pure helpers", () => {
   expect(canUseAsReply(view(), false)).toBe(true);
   expect(canUseAsReply(view({ status: "held" }), false)).toBe(true);
   expect(canUseAsReply(view({ status: "failed", answer: null }), false)).toBe(false);
-  expect(canUseAsReply(view({ status: "sent" }), true)).toBe(false);
+  expect(canUseAsReply(view({ status: "sent", sendable: false }), true)).toBe(false);
+  // A sent row whose send was rejected, expired or cancelled before spawn can be re-requested.
+  expect(canUseAsReply(view({ status: "sent", sendable: true }), false)).toBe(true);
+  // A held review row whose approval is still pending is not sendable again.
+  expect(canUseAsReply(view({ status: "held", sendable: false }), false)).toBe(false);
   const bad = view({ suspectedInjection: { detected: true, severity: "high", reason: "x" } });
   expect(canUseAsReply(bad, false)).toBe(false);
   expect(canUseAsReply(bad, true)).toBe(true);
@@ -108,6 +113,15 @@ test("answer text renders escaped, never as HTML", () => {
   expect(html).not.toContain("<script>");
   expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
   expect(html).not.toContain("<b>x</b>");
+});
+
+test("a sent row: waiting while its send is live; offered again once it failed", () => {
+  const waiting = panel({ initialViews: [view({ status: "sent", sendable: false })] });
+  expect(waiting).toContain("waiting for your approval");
+  expect(waiting).not.toContain("Use as reply");
+  const again = panel({ initialViews: [view({ status: "sent", sendable: true })] });
+  expect(again).toContain("Reply not sent");
+  expect(again).toContain("Use as reply");
 });
 
 test("not_answerable, unverified and failed show their reason and no 'Use as reply'", () => {

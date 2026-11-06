@@ -587,7 +587,7 @@ export class AutoReplyService {
    * unless an earlier check holds), so it shows in the return digest, and nothing is sent.
    */
   private resolveCodeAnswer(tx: DbOrTx, codeAnswerId: string): Resolved {
-    const a = this.deps.codeAnswers.get(codeAnswerId);
+    const a = this.deps.codeAnswers.get(codeAnswerId, tx);
     if (!a) return { skip: "not_found" };
     if (a.trigger !== "away") return { skip: "kind_mismatch" };
     if (a.autoReplyId !== null) return { skip: "already_evaluated" };
@@ -751,6 +751,9 @@ export class AutoReplyService {
       const block = codeBlockCheck(r.text);
       if (block) return this.recordHold(tx, c, block);
     }
+    // Controller ruling (Task 10 fix 1): the A5 caps bound unapproved sends. A code answer that
+    // will become a user approval anyway (autoSend off) is not stopped by them.
+    const reviewOnly = c.kind === "code_answer" && !settings.get("codeAnswer.away.autoSend");
     const now = isoNow(clock);
     const since = new Date(clock.now().getTime() - DAY_MS).toISOString();
     // A5: rolling 24 h per recipient, and the latest send in this conversation and thread. In a DM
@@ -790,8 +793,8 @@ export class AutoReplyService {
       recipientPriority: people.getPriorityBySlackUser(c.recipient).priority,
       incomingText: r.incomingText,
       incomingFlagged: r.incomingFlagged,
-      sentToRecipientLast24h: n,
-      lastSentInThreadAt: last?.createdAt ?? null,
+      sentToRecipientLast24h: reviewOnly ? 0 : n,
+      lastSentInThreadAt: reviewOnly ? null : (last?.createdAt ?? null),
       now,
       confidence: r.confidence,
       candidateText: r.text,
@@ -815,9 +818,7 @@ export class AutoReplyService {
     }
     // C7/C8: a code answer is auto-sent only when the user turned `codeAnswer.away.autoSend` on.
     // Otherwise it becomes a normal send approval for the user: exact text, no tag.
-    if (c.kind === "code_answer" && !settings.get("codeAnswer.away.autoSend")) {
-      return this.recordReviewHold(tx, c, r.text);
-    }
+    if (reviewOnly) return this.recordReviewHold(tx, c, r.text);
 
     // A10: the tag is added in code just before the send is requested.
     const tagged = withAutoReplyTag(r.text);

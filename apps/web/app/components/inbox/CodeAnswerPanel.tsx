@@ -9,6 +9,7 @@ import {
   codeAnswerStatusText,
   formatEvidence,
   preselectRepository,
+  showsAnswerText,
 } from "../../../lib/code-answers";
 import { Button } from "../ui/Button";
 import { useToast } from "../ui/Toasts";
@@ -49,7 +50,7 @@ function Answer({
 >) {
   const useAnyway = acknowledged.has(v.id);
   const injected = v.suspectedInjection?.detected === true;
-  const showsAnswer = (v.status === "ready" || v.status === "held") && v.answer !== null;
+  const showsAnswer = showsAnswerText(v);
   const dismissable = ["ready", "held", "not_answerable", "unverified", "failed"].includes(
     v.status,
   );
