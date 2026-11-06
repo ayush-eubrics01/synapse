@@ -1,0 +1,80 @@
+# Phase 10: Engineering Automation — Design
+
+**Authority:**
+- ADR-030 (one task at a time, fixed Git workflow)
+- ADR-035 (branch confirmation, registry)
+- ADR-032 (only the user-approved task description reaches the engineering worker)
+- ADR-013 (approval for code change, commit, push, PR, merge)
+- ADR-026
+- `docs/modules/claude-orchestrator.md` §Git workflow and §5d
+- `docs/product/workflows.md` W5
+- the Phase 9 implementation note (enforce `protected` and `auto_deploys_on_merge`)
+
+## Principle
+
+The model edits files and runs the repository's tests. Nothing else. **Every Git operation is performed by Synapse code** (argv, no shell), never by the model, and each write step needs the user's explicit approval of exactly what will happen. These steps are branch creation, commit, pull, local merge, push, PR creation and PR merge.
+
+## Scope
+
+This phase covers:
+- engineering tasks created by the user, or proposed from a Jira issue or a Slack message;
+- read-only investigation and planning;
+- plan approval together with branch confirmation;
+- the global engineering lock;
+- development and test runs, limited to editing files and running the tests;
+- approval-gated Git steps through to PR merge;
+- cleanup;
+- the dashboard section and Needs-you cards.
+
+**Deferred** (recorded in follow-ups):
+- `code_answer` for away mode, Phase 10b, with its own design: untrusted question plus repository reads.
+- Interactive session observation (ADR-036): Phase 10b.
+- Automatic conflict resolution: never.
+- More than one repository per task.
+
+## Decisions
+
+| # | Decision | Why |
+|---|---|---|
+| E1 | **Tables (migration 0017).** `engineering_tasks`: `id`, `repository_id`, `environment_id?`, `source` (`'manual'\|'jira'\|'slack'`), `source_ref?`, `title` (≤120), `draft_description` (may contain untrusted text, never sent to a run that can act), `approved_description?`, `plan` (json, nullable), `parent_branch?`, `task_branch?`, `status` (`proposed`, `investigating`, `planned`, `approved`, `queued`, `in_progress`, `awaiting_approval`, `completed`, `failed`, `cancelled`, `needs_attention`), `current_step?`, `pr_url?`, `pr_number?`, `base_sha?`, `merge_sha?`, `failure?`, timestamps. `engineering_task_steps`: `id`, `task_id`, `step` (`investigate`, `branch`, `develop`, `commit`, `update_parent`, `merge_local`, `push_pr`, `merge_pr`, `cleanup`), `status` (`pending`, `awaiting_approval`, `running`, `done`, `failed`, `skipped`), `approval_id?`, `claude_run_id?`, `output` (json; ids, shas, counts, file list), timestamps | Matches the database design rows |
+| E2 | **Task description provenance.** The draft is prefilled from Jira (summary only) or a Slack message (text), or typed by the user. It is shown with an "untrusted source" note. The user edits it and approves it as `approved_description`. Only `approved_description` and system parts ever reach an engineering run, as `user_approved` and `system` parts. Proposals from Jira or Slack never auto-start | ADR-032 |
+| E3 | **Investigation run** (`engineering.investigate`). It runs after the user approves the description, on the engineering profile, read-only with Phase 9 scopes (`Read`/`Grep`/`Glob(//<repo>/**)`), with `workingDirectory` set to the repo. It returns structured output `{ summary (≤800), plan: [{ step (≤200) }] (1..12), filesLikelyTouched: string[] (≤30, verified inside the repo), testCommand?: string, risk: 'low'\|'medium'\|'high', size: 'xs'\|'s'\|'m'\|'l', unclear: string[] (≤5) }`, Zod-validated. One attempt. If `unclear` is non-empty, the task stays `planned` with the questions shown, and the user may edit the description and re-investigate | concept §5d: investigate first |
+| E4 | **Plan approval with branch confirmation** (ADR-035) is one user action: `POST /api/engineering/tasks/:id/approve-plan {parentBranch, environmentId?, testCommand, rememberAsTracked?}`. It is checked against the registry: the branch must exist locally or on a remote, and a **protected** environment's branch is refused (`protected_branch`) with no override in this phase. The approval screen shows the repository, environment, parent branch, task branch (`synapse/<shortid>-<slug>`), `PR origin/<parent> → upstream/<parent>`, the test command, the plan, and the auto-deploy notice when the environment has `auto_deploys_on_merge` ("merging the PR deploys <env>"). The task becomes `queued` | ADR-035, plus the Phase 9 enforcement note |
+| E5 | **Test command.** The user confirms it on plan approval (prefilled from the investigation or the repo's last-used value, stored per repo as `repositories.test_command`). It must match `^[A-Za-z0-9 ._:/=@+-]{1,120}$` with no `;`, `&`, `\|`, `>`, `<`, backquote, `$` or newline, and its first word must be in the allowlist `npm, pnpm, yarn, bun, npx, uv, pytest, python, python3, make, go, cargo, deno`. It is granted to the develop run as `Bash(<testCommand>:*)`. That one specifier is the only Bash grant | Running tests is needed. Prefix scoping keeps Bash to the user-confirmed command |
+| E6 | **Global engineering lock** (ADR-030). Lease `engineering` with holder `task:<id>`, TTL 10 min, renewed every 2 min by the API process while the task is `in_progress` or `awaiting_approval`. The lock is acquired when a `queued` task is picked up, highest priority first and then oldest. It is held through approval waits and released after `completed`/`cancelled`/`failed` plus cleanup. On startup with an expired engineering lease whose task is not terminal: if the repo is dirty or a merge is in progress, the task becomes `needs_attention` and the lease is not released. Otherwise the holder re-acquires and the task resumes at its current step | ADR-030 |
+| E7 | **Preflight** (deterministic, no AI). Checks: the repo is registered; the realpath equals the git top level; the working tree is clean (`git status --porcelain` empty, with `-c core.fsmonitor=false -c core.hooksPath=/dev/null` and `--no-optional-locks`); no merge or rebase is in progress; the `origin` and `upstream` remotes exist; the upstream push URL is disabled or the user accepted otherwise (Phase 9 data); the parent branch exists on `origin` and `upstream`. Any failure sets `needs_attention` with a fixed reason code | ADR-030 |
+| E8 | **Step `branch`** (approved by the plan approval). Synapse runs `git switch -c <taskBranch> <parent>` (after `git fetch origin <parent>` and `git fetch upstream <parent>`, then a fast-forward of the local parent only when it is a fast-forward). Base sha recorded | — |
+| E9 | **Step `develop`** (approved by the plan approval). One engineering run: workingDirectory = repo, model `engineering.model` (default sonnet), maxTurns `engineering.develop.maxTurns` (60), timeout 30 min, one attempt. Tools: `Read`/`Grep`/`Glob`/`Edit`/`Write(//<repo>/**)`, `MultiEdit(//<repo>/**)`, and `Bash(<testCommand>:*)`. Parts: system instructions plus the `user_approved` description plus the `user_approved` plan. Instructions: implement the plan, run the tests, keep changes minimal, don't touch `.git`, don't commit. The output is `{ summary, testsPassed: boolean, testOutputTail (≤2000, from the tool_result, not the model), notes }`, with `testsPassed` and `testOutputTail` taken from the last real Bash tool_result for the test command (ADR-026). After the run Synapse computes `git status`/`git diff --stat` and rejects any change under `.git/` or outside the repo. There must be a diff; an empty diff means `failed` (`no_changes`). Validator rule L is extended: in engineering runs, `Edit`/`Write`/`MultiEdit` must equal `Tool(/<wd>/**)` exactly, and `Bash` only as `Bash(<cmd>:*)` with `cmd` passing E5 | Edits stay in the repo. Bash is limited to the test command. Git is never touched by the model |
+| E10 | **Step `commit`** (approval `engineering.commit`). The approval shows the changed files with `+/-` counts, the full diff truncated to 200 KB, the test result, and the commit message (`<title>` + approved description summary + `Task: <id>`). The user may edit the message. On approval Synapse runs `git add -A` (repo only) and `git commit -m` with the approved message; author and committer come from the repo's git config. Commit sha recorded | ADR-013: commit needs approval |
+| E11 | **Step `update_parent`** (no approval; it changes no remote). `git switch <parent>`, `git pull --ff-only origin <parent>`, `git pull --ff-only upstream <parent>`. If not fast-forward, `git pull --no-rebase` with a merge; any conflict aborts the merge (`git merge --abort`) and sets `needs_attention` (`parent_conflict`). Never auto-resolved | ADR-030 step 3 |
+| E12 | **Step `merge_local`** (approval `engineering.merge_local`). It shows the commits to merge and the target. `git merge --no-ff <taskBranch>`; a conflict leads to abort and `needs_attention` (`merge_conflict`) | ADR-030 step 4 |
+| E13 | **Step `push_pr`** (approval `engineering.push_pr`). It shows: the commits being pushed (`origin/<parent>..<parent>`), "push to origin/<parent> (your fork)", the PR title and body (editable), PR `origin/<parent> → upstream/<parent>`, and the auto-deploy notice when relevant. On approval: `git push origin <parent>` (refused if the remote URL is the upstream URL, or if the target branch is protected), then PR creation through the `PullRequestProvider` port. The `GitHubCliProvider` adapter runs `gh pr create --repo <upstream owner/repo> --head <fork owner>:<parent> --base <parent> --title … --body …` (argv), with owner and repo parsed from the stored, credential-stripped URLs; it supports github.com only, otherwise `unsupported_remote` and `needs_attention`. PR url and number are recorded. **Never pushes to upstream** (hard rule 13) | ADR-030 step 5 |
+| E14 | **Step `merge_pr`** (approval `engineering.merge_pr`, risk high). It shows the PR, its checks status (via `gh pr view --json statusCheckRollup,mergeable`) and the auto-deploy warning: "Merging deploys <env> (auto-deploys on merge)". It is refused for a protected base branch. On approval: `gh pr merge <number> --repo <upstream> --merge`. Then the task is `completed` | ADR-030 step 6, plus the Phase 9 note |
+| E15 | **Cleanup** (`cleanup` step, no approval, local only). After `completed`, `cancelled` or `failed`: delete the local task branch (`git branch -D` only if its commits are merged, or the task was cancelled before commit), switch back to the branch that was checked out at pickup if the tree is clean, then release the lock. A dirty tree is left alone (`needs_attention`) | ADR-030 |
+| E16 | **Cancel/reject.** Rejecting any step approval, or `POST …/cancel`, cancels the task: no further Git writes, cleanup, lock released. Once the push has happened, the PR stays as is and the UI says so | — |
+| E17 | **Git runner hardening.** Every Synapse git call uses argv, `-c core.fsmonitor=false -c core.hooksPath=/dev/null -c credential.interactive=never`, `GIT_TERMINAL_PROMPT=0`, a timeout (60 s; push 120 s), and `cwd`/`-C` set to the registered realpath only. User credentials (ssh-agent, credential helper, gh auth) are used as configured; tokens are never read | Rule 9 |
+| E18 | **Approvals.** New actions `engineering.commit`, `engineering.merge_local`, `engineering.push_pr` and `engineering.merge_pr`, default `approval_required` (`merge_pr` is `explicit_approval_required` if that policy exists, otherwise `approval_required` with risk `high`). The engineering task executor registers per action. Revalidate checks that the task is still at that step, the lock holder is this task, the tree state matches (the commit step re-checks the diff hash shown in the approval), and the target branch is not protected | ADR-013 |
+| E19 | **API.** `GET /api/engineering/tasks?status=`, `POST /api/engineering/tasks {repositoryId, title, draftDescription}`, `POST /api/engineering/tasks/from-jira {key}`, `POST /api/engineering/tasks/from-slack {messageId}`, `GET /api/engineering/tasks/:id` (with steps), `POST …/:id/approve-description {description}` (enqueues the investigation), `POST …/:id/approve-plan` (E4), `POST …/:id/cancel`, `GET /api/engineering/lock` → `{held, taskId?, since?}`. Overview: `counts.engineeringAwaiting` and `engineeringLock` (replacing the Phase 7 placeholder `null` with `{held, taskTitle?}`) | — |
+| E20 | **Web.** An "Engineering" section after Projects: the active task (step timeline, lock status, current approval), the queue, proposed tasks (with "new task" from scratch, from a Jira issue in the Jira section, or from an inbox message), and history. Needs-you cards: "ENGINEERING · APPROVE PLAN", "ENGINEERING · COMMIT" (diff viewer, collapsible per file, plain text), "ENGINEERING · MERGE LOCAL", "ENGINEERING · PUSH & PR", "ENGINEERING · MERGE PR" (red auto-deploy banner), and "ENGINEERING · NEEDS ATTENTION" (reason). The sidebar footer `eng lock` shows "free" or "busy · <task>". Approve buttons are explicit, never deferred | — |
+| E21 | **Untrusted data.** The Jira summary and Slack text appear only in `draft_description` and are rendered as plain text. Diff text is repo content, rendered as plain text and never logged. Test output tails are stored per task step and never logged | Rule 9 |
+
+## Out of scope
+
+- `code_answer`.
+- ADR-036 session observation.
+- Rebase or squash options.
+- Multi-repo tasks.
+- Non-GitHub hosts.
+- Overriding protected branches.
+
+## Pre-checks (controller, real CLI, 2026-11-06, provider level)
+
+- **Edit and Write scoping.** Run with cwd set to the repo and allowedTools `Read/Edit/Write(//<repo>/**)` plus `Bash(bun test:*)`:
+  - Editing `repo/a.txt` succeeded.
+  - Editing `outside/b.txt` failed, and writing `outside/c.txt` was denied. No outside file changed.
+- **Bash scoping.** With `Bash(bun test:*)` allowed:
+  - `bun test` ran.
+  - `ls <outside>` was denied.
+  - Each of these was denied: `bun test && touch <outside>/d.txt`, `bun test; touch <outside>/e.txt` and `bun test $(touch <outside>/f.txt)`. No file was created.
+
+So E5 and E9 rest on observed behaviour. The prefix rule refuses chaining, sequencing and command substitution.
