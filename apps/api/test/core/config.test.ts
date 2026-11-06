@@ -217,7 +217,7 @@ test("jira settings defaults", () => {
   expect(settings.get("jira.cloudId")).toBeNull();
   expect(settings.get("jira.scope.jql")).toBe("assignee = currentUser() AND updated >= -60d");
   expect(settings.get("jira.excludedProjects")).toEqual([]);
-  expect(settings.get("jira.sync.intervalMinutes")).toBe(15);
+  expect(settings.get("jira.sync.intervalMinutes")).toBe(30);
   expect(settings.get("jira.reconcile.hours")).toBe(24);
   expect(settings.get("jira.windowDays")).toBe(60);
   expect(settings.get("jira.stale.days")).toBe(5);
@@ -225,6 +225,7 @@ test("jira settings defaults", () => {
   expect(settings.get("jira.blockedStatuses")).toEqual([]);
   expect(settings.get("jira.pageSize")).toBe(20);
   expect(settings.get("jira.maxPagesPerRun")).toBe(6);
+  expect(settings.get("jira.maxPagesPerChain")).toBe(50);
   expect(() => settings.set("jira.pageSize", 31)).toThrow();
 });
 

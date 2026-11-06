@@ -97,12 +97,16 @@ export class DashboardService {
             .select({ n: countDistinct(schema.slackMessages.conversationId) })
             .from(schema.slackMessages)
             .get()?.n ?? 0,
-        jiraAttention:
-          db
-            .select({ n: count() })
-            .from(schema.jiraIssues)
-            .where(and(eq(schema.jiraIssues.inScope, true), isNotNull(schema.jiraIssues.attention)))
-            .get()?.n ?? 0,
+        // Nothing to act on while tracking is off, whatever rows remain from before.
+        jiraAttention: !settings.get("jira.enabled")
+          ? 0
+          : (db
+              .select({ n: count() })
+              .from(schema.jiraIssues)
+              .where(
+                and(eq(schema.jiraIssues.inScope, true), isNotNull(schema.jiraIssues.attention)),
+              )
+              .get()?.n ?? 0),
       },
       away: {
         on: settings.get("autoReply.awayMode"),

@@ -67,6 +67,24 @@ describe("jira parseSearchResult", () => {
     expect(r.total).toBe(7);
   });
 
+  test("webUrl is kept only when it starts with https://", () => {
+    const r = parseSearchResult(
+      page(
+        [
+          node("DEMO-1"),
+          { ...node("DEMO-2"), webUrl: "javascript:alert(1)" },
+          { ...node("DEMO-3"), webUrl: "http://example.atlassian.net/browse/DEMO-3" },
+        ],
+        false,
+      ),
+    );
+    expect(r.issues.map((i) => i.webUrl)).toEqual([
+      "https://example.atlassian.net/browse/DEMO-1",
+      null,
+      null,
+    ]);
+  });
+
   test("null priority and due date stay null", () => {
     const r = parseSearchResult(page([node("DEMO-2", { priority: null, duedate: null })], false));
     expect(r.issues[0]?.priority).toBeNull();

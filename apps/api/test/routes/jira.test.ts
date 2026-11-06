@@ -97,7 +97,17 @@ describe("jira routes", () => {
       lastReconcileAt: null,
       issueCount: 0,
       lastError: null,
+      scopeJql: "assignee = currentUser() AND updated >= -60d",
+      excludedProjects: [],
     });
+  });
+
+  test("GET status returns the stored scope and exclusions", async () => {
+    expect((await put({ scopeJql: "project = DEMO", excludedProjects: ["SKIP"] })).status).toBe(
+      200,
+    );
+    const s = (await (await call("/api/jira/status")).json()) as JiraStatusDto;
+    expect(s).toMatchObject({ scopeJql: "project = DEMO", excludedProjects: ["SKIP"] });
   });
 
   test("list views filter as specified", async () => {
@@ -205,8 +215,15 @@ describe("jira routes", () => {
 describe("overview", () => {
   test("counts.jiraAttention counts in-scope issues with attention", async () => {
     seed();
+    c.settings.set("jira.enabled", true);
     const o = (await (await call("/api/dashboard/overview")).json()) as DashboardOverview;
     expect(o.counts.jiraAttention).toBe(1);
+  });
+
+  test("is 0 while Jira is disabled, whatever is stored", async () => {
+    seed();
+    const o = (await (await call("/api/dashboard/overview")).json()) as DashboardOverview;
+    expect(o.counts.jiraAttention).toBe(0);
   });
 
   test("is 0 with no issues", async () => {

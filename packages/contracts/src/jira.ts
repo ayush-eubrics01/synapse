@@ -73,7 +73,8 @@ export const sourceIssueSchema = z.object({
     .nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
-  webUrl: z.string(),
+  /** The issue's Jira link, only when it is `https://`; null otherwise (never rendered). */
+  webUrl: z.string().nullable(),
 });
 export type SourceIssue = z.infer<typeof sourceIssueSchema>;
 
@@ -104,6 +105,9 @@ export const jiraStatusDtoSchema = z.object({
   lastReconcileAt: z.string().nullable(),
   issueCount: z.number().int().nonnegative(),
   lastError: z.string().nullable(),
+  /** The stored `jira.scope.jql` and `jira.excludedProjects` (local settings, never logged). */
+  scopeJql: z.string(),
+  excludedProjects: z.array(z.string()),
 });
 export type JiraStatusDto = z.infer<typeof jiraStatusDtoSchema>;
 

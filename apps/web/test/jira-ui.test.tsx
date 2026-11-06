@@ -3,7 +3,6 @@ import { renderToString } from "react-dom/server";
 import { JiraSection } from "../app/components/jira/JiraSection";
 import { JiraAttentionCard } from "../app/components/triage/JiraAttentionCard";
 import { JiraSetupCard } from "../app/components/triage/JiraSetupCard";
-import { DEFAULT_SCOPE_JQL } from "../lib/jira";
 import { issue } from "./jira-fixtures";
 
 const text = (html: string) => html.replace(/<!-- -->/g, "");
@@ -15,6 +14,8 @@ const status = (o = {}) => ({
   lastReconcileAt: null,
   issueCount: 3,
   lastError: null,
+  scopeJql: "assignee = currentUser() AND updated >= -60d",
+  excludedProjects: [] as string[],
   ...o,
 });
 const render = (issues = [issue()], st: ReturnType<typeof status> | null = status()) =>
@@ -88,6 +89,20 @@ test("empty state, not-synced line and disabled state", () => {
   expect(off).not.toContain("Sync now");
   expect(render([], null)).not.toContain("No Jira issues in scope.");
   expect(render([], status({ lastError: "rate_limited" }))).toContain("rate_limited");
+  expect(render([], status({ lastError: "output_too_large" }))).toContain(
+    "Jira page too large — lower jira.pageSize",
+  );
+  expect(render([], status({ lastError: "multiple_sites" }))).toContain(
+    "Several Jira sites are available — set jira.cloudId in settings",
+  );
+  expect(render([], status({ lastError: "no_sites" }))).toContain(
+    "No Jira site is available to this Claude account",
+  );
+});
+
+test("a row without a safe webUrl has no Jira link", () => {
+  expect(render([issue({ webUrl: null })])).not.toContain("Open in Jira");
+  expect(render([issue({ webUrl: "javascript:alert(1)" })])).not.toContain("Open in Jira");
 });
 
 test("the attention card lists up to 5 issues and links to the section", () => {
@@ -112,12 +127,21 @@ test("the attention card lists up to 5 issues and links to the section", () => {
   ).toContain("1 Jira issue needs attention");
 });
 
-test("the setup card has the explainer, a prefilled scope, excluded projects and Enable", () => {
-  const html = text(renderToString(<JiraSetupCard onEnable={() => {}} />));
+test("the setup card has the explainer, the stored scope and exclusions, and Enable", () => {
+  const html = text(
+    renderToString(
+      <JiraSetupCard
+        scopeJql="project = DEMO AND updated >= -30d"
+        excludedProjects={["SKIP", "OPS"]}
+        onEnable={() => {}}
+      />,
+    ),
+  );
   expect(html).toContain("JIRA · SETUP");
   expect(html).toContain("Track the Jira issues assigned to you.");
   expect(html).toContain("<textarea");
-  expect(html).toContain(DEFAULT_SCOPE_JQL.replace(">", "&gt;"));
+  expect(html).toContain("project = DEMO AND updated &gt;= -30d");
+  expect(html).toContain('value="SKIP, OPS"');
   expect(html).toContain('aria-label="Excluded projects"');
   expect(html).toContain("Enable");
   expect(html).not.toContain('role="alert"');

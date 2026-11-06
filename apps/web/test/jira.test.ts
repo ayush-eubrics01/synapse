@@ -11,6 +11,7 @@ import {
   attentionLabel,
   dueLabel,
   groupIssues,
+  jiraErrorLabel,
   jiraPaletteItems,
   validateJiraSetup,
 } from "../lib/jira";
@@ -93,6 +94,22 @@ test("validateJiraSetup mirrors the server rules", () => {
   expect(validateJiraSetup("   ", "").ok).toBe(false);
   expect(validateJiraSetup("a\nb", "").ok).toBe(false);
   expect(validateJiraSetup("a".repeat(501), "").ok).toBe(false);
+  for (const jql of ["a = b) OR (c = d", "a in (b", 'summary ~ "open']) {
+    const r = validateJiraSetup(jql, "");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.scopeError).toBe("Scope has unbalanced parentheses or quotes.");
+  }
+  expect(validateJiraSetup('summary ~ "x) OR (y"', "").ok).toBe(true);
+});
+
+test("jiraErrorLabel: fixed hints for site and page-size problems; other kinds as they are", () => {
+  expect(jiraErrorLabel(null)).toBeNull();
+  expect(jiraErrorLabel("multiple_sites")).toBe(
+    "Several Jira sites are available — set jira.cloudId in settings",
+  );
+  expect(jiraErrorLabel("no_sites")).toBe("No Jira site is available to this Claude account");
+  expect(jiraErrorLabel("output_too_large")).toBe("Jira page too large — lower jira.pageSize");
+  expect(jiraErrorLabel("rate_limited")).toBe("rate_limited");
 });
 
 test("jiraPaletteItems: Sync Jira now and one entry per open issue", () => {
@@ -134,37 +151,73 @@ const status = (o = {}) => ({
   lastReconcileAt: null,
   issueCount: 0,
   lastError: null,
+  scopeJql: "assignee = currentUser() AND updated >= -60d",
+  excludedProjects: [],
   ...o,
 });
 
-test("Needs you: disabled Jira shows the setup card; enabled shows one attention card", () => {
-  const off = buildNeedsYou(baseInput({ jiraStatus: status({ enabled: false }) }));
+test("Needs you: disabled Jira shows the setup card prefilled from the status", () => {
+  const off = buildNeedsYou(
+    baseInput({
+      jiraStatus: status({
+        enabled: false,
+        scopeJql: "project = DEMO",
+        excludedProjects: ["SKIP"],
+      }),
+    }),
+  );
   expect(off.map((c) => c.kind)).toEqual(["setup-jira"]);
+  const card = off[0];
+  expect(card?.kind === "setup-jira" && card.data).toEqual({
+    scopeJql: "project = DEMO",
+    excludedProjects: ["SKIP"],
+  });
   expect(buildNeedsYou(baseInput({ jiraStatus: null })).length).toBe(0);
+});
+
+test("Needs you: the attention card shows the backend's attention view as given", () => {
+  // The backend's severity order (blocked before stale), with no client-side re-filtering.
+  const attention = [
+    issue({ key: "DEMO-7", attention: "blocked" }),
+    issue({ key: "DEMO-2", attention: "stale" }),
+  ];
   const on = buildNeedsYou(
     baseInput({
       jiraStatus: status(),
-      jiraIssues: [
-        issue({ attention: "overdue" }),
-        issue({ key: "DEMO-2", attention: "stale" }),
-        issue({ key: "DEMO-3" }),
-      ],
-    }),
+      jiraAttention: attention,
+      jiraIssues: [issue({ key: "DEMO-9", attention: "overdue" })],
+    } as Partial<NeedsYouInput>),
   );
   expect(on.map((c) => c.kind)).toEqual(["jira-attention"]);
   const card = on[0];
   expect(card?.kind === "jira-attention" && card.data.issues.map((i) => i.key)).toEqual([
-    "DEMO-1",
+    "DEMO-7",
     "DEMO-2",
   ]);
   expect(needsYouCount(on)).toBe(1);
+  // Nothing in the attention view: no card, whatever the full list holds.
+  expect(
+    buildNeedsYou(
+      baseInput({
+        jiraStatus: status(),
+        jiraAttention: [],
+        jiraIssues: [issue({ attention: "overdue" })],
+      } as Partial<NeedsYouInput>),
+    ),
+  ).toEqual([]);
+  // Disabled: no attention card even if a stale list is still loaded.
+  expect(
+    buildNeedsYou(
+      baseInput({ jiraStatus: status({ enabled: false }), jiraAttention: attention }),
+    ).map((c) => c.kind),
+  ).toEqual(["setup-jira"]);
 });
 
 test("jira-attention ranks after commitments and before profile recommendations; setup with setup", () => {
   const cards = buildNeedsYou(
     baseInput({
       jiraStatus: status({ enabled: true }),
-      jiraIssues: [issue({ attention: "blocked" })],
+      jiraAttention: [issue({ attention: "blocked" })],
       reviewQueue: [{ id: "c1", actions: ["accept"] } as never],
       recommendations: [{ id: "r1", approvalId: null } as never],
       identity: { selfUserId: null, suggestion: null, suggestionName: null } as never,

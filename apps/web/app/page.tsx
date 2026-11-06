@@ -207,6 +207,7 @@ export default function Dashboard() {
   const [followups, setFollowups] = useState<FollowupViewDto[]>([]);
   const [jiraStatus, setJiraStatus] = useState<JiraStatusDto | null>(null);
   const [jiraIssues, setJiraIssues] = useState<JiraIssueView[]>([]);
+  const [jiraAttention, setJiraAttention] = useState<JiraIssueView[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionErrors, setActionErrors] = useState<ActionErrors>(NO_ACTION_ERRORS);
   // Immediate actions clear only their own channel; a deferred commit's failure stays until Dismiss.
@@ -233,7 +234,7 @@ export default function Dashboard() {
   const refresh = useCallback(async () => {
     const openUser = personRef.current;
     const threadId = threadIdRef.current;
-    const [a, j, cs, cr, ss, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv, pd, td, ad, js, ji] =
+    const [a, j, cs, cr, ss, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv, pd, td, ad, js, ji, ja] =
       await Promise.allSettled([
         getApprovals(),
         getJobs(20),
@@ -256,6 +257,7 @@ export default function Dashboard() {
         getAwayDigest(),
         getJiraStatus(),
         getJiraIssues("all"),
+        getJiraIssues("attention"),
       ]);
     if (a.status === "fulfilled") setApprovals(a.value);
     if (j.status === "fulfilled") setJobs(j.value);
@@ -277,6 +279,7 @@ export default function Dashboard() {
     if (ad.status === "fulfilled") setAwayDigest(ad.value);
     if (js.status === "fulfilled") setJiraStatus(js.value);
     if (ji.status === "fulfilled") setJiraIssues(ji.value);
+    if (ja.status === "fulfilled") setJiraAttention(ja.value);
     // The open thread is refetched with everything else; stale answers for another conversation are dropped.
     if (td.status === "fulfilled" && td.value && threadIdRef.current === threadId)
       setThread(td.value);
@@ -456,7 +459,7 @@ export default function Dashboard() {
     slackStatus,
     awayDigest,
     jiraStatus,
-    jiraIssues,
+    jiraAttention,
     hidden: feed.hidden,
   };
   const cards = buildNeedsYou(needsInput);

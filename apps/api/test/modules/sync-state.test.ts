@@ -57,3 +57,44 @@ test("jira streams live under their own integration row", () => {
   expect(byStream.get("jira.issues")).toBe(byStream.get("jira.reconcile"));
   expect(byStream.get("jira.issues")).not.toBe(byStream.get("slack.messages"));
 });
+
+test("backward compatible: a Slack integration row and slack.messages state written before Jira resolve to the same row", () => {
+  // Seeded the way the pre-Phase-8 service wrote them: one slack integration, one state row.
+  db.insert(schema.integrations)
+    .values({
+      id: "slack-int-legacy",
+      kind: "slack",
+      adapter: "claude-connector",
+      createdAt: "2026-10-01T00:00:00.000Z",
+    })
+    .run();
+  db.insert(schema.integrationSyncStates)
+    .values({
+      id: "state-legacy",
+      integrationId: "slack-int-legacy",
+      stream: "slack.messages",
+      status: "idle",
+      checkpoint: "1730000000.000100",
+      generation: "gen-legacy",
+    })
+    .run();
+
+  const fresh = new SyncStateService(db, clock);
+  const s = fresh.get("slack.messages");
+  expect(s.checkpoint).toBe("1730000000.000100");
+  expect(s.generation).toBe("gen-legacy");
+  db.transaction((tx) => fresh.update(tx, "slack.messages", { pagesDone: 4 }));
+  // Jira gets its own integration row; the legacy rows are reused, never duplicated.
+  fresh.get("jira.issues");
+  const rows = db.select().from(schema.integrationSyncStates).all();
+  const slackRows = rows.filter((r) => r.stream === "slack.messages");
+  expect(slackRows).toHaveLength(1);
+  expect(slackRows[0]).toMatchObject({
+    id: "state-legacy",
+    integrationId: "slack-int-legacy",
+    pagesDone: 4,
+  });
+  const ints = db.select().from(schema.integrations).all();
+  expect(ints.filter((i) => i.kind === "slack").map((i) => i.id)).toEqual(["slack-int-legacy"]);
+  expect(ints.filter((i) => i.kind === "jira")).toHaveLength(1);
+});

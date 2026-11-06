@@ -1,18 +1,21 @@
 "use client";
 
 import { useState } from "react";
-import { DEFAULT_SCOPE_JQL, validateJiraSetup } from "../../../lib/jira";
+import { validateJiraSetup } from "../../../lib/jira";
 import { Button } from "../ui/Button";
 import { Actions, CardFrame, Explainer } from "./CardFrame";
 
-/** Shown while Jira tracking is off. Enabling saves the scope and exclusions, then syncs. */
+/**
+ * Shown while Jira tracking is off, prefilled with the stored scope and exclusions (from the
+ * status). Enabling saves them, then syncs.
+ */
 export function JiraSetupCard({
-  scopeJql = DEFAULT_SCOPE_JQL,
-  excludedProjects = [],
+  scopeJql,
+  excludedProjects,
   onEnable,
 }: {
-  scopeJql?: string;
-  excludedProjects?: string[];
+  scopeJql: string;
+  excludedProjects: string[];
   onEnable: (setup: { scopeJql: string; excludedProjects: string[] }) => void;
 }) {
   const [scope, setScope] = useState(scopeJql);

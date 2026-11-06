@@ -88,7 +88,13 @@ function Card({ card, p }: { card: NeedsCard; p: NeedsYouProps }) {
     case "jira-attention":
       return <JiraAttentionCard issues={card.data.issues} now={p.now} onSeeAll={h.seeAllJira} />;
     case "setup-jira":
-      return <JiraSetupCard onEnable={h.enableJira} />;
+      return (
+        <JiraSetupCard
+          scopeJql={card.data.scopeJql}
+          excludedProjects={card.data.excludedProjects}
+          onEnable={h.enableJira}
+        />
+      );
     case "recommendation":
       return (
         <RecommendationCard

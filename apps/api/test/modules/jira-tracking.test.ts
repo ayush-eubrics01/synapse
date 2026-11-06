@@ -256,6 +256,57 @@ describe("store", () => {
     expect(row("DEMO-1")?.inScope).toBe(false);
   });
 
+  test("a project move (same jira id, new key) renames the row instead of duplicating it", () => {
+    store.upsertPage([issue(1)], { setScope: true });
+    const before = evts("jira.issue_updated").length;
+    const r = store.upsertPage(
+      [
+        issue(1, {
+          key: "OTHER-7",
+          projectKey: "OTHER",
+          updatedAt: "2026-11-06T11:00:00.000Z",
+        }),
+      ],
+      { setScope: true },
+    );
+    expect(r).toMatchObject({ inserted: 0, updated: 1, keys: ["OTHER-7"] });
+    const rows = db.select().from(schema.jiraIssues).all();
+    expect(rows.map((x) => [x.key, x.jiraId, x.projectKey])).toEqual([
+      ["OTHER-7", "10001", "OTHER"],
+    ]);
+    expect(
+      evts("jira.issue_updated")
+        .slice(before)
+        .map((e) => e.payload),
+    ).toEqual([{ key: "OTHER-7" }]);
+    expect(store.get("DEMO-1")).toBeNull();
+    expect(store.get("OTHER-7")?.projectKey).toBe("OTHER");
+  });
+
+  test("an older read of a moved issue keeps the stored key", () => {
+    store.upsertPage([issue(1, { key: "OTHER-7", projectKey: "OTHER" })], { setScope: true });
+    const r = store.upsertPage([issue(1, { updatedAt: "2026-11-06T09:00:00.000Z" })], {
+      setScope: true,
+    });
+    expect(r.keys).toEqual(["OTHER-7"]);
+    expect(
+      db
+        .select()
+        .from(schema.jiraIssues)
+        .all()
+        .map((x) => x.key),
+    ).toEqual(["OTHER-7"]);
+  });
+
+  test("a missing webUrl is stored without one and read back as null", () => {
+    store.upsertPage([issue(1, { webUrl: null })], { setScope: true });
+    expect(store.get("DEMO-1")?.webUrl).toBeNull();
+    // A stored value that is not https (written before the rule) never reaches the UI.
+    db.update(schema.jiraIssues).set({ webUrl: "javascript:alert(1)" }).run();
+    expect(store.get("DEMO-1")?.webUrl).toBeNull();
+    expect(store.list("all")[0]?.webUrl).toBeNull();
+  });
+
   test("markScope: seen in, unseen out (unless seen since the run started)", () => {
     store.upsertPage([issue(1), issue(2), issue(3)], { setScope: true });
     db.update(schema.jiraIssues)
@@ -419,6 +470,8 @@ describe("service", () => {
       lastReconcileAt: null,
       issueCount: 0,
       lastError: null,
+      scopeJql: SCOPE,
+      excludedProjects: [],
     });
     store.upsertPage([issue(1)], { setScope: true });
     db.transaction((tx) => {
@@ -468,10 +521,50 @@ describe("service", () => {
     expect(settings.get("jira.enabled")).toBe(true);
   });
 
-  test("enabling with a cloudId enqueues a sync", () => {
+  test("enabling with a cloudId and no checkpoint enqueues a sync and a reconcile", () => {
     settings.set("jira.cloudId", CLOUD);
     service.updateSettings({ enabled: true });
+    expect(jobs().map((j) => j.type)).toEqual(["jira.sync_incremental", "jira.reconcile"]);
+  });
+
+  test("enabling with a cloudId and a checkpoint enqueues only a sync", () => {
+    settings.set("jira.cloudId", CLOUD);
+    db.transaction((tx) =>
+      sync.update(tx, "jira.issues", { checkpoint: "2026-11-06T10:00:00.000Z" }),
+    );
+    service.updateSettings({ enabled: true });
     expect(jobs().map((j) => j.type)).toEqual(["jira.sync_incremental"]);
+  });
+
+  test("enabling coalesces with a reconcile that is already waiting", () => {
+    settings.set("jira.cloudId", CLOUD);
+    queue.enqueue(db, { type: "jira.reconcile", idempotencyKey: "r-waiting" });
+    service.updateSettings({ enabled: true });
+    expect(jobs("jira.reconcile")).toHaveLength(1);
+  });
+
+  test("a forced reconcile cancels waiting fresh reconciles instead of duplicating them", () => {
+    settings.set("jira.enabled", true);
+    settings.set("jira.cloudId", CLOUD);
+    const pending = queue.enqueue(db, { type: "jira.reconcile", idempotencyKey: "r-pending" });
+    const retry = queue.enqueue(db, { type: "jira.reconcile", idempotencyKey: "r-retry" });
+    db.update(schema.jobs).set({ status: "RETRY" }).where(eq(schema.jobs.id, retry.id)).run();
+    const cont = queue.enqueue(db, {
+      type: "jira.reconcile",
+      input: { generation: "old" },
+      idempotencyKey: "r-cont",
+    });
+    service.updateSettings({ scopeJql: "assignee = currentUser()" });
+    service.updateSettings({ scopeJql: "assignee = currentUser() AND updated >= -30d" });
+    const status = (id: string) => jobs().find((j) => j.id === id)?.status;
+    expect(status(pending.id)).toBe("CANCELLED");
+    expect(status(retry.id)).toBe("CANCELLED");
+    // A continuation is left to its generation check (superseded when it runs).
+    expect(status(cont.id)).toBe("PENDING");
+    const live = jobs("jira.reconcile").filter(
+      (j) => j.input === null && (j.status === "PENDING" || j.status === "RETRY"),
+    );
+    expect(live).toHaveLength(1);
   });
 
   test("a scope edit resets the checkpoint, supersedes chains and enqueues a reconcile", () => {

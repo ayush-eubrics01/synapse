@@ -53,7 +53,7 @@ export type NeedsCard = CardBase &
     | { kind: "setup-identity"; data: { identity: SlackIdentityDto; people: PersonDto[] } }
     | { kind: "setup-people"; data: { candidates: Candidate[] } }
     | { kind: "setup-backfill"; data: { backfill: SlackStatusDto["backfill"] } }
-    | { kind: "setup-jira"; data: Record<string, never> }
+    | { kind: "setup-jira"; data: { scopeJql: string; excludedProjects: string[] } }
   );
 
 export type NeedsKind = NeedsCard["kind"];
@@ -72,9 +72,10 @@ export interface NeedsYouInput {
   slackStatus: SlackStatusDto | null;
   /** The return digest of the last away session, until dismissed (spec A17). */
   awayDigest?: AwayDigest | null;
-  /** Jira tracking status (null until loaded) and the in-scope issues; absent in older callers. */
+  /** Jira tracking status (null until loaded); absent in older callers. */
   jiraStatus?: JiraStatusDto | null;
-  jiraIssues?: JiraIssueView[];
+  /** `GET /api/jira/issues?view=attention`: already filtered and in the backend's severity order. */
+  jiraAttention?: JiraIssueView[];
   /** Keys of items pending a deferred commit (spec D8): never shown, whatever the data says. */
   hidden: Set<string>;
 }
@@ -198,12 +199,9 @@ export function buildNeedsYou(input: NeedsYouInput): NeedsCard[] {
     cards.push({ key: `commitment:${c.id}`, kind: "commitment", rank: RANK.commitment, data: c });
   }
 
-  // One card for all issues that need attention; the card shows the first few.
-  const jiraAttention = input.jiraStatus?.enabled
-    ? (input.jiraIssues ?? []).filter(
-        (i) => i.inScope && i.attention !== null && i.statusCategory !== "done",
-      )
-    : [];
+  // One card for all issues that need attention, as the backend lists them (it owns the rules
+  // and the order); the card shows the first few.
+  const jiraAttention = input.jiraStatus?.enabled ? (input.jiraAttention ?? []) : [];
   if (jiraAttention.length > 0) {
     cards.push({
       key: "jira-attention",
@@ -255,8 +253,14 @@ export function buildNeedsYou(input: NeedsYouInput): NeedsCard[] {
     });
   }
 
-  if (input.jiraStatus && !input.jiraStatus.enabled) {
-    cards.push({ key: "setup:jira", kind: "setup-jira", rank: RANK.jiraSetup, data: {} });
+  const js = input.jiraStatus;
+  if (js && !js.enabled) {
+    cards.push({
+      key: "setup:jira",
+      kind: "setup-jira",
+      rank: RANK.jiraSetup,
+      data: { scopeJql: js.scopeJql, excludedProjects: js.excludedProjects },
+    });
   }
 
   // Array.prototype.sort is stable: equal ranks keep the API's order.

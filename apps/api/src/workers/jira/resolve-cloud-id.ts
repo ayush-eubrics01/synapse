@@ -8,7 +8,7 @@ const LOOKUP_FAILED = "jira cloud id lookup failed";
 
 /**
  * Spec B4: one `getAccessibleAtlassianResources` run while enabled with no cloudId. Exactly one
- * site is stored and a sync queued. Zero or several park the job in NEEDS_ATTENTION with the reason
+ * site is stored and a sync queued (plus a reconcile while there is no checkpoint). Zero or several park the job in NEEDS_ATTENTION with the reason
  * `no_sites` / `multiple_sites`; the user then sets `jira.cloudId` by hand. Nothing is guessed.
  */
 export function resolveCloudIdHandler(deps: JiraJobDeps) {
@@ -46,6 +46,10 @@ export function resolveCloudIdHandler(deps: JiraJobDeps) {
         settings.setIn(tx, "jira.cloudId", only.id);
         sync.update(tx, "jira.issues", { lastError: null });
         enqueueJiraJob(tx, queue, clock, JIRA_JOB.sync, "cloud_id");
+        // No checkpoint yet: a full reconcile settles every stored issue's scope flag.
+        if (sync.get("jira.issues", tx).checkpoint === null) {
+          enqueueJiraJob(tx, queue, clock, JIRA_JOB.reconcile, "cloud_id");
+        }
       },
       { behavior: "immediate" },
     );

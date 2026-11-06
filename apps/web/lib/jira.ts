@@ -1,9 +1,6 @@
 import type { JiraIssueView } from "@synapse/contracts";
 import type { PaletteItem } from "./palette";
 
-/** The API's default scope (`jira.scope.jql`); the status DTO does not expose the current value. */
-export const DEFAULT_SCOPE_JQL = "assignee = currentUser() AND updated >= -60d";
-
 const PROJECT_KEY = /^[A-Z][A-Z0-9_]+$/;
 const DAY_MS = 86_400_000;
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -78,6 +75,39 @@ export function dueLabel(
   return { text, overdue: false };
 }
 
+/**
+ * The server's `jqlBalanced` (packages/contracts/src/jira.ts), mirrored so the web bundle does not
+ * pull in the contracts runtime: parentheses balance outside double-quoted strings, and every
+ * string is closed (a backslash escapes the next character inside one).
+ */
+function jqlBalanced(jql: string): boolean {
+  let depth = 0;
+  let quoted = false;
+  for (let i = 0; i < jql.length; i++) {
+    const ch = jql[i];
+    if (quoted) {
+      if (ch === "\\") i++;
+      else if (ch === '"') quoted = false;
+    } else if (ch === '"') quoted = true;
+    else if (ch === "(") depth++;
+    else if (ch === ")" && --depth < 0) return false;
+  }
+  return depth === 0 && !quoted;
+}
+
+/** Fixed hints for status `lastError` values a person must act on; other kinds show as they are. */
+const ERROR_HINTS: Record<string, string> = {
+  multiple_sites: "Several Jira sites are available — set jira.cloudId in settings",
+  no_sites: "No Jira site is available to this Claude account",
+  output_too_large: "Jira page too large — lower jira.pageSize",
+};
+
+/** The status line text for `JiraStatusDto.lastError`; null when there is none. */
+export function jiraErrorLabel(lastError: string | null): string | null {
+  if (lastError === null) return null;
+  return ERROR_HINTS[lastError] ?? lastError;
+}
+
 export type JiraSetupResult =
   | { ok: true; scopeJql: string; excludedProjects: string[] }
   | { ok: false; scopeError: string | null; excludedError: string | null };
@@ -90,6 +120,7 @@ export function validateJiraSetup(scope: string, excluded: string): JiraSetupRes
   else if (scopeJql.length > 500) scopeError = "Scope is limited to 500 characters.";
   else if (/[\r\n]/.test(scopeJql)) scopeError = "Scope must be one line.";
   else if (/\border\s+by\b/i.test(scopeJql)) scopeError = "Scope can't contain ORDER BY.";
+  else if (!jqlBalanced(scopeJql)) scopeError = "Scope has unbalanced parentheses or quotes.";
   const projects = excluded
     .split(",")
     .map((p) => p.trim())

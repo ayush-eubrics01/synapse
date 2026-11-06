@@ -72,7 +72,7 @@ const settingSchemas = {
   // No newline, no ORDER BY, balanced parentheses and quotes (the code wraps it as `(<scope>)`).
   "jira.scope.jql": jiraScopeJqlSchema.default("assignee = currentUser() AND updated >= -60d"),
   "jira.excludedProjects": z.array(jiraProjectKeySchema).default([]),
-  "jira.sync.intervalMinutes": z.number().int().positive().default(15),
+  "jira.sync.intervalMinutes": z.number().int().positive().default(30),
   "jira.reconcile.hours": z.number().int().positive().default(24),
   "jira.windowDays": z.number().int().positive().default(60),
   "jira.stale.days": z.number().int().positive().default(5),

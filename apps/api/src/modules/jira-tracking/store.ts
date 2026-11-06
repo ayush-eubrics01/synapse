@@ -46,6 +46,8 @@ export interface UpsertResult {
   maxUpdated: string | null;
 }
 
+/** `web_url` is NOT NULL (migration 0015); an issue without a safe link stores this. */
+const NO_URL = "";
 const MENTIONS_SHOWN = 20;
 const DAY_MS = 86_400_000;
 const ATTENTION_RANK: Record<JiraAttention, number> = {
@@ -81,7 +83,7 @@ function dataChange(a: Row, b: SourceIssue): boolean {
     JSON.stringify(a.labels) !== JSON.stringify(b.labels) ||
     a.jiraCreatedAt !== b.createdAt ||
     a.jiraUpdatedAt !== b.updatedAt ||
-    a.webUrl !== b.webUrl
+    a.webUrl !== (b.webUrl ?? NO_URL)
   );
 }
 
@@ -153,12 +155,16 @@ export class JiraStore {
             result.dropped++;
             continue;
           }
-          result.keys.push(i.key);
           if (result.maxUpdated === null || i.updatedAt > result.maxUpdated) {
             result.maxUpdated = i.updatedAt;
           }
-          const existing = tx.select().from(jiraIssues).where(eq(jiraIssues.key, i.key)).get();
+          // A project move keeps the Jira id and changes the key: an unknown key with a known id
+          // is that row, renamed below (never a second row for the same issue).
+          const existing =
+            tx.select().from(jiraIssues).where(eq(jiraIssues.key, i.key)).get() ??
+            tx.select().from(jiraIssues).where(eq(jiraIssues.jiraId, i.jiraId)).get();
           if (!existing) {
+            result.keys.push(i.key);
             const attention = attentionOf({ ...i, inScope: true }, nowDate, att);
             tx.insert(jiraIssues)
               .values({
@@ -174,7 +180,7 @@ export class JiraStore {
                 dueDate: i.dueDate,
                 jiraCreatedAt: i.createdAt,
                 jiraUpdatedAt: i.updatedAt,
-                webUrl: i.webUrl,
+                webUrl: i.webUrl ?? NO_URL,
                 inScope: true,
                 firstSeenAt: now,
                 lastSeenAt: now,
@@ -191,7 +197,8 @@ export class JiraStore {
           // Data older than what is stored (an earlier read finishing late) never overwrites it.
           const fresh = i.updatedAt >= existing.jiraUpdatedAt;
           const src: SourceIssue = fresh ? i : rowToSource(existing);
-          const notable = notableChange(existing, src, inScope);
+          const moved = src.key !== existing.key;
+          const notable = moved || notableChange(existing, src, inScope);
           const changed = notable || (fresh && dataChange(existing, src));
           const attention = attentionOf({ ...src, inScope }, nowDate, att);
           const attentionChanged = attention !== existing.attention;
@@ -200,6 +207,7 @@ export class JiraStore {
               lastSeenAt: now,
               ...(changed
                 ? {
+                    key: src.key,
                     jiraId: src.jiraId,
                     projectKey: src.projectKey,
                     summary: src.summary,
@@ -211,16 +219,17 @@ export class JiraStore {
                     dueDate: src.dueDate,
                     jiraCreatedAt: src.createdAt,
                     jiraUpdatedAt: src.updatedAt,
-                    webUrl: src.webUrl,
+                    webUrl: src.webUrl ?? NO_URL,
                     inScope,
                   }
                 : {}),
               ...(attentionChanged ? { attention, attentionSince: attention ? now : null } : {}),
             })
-            .where(eq(jiraIssues.key, i.key))
+            .where(eq(jiraIssues.key, existing.key))
             .run();
-          if (notable) this.publishUpdated(tx, i.key);
-          if (attentionChanged && attention) this.publishAttention(tx, i.key, attention);
+          result.keys.push(src.key);
+          if (notable) this.publishUpdated(tx, src.key);
+          if (attentionChanged && attention) this.publishAttention(tx, src.key, attention);
           if (changed) result.updated++;
           else result.unchanged++;
         }
@@ -425,6 +434,7 @@ function rowToSource(r: Row): SourceIssue {
     dueDate: r.dueDate,
     createdAt: r.jiraCreatedAt,
     updatedAt: r.jiraUpdatedAt,
-    webUrl: r.webUrl,
+    // Only an https link leaves the store (an older row may hold anything).
+    webUrl: r.webUrl.startsWith("https://") ? r.webUrl : null,
   };
 }

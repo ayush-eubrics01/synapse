@@ -1,7 +1,7 @@
 import type { JiraIssueView, JiraIssueViewKind, JiraStatusDto } from "@synapse/contracts";
 import { type Db, schema, type Tx } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { SettingsService } from "../../core/config/settings";
 import type { JobQueue } from "../../core/jobs/queue";
 import type { SyncStateService } from "../inbox/sync-state";
@@ -11,6 +11,7 @@ export const JIRA_JOB = {
   resolveCloudId: "jira.resolve_cloud_id",
   sync: "jira.sync_incremental",
   reconcile: "jira.reconcile",
+  refreshAttention: "jira.refresh_attention",
 } as const;
 export type JiraJobType = (typeof JIRA_JOB)[keyof typeof JIRA_JOB];
 
@@ -64,6 +65,8 @@ export class JiraService {
               (CLOUD_ID_REASONS as readonly string[]).includes(err.message)
             ? err.message
             : err.kind,
+      scopeJql: settings.get("jira.scope.jql"),
+      excludedProjects: settings.get("jira.excludedProjects"),
     };
   }
 
@@ -125,7 +128,15 @@ export class JiraService {
           if (enabled && hasCloudId) this.enqueueOnce(tx, JIRA_JOB.reconcile, "settings", true);
         }
         if (enabled && !wasEnabled) {
-          this.enqueueOnce(tx, hasCloudId ? JIRA_JOB.sync : JIRA_JOB.resolveCloudId, "enabled");
+          if (hasCloudId) {
+            this.enqueueOnce(tx, JIRA_JOB.sync, "enabled");
+            // No checkpoint yet: a full reconcile settles every stored issue's scope flag.
+            if (sync.get("jira.issues", tx).checkpoint === null) {
+              this.enqueueOnce(tx, JIRA_JOB.reconcile, "enabled");
+            }
+          } else {
+            this.enqueueOnce(tx, JIRA_JOB.resolveCloudId, "enabled");
+          }
         }
       },
       { behavior: "immediate" },
@@ -139,9 +150,11 @@ export class JiraService {
 }
 
 /**
- * Enqueues `type` unless one is already pending or running (that job is returned). `fresh` skips
- * the check for a reconcile that must run against a new scope; the older run is superseded by its
- * generation.
+ * Enqueues `type` unless one is already pending or running (that job is returned). `fresh` is for
+ * a reconcile that must run against a new scope: it cancels fresh jobs of that type still waiting
+ * (PENDING or RETRY, null input: they have not started) and always enqueues a new one, so repeated
+ * scope edits leave one waiting run. A running job or a continuation is superseded by its
+ * generation instead.
  */
 export function enqueueJiraJob(
   tx: Tx,
@@ -151,7 +164,18 @@ export function enqueueJiraJob(
   trigger: string,
   fresh = false,
 ): { jobId: string; created: boolean } {
-  if (!fresh) {
+  if (fresh) {
+    tx.update(schema.jobs)
+      .set({ status: "CANCELLED", finishedAt: isoNow(clock) })
+      .where(
+        and(
+          eq(schema.jobs.type, type),
+          inArray(schema.jobs.status, ["PENDING", "RETRY"]),
+          isNull(schema.jobs.input),
+        ),
+      )
+      .run();
+  } else {
     const live = tx
       .select({ id: schema.jobs.id })
       .from(schema.jobs)

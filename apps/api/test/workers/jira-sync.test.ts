@@ -143,9 +143,37 @@ test("registration: handlers and coalesced schedules from settings", () => {
     expect(handlers.get(t)?.timeoutMs).toBeGreaterThan(0);
   }
   const tasks = db.select().from(schema.scheduledTasks).all();
-  expect(tasks.find((t) => t.name === "jira.sync_incremental")?.intervalSeconds).toBe(15 * 60);
+  expect(tasks.find((t) => t.name === "jira.sync_incremental")?.intervalSeconds).toBe(30 * 60);
   expect(tasks.find((t) => t.name === "jira.reconcile")?.intervalSeconds).toBe(24 * 3600);
   expect(tasks.find((t) => t.jobType === "jira.resolve_cloud_id")).toBeUndefined();
+  const refresh = tasks.find((t) => t.name === "jira.refresh_attention");
+  expect(refresh).toMatchObject({ jobType: "jira.refresh_attention", intervalSeconds: 3600 });
+  expect(handlers.get("jira.refresh_attention")?.timeoutMs).toBeGreaterThan(0);
+});
+
+describe("refresh attention", () => {
+  test("recomputes time-driven attention and publishes it, without Claude", async () => {
+    store.upsertPage([issue(1, { updatedAt: "2026-11-06T11:00:00.000Z" })], { setScope: true });
+    expect(row("DEMO-1")?.attention).toBeNull();
+    clock.advance(6 * 86_400_000);
+    expect(await run("jira.refresh_attention")).toEqual({ changed: 1 });
+    expect(row("DEMO-1")?.attention).toBe("stale");
+    expect(evts("jira.issue_attention").map((e) => e.payload)).toEqual([
+      { key: "DEMO-1", attention: "stale" },
+    ]);
+    expect(await run("jira.refresh_attention")).toEqual({ changed: 0 });
+    expect(evts("jira.issue_attention")).toHaveLength(1);
+    expect(searches).toHaveLength(0);
+    expect(resolves).toBe(0);
+  });
+
+  test("does nothing while disabled", async () => {
+    store.upsertPage([issue(1, { updatedAt: "2026-11-06T11:00:00.000Z" })], { setScope: true });
+    settings.set("jira.enabled", false);
+    clock.advance(6 * 86_400_000);
+    expect(await run("jira.refresh_attention")).toEqual({ skipped: "disabled" });
+    expect(row("DEMO-1")?.attention).toBeNull();
+  });
 });
 
 describe("disabled or unconfigured", () => {
@@ -513,10 +541,19 @@ describe("reconcile", () => {
 describe("cloudId", () => {
   beforeEach(() => settings.clear("jira.cloudId"));
 
-  test("exactly one site is stored and a sync is enqueued", async () => {
+  test("exactly one site is stored; a sync and (no checkpoint yet) a reconcile are enqueued", async () => {
     sites.push(async () => [{ id: CLOUD, url: "https://example.invalid", name: "site" }]);
     await run("jira.resolve_cloud_id");
     expect(settings.get("jira.cloudId")).toBe(CLOUD);
+    expect(jobs().map((j) => j.type)).toEqual(["jira.sync_incremental", "jira.reconcile"]);
+  });
+
+  test("with a checkpoint already stored only a sync is enqueued", async () => {
+    db.transaction((tx) =>
+      sync.update(tx, "jira.issues", { checkpoint: "2026-11-06T10:00:00.000Z" }),
+    );
+    sites.push(async () => [{ id: CLOUD, url: "https://example.invalid", name: "site" }]);
+    await run("jira.resolve_cloud_id");
     expect(jobs().map((j) => j.type)).toEqual(["jira.sync_incremental"]);
   });
 

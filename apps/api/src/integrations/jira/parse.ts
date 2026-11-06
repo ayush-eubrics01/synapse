@@ -89,7 +89,8 @@ export function parseSearchResult(content: string): {
       dueDate: n.fields.duedate ?? null,
       createdAt: toUtcIso(n.fields.created),
       updatedAt: toUtcIso(n.fields.updated),
-      webUrl: n.webUrl,
+      // Only an https link may reach the UI as an href.
+      webUrl: n.webUrl.startsWith("https://") ? n.webUrl : null,
     });
     // A ZodError message can echo Jira content; throw the fixed-message error instead.
     if (!r.success) throw new JiraParseError();

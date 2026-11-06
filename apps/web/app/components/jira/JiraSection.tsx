@@ -3,7 +3,13 @@
 import type { JiraIssueView } from "@synapse/contracts";
 import type { JiraStatusDto } from "../../../lib/api";
 import { relMinutes } from "../../../lib/format";
-import { attentionLabel, dueLabel, groupIssues, jiraRowId } from "../../../lib/jira";
+import {
+  attentionLabel,
+  dueLabel,
+  groupIssues,
+  jiraErrorLabel,
+  jiraRowId,
+} from "../../../lib/jira";
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { Chip, type ChipTone } from "../ui/Chip";
@@ -45,9 +51,11 @@ function Row({ i, now }: { i: JiraIssueView; now: Date | null }) {
             {n} Slack {n === 1 ? "mention" : "mentions"}
           </span>
         )}
-        <a className="syn-ncard-link" href={i.webUrl} target="_blank" rel="noreferrer noopener">
-          Open in Jira ↗
-        </a>
+        {i.webUrl?.startsWith("https://") && (
+          <a className="syn-ncard-link" href={i.webUrl} target="_blank" rel="noreferrer noopener">
+            Open in Jira ↗
+          </a>
+        )}
       </div>
     </li>
   );
@@ -88,7 +96,7 @@ export function JiraSection({
         )}
       </div>
       {status?.lastError && enabled && (
-        <p className="syn-jira-error">Last sync problem: {status.lastError}</p>
+        <p className="syn-jira-error">Last sync problem: {jiraErrorLabel(status.lastError)}</p>
       )}
       {status && !enabled && (
         <p className="syn-jira-faint">
