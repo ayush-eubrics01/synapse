@@ -245,6 +245,31 @@ describe("ClaudeCliProvider.execute", () => {
     expect(JSON.parse(readFileSync(argvFile, "utf8"))).toEqual(buildClaudeArgs(request, custom));
   });
 
+  test("every run is hermetic: auto memory and CLAUDE.md files are disabled in the env", async () => {
+    const envFile = join(tmp, "env.json");
+    // Even a caller env that tries to turn them back on is overridden.
+    await provider({
+      FAKE_CLAUDE_MODE: "success",
+      FAKE_CLAUDE_ENV_FILE: envFile,
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0",
+    }).execute(req({ workerProfile: "engineering" }), sig());
+    expect(JSON.parse(readFileSync(envFile, "utf8"))).toEqual({
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
+      hasPath: true,
+      hasHome: true,
+    });
+    rmSync(envFile);
+    await provider({ FAKE_CLAUDE_MODE: "success", FAKE_CLAUDE_ENV_FILE: envFile }).execute(
+      req(),
+      sig(),
+    );
+    expect(JSON.parse(readFileSync(envFile, "utf8"))).toMatchObject({
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
+    });
+  });
+
   test("J2: a sendGuard adds a per-run PreToolUse hook; plugins stay disabled", async () => {
     const argvFile = join(tmp, "argv-guard.json");
     const custom = '{"enabledPlugins":{"x@y":false},"hooks":{}}';
@@ -414,5 +439,18 @@ describe("ClaudeCliProvider.getHealth", () => {
   });
   test("down for missing binary", async () => {
     expect((await provider({}, "/nonexistent/claude").getHealth()).status).toBe("down");
+  });
+});
+
+describe("userPermissionsWidenScope", () => {
+  test("defaults to false and carries the startup flag when given", () => {
+    expect(provider({}).userPermissionsWidenScope).toBe(false);
+    const p = new ClaudeCliProvider({
+      binary: process.execPath,
+      env: { PATH: process.env.PATH ?? "" },
+      clock: new FakeClock("2026-11-05T00:00:00Z"),
+      userPermissionsWidenScope: true,
+    });
+    expect(p.userPermissionsWidenScope).toBe(true);
   });
 });

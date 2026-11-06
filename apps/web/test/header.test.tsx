@@ -25,11 +25,13 @@ function overview(
       peopleToEvaluate: 0,
       conversations: 0,
       jiraAttention: 0,
+      brainReview: 0,
     },
     away: { on: false, highPriorityCount: 0 },
     lastSlackSyncAt: null,
     health,
     pipeline: [],
+    upcoming: [],
     engineeringLock: null,
   } as DashboardOverview;
 }

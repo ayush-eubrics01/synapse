@@ -77,6 +77,8 @@ function setup(fail: Partial<Record<keyof NeedsYouApi, Error>> = {}, evalQueued 
     toggleHistory: () => {},
     seeAllPeople: () => {},
     seeAllJira: () => {},
+    seeAllProjects: () => {},
+    registerRepository: () => {},
     onEvaluationQueued: (id) => evaluationsQueued.push(id),
   });
   const hidden = () => new Set([...deferred.pending(), ...committing]);
@@ -318,4 +320,30 @@ test("the Away toggle toasts its result, and a failure is surfaced without a toa
   await settle();
   expect(failing.toasts).toEqual([]);
   expect(failing.errors).toContain("500 boom");
+});
+
+test("accepting a brain fact is immediate (with optional edit); rejecting is deferred with Undo", async () => {
+  const s = setup();
+  s.handlers.acceptBrainFact("f1");
+  s.handlers.acceptBrainFact("f2", "edited");
+  await settle();
+  expect(s.calls).toEqual(['acceptBrainFact("f1",)', 'acceptBrainFact("f2","edited")']);
+  expect(s.toasts.map((t) => t.text)).toEqual([TOASTS.factAccepted, TOASTS.factAccepted]);
+
+  const r = setup();
+  r.handlers.rejectBrainFact("f3");
+  expect(r.calls).toEqual([]);
+  expect(r.hidden().has("brain-fact:f3")).toBe(true);
+  r.timers.advance(DELAY);
+  await settle();
+  expect(r.calls).toEqual(['rejectBrainFact("f3")']);
+});
+
+test("a failed fact accept surfaces on the immediate error channel", async () => {
+  const s = setup({
+    acceptBrainFact: new Error("POST /api/brain/facts/f1/accept failed with 409: invalid_state"),
+  });
+  s.handlers.acceptBrainFact("f1");
+  await settle();
+  expect(s.errors).toContain("POST /api/brain/facts/f1/accept failed with 409: invalid_state");
 });

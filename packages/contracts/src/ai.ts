@@ -127,6 +127,11 @@ export interface AIExecutionResult {
 export interface AIProvider {
   execute(request: AIExecutionRequest, signal: AbortSignal): Promise<AIExecutionResult>;
   getHealth(): Promise<{ status: HealthStatus; detail?: string; version?: string }>;
+  /**
+   * True when the user's Claude Code settings (read once at startup) widen file or shell scope
+   * beyond what a run allows. The orchestrator refuses engineering runs while it is true.
+   */
+  readonly userPermissionsWidenScope?: boolean;
 }
 
 export const workerProfileSchema = z.enum(["collector", "intelligence", "engineering"]);

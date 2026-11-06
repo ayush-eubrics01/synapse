@@ -50,6 +50,10 @@ test("catalog covers the Phase 1 and 2 events", () => {
       "away.changed",
       "jira.issue_updated",
       "jira.issue_attention",
+      "repo.registered",
+      "repo.drift_detected",
+      "brain.facts_proposed",
+      "brain.fact_decided",
     ].sort(),
   );
   expect(parseEventPayload("settings.changed", { key: "k" })).toEqual({ key: "k" });

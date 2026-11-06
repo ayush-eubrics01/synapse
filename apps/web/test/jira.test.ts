@@ -238,7 +238,7 @@ test("jira-attention ranks after commitments and before profile recommendations;
   expect(setup.map((c) => c.kind)).toEqual(["setup-identity", "setup-jira"]);
 });
 
-test("nav: a Jira item sits between Commitments and People; its badge is jiraAttention, hidden at 0", () => {
+test("nav: a Jira item sits between Commitments and Projects; its badge is jiraAttention, hidden at 0", () => {
   const counts = { jiraAttention: 3 } as never;
   const items = sidebarItems(counts, 0);
   expect(items.map((i) => i.id)).toEqual([
@@ -247,6 +247,7 @@ test("nav: a Jira item sits between Commitments and People; its badge is jiraAtt
     "inbox",
     "commitments",
     "jira",
+    "projects",
     "people",
     "system",
   ]);
@@ -315,6 +316,8 @@ test("actions: sync and enable are immediate API calls; a 400 surfaces as the ac
       toggleHistory: () => {},
       seeAllPeople: () => {},
       seeAllJira: () => calls.push("seeAllJira"),
+      seeAllProjects: () => {},
+      registerRepository: () => {},
     });
   const h = mk();
   h.syncJira();

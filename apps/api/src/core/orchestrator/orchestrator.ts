@@ -60,6 +60,10 @@ const SAFE_MESSAGE_KINDS = new Set<string>([
 ]);
 
 const AUTH_PAUSE_RETRY_MS = 15 * 60_000;
+
+/** Fixed, content-free: the user must edit `~/.claude/settings.json` (read once at startup). */
+export const UNSAFE_USER_SETTINGS_MESSAGE =
+  "Claude Code user settings widen file or shell permissions; engineering runs are refused until they are removed and the API is restarted";
 const AUTH_PROBE_AFTER_MS = 30 * 60_000;
 
 const defaultBoundary = () => crypto.randomUUID().replace(/-/g, "").slice(0, 16);
@@ -299,6 +303,25 @@ export class ClaudeOrchestrator {
         });
       });
       throw new JobError({ kind: "invalid_input", message: verdict.reason });
+    }
+    // Phase 9: user-level permissions merge into the run (`--setting-sources user`) and the
+    // override cannot remove them, so a widening user setting would defeat rule L's path scoping.
+    if (profile === "engineering" && provider.userPermissionsWidenScope === true) {
+      db.transaction((tx) => {
+        audit.record(tx, {
+          actor: "system",
+          module: "orchestrator",
+          action: "claude.request_rejected",
+          workerProfile: profile,
+          result: "rejected",
+          details: { reason: "unsafe_user_settings" },
+        });
+      });
+      throw new JobError({
+        kind: "needs_attention",
+        message: UNSAFE_USER_SETTINGS_MESSAGE,
+        details: { notSpawned: true },
+      });
     }
     const sendsExternally = hasWriteTool(allowedTools);
 

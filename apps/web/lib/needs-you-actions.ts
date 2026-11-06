@@ -5,6 +5,7 @@ import type {
   UrgencyStatusDto,
 } from "./api";
 import * as apiModule from "./api";
+import { brainFactKey } from "./brain";
 import { decideThenRefresh } from "./decide";
 import type { Deferred } from "./deferred";
 import { flagKey } from "./needs-you";
@@ -36,6 +37,10 @@ export interface NeedsYouHandlers {
   syncJira: () => void;
   enableJira: (setup: { scopeJql: string; excludedProjects: string[] }) => void;
   seeAllJira: () => void;
+  acceptBrainFact: (factId: string, content?: string) => void;
+  rejectBrainFact: (factId: string) => void;
+  seeAllProjects: () => void;
+  registerRepository: () => void;
 }
 
 /** The `lib/api.ts` calls the feed uses; injectable so the routing can be tested. */
@@ -60,6 +65,8 @@ export type NeedsYouApi = Pick<
   | "setAway"
   | "requestJiraSync"
   | "updateJiraSettings"
+  | "acceptBrainFact"
+  | "rejectBrainFact"
 >;
 
 export const realNeedsYouApi: NeedsYouApi = apiModule;
@@ -79,6 +86,8 @@ export const TOASTS = {
   awayOff: "Away mode off",
   jiraSyncQueued: "Jira sync queued · runs in the background",
   jiraEnabled: "Jira tracking on · first sync queued",
+  factAccepted: "Fact approved",
+  factRejected: "Fact rejected",
   draftDiscarded: "Draft discarded",
   notACommitment: "Marked as not a commitment",
   suggestionDismissed: "Suggestion dismissed",
@@ -108,6 +117,8 @@ export interface NeedsYouActionsDeps {
   toggleHistory: (slackUserId: string) => void;
   seeAllPeople: () => void;
   seeAllJira: () => void;
+  seeAllProjects: () => void;
+  registerRepository: () => void;
   /** A person whose evaluation was queued: added to the session's queued set People shares. */
   onEvaluationQueued?: (slackUserId: string) => void;
 }
@@ -213,6 +224,13 @@ export function createNeedsYouActions(d: NeedsYouActionsDeps): NeedsYouHandlers 
     enableJira: (setup) =>
       void now(() => api.updateJiraSettings({ enabled: true, ...setup }), TOASTS.jiraEnabled),
     seeAllJira: d.seeAllJira,
+    // Both are local: approving a fact stores it, rejecting is a reversible deferred commit.
+    acceptBrainFact: (id, content) =>
+      void now(() => api.acceptBrainFact(id, content), TOASTS.factAccepted),
+    rejectBrainFact: (id) =>
+      defer(brainFactKey(id), TOASTS.factRejected, () => api.rejectBrainFact(id)),
+    seeAllProjects: d.seeAllProjects,
+    registerRepository: d.registerRepository,
     setAway: (on) => void now(() => api.setAway(on), on ? TOASTS.awayOn : TOASTS.awayOff),
   };
 }

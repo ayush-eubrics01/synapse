@@ -1,7 +1,7 @@
 import type { JiraIssueView } from "@synapse/contracts";
+import { JIRA_PROJECT_KEY_RE } from "@synapse/contracts/patterns";
 import type { PaletteItem } from "./palette";
 
-const PROJECT_KEY = /^[A-Z][A-Z0-9_]+$/;
 const DAY_MS = 86_400_000;
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -126,7 +126,7 @@ export function validateJiraSetup(scope: string, excluded: string): JiraSetupRes
     .split(",")
     .map((p) => p.trim())
     .filter((p) => p !== "");
-  const bad = projects.filter((p) => !PROJECT_KEY.test(p));
+  const bad = projects.filter((p) => !JIRA_PROJECT_KEY_RE.test(p));
   const excludedError =
     bad.length > 0
       ? `Not a project key: ${bad.join(", ")}. Use capitals, digits and _, starting with a letter (e.g. DEMO).`

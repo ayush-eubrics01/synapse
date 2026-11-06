@@ -7,6 +7,8 @@ import { Chip } from "../ui/Chip";
 import { AllClear } from "./AllClear";
 import { ApprovalCard } from "./ApprovalCard";
 import { AwayDigestCard } from "./AwayDigestCard";
+import { BrainReviewCard } from "./BrainReviewCard";
+import { BrainSetupCard } from "./BrainSetupCard";
 import { CommitmentReviewCard } from "./CommitmentReviewCard";
 import { FlagCard } from "./FlagCard";
 import { FollowupCard } from "./FollowupCard";
@@ -87,6 +89,17 @@ function Card({ card, p }: { card: NeedsCard; p: NeedsYouProps }) {
       );
     case "jira-attention":
       return <JiraAttentionCard issues={card.data.issues} now={p.now} onSeeAll={h.seeAllJira} />;
+    case "brain-review":
+      return (
+        <BrainReviewCard
+          facts={card.data.facts}
+          onAccept={(id) => h.acceptBrainFact(id)}
+          onReject={h.rejectBrainFact}
+          onSeeAll={h.seeAllProjects}
+        />
+      );
+    case "setup-brain":
+      return <BrainSetupCard onRegister={h.registerRepository} />;
     case "setup-jira":
       return (
         <JiraSetupCard

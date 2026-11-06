@@ -9,7 +9,7 @@ End-to-end user-visible workflows. Module docs hold the detailed steps; this doc
 3. **Slack:** run a test search; start the 90-day backfill as a resumable background job (~5 pages per run, checkpoint after every page).
 4. **People selection:** list individual contacts seen in the backfill → the user picks people to evaluate → profile recommendations → the user approves → profiles saved. The user sets each person's priority manually.
 5. **Jira:** resolve and store `cloudId`; the user sets the backfill scope (JQL); initial sync.
-6. **Engineering Brain:** the user registers repository paths → Synapse proposes tracked branch, remotes and deployment environments (for example `flexi-demo`: stage→`stage`, prod→`prod`) → the user confirms → discovery → knowledge recommendations → the user reviews.
+6. **Engineering Brain:** the user registers repository paths → Synapse proposes tracked branch, remotes and deployment environments (for example `demo-app`: stage→`stage`, prod→`prod`) → the user confirms → discovery → knowledge recommendations → the user reviews.
 7. **Start:** enable schedules, the job processor, notifications and health monitoring.
 
 ## W2 — Collection cycle (every 10 minutes by default)

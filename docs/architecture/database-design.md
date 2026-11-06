@@ -95,13 +95,17 @@ Phase 6b migrations:
 
 ## Engineering Brain tables (owned by `engineering-brain`)
 
+**Migration 0016** (`0016_engineering_brain.sql`, Phase 9) built the first six tables below. The rest are planned and not built yet. See `docs/modules/engineering-brain.md`.
+
 | Table | Notes |
 |---|---|
-| `repositories` | `name`, `local_path` unique, `origin_url`, `upstream_url`, `upstream_push_disabled`, `tracked_branch`, `notes`, `registered_at`, `last_drift_check_at` (ADR-035) |
-| `repository_environments` | `repository_id` FK, `name` (e.g. stage/prod), `branch`, `notes`, unique(`repository_id`,`name`) |
-
-
-`projects`, `project_repositories`, `project_facts`, `project_decisions`, `project_milestones` (including go-live dates), `project_dependencies`, `project_knowledge_recommendations`, `project_knowledge_evidence`. Facts and decisions carry `status` (approved/needs_review/unknown/outdated), `source_refs`, `approved_at`, and supersede links for history.
+| `repositories` | Migration 0016. `id`, `name` unique, `local_path` unique (the realpath), `origin_url` and `upstream_url` (credential-stripped, nullable), `upstream_push_disabled`, `tracked_branch`, `jira_project_keys` JSON, `notes`, `head_sha`, `inspected_head_sha`, `drift` JSON (nullable; `offTrackedBranch`, `missingEnvironmentBranches`, `remotesChanged`, `pathMissing`, `detectedAt`), `created_at`, `updated_at` (ADR-035). There is no `registered_at` or `last_drift_check_at` |
+| `repository_environments` | Migration 0016. `id`, `repository_id` FK (cascade), `name` (e.g. stage/prod), `branch`, `protected`, `auto_deploys_on_merge`, `notes`, unique(`repository_id`,`name`) |
+| `projects` | Migration 0016. `id`, `name` unique, `summary`, `created_at`, `updated_at`. Survives unregistering its repository |
+| `project_repositories` | Migration 0016. `project_id` FK, `repository_id` FK (both cascade), unique(`project_id`,`repository_id`) |
+| `project_facts` | Migration 0016. `id`, `project_id` FK (cascade), `kind` (purpose/stack/module/entrypoint/convention/risk/note), `content` (repository-derived, untrusted), `evidence` JSON `{path, line?}[]`, `status` (needs_review/approved/rejected/outdated), `source` (inspection/user), `claude_run_id`, `supersedes_id`, `head_sha`, `created_at`, `decided_at`. Index (`project_id`,`status`) |
+| `project_milestones` | Migration 0016. `id`, `project_id` FK (cascade), `name`, `target_date` (YYYY-MM-DD, including go-live dates), `environment_id` FK nullable (set null), `status` (planned/done/slipped/cancelled), `notes`, `created_at`, `updated_at`. Index (`project_id`,`target_date`) |
+| `project_decisions`, `project_dependencies`, `project_knowledge_recommendations`, `project_knowledge_evidence` | **Planned, not built.** From the original module design; deferred in the Phase 9 follow-ups |
 
 ## Jira tables (owned by `jira-tracking`)
 

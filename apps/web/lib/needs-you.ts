@@ -3,7 +3,9 @@ import type {
   AwayDigest,
   CandidatesResponse,
   JiraIssueView,
+  ProjectFactView,
   RecommendationView,
+  RepositoryView,
 } from "@synapse/contracts";
 import type {
   CommitmentViewDto,
@@ -17,6 +19,7 @@ import type {
   UrgentItemDto,
 } from "./api";
 import { backfillAction } from "./backfill-action";
+import { brainFactKey } from "./brain";
 import { conversationLabel } from "./format";
 
 /** A send whose delivery Synapse could not confirm: the user decides (mark sent, resend, discard). */
@@ -30,6 +33,12 @@ export interface OutgoingAttention {
   /** The requested text for a follow-up; null for an urgent reply (not part of the item). */
   text: string | null;
   at: string;
+}
+
+/** A fact waiting for review, with the project it belongs to. */
+export interface BrainReviewFact {
+  fact: ProjectFactView;
+  projectName: string;
 }
 
 type Candidate = CandidatesResponse["candidates"][number];
@@ -49,11 +58,13 @@ export type NeedsCard = CardBase &
     | { kind: "followup"; data: FollowupViewDto }
     | { kind: "commitment"; data: CommitmentViewDto }
     | { kind: "jira-attention"; data: { issues: JiraIssueView[] } }
+    | { kind: "brain-review"; data: { facts: BrainReviewFact[] } }
     | { kind: "recommendation"; data: RecommendationView }
     | { kind: "setup-identity"; data: { identity: SlackIdentityDto; people: PersonDto[] } }
     | { kind: "setup-people"; data: { candidates: Candidate[] } }
     | { kind: "setup-backfill"; data: { backfill: SlackStatusDto["backfill"] } }
     | { kind: "setup-jira"; data: { scopeJql: string; excludedProjects: string[] } }
+    | { kind: "setup-brain"; data: Record<string, never> }
   );
 
 export type NeedsKind = NeedsCard["kind"];
@@ -76,6 +87,10 @@ export interface NeedsYouInput {
   jiraStatus?: JiraStatusDto | null;
   /** `GET /api/jira/issues?view=attention`: already filtered and in the backend's severity order. */
   jiraAttention?: JiraIssueView[];
+  /** Facts needing review across projects (Phase 9); absent in older callers. */
+  brainReview?: BrainReviewFact[];
+  /** Registered repositories; null until loaded, so a slow load never shows the setup card. */
+  repositories?: RepositoryView[] | null;
   /** Keys of items pending a deferred commit (spec D8): never shown, whatever the data says. */
   hidden: Set<string>;
 }
@@ -100,11 +115,13 @@ const RANK = {
   followup: 40,
   commitment: 50,
   jira: 55,
+  brain: 56,
   recommendation: 60,
   identity: 70,
   people: 71,
   backfill: 72,
   jiraSetup: 73,
+  brainSetup: 74,
 } as const;
 
 /** The key a flag card (and a deferred flag review) uses. */
@@ -211,6 +228,19 @@ export function buildNeedsYou(input: NeedsYouInput): NeedsCard[] {
     });
   }
 
+  // One card for the facts waiting on review; a fact pending a deferred reject is left out.
+  const reviewFacts = (input.brainReview ?? []).filter(
+    (r) => !input.hidden.has(brainFactKey(r.fact.id)),
+  );
+  if (reviewFacts.length > 0) {
+    cards.push({
+      key: "brain-review",
+      kind: "brain-review",
+      rank: RANK.brain,
+      data: { facts: reviewFacts },
+    });
+  }
+
   for (const r of input.recommendations) {
     cards.push({
       key: `recommendation:${r.id}`,
@@ -261,6 +291,10 @@ export function buildNeedsYou(input: NeedsYouInput): NeedsCard[] {
       rank: RANK.jiraSetup,
       data: { scopeJql: js.scopeJql, excludedProjects: js.excludedProjects },
     });
+  }
+
+  if (Array.isArray(input.repositories) && input.repositories.length === 0) {
+    cards.push({ key: "setup:brain", kind: "setup-brain", rank: RANK.brainSetup, data: {} });
   }
 
   // Array.prototype.sort is stable: equal ranks keep the API's order.

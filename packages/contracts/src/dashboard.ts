@@ -1,3 +1,4 @@
+import type { UpcomingMilestone } from "./brain";
 import type { HealthStatus } from "./health";
 import type { ConversationType } from "./messages";
 import type { FlagSeverity, UrgencyLevel, UrgencyStatus } from "./urgency";
@@ -88,7 +89,11 @@ export interface DashboardOverview {
     conversations: number;
     /** In-scope Jira issues with a non-null attention (Phase 8). */
     jiraAttention: number;
+    /** Engineering Brain facts waiting for review (Phase 9). */
+    brainReview: number;
   };
+  /** The next three planned milestones, overdue ones first (Phase 9, C10). */
+  upcoming: UpcomingMilestone[];
   /** Away mode (ADR-033): the switch and how many people (high or critical, not self) it can reply to. */
   away: { on: boolean; highPriorityCount: number };
   lastSlackSyncAt: string | null;

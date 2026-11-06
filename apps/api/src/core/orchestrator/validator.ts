@@ -1,4 +1,4 @@
-import type { AIExecutionRequest } from "@synapse/contracts";
+import { type AIExecutionRequest, isSafeAbsolutePath } from "@synapse/contracts";
 import { assemblePrompt } from "./prompt";
 import {
   BUILTIN_FS_READ,
@@ -32,7 +32,7 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *  A. prompt at most 100 KiB (UTF-8) and not starting with "-" (it is an argv entry, R33);
  *     boundary non-empty; prompt === assemblePrompt(instructions, promptParts, boundary) (R24)
  *  B. built-in tools: unknown (R23), network in any profile (R22), write built-ins and
- *     Read/Grep/Glob for collector/intelligence (rule 0; I4 until Phase 8 path scoping)
+ *     Read/Grep/Glob for collector/intelligence (rule 0; engineering fs reads are path-scoped by rule L)
  *  C. engineering may not allow any connector tool (R20)
  *  D. untrusted content with a write-capable tool (rule 1)
  *  E. engineering with untrusted content (rule 2)
@@ -40,13 +40,19 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *  G. ToolSearch required for connector tools (rule 3)
  *  H. denylist covers every unused known server (rule 4)
  *  H2. denylist contains every network built-in, and every write and filesystem-read built-in
- *     unless engineering (R26, I4)
+ *     (R26, I4); an engineering run must deny each of them it does not allow (final review)
  *  I. send run with untrusted content (rule 5; subsumed by D, kept as defence in depth)
  *  J. untrusted content contains the boundary (rule 6)
  *  K. policy_approved content outside a send run (rule F's single write connector; J1, ADR-033);
  *     alongside untrusted content it already fails rule D. A send run must carry a sendGuard
  *     whose toolName is its write tool (J2), so every send is blocked by the PreToolUse hook
  *     unless its arguments are the approved ones
+ *  L. every engineering run's working directory must satisfy isSafeAbsolutePath (no dot or empty
+ *     segments, two or more segments), and its Read/Grep/Glob must each be exactly
+ *     `Tool(/<workingDirectory>/**)`: the CLI's double-slash absolute form `//abs/dir/**`. The
+ *     single-slash form `/abs/dir/**` is cwd-relative on the CLI and grants nothing (final review),
+ *     so it fails, as does a bare Read (C7). Last, so the other rules keep their order. Tools
+ *     other than the fs reads are unaffected
  * Tool names are normalised (specifier stripped) before classification.
  */
 export function validateRequest(
@@ -141,7 +147,9 @@ export function validateRequest(
   // H2
   const required = [
     ...BUILTIN_NETWORK,
-    ...(req.workerProfile === "engineering" ? [] : [...BUILTIN_WRITE, ...BUILTIN_FS_READ]),
+    ...(req.workerProfile === "engineering"
+      ? [...BUILTIN_WRITE, ...BUILTIN_FS_READ].filter((t) => !allowed.includes(t))
+      : [...BUILTIN_WRITE, ...BUILTIN_FS_READ]),
   ];
   for (const t of required) {
     if (!req.disallowedTools.includes(t)) return fail(`denylist missing ${t}`);
@@ -166,6 +174,20 @@ export function validateRequest(
   }
   if (w !== undefined && req.sendGuard?.toolName !== w) {
     return fail("send run without a matching send guard");
+  }
+
+  // L
+  if (req.workerProfile === "engineering") {
+    if (!isSafeAbsolutePath(req.workingDirectory)) {
+      return fail("working directory must be an absolute path of safe characters");
+    }
+    const dir = req.workingDirectory.replace(/\/+$/, "");
+    for (const t of raw.filter((t) => BUILTIN_FS_READ.includes(normalizeTool(t)))) {
+      // `dir` starts with "/", so this is `Tool(//abs/dir/**)`: the CLI's absolute form.
+      if (t !== `${normalizeTool(t)}(/${dir}/**)`) {
+        return fail("fs read tools must be scoped to the working directory");
+      }
+    }
   }
 
   return { ok: true };

@@ -17,6 +17,10 @@ const req: AIExecutionRequest = {
   workingDirectory: "/tmp",
 };
 
+// `--setting-sources user` is the control that keeps the inspected repository's own CLAUDE.md,
+// .claude/settings.json and .mcp.json out of a run: the project and local sources are never
+// loaded (checked in the CLI bundle in the Phase 9 final review). `--permission-mode default` is
+// pinned because a CLI flag beats a user-settings `defaultMode` (auto, acceptEdits, bypass...).
 test("exact argv", () => {
   const override = '{"enabledPlugins":{"p@m":false},"hooks":{}}';
   const a = buildClaudeArgs(req, override);
@@ -28,6 +32,8 @@ test("exact argv", () => {
     "--settings",
     override,
     "--disable-slash-commands",
+    "--permission-mode",
+    "default",
     "--system-prompt",
     "sys",
     "--allowedTools",
@@ -45,4 +51,6 @@ test("exact argv", () => {
   ]);
   expect(a).not.toContain("--bare");
   expect(a).not.toContain("--tools");
+  expect(a).not.toContain("--dangerously-skip-permissions");
+  expect(a[a.indexOf("--permission-mode") + 1]).toBe("default");
 });

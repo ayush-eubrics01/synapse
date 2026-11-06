@@ -40,8 +40,9 @@ import { SchedulerService } from "./core/scheduler/scheduler";
 import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
 import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notifier";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
-import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
+import { loadUserSettings } from "./integrations/claude-code/settings-override";
 import { JiraConnectorSource } from "./integrations/jira/connector-source";
+import { LocalGitProvider } from "./integrations/repository/local-git";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
 import { AutoReplyService } from "./modules/auto-reply/service";
@@ -51,6 +52,9 @@ import { CommitmentLifecycle } from "./modules/commitments/lifecycle";
 import { StallService } from "./modules/commitments/stall";
 import { CommitmentStore } from "./modules/commitments/store";
 import { DashboardService } from "./modules/dashboard/service";
+import type { InspectionService } from "./modules/engineering-brain/inspection";
+import { RepositoryRegistry } from "./modules/engineering-brain/registry";
+import { BrainService } from "./modules/engineering-brain/service";
 import { InboxConversations } from "./modules/inbox/conversations";
 import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
@@ -70,6 +74,8 @@ import { TemporaryContacts } from "./modules/people/temporary";
 import { PeopleViews } from "./modules/people/views";
 import { SecurityFlagsService } from "./modules/security-flags/service";
 import { registerAutoReplyJobs } from "./workers/auto-reply/evaluate";
+import { registerDriftCheck } from "./workers/brain/drift";
+import { registerInspectionJobs } from "./workers/brain/inspect";
 import { registerCommitmentJobs } from "./workers/commitments";
 import { createRunHelpers } from "./workers/intelligence-shared";
 import { registerJiraJobs } from "./workers/jira";
@@ -128,6 +134,12 @@ export interface Container {
   dashboard: DashboardService;
   /** Read-only Jira tracking (Phase 8): status, issue views, manual sync and scope settings. */
   jira: JiraService;
+  /** Repository registry (Phase 9, ADR-035): propose, register, edit and unregister. */
+  repositories: RepositoryRegistry;
+  /** Repository inspection (Phase 9, C6): `requestInspection` backs "Inspect now". */
+  inspections: InspectionService;
+  /** Projects, fact review, milestones and the Jira association (Phase 9, C9 to C12). */
+  brain: BrainService;
   slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
@@ -202,14 +214,16 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   });
 
   const home = resolveHome(process.env);
+  // Plugin names and the user-permission widening flag, read once at startup (R34, Phase 9).
+  const userSettings = loadUserSettings(home);
   const provider =
     deps.provider ??
     new ClaudeCliProvider({
       binary: config.claudeBinary,
       env: { PATH: `${home}/.bun/bin:${home}/.local/bin:/usr/bin:/bin`, HOME: home },
       clock,
-      // Plugin names only, read once at startup (R34).
-      settingsOverride: loadSettingsOverride(home),
+      settingsOverride: userSettings.override,
+      userPermissionsWidenScope: userSettings.userPermissionsWidenScope,
     });
   const auth = new AuthMonitor(db, clock, settings, events, config.credentialsPath);
   const scratchDir =
@@ -434,6 +448,49 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     source: new JiraConnectorSource({ orchestrator, clock }),
   });
 
+  // Phase 9: read-only local git, the registry (DB only, ADR-035) and the daily drift check.
+  const repositoryProvider = new LocalGitProvider({ home });
+  const repositories = new RepositoryRegistry({
+    db,
+    clock,
+    audit,
+    events,
+    provider: repositoryProvider,
+  });
+  registerDriftCheck({
+    db,
+    clock,
+    events,
+    notifications,
+    provider: repositoryProvider,
+    scheduler,
+    handlers,
+  });
+  // C6: read-only, path-scoped inspection on registration, weekly when HEAD moved, or on request.
+  const inspections = registerInspectionJobs({
+    db,
+    clock,
+    settings,
+    events,
+    audit,
+    queue,
+    provider: repositoryProvider,
+    orchestrator,
+    scheduler,
+    dispatcher,
+    handlers,
+  });
+
+  const brain = new BrainService({
+    db,
+    clock,
+    settings,
+    audit,
+    events,
+    registry: repositories,
+    inspections,
+  });
+
   const health = new HealthService({
     database: databaseCheck(sqlite),
     jobs: jobsCheck(db, clock),
@@ -460,6 +517,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     peopleViews,
     sync,
     health,
+    brain,
   });
 
   return {
@@ -502,6 +560,9 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     followups: followupService,
     dashboard,
     jira,
+    repositories,
+    inspections,
+    brain,
     handlers,
     recoverySweeps: [
       { name: "urgency.assess", run: urgency.recoverySweep },

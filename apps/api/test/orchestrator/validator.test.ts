@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { AIExecutionRequest, PromptPart } from "@synapse/contracts";
+import {
+  type AIExecutionRequest,
+  isSafeAbsolutePath,
+  type PromptPart,
+  repositoryInspectInputSchema,
+  repositoryRegisterInputSchema,
+} from "@synapse/contracts";
 import { assemblePrompt } from "../../src/core/orchestrator/prompt";
 import {
   buildDenylist,
@@ -46,7 +52,8 @@ describe("validateRequest", () => {
   test("valid engineering without untrusted", () => {
     const r = make({
       workerProfile: "engineering",
-      allowed: ["Read", "Edit", "Bash"],
+      allowed: ["Read(//tmp/demo-repo/**)", "Edit", "Bash"],
+      workingDirectory: "/tmp/demo-repo",
       promptParts: [
         { provenance: "system", content: "x" },
         { provenance: "user_approved", content: "y" },
@@ -146,7 +153,8 @@ describe("validateRequest", () => {
   test("R26 Bash(git:*) accepted on engineering", () => {
     const r = make({
       workerProfile: "engineering",
-      allowed: ["Read", "Bash(git:*)"],
+      allowed: ["Read(//tmp/demo-repo/**)", "Bash(git:*)"],
+      workingDirectory: "/tmp/demo-repo",
       promptParts: [],
     });
     expect(v(r)).toEqual({ ok: true });
@@ -276,7 +284,8 @@ describe("final-review fixes", () => {
     ).toEqual({ ok: true });
     const e = make({
       workerProfile: "engineering",
-      allowed: ["Read", "Grep", "Glob"],
+      allowed: ["Read(//tmp/demo-repo/**)", "Grep(//tmp/demo-repo/**)", "Glob(//tmp/demo-repo/**)"],
+      workingDirectory: "/tmp/demo-repo",
       promptParts: [],
     });
     expect(v(e)).toEqual({ ok: true });
@@ -287,8 +296,28 @@ describe("final-review fixes", () => {
       expect(d).toEqual(expect.arrayContaining(["Read", "Grep", "Glob"]));
       expect(d).not.toContain("ToolSearch");
     }
+    // Engineering denies the fs reads it does not allow (final review), keeps the ones it does.
     const eng = buildDenylist(["Edit"], DEFAULT_KNOWN_SERVERS, "engineering");
-    expect(eng).not.toContain("Read");
+    expect(eng).toEqual(expect.arrayContaining(["Read", "Grep", "Glob"]));
+    const scoped = buildDenylist(["Read(//tmp/demo/**)"], DEFAULT_KNOWN_SERVERS, "engineering");
+    expect(scoped).not.toContain("Read");
+    expect(scoped).toEqual(expect.arrayContaining(["Grep", "Glob"]));
+    const r = make({
+      workerProfile: "engineering",
+      allowed: ["Edit"],
+      workingDirectory: "/tmp/demo-repo",
+      promptParts: [],
+    });
+    expect(v({ ...r, disallowedTools: r.disallowedTools.filter((t) => t !== "Grep") })).toEqual({
+      ok: false,
+      reason: "denylist missing Grep",
+    });
+    // Likewise every write built-in it does not allow (closes the Phase 9 H2 follow-up).
+    expect(v({ ...r, disallowedTools: r.disallowedTools.filter((t) => t !== "Bash") })).toEqual({
+      ok: false,
+      reason: "denylist missing Bash",
+    });
+    expect(v(r)).toEqual({ ok: true });
     const full = buildDenylist([SEARCH, "ToolSearch"], DEFAULT_KNOWN_SERVERS, "collector");
     expect(reason(v(make({ disallowedTools: full.filter((t) => t !== "Grep") })))).toBe(
       "denylist missing Grep",
@@ -366,8 +395,127 @@ describe("tool catalog", () => {
     expect(d).not.toContain("Edit");
     expect(d).toContain("WebFetch");
   });
+  test("engineering denylist denies every write built-in it does not allow", () => {
+    const d = buildDenylist(["Read(//tmp/demo/**)"], DEFAULT_KNOWN_SERVERS, "engineering");
+    for (const t of ["Bash", "Edit", "Write", "NotebookEdit", "MultiEdit", "Monitor"]) {
+      expect(d).toContain(t);
+    }
+    expect(d).not.toContain("Read");
+    const withBash = buildDenylist(["Bash(git:*)"], DEFAULT_KNOWN_SERVERS, "engineering");
+    expect(withBash).not.toContain("Bash");
+    expect(withBash).toContain("Edit");
+  });
   test("denylist never contains allowed", () => {
     const d = buildDenylist([SEND, "ToolSearch"], DEFAULT_KNOWN_SERVERS, "collector");
     expect(d).not.toContain(SEND);
+  });
+});
+
+describe("rule L (engineering fs reads scoped to the working directory)", () => {
+  const WD = "/tmp/demo-repo";
+  const eng = (allowed: string[], workingDirectory = WD) =>
+    make({ workerProfile: "engineering", allowed, promptParts: [], workingDirectory });
+  const MSG = "fs read tools must be scoped to the working directory";
+  test("exactly scoped Read/Grep/Glob pass", () => {
+    const r = eng([`Read(/${WD}/**)`, `Grep(/${WD}/**)`, `Glob(/${WD}/**)`]);
+    expect(v(r)).toEqual({ ok: true });
+  });
+  test("a trailing slash on the working directory is stripped", () => {
+    expect(v(eng([`Read(/${WD}/**)`], `${WD}/`))).toEqual({ ok: true });
+  });
+  test("bare Read fails", () => {
+    expect(reason(v(eng(["Read"])))).toBe(MSG);
+    expect(reason(v(eng(["Grep"])))).toBe(MSG);
+    expect(reason(v(eng(["Glob"])))).toBe(MSG);
+  });
+  test("another directory fails", () => {
+    expect(reason(v(eng(["Read(//tmp/other/**)"])))).toBe(MSG);
+  });
+  test("a single-star specifier fails", () => {
+    expect(reason(v(eng([`Read(/${WD}/*)`])))).toBe(MSG);
+  });
+  test("one unscoped tool among scoped ones fails", () => {
+    expect(reason(v(eng([`Read(/${WD}/**)`, "Glob"])))).toBe(MSG);
+  });
+  test("a working directory with a space fails", () => {
+    expect(reason(v(eng(["Read(/tmp/my repo/**)"], "/tmp/my repo")))).toMatch(
+      /^malformed tool name|working directory/,
+    );
+    expect(reason(v(eng(["Edit", "Read(/tmp/x/**)"], "/tmp/my repo")))).toBe(
+      "working directory must be an absolute path of safe characters",
+    );
+  });
+  test("a relative working directory fails", () => {
+    expect(reason(v(eng([`Read(rel/**)`], "rel")))).toBe(
+      "working directory must be an absolute path of safe characters",
+    );
+  });
+  test("the single-slash form is cwd-relative on the CLI and fails (final review)", () => {
+    // `Read(/abs/**)` is relative to the settings source (the cwd), not the filesystem root:
+    // it granted nothing on the real CLI. Only `Read(//abs/**)` scopes to an absolute path.
+    expect(reason(v(eng([`Read(${WD}/**)`])))).toBe(MSG);
+    expect(reason(v(eng([`Grep(${WD}/**)`])))).toBe(MSG);
+    expect(reason(v(eng([`Glob(${WD}/**)`])))).toBe(MSG);
+    expect(reason(v(eng([`Read(///${WD}/**)`])))).toBe(MSG);
+    expect(reason(v(eng([`Read(~${WD}/**)`])))).toBe(MSG);
+  });
+  test("engineering runs without fs reads still need a safe working directory", () => {
+    expect(v(eng(["Edit", "Bash(git:*)"]))).toEqual({ ok: true });
+    expect(reason(v(eng(["Edit", "Bash(git:*)"], "/tmp/my repo")))).toBe(
+      "working directory must be an absolute path of safe characters",
+    );
+    expect(reason(v(eng(["Edit"], "rel")))).toBe(
+      "working directory must be an absolute path of safe characters",
+    );
+  });
+  test("intelligence and collector runs are unaffected", () => {
+    expect(
+      v(make({ workerProfile: "intelligence", allowed: ["ToolSearch"], promptParts: [] })),
+    ).toEqual({ ok: true });
+    expect(v(make())).toEqual({ ok: true });
+  });
+  test("dot, empty and shallow working directories fail", () => {
+    for (const wd of ["/tmp/a/../..", "//", "///", "/tmp/./x", "/tmp//x", "/tmp", "/"]) {
+      expect(reason(v(eng([`Read(/${wd}/**)`], wd)))).toBe(
+        "working directory must be an absolute path of safe characters",
+      );
+    }
+  });
+  test("specifier variants fail", () => {
+    expect(reason(v(eng([`Read(/${WD}/**/)`])))).toBe(MSG);
+    expect(reason(v(eng([`Read(/${WD}/**/**)`])))).toBe(MSG);
+    expect(reason(v(eng([`read(/${WD}/**)`])))).toBe("unknown built-in tool read");
+    expect(reason(v(eng([`Read(/${WD}/**) `])))).toBe(`malformed tool name Read(/${WD}/**) `);
+  });
+});
+
+describe("isSafeAbsolutePath", () => {
+  test("accepts and rejects", () => {
+    for (const p of ["/tmp/x", "/tmp/x/", "/home/u/proj-1/a.b"])
+      expect(isSafeAbsolutePath(p)).toBe(true);
+    for (const p of [
+      "/",
+      "//",
+      "/tmp",
+      "/tmp/",
+      "/tmp/../x",
+      "/tmp/./x",
+      "/tmp//x",
+      "tmp/x",
+      "/a b/c",
+      "",
+    ]) {
+      expect(isSafeAbsolutePath(p)).toBe(false);
+    }
+  });
+  test("register and inspect schemas reject dot segments", () => {
+    const base = { name: "n", trackedBranch: "main" };
+    expect(repositoryRegisterInputSchema.safeParse({ ...base, path: "/tmp/a/../.." }).success).toBe(
+      false,
+    );
+    expect(repositoryRegisterInputSchema.safeParse({ ...base, path: "/tmp/a/b" }).success).toBe(
+      true,
+    );
+    expect(repositoryInspectInputSchema.safeParse({ path: "/tmp/a/.." }).success).toBe(false);
   });
 });

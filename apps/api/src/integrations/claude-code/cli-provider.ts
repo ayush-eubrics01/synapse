@@ -20,6 +20,15 @@ const AUTH_RE =
   /oauth token|please run \/login|not logged in|authentication (failed|error|required)|unauthori[sz]ed|invalid api key/i;
 const QUOTA_TEXT_RE = /usage limit|rate limit|quota (exceeded|exhausted|reached)/i;
 
+/**
+ * Added to every run's environment, over whatever the caller passed: Synapse's runs never load the
+ * user's auto memory or any CLAUDE.md file (hermetic runs; ADR-036 "observed, never read").
+ */
+export const HERMETIC_ENV: Readonly<Record<string, string>> = {
+  CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+  CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
+};
+
 /** A spawn failure message by errno code; never includes paths or arguments. */
 export function spawnErrorMessage(code: string | undefined): string {
   if (code === "ENOENT" || code === "EACCES") return "claude binary not found or not executable";
@@ -40,6 +49,8 @@ export interface ClaudeCliProviderOptions {
   killGraceMs?: number;
   /** `--settings` JSON disabling plugins and hooks (R34); defaults to an empty override. */
   settingsOverride?: string;
+  /** From the same startup read: user permissions widen engineering scope (Phase 9 guard). */
+  userPermissionsWidenScope?: boolean;
 }
 
 interface SpawnOutcome {
@@ -75,8 +86,11 @@ const normalize = (s: string): string => s.replace(/[^A-Za-z0-9]/g, "_");
 export class ClaudeCliProvider implements AIProvider {
   private readonly killGraceMs: number;
 
+  readonly userPermissionsWidenScope: boolean;
+
   constructor(private readonly opts: ClaudeCliProviderOptions) {
     this.killGraceMs = opts.killGraceMs ?? 5000;
+    this.userPermissionsWidenScope = opts.userPermissionsWidenScope === true;
   }
 
   private run(o: SpawnOptions): Promise<SpawnOutcome> {
@@ -101,7 +115,7 @@ export class ClaudeCliProvider implements AIProvider {
           detached: true,
           stdio: ["ignore", "pipe", "pipe"],
           cwd: o.cwd,
-          env: this.opts.env,
+          env: { ...this.opts.env, ...HERMETIC_ENV },
         });
       } catch (e) {
         out.spawnError = true;
