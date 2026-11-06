@@ -755,6 +755,7 @@ export const repositories = sqliteTable("repositories", {
   trackedBranch: text("tracked_branch").notNull(),
   jiraProjectKeys: json("jira_project_keys").$type<string[]>().notNull(),
   notes: text("notes"),
+  testCommand: text("test_command"),
   headSha: text("head_sha"),
   inspectedHeadSha: text("inspected_head_sha"),
   drift: json("drift").$type<{
@@ -848,4 +849,89 @@ export const projectMilestones = sqliteTable(
     updatedAt: text("updated_at").notNull(),
   },
   (t) => [index("project_milestones_project_date_idx").on(t.projectId, t.targetDate)],
+);
+
+const STEPS = [
+  "investigate",
+  "branch",
+  "develop",
+  "commit",
+  "update_parent",
+  "merge_local",
+  "push_pr",
+  "merge_pr",
+  "cleanup",
+] as const;
+
+export const engineeringTasks = sqliteTable(
+  "engineering_tasks",
+  {
+    id: id(),
+    repositoryId: text("repository_id")
+      .notNull()
+      .references(() => repositories.id, { onDelete: "cascade" }),
+    environmentId: text("environment_id").references(() => repositoryEnvironments.id, {
+      onDelete: "set null",
+    }),
+    source: text("source", { enum: ["manual", "jira", "slack"] }).notNull(),
+    sourceRef: text("source_ref"),
+    title: text("title").notNull(),
+    draftDescription: text("draft_description").notNull(),
+    approvedDescription: text("approved_description"),
+    plan: json("plan").$type<unknown>(),
+    parentBranch: text("parent_branch"),
+    taskBranch: text("task_branch"),
+    status: text("status", {
+      enum: [
+        "proposed",
+        "investigating",
+        "planned",
+        "approved",
+        "queued",
+        "in_progress",
+        "awaiting_approval",
+        "completed",
+        "failed",
+        "cancelled",
+        "needs_attention",
+      ],
+    }).notNull(),
+    priority: integer("priority").notNull().default(0),
+    currentStep: text("current_step", { enum: STEPS }),
+    prUrl: text("pr_url"),
+    prNumber: integer("pr_number"),
+    baseSha: text("base_sha"),
+    mergeSha: text("merge_sha"),
+    failure: text("failure"),
+    /** I1: last retryable pickup failure (`fetch_failed`, `git_timeout`); null after a pickup. */
+    lastPickupError: text("last_pickup_error"),
+    /** Consecutive retryable pickup failures (drives the backoff); reset to 0 on a pickup. */
+    pickupFailures: integer("pickup_failures").notNull().default(0),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    index("engineering_tasks_status_idx").on(t.status),
+    index("engineering_tasks_repository_idx").on(t.repositoryId),
+  ],
+);
+
+export const engineeringTaskSteps = sqliteTable(
+  "engineering_task_steps",
+  {
+    id: id(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => engineeringTasks.id, { onDelete: "cascade" }),
+    step: text("step", { enum: STEPS }).notNull(),
+    status: text("status", {
+      enum: ["pending", "awaiting_approval", "running", "done", "failed", "skipped"],
+    }).notNull(),
+    approvalId: text("approval_id"),
+    claudeRunId: text("claude_run_id"),
+    output: json("output").$type<unknown>(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [uniqueIndex("engineering_task_steps_task_step_uq").on(t.taskId, t.step)],
 );

@@ -8,6 +8,8 @@ import type {
   ConversationSummary,
   ConversationThread,
   DashboardOverview,
+  EngineeringTaskDetail,
+  EngineeringTaskView,
   JiraIssueView,
   Job,
   PersonDetail,
@@ -21,11 +23,14 @@ import {
   ApiError,
   acceptCurrentRemotes,
   addProjectFact,
+  approveTaskDescription,
+  approveTaskPlan,
   type ClaudeRun,
   type ClaudeStatus,
   type CommitmentStatusDto,
   type CommitmentViewDto,
   classifyOverviewFailure,
+  createEngineeringTask,
   createMilestone,
   decideProposal,
   deleteMilestone,
@@ -40,6 +45,8 @@ import {
   getClaudeStatus,
   getCommitments,
   getConversations,
+  getEngineeringTask,
+  getEngineeringTasks,
   getFollowups,
   getJiraIssues,
   getJiraStatus,
@@ -75,6 +82,7 @@ import {
 } from "../lib/api";
 import { brainPaletteItems, projectRowId } from "../lib/brain";
 import { trailingDebounce } from "../lib/debounce";
+import { engineeringErrorText, isTerminal, lockText } from "../lib/engineering";
 import { conversationTitle, filterConversations, type InboxFilter } from "../lib/inbox";
 import { jiraPaletteItems, jiraRowId } from "../lib/jira";
 import { LIVE_EVENT_TYPES } from "../lib/live-events";
@@ -93,6 +101,7 @@ import { writeTheme } from "../lib/theme";
 import type { MilestoneDraft } from "./components/brain/ProjectCard";
 import { ProjectsSection } from "./components/brain/ProjectsSection";
 import { Commitments } from "./components/commitments/Commitments";
+import { EngineeringSection, engineeringRowId } from "./components/engineering/EngineeringSection";
 import { AwayBanner } from "./components/header/AwayBanner";
 import { CommandPalette } from "./components/header/CommandPalette";
 import { Header } from "./components/header/Header";
@@ -109,7 +118,7 @@ import { BACKFILL_CARD_ID } from "./components/triage/SetupCards";
 import { useNeedsYouActions } from "./components/triage/useNeedsYouActions";
 import { useToast } from "./components/ui/Toasts";
 
-const FOOTER = { api: "127.0.0.1:7400", web: ":7401", lock: "not in use yet" };
+const FOOTER = { api: "127.0.0.1:7400", web: ":7401" };
 
 /** Highlights the section in view (spec D1): the first one crossing the top 40% of the viewport. */
 function useActiveSection(initial: SectionId): [SectionId, (id: SectionId) => void] {
@@ -173,6 +182,7 @@ const GO_TO: Array<{ id: SectionId; label: string }> = [
   { id: "commitments", label: "Commitments" },
   { id: "jira", label: "Jira" },
   { id: "projects", label: "Projects" },
+  { id: "engineering", label: "Engineering" },
   { id: "people", label: "People" },
   { id: "system", label: "System" },
 ];
@@ -228,6 +238,10 @@ export default function Dashboard() {
   const [jiraAttention, setJiraAttention] = useState<JiraIssueView[]>([]);
   const [repos, setRepos] = useState<RepositoryView[] | null>(null);
   const [projectDetails, setProjectDetails] = useState<ProjectDetail[]>([]);
+  const [engineeringTasks, setEngineeringTasks] = useState<EngineeringTaskView[]>([]);
+  const [engineeringDetails, setEngineeringDetails] = useState<
+    Record<string, EngineeringTaskDetail>
+  >({});
   const [registerSignal, setRegisterSignal] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionErrors, setActionErrors] = useState<ActionErrors>(NO_ACTION_ERRORS);
@@ -280,6 +294,7 @@ export default function Dashboard() {
       ja,
       rp,
       pr,
+      et,
     ] = await Promise.allSettled([
       getApprovals(),
       getJobs(20),
@@ -305,6 +320,7 @@ export default function Dashboard() {
       getJiraIssues("attention"),
       getRepositories(),
       getProjects(),
+      getEngineeringTasks(),
     ]);
     if (a.status === "fulfilled") setApprovals(a.value);
     if (j.status === "fulfilled") setJobs(j.value);
@@ -352,6 +368,24 @@ export default function Dashboard() {
         }),
       );
     }
+    // Open tasks carry their plan, steps and diff in the detail; finished ones show the list row only.
+    if (et.status === "fulfilled") {
+      setEngineeringTasks(et.value);
+      const open = et.value.filter((t) => !isTerminal(t.status));
+      const fetched = await Promise.allSettled(open.map((t) => getEngineeringTask(t.id)));
+      // A failed fetch keeps the detail already shown, so an open description form is not
+      // unmounted (and its edits lost) by one bad refresh.
+      setEngineeringDetails((prev) =>
+        Object.fromEntries(
+          open.flatMap((t, i) => {
+            const d = fetched[i];
+            if (d?.status === "fulfilled") return [[t.id, d.value]];
+            const kept = prev[t.id];
+            return kept ? [[t.id, kept]] : [];
+          }),
+        ),
+      );
+    }
     // Expanded histories are refetched on every refresh so review changes show at once.
     const open = expandedRef.current;
     const hist = await Promise.allSettled(open.map((u) => getPersonFlags(u)));
@@ -385,6 +419,7 @@ export default function Dashboard() {
       js,
       ji,
       rp,
+      et,
     ].find((r) => r.status === "rejected");
     const message =
       failed?.status === "rejected"
@@ -555,6 +590,10 @@ export default function Dashboard() {
     seeAllJira: () => goTo("jira"),
     seeAllProjects: () => goTo("projects"),
     registerRepository: () => openRegister(),
+    seeAllEngineering: (taskId) => {
+      setActive("engineering");
+      scrollToSection(taskId ? engineeringRowId(taskId) : "engineering");
+    },
     onEvaluationQueued: (id) => evalQueue.markQueued([id]),
   });
   // Pending-undo keys are passed in, so a live refresh can't bring a hidden item back (D8).
@@ -578,9 +617,21 @@ export default function Dashboard() {
         .map((fact) => ({ fact, projectName: d.name })),
     ),
     repositories: repos,
+    engineeringTasks,
     hidden: feed.hidden,
   };
   const cards = buildNeedsYou(needsInput);
+
+  // Each form handler resolves to an error text (shown inside the form), or null on success.
+  const engineeringCall = async (fn: () => Promise<unknown>): Promise<string | null> => {
+    try {
+      await fn();
+    } catch (e) {
+      return engineeringErrorText(e);
+    }
+    await refresh();
+    return null;
+  };
   // A running backfill has nothing to start, so the palette offers no action for it.
   const canStartBackfill = cards.some((c) => c.kind === "setup-backfill" && isActionable(c));
 
@@ -685,7 +736,7 @@ export default function Dashboard() {
           setActive(section);
           scrollToSection(section);
         }}
-        footer={FOOTER}
+        footer={{ ...FOOTER, lock: lockText(overview?.engineeringLock) }}
       />
       <main className="syn-main">
         <div className="syn-main-inner">
@@ -734,6 +785,7 @@ export default function Dashboard() {
                 onCopy={copy}
                 backfillConfirmSignal={backfillSignal}
                 queuedEvaluations={evalQueue.queued}
+                engineering={{ tasks: engineeringTasks, details: engineeringDetails }}
               />
             </section>
             <section id="running" className="syn-section">
@@ -743,6 +795,7 @@ export default function Dashboard() {
                 runs={claudeRuns}
                 now={now}
                 upcoming={overview?.upcoming}
+                engineeringLock={overview?.engineeringLock}
               />
             </section>
           </div>
@@ -793,6 +846,7 @@ export default function Dashboard() {
               now={now}
               onSync={feed.handlers.syncJira}
               onGoToSetup={() => goTo("triage")}
+              onCreateTask={feed.handlers.createTaskFromJira}
             />
           </section>
           <section id="projects" className="syn-section">
@@ -818,6 +872,21 @@ export default function Dashboard() {
                 )
               }
               onDeleteMilestone={(projectId, id) => void act(() => deleteMilestone(projectId, id))}
+            />
+          </section>
+          <section id="engineering" className="syn-section">
+            <EngineeringSection
+              tasks={engineeringTasks}
+              details={engineeringDetails}
+              repos={repos ?? []}
+              lock={overview?.engineeringLock ?? null}
+              now={now}
+              handlers={{
+                create: (input) => engineeringCall(() => createEngineeringTask(input)),
+                approveDescription: (id, d) => engineeringCall(() => approveTaskDescription(id, d)),
+                approvePlan: (id, v) => engineeringCall(() => approveTaskPlan(id, v)),
+                cancel: feed.handlers.cancelEngineeringTask,
+              }}
             />
           </section>
           <section id="people" className="syn-section">

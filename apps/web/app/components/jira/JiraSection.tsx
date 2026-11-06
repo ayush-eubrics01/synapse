@@ -20,7 +20,15 @@ const STATUS_TONE: Record<JiraIssueView["statusCategory"], ChipTone> = {
   done: "green",
 };
 
-function Row({ i, now }: { i: JiraIssueView; now: Date | null }) {
+function Row({
+  i,
+  now,
+  onCreateTask,
+}: {
+  i: JiraIssueView;
+  now: Date | null;
+  onCreateTask?: (key: string) => void;
+}) {
   const attention = attentionLabel(i, now);
   const due = dueLabel(i, now);
   const n = i.slackMentions.count;
@@ -51,6 +59,11 @@ function Row({ i, now }: { i: JiraIssueView; now: Date | null }) {
             {n} Slack {n === 1 ? "mention" : "mentions"}
           </span>
         )}
+        {onCreateTask && (
+          <Button variant="ghost" size="sm" onClick={() => onCreateTask(i.key)}>
+            Create task
+          </Button>
+        )}
         {i.webUrl?.startsWith("https://") && (
           <a className="syn-ncard-link" href={i.webUrl} target="_blank" rel="noreferrer noopener">
             Open in Jira ↗
@@ -73,12 +86,15 @@ export function JiraSection({
   now,
   onSync,
   onGoToSetup,
+  onCreateTask,
 }: {
   status: JiraStatusDto | null;
   issues: JiraIssueView[];
   now: Date | null;
   onSync: () => void;
   onGoToSetup: () => void;
+  /** Proposes an engineering task from the issue (Phase 10); the action is hidden without it. */
+  onCreateTask?: (key: string) => void;
 }) {
   const enabled = status?.enabled === true;
   const groups = groupIssues(issues).filter((g) => g.issues.length > 0);
@@ -115,7 +131,7 @@ export function JiraSection({
             </h3>
             <ul className="syn-jira-list">
               {g.issues.map((i) => (
-                <Row key={i.key} i={i} now={now} />
+                <Row key={i.key} i={i} now={now} onCreateTask={onCreateTask} />
               ))}
             </ul>
           </section>

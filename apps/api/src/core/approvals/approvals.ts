@@ -265,6 +265,18 @@ export class ApprovalEngine {
     return this.apply(tx, row, "revoked", "approval.revoked", "system", reason);
   }
 
+  /**
+   * Expires a pending (or approved, unclaimed) approval as `system`, inside the caller's
+   * transaction: the work it asked about was cancelled. Throws InvalidApprovalTransition otherwise.
+   */
+  expireAsSystem(tx: DbOrTx, id: string, reason: string): Approval {
+    const row = tx.select().from(schema.approvals).where(eq(schema.approvals.id, id)).get();
+    if (!row || !ALLOWED[row.status].includes("expired") || row.executionStartedAt !== null) {
+      throw new InvalidApprovalTransition(id, row?.status ?? "missing", "expired");
+    }
+    return this.apply(tx, row, "expired", "approval.expired", "system", reason);
+  }
+
   /** Whether a policy (not the user) may approve `action` right now: effective policy policy_gated. */
   policyGateOpen(action: Operation): boolean {
     return this.permissions.policyGateOpen(action);

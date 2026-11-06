@@ -54,3 +54,11 @@ test("exact argv", () => {
   expect(a).not.toContain("--dangerously-skip-permissions");
   expect(a[a.indexOf("--permission-mode") + 1]).toBe("default");
 });
+
+test("a Bash prefix grant with a space stays one comma-joined --allowedTools entry", () => {
+  const args = buildClaudeArgs(
+    { ...req, allowedTools: ["Edit(//tmp/x/**)", "Bash(bun test:*)"] },
+    "{}",
+  );
+  expect(args[args.indexOf("--allowedTools") + 1]).toBe("Edit(//tmp/x/**),Bash(bun test:*)");
+});

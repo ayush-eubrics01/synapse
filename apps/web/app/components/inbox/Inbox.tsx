@@ -25,7 +25,8 @@ export interface InboxProps {
   urgentById: ReadonlyMap<string, UrgentItemDto>;
   now: Date | null;
   hidden: Set<string>;
-  handlers: Pick<NeedsYouHandlers, "trackCommitment" | "rejectCommitment" | "urgentReply">;
+  handlers: Pick<NeedsYouHandlers, "trackCommitment" | "rejectCommitment" | "urgentReply"> &
+    Partial<Pick<NeedsYouHandlers, "createTaskFromSlack">>;
 }
 
 export function Inbox(p: InboxProps) {
@@ -72,6 +73,7 @@ export function Inbox(p: InboxProps) {
                   hidden={p.hidden}
                   onTrack={p.handlers.trackCommitment}
                   onIgnore={p.handlers.rejectCommitment}
+                  onCreateTask={p.handlers.createTaskFromSlack}
                 />
                 <Composer
                   state={composerState(loaded.conversation, p.urgentById)}

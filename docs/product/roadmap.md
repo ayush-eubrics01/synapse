@@ -14,8 +14,8 @@ This list amends the phase plan in `pre-project-concept-document/concept.md`. Wh
 | 6b | Away-mode auto-replies (ADR-033) and the return digest | Done (merged; PR #11). Module doc: `docs/modules/auto-reply.md`. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-6b-followups.md` |
 | 7 | **Design revamp** | Done (merged; PR #8/#9). Inserted at the user's request (2026-11-06), before the Jira integration. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-7-followups.md` |
 | 8 | Jira integration | Done (merged, PR #12). Read-only tracking; module doc: `docs/modules/jira.md`. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-8-followups.md`. Was Phase 7 |
-| 9 | Engineering Brain | PR open. Repository registry with drift check, read-only path-scoped inspection with verified evidence and fact review, projects, milestones and go-live dates, Jira association, Projects UI. Module doc: `docs/modules/engineering-brain.md`. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-9-followups.md`. Was Phase 8 |
-| 10 | Engineering automation | Planned. Was Phase 9 |
+| 9 | Engineering Brain | Done (merged, PR #13). Repository registry with drift check, read-only path-scoped inspection with verified evidence and fact review, projects, milestones and go-live dates, Jira association, Projects UI. Module doc: `docs/modules/engineering-brain.md`. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-9-followups.md`. Was Phase 8 |
+| 10 | Engineering automation | PR open. Tasks from the user, Jira or Slack; read-only investigation; plan approval with branch confirmation; the global lock; a scoped develop run (edit files and run the confirmed test command); approval-gated commit, local merge, push, PR and PR merge, all run by Synapse code, never the model; cleanup; Engineering section in the web. Module doc: `docs/modules/engineering-tasks.md`. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-10-followups.md`. Was Phase 9 |
 | 11 | Dashboard customisation and runtime hardening | Planned. Was Phase 10 |
 
 ## Phase 7: Design revamp

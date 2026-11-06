@@ -37,7 +37,7 @@ export function stripCredentials(url: string): string {
 }
 
 /** A push URL that git can never push to: the conventional `no_push`, `DISABLED`, or empty. */
-function pushDisabled(push: string): boolean {
+export function pushDisabled(push: string): boolean {
   return push === "" || push === "no_push" || push === "DISABLED";
 }
 

@@ -2,7 +2,12 @@ import type { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { AIProvider, DesktopNotifier, MessageSink } from "@synapse/contracts";
+import type {
+  AIProvider,
+  DesktopNotifier,
+  MessageSink,
+  PullRequestProvider,
+} from "@synapse/contracts";
 import { type Db, openDatabase, runMigrations } from "@synapse/database";
 import { type Clock, newId, systemClock } from "@synapse/shared";
 import { ApprovalEngine } from "./core/approvals/approvals";
@@ -41,7 +46,9 @@ import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
 import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notifier";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadUserSettings } from "./integrations/claude-code/settings-override";
+import { GitHubCliProvider } from "./integrations/github/gh-cli";
 import { JiraConnectorSource } from "./integrations/jira/connector-source";
+import { LocalGitWorkflow } from "./integrations/repository/git-workflow";
 import { LocalGitProvider } from "./integrations/repository/local-git";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
@@ -55,6 +62,9 @@ import { DashboardService } from "./modules/dashboard/service";
 import type { InspectionService } from "./modules/engineering-brain/inspection";
 import { RepositoryRegistry } from "./modules/engineering-brain/registry";
 import { BrainService } from "./modules/engineering-brain/service";
+import { EngineeringLock } from "./modules/engineering-tasks/lock";
+import { EngineeringTaskService } from "./modules/engineering-tasks/service";
+import { EngineeringStepService } from "./modules/engineering-tasks/steps";
 import { InboxConversations } from "./modules/inbox/conversations";
 import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
@@ -77,6 +87,9 @@ import { registerAutoReplyJobs } from "./workers/auto-reply/evaluate";
 import { registerDriftCheck } from "./workers/brain/drift";
 import { registerInspectionJobs } from "./workers/brain/inspect";
 import { registerCommitmentJobs } from "./workers/commitments";
+import { registerInvestigateJob } from "./workers/engineering/investigate";
+import { registerPickupJobs } from "./workers/engineering/pickup";
+import { registerStepJob } from "./workers/engineering/steps";
 import { createRunHelpers } from "./workers/intelligence-shared";
 import { registerJiraJobs } from "./workers/jira";
 import { registerOutgoingJobs } from "./workers/outgoing";
@@ -140,6 +153,12 @@ export interface Container {
   inspections: InspectionService;
   /** Projects, fact review, milestones and the Jira association (Phase 9, C9 to C12). */
   brain: BrainService;
+  /** Engineering tasks (Phase 10, E1–E7): creation, investigation, plan approval, pickup. */
+  engineering: EngineeringTaskService;
+  /** The global engineering lock (E6, ADR-030); main.ts runs `recover()` once at boot. */
+  engineeringLock: EngineeringLock;
+  /** The step runner and the four engineering approval executors (E8–E18). */
+  engineeringSteps: EngineeringStepService;
   slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
@@ -152,6 +171,8 @@ export interface ContainerDeps {
   testHandlers?: boolean;
   /** Replaces the real SlackSender behind `outgoing` (tests and smoke scripts inject a fake). */
   sink?: MessageSink;
+  /** Replaces the real GitHubCliProvider (tests inject a fake; nothing may reach real gh). */
+  prs?: PullRequestProvider;
   /** Desktop notification adapter. Defaults to a no-op; main.ts injects the real one. */
   notifier?: DesktopNotifier & NotifierHealth;
 }
@@ -491,6 +512,46 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     inspections,
   });
 
+  // Phase 10: engineering tasks, the global lock, the investigation run and the pickup tick.
+  const gitWorkflow = new LocalGitWorkflow({ home });
+  const engineeringLock = new EngineeringLock({
+    db,
+    clock,
+    leases,
+    settings,
+    events,
+    audit,
+    git: gitWorkflow,
+    queue,
+    approvals,
+  });
+  const engineering = new EngineeringTaskService({
+    db,
+    clock,
+    events,
+    audit,
+    queue,
+    provider: repositoryProvider,
+    registry: repositories,
+    lock: engineeringLock,
+    git: gitWorkflow,
+  });
+  const engineeringSteps = new EngineeringStepService({
+    db,
+    clock,
+    events,
+    audit,
+    queue,
+    approvals,
+    lock: engineeringLock,
+    git: gitWorkflow,
+    prs: deps.prs ?? new GitHubCliProvider(),
+  });
+  engineeringSteps.register(approvals, dispatcher);
+  registerInvestigateJob({ db, settings, orchestrator, service: engineering, handlers });
+  registerStepJob({ db, settings, orchestrator, steps: engineeringSteps, handlers });
+  registerPickupJobs({ service: engineering, lock: engineeringLock, scheduler, handlers });
+
   const health = new HealthService({
     database: databaseCheck(sqlite),
     jobs: jobsCheck(db, clock),
@@ -518,6 +579,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     sync,
     health,
     brain,
+    engineeringLock,
   });
 
   return {
@@ -563,6 +625,9 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     repositories,
     inspections,
     brain,
+    engineering,
+    engineeringLock,
+    engineeringSteps,
     handlers,
     recoverySweeps: [
       { name: "urgency.assess", run: urgency.recoverySweep },

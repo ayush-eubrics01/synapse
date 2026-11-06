@@ -54,6 +54,10 @@ test("catalog covers the Phase 1 and 2 events", () => {
       "repo.drift_detected",
       "brain.facts_proposed",
       "brain.fact_decided",
+      "engineering.task_created",
+      "engineering.task_status_changed",
+      "engineering.step_changed",
+      "engineering.lock_changed",
     ].sort(),
   );
   expect(parseEventPayload("settings.changed", { key: "k" })).toEqual({ key: "k" });

@@ -14,6 +14,10 @@ export type Operation =
   | "git.pr"
   | "git.merge"
   | "deploy"
+  | "engineering.commit"
+  | "engineering.merge_local"
+  | "engineering.push_pr"
+  | "engineering.merge_pr"
   | "person.priority.set";
 
 export type Policy =
@@ -41,6 +45,10 @@ export const DEFAULT_POLICIES: Record<Operation, Policy> = {
   "git.pr": "approval_required",
   "git.merge": "approval_required",
   deploy: "explicit_approval_required",
+  "engineering.commit": "approval_required",
+  "engineering.merge_local": "approval_required",
+  "engineering.push_pr": "approval_required",
+  "engineering.merge_pr": "explicit_approval_required",
   "person.priority.set": "user_only",
 };
 

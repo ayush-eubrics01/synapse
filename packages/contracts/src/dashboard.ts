@@ -91,6 +91,8 @@ export interface DashboardOverview {
     jiraAttention: number;
     /** Engineering Brain facts waiting for review (Phase 9). */
     brainReview: number;
+    /** Engineering tasks in `awaiting_approval` plus `needs_attention` (Phase 10, E19). */
+    engineeringAwaiting: number;
   };
   /** The next three planned milestones, overdue ones first (Phase 9, C10). */
   upcoming: UpcomingMilestone[];
@@ -114,7 +116,8 @@ export interface DashboardOverview {
     state: PipelineState;
     summary: string;
   }>;
-  engineeringLock: null;
+  /** The global engineering lock (Phase 10, E19); `taskTitle` only while a task holds it. */
+  engineeringLock: { held: boolean; taskId?: string; taskTitle?: string; since?: string };
 }
 
 /** One row of the inbox conversation list (`GET /api/inbox/conversations`). */

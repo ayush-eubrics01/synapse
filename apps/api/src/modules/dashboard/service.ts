@@ -7,6 +7,7 @@ import type { SettingsService } from "../../core/config/settings";
 import type { FollowupService } from "../commitments/followups";
 import type { CommitmentLifecycle } from "../commitments/lifecycle";
 import type { BrainService } from "../engineering-brain/service";
+import type { EngineeringLock } from "../engineering-tasks/lock";
 import type { SyncStateService } from "../inbox/sync-state";
 import type { UrgentInbox } from "../inbox/urgent";
 import type { PeopleViews } from "../people/views";
@@ -27,6 +28,7 @@ export interface DashboardDeps {
   sync: SyncStateService;
   health: { report(): Promise<HealthReport> };
   brain: Pick<BrainService, "reviewCount" | "upcoming">;
+  engineeringLock: Pick<EngineeringLock, "view">;
 }
 
 const DAY_MS = 86_400_000;
@@ -110,6 +112,14 @@ export class DashboardService {
               )
               .get()?.n ?? 0),
         brainReview: this.deps.brain.reviewCount(),
+        engineeringAwaiting:
+          db
+            .select({ n: count() })
+            .from(schema.engineeringTasks)
+            .where(
+              inArray(schema.engineeringTasks.status, ["awaiting_approval", "needs_attention"]),
+            )
+            .get()?.n ?? 0,
       },
       away: {
         on: settings.get("autoReply.awayMode"),
@@ -145,8 +155,21 @@ export class DashboardService {
         now,
       ),
       upcoming: this.deps.brain.upcoming().slice(0, 3),
-      engineeringLock: null,
+      engineeringLock: this.lockView(),
     };
+  }
+
+  private lockView(): DashboardOverview["engineeringLock"] {
+    const v = this.deps.engineeringLock.view();
+    if (!v.held) return { held: false };
+    const title = v.taskId
+      ? this.deps.db
+          .select({ title: schema.engineeringTasks.title })
+          .from(schema.engineeringTasks)
+          .where(eq(schema.engineeringTasks.id, v.taskId))
+          .get()?.title
+      : undefined;
+    return { ...v, ...(title !== undefined ? { taskTitle: title } : {}) };
   }
 
   /** People the away policy can reply to: priority high or critical, never the user. */

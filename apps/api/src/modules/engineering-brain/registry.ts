@@ -18,12 +18,15 @@ import {
 } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, notInArray } from "drizzle-orm";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { EventPublisher } from "../../core/events/publisher";
 import { computeDrift, type DriftFindings } from "./drift";
 
-const { repositories, repositoryEnvironments, projects, projectRepositories } = schema;
+const { repositories, repositoryEnvironments, projects, projectRepositories, engineeringTasks } =
+  schema;
+/** Engineering task statuses after which a task no longer needs its repository (M4). */
+const FINISHED_TASK_STATUSES = ["completed", "failed", "cancelled"] as const;
 const MODULE = "engineering-brain";
 
 export type ProposalFailure = PathRefusalReason | "git_failed";
@@ -36,6 +39,7 @@ export type RegistryErrorCode =
   | "unknown_tracked_branch"
   | "unknown_environment_branch"
   | "path_unavailable"
+  | "repo_has_active_task"
   | "not_found";
 
 /** A refused registry call. The message is the fixed code only: never a path, URL or branch. */
@@ -325,13 +329,29 @@ export class RepositoryRegistry {
     return view;
   }
 
-  /** Removes the repository and its environments. Its project (and facts) stay. Audited. */
+  /**
+   * Removes the repository and its environments. Its project (and facts) stay. Audited. Refused
+   * with `repo_has_active_task` while an engineering task of the repository is not finished
+   * (M4): deleting the row would cascade the task away while it may hold the lock or a branch.
+   */
   unregister(id: string): void {
     const { db, audit } = this.deps;
     db.transaction(
       (tx) => {
         const row = tx.select().from(repositories).where(eq(repositories.id, id)).get();
         if (!row) throw new RegistryError("not_found");
+        const active = tx
+          .select({ id: engineeringTasks.id })
+          .from(engineeringTasks)
+          .where(
+            and(
+              eq(engineeringTasks.repositoryId, id),
+              notInArray(engineeringTasks.status, [...FINISHED_TASK_STATUSES]),
+            ),
+          )
+          .limit(1)
+          .get();
+        if (active) throw new RegistryError("repo_has_active_task");
         tx.delete(repositories).where(eq(repositories.id, id)).run();
         audit.record(tx, {
           actor: "user",

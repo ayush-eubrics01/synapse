@@ -52,7 +52,7 @@ describe("validateRequest", () => {
   test("valid engineering without untrusted", () => {
     const r = make({
       workerProfile: "engineering",
-      allowed: ["Read(//tmp/demo-repo/**)", "Edit", "Bash"],
+      allowed: ["Read(//tmp/demo-repo/**)", "Edit(//tmp/demo-repo/**)", "Bash(bun test:*)"],
       workingDirectory: "/tmp/demo-repo",
       promptParts: [
         { provenance: "system", content: "x" },
@@ -150,14 +150,77 @@ describe("validateRequest", () => {
       );
     }
   });
-  test("R26 Bash(git:*) accepted on engineering", () => {
-    const r = make({
-      workerProfile: "engineering",
-      allowed: ["Read(//tmp/demo-repo/**)", "Bash(git:*)"],
-      workingDirectory: "/tmp/demo-repo",
-      promptParts: [],
+  describe("rule L: scoped writes and test command", () => {
+    const eng = (allowed: string[]) =>
+      make({
+        workerProfile: "engineering",
+        allowed,
+        workingDirectory: "/tmp/demo-repo",
+        promptParts: [],
+      });
+    const SCOPE = "(//tmp/demo-repo/**)";
+    test.each(["Edit", "Write", "MultiEdit"])(
+      "%s must be scoped with the double-slash form",
+      (t) => {
+        expect(v(eng([`${t}${SCOPE}`]))).toEqual({ ok: true });
+        expect(reason(v(eng([`${t}(/tmp/demo-repo/**)`])))).toBe(
+          "write tools must be scoped to the working directory",
+        );
+        expect(reason(v(eng([t])))).toBe("write tools must be scoped to the working directory");
+        expect(reason(v(eng([`${t}(//tmp/other/**)`])))).toBe(
+          "write tools must be scoped to the working directory",
+        );
+      },
+    );
+    test("Bash only as Bash(<safe test command>:*)", () => {
+      expect(v(eng(["Bash(bun test:*)"]))).toEqual({ ok: true });
+      expect(
+        v(eng(["Read(//tmp/demo-repo/**)", "Edit(//tmp/demo-repo/**)", "Bash(npm test:*)"])),
+      ).toEqual({ ok: true });
+      for (const bad of ["Bash", "Bash(curl x:*)", "Bash(git:*)"]) {
+        expect(reason(v(eng([bad])))).toBe("write tools must be scoped to the working directory");
+      }
     });
-    expect(v(r)).toEqual({ ok: true });
+    test("a chained command is malformed at rule 0", () => {
+      expect(reason(v(eng(["Bash(bun test; rm:*)"])))).toBe(
+        "malformed tool name Bash(bun test; rm:*)",
+      );
+    });
+    test("more than one Bash grant fails", () => {
+      expect(reason(v(eng(["Bash(bun test:*)", "Bash(npm test:*)"])))).toBe(
+        "only one Bash grant is allowed",
+      );
+    });
+    test("bare interpreters and odd characters are refused", () => {
+      for (const bad of ["Bash(bun:*)", "Bash(python:*)", "Bash(npx:*)"]) {
+        expect(reason(v(eng([bad])))).toBe("write tools must be scoped to the working directory");
+      }
+      expect(reason(v(eng(["Bash(bun test$x:*)"])))).toBe("malformed tool name Bash(bun test$x:*)");
+      expect(v(eng(["Bash(pytest:*)"]))).toEqual({ ok: true });
+    });
+    test("a Bash specifier without the :* prefix form is malformed", () => {
+      expect(reason(v(eng(["Bash(bun test)"])))).toBe("malformed tool name Bash(bun test)");
+    });
+    test("allowed writes are not denied and the denylist still passes H2", () => {
+      const r = eng(["Edit(//tmp/demo-repo/**)", "Bash(bun test:*)"]);
+      expect(r.disallowedTools).not.toContain("Edit");
+      expect(r.disallowedTools).not.toContain("Bash");
+      expect(r.disallowedTools).toEqual(expect.arrayContaining(["Write", "MultiEdit", "WebFetch"]));
+      expect(v(r)).toEqual({ ok: true });
+      expect(v({ ...r, disallowedTools: r.disallowedTools.filter((t) => t !== "Write") })).toEqual({
+        ok: false,
+        reason: "denylist missing Write",
+      });
+    });
+    test("untrusted content in an engineering run with writes still fails", () => {
+      const withU = make({
+        workerProfile: "engineering",
+        allowed: ["Edit(//tmp/demo-repo/**)"],
+        workingDirectory: "/tmp/demo-repo",
+        promptParts: [untrusted],
+      });
+      expect(reason(v(withU))).toBe("untrusted content with write-capable tool Edit");
+    });
   });
   test("R26 denylist must cover network and write built-ins", () => {
     const full = buildDenylist([SEARCH, "ToolSearch"], DEFAULT_KNOWN_SERVERS, "collector");
@@ -186,7 +249,7 @@ describe("validateRequest", () => {
         [],
         [SEARCH, "ToolSearch"],
         [SEND, "ToolSearch"],
-        ["Read", "Bash(git:*)"],
+        ["Read", "Bash(bun test:*)"],
       ]) {
         for (const t of buildDenylist(allowed, DEFAULT_KNOWN_SERVERS, profile)) {
           expect(re.test(t)).toBe(true);
@@ -304,7 +367,7 @@ describe("final-review fixes", () => {
     expect(scoped).toEqual(expect.arrayContaining(["Grep", "Glob"]));
     const r = make({
       workerProfile: "engineering",
-      allowed: ["Edit"],
+      allowed: ["Edit(//tmp/demo-repo/**)"],
       workingDirectory: "/tmp/demo-repo",
       promptParts: [],
     });
@@ -460,8 +523,8 @@ describe("rule L (engineering fs reads scoped to the working directory)", () => 
     expect(reason(v(eng([`Read(~${WD}/**)`])))).toBe(MSG);
   });
   test("engineering runs without fs reads still need a safe working directory", () => {
-    expect(v(eng(["Edit", "Bash(git:*)"]))).toEqual({ ok: true });
-    expect(reason(v(eng(["Edit", "Bash(git:*)"], "/tmp/my repo")))).toBe(
+    expect(v(eng([`Edit(/${WD}/**)`, "Bash(bun test:*)"]))).toEqual({ ok: true });
+    expect(reason(v(eng(["Edit", "Bash(bun test:*)"], "/tmp/my repo")))).toBe(
       "working directory must be an absolute path of safe characters",
     );
     expect(reason(v(eng(["Edit"], "rel")))).toBe(

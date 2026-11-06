@@ -48,7 +48,7 @@ const overview = (on: boolean, n = 0): DashboardOverview =>
     lastSlackSyncAt: null,
     health: { status: "ok", issues: [] },
     pipeline: [],
-    engineeringLock: null,
+    engineeringLock: { held: false },
   }) as unknown as DashboardOverview;
 
 const header = (o: DashboardOverview | null, onToggleAway = () => {}) =>

@@ -9,6 +9,7 @@ import { brainRoutes } from "./routes/brain";
 import { claudeRoutes } from "./routes/claude";
 import { commitmentRoutes } from "./routes/commitments";
 import { dashboardRoutes } from "./routes/dashboard";
+import { engineeringRoutes } from "./routes/engineering";
 import { healthRoutes } from "./routes/health";
 import { inboxRoutes } from "./routes/inbox";
 import { jiraRoutes } from "./routes/jira";
@@ -39,6 +40,7 @@ export function createApp(c: Container): Hono {
   app.route("/", commitmentRoutes(c));
   app.route("/", awayRoutes(c));
   app.route("/", brainRoutes(c));
+  app.route("/", engineeringRoutes(c));
   app.route("/", dashboardRoutes(c));
   app.route("/", streamRoutes(c));
   app.onError((err, ctx) => {

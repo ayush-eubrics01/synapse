@@ -4,7 +4,12 @@ import type { Container } from "../container";
 import { RegistryError } from "../modules/engineering-brain/registry";
 import { BrainError } from "../modules/engineering-brain/service";
 
-const REGISTRY_CONFLICTS = new Set(["already_registered", "duplicate_name", "path_unavailable"]);
+const REGISTRY_CONFLICTS = new Set([
+  "already_registered",
+  "duplicate_name",
+  "path_unavailable",
+  "repo_has_active_task",
+]);
 
 /**
  * Spec C12. Errors are fixed codes: paths, remote URLs, branch names and fact text never reach a

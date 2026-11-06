@@ -13,6 +13,8 @@ export interface ThreadProps {
   hidden: Set<string>;
   onTrack: (commitmentId: string) => void;
   onIgnore: (commitmentId: string) => void;
+  /** Proposes an engineering task from a message (Phase 10); the action is hidden without it. */
+  onCreateTask?: (messageId: string) => void;
 }
 
 function clock(iso: string): string {
@@ -94,7 +96,7 @@ function Annotations({
 }
 
 /** Messages render as plain text (React escaping): untrusted, never HTML, never auto-linked. */
-export function Thread({ thread, now, hidden, onTrack, onIgnore }: ThreadProps) {
+export function Thread({ thread, now, hidden, onTrack, onIgnore, onCreateTask }: ThreadProps) {
   const ref = useRef<HTMLDivElement>(null);
   // The pane is mounted per conversation (keyed by the caller), so this runs when one opens.
   useEffect(() => {
@@ -125,6 +127,13 @@ export function Thread({ thread, now, hidden, onTrack, onIgnore }: ThreadProps) 
               <div className="syn-msg-text">
                 {m.text === null ? <em>content expired</em> : m.text}
               </div>
+              {onCreateTask && m.text !== null && m.text !== "" && (
+                <div className="syn-msg-task">
+                  <Button size="sm" variant="ghost" onClick={() => onCreateTask(m.id)}>
+                    Create task
+                  </Button>
+                </div>
+              )}
               <Annotations m={m} hidden={hidden} onTrack={onTrack} onIgnore={onIgnore} />
             </div>
           </div>

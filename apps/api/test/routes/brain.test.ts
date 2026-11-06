@@ -157,6 +157,17 @@ describe("repositories", () => {
     expect(c.db.select().from(schema.projects).all()).toHaveLength(1);
   });
 
+  test("DELETE is refused with 409 repo_has_active_task while an engineering task is not finished (M4)", async () => {
+    const { repo } = await register();
+    const t = c.engineering.create({ repositoryId: repo.id, title: "T", draftDescription: "d" });
+    const del = await call(`/api/repos/${repo.id}`, { method: "DELETE" });
+    expect(del.status).toBe(409);
+    expect(await del.json()).toEqual({ error: "repo_has_active_task" });
+    expect(c.db.select().from(schema.repositories).all()).toHaveLength(1);
+    c.engineering.cancel(t.id);
+    expect((await call(`/api/repos/${repo.id}`, { method: "DELETE" })).status).toBe(204);
+  });
+
   test("POST accept-remotes returns the updated view; unknown id is 404", async () => {
     const { repo, path } = await register();
     git(path, "remote", "set-url", "origin", "https://example.com/other/app.git");

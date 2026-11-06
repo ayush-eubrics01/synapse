@@ -1,0 +1,1 @@
+ALTER TABLE `engineering_tasks` ADD `pickup_failures` integer DEFAULT 0 NOT NULL;

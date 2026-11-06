@@ -14,20 +14,6 @@ const c = createContainer(config, {
   testHandlers: process.env.SYNAPSE_TEST_HANDLERS === "1",
   notifier: new NotifySendNotifier(),
 });
-recoverOnStartup({
-  db: c.db,
-  clock: c.clock,
-  leases: c.leases,
-  audit: c.audit,
-  sweeps: c.recoverySweeps,
-});
-recoverOrphanRuns(c.db, c.clock);
-try {
-  c.auth.record();
-} catch (e) {
-  console.error("auth record failed:", e instanceof Error ? e.name : "non-error value thrown");
-}
-
 let server: ReturnType<typeof Bun.serve>;
 try {
   server = Bun.serve({
@@ -44,6 +30,29 @@ try {
     process.exit(1);
   }
   throw e;
+}
+
+// Recovery runs only once this process owns the port: a second process that fails with
+// EADDRINUSE above has changed nothing (no job, lease or run of the live process is touched).
+recoverOnStartup({
+  db: c.db,
+  clock: c.clock,
+  leases: c.leases,
+  audit: c.audit,
+  sweeps: c.recoverySweeps,
+});
+recoverOrphanRuns(c.db, c.clock);
+// E6: the engineering lease is never released by core recovery. Settled here, before the worker
+// and the scheduler start, so no step or pickup runs against a tree that a crash left half-changed.
+try {
+  await c.engineeringLock.recover();
+} catch (e) {
+  console.error("engineering lock recovery failed:", e instanceof Error ? e.name : "non-error");
+}
+try {
+  c.auth.record();
+} catch (e) {
+  console.error("auth record failed:", e instanceof Error ? e.name : "non-error value thrown");
 }
 
 const guarded = (name: string, fn: () => void) => () => {
