@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { readTheme, THEME_BOOT_SCRIPT, THEME_STORAGE_KEY, writeTheme } from "../lib/theme";
+import {
+  readTheme,
+  systemPrefersDark,
+  THEME_BOOT_SCRIPT,
+  THEME_STORAGE_KEY,
+  writeTheme,
+} from "../lib/theme";
 
 const store = (value: string | null) => ({ getItem: (_k: string) => value });
 
@@ -39,7 +45,18 @@ test("writeTheme stores under synapse.theme and swallows errors", () => {
   expect(() => writeTheme(null, "dark")).not.toThrow();
 });
 
-function boot(stored: string | null | "throw", prefersDark: boolean): string | null {
+type Media = "missing" | "throws" | boolean;
+const mediaWindow = (m: Media): { matchMedia?: (q: string) => { matches: boolean } } =>
+  m === "missing"
+    ? {}
+    : {
+        matchMedia: () => {
+          if (m === "throws") throw new Error("no media queries");
+          return { matches: m };
+        },
+      };
+
+function boot(stored: string | null | "throw", prefersDark: Media): string | null {
   const attrs: Record<string, string> = {};
   const localStorage = {
     getItem: () => {
@@ -47,7 +64,7 @@ function boot(stored: string | null | "throw", prefersDark: boolean): string | n
       return stored;
     },
   };
-  const window = { matchMedia: () => ({ matches: prefersDark }) };
+  const window = mediaWindow(prefersDark);
   const document = {
     documentElement: {
       setAttribute: (k: string, v: string) => {
@@ -68,4 +85,14 @@ test("the boot script applies the stored theme, else the system preference", () 
   expect(boot("junk", true)).toBe("dark");
   expect(boot(null, false)).toBe("light");
   expect(boot("throw", true)).toBe("dark");
+});
+
+test("the switch and the boot script share one rule when matchMedia is missing or throws", () => {
+  for (const m of ["missing", "throws", true, false] as const) {
+    expect(readTheme(null, systemPrefersDark(mediaWindow(m))) as string).toBe(boot(null, m) ?? "");
+  }
+  expect(systemPrefersDark(mediaWindow("missing"))).toBe(false);
+  expect(systemPrefersDark(mediaWindow("throws"))).toBe(false);
+  expect(systemPrefersDark(null)).toBe(false);
+  expect(systemPrefersDark(mediaWindow(true))).toBe(true);
 });

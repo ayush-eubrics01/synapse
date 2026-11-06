@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { DashboardOverview, Job } from "@synapse/contracts";
 import { renderToString } from "react-dom/server";
 import { QuotaBars } from "../app/components/system/QuotaBars";
@@ -207,4 +209,16 @@ test("SystemDetails keeps the Claude runs table", () => {
   expect(html).toContain("Claude runs");
   expect(html).toContain("11.4s");
   expect(renderSystem([], null, [])).toContain("No Claude runs yet.");
+});
+
+test("system.css: only kv rows after the first get a divider (adjacent sibling, not first-of-type)", () => {
+  const css = readFileSync(join(import.meta.dir, "../app/styles/system.css"), "utf8");
+  expect(css).not.toContain(".syn-kv:first-of-type");
+  expect(css).toMatch(/\.syn-kv \+ \.syn-kv\s*\{[^}]*border-top: 1px solid var\(--line2\)/);
+});
+
+test("Running with no pipeline yet says it is waiting for the API instead of an empty track", () => {
+  const html = renderToString(<Running pipeline={[]} status={null} runs={[]} now={NOW} />);
+  expect(html).not.toContain('class="syn-stages"');
+  expect(html).toContain("Waiting for the API.");
 });

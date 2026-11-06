@@ -10,6 +10,7 @@ import type {
   UrgentItemDto,
 } from "./api";
 import { backfillAction } from "./backfill-action";
+import { conversationLabel } from "./format";
 
 /** A send whose delivery Synapse could not confirm: the user decides (mark sent, resend, discard). */
 export interface OutgoingAttention {
@@ -101,7 +102,7 @@ function urgentOutgoing(i: UrgentItemDto): OutgoingAttention | null {
     actions: r.actions,
     origin: "urgent",
     recipient: i.sender.name ?? i.sender.id,
-    conversation: i.conversation.name ?? i.conversation.id,
+    conversation: conversationLabel(i.conversation),
     text: null,
     at: i.sentAt,
   };

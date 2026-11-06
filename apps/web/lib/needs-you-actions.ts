@@ -79,7 +79,10 @@ export interface NeedsYouActionsDeps {
   deferred: Deferred;
   toast: { show(text: string, undo?: () => void): void };
   refresh: () => Promise<string | null>;
+  /** The immediate-action error channel; each immediate action clears it when it starts. */
   setActionError: (error: string | null) => void;
+  /** A deferred commit's failure; never cleared by another action, only by Dismiss. */
+  setDeferredError: (error: string) => void;
   /** Keys whose deferred commit has started; hidden until its refresh lands. */
   committing: { add(key: string): void; delete(key: string): void };
   toggleHistory: (slackUserId: string) => void;
@@ -94,11 +97,12 @@ function message(e: unknown): string {
  * The feed's action routing (spec D8). Reversible local decisions (flag review, commitment
  * reject, suggestion dismiss, draft discard) are deferred commits with Undo: hidden at once,
  * called after the delay, kept hidden while committing so nothing flashes back. A failed commit
- * reports its error and the refresh brings the item back. Everything that sends, approves,
+ * reports its error on the deferred channel (which no later action clears) and the refresh brings
+ * the item back. Everything that sends, approves,
  * queues Claude or starts a backfill calls the API at once.
  */
 export function createNeedsYouActions(d: NeedsYouActionsDeps): NeedsYouHandlers {
-  const { api, deferred, toast, refresh, setActionError, committing } = d;
+  const { api, deferred, toast, refresh, setActionError, setDeferredError, committing } = d;
 
   const defer = (key: string, label: string, commit: () => Promise<unknown>) => {
     setActionError(null);
@@ -107,7 +111,7 @@ export function createNeedsYouActions(d: NeedsYouActionsDeps): NeedsYouHandlers 
       try {
         await commit();
       } catch (e) {
-        setActionError(message(e));
+        setDeferredError(message(e));
       } finally {
         await refresh();
         committing.delete(key);

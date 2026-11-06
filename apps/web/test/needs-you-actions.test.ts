@@ -57,6 +57,7 @@ function setup(fail: Partial<Record<keyof NeedsYouApi, Error>> = {}) {
   });
   const toasts: Array<{ text: string; undo?: () => void }> = [];
   const errors: Array<string | null> = [];
+  const deferredErrors: string[] = [];
   const committing = new Set<string>();
   let refreshes = 0;
   const handlers: NeedsYouHandlers = createNeedsYouActions({
@@ -68,6 +69,7 @@ function setup(fail: Partial<Record<keyof NeedsYouApi, Error>> = {}) {
       return null;
     },
     setActionError: (e) => errors.push(e),
+    setDeferredError: (e) => deferredErrors.push(e),
     committing,
     toggleHistory: () => {},
     seeAllPeople: () => {},
@@ -79,6 +81,7 @@ function setup(fail: Partial<Record<keyof NeedsYouApi, Error>> = {}) {
     deferred,
     toasts,
     errors,
+    deferredErrors,
     hidden,
     handlers,
     refreshes: () => refreshes,
@@ -242,7 +245,21 @@ test("a failed deferred commit reports its error and the key leaves hidden after
   // While the commit runs, the key stays hidden so the card can't flash back.
   expect(s.hidden().has("flag:fl1")).toBe(true);
   await settle();
-  expect(s.errors).toContain("POST /api/security/flags/fl1/review failed with 500");
+  expect(s.deferredErrors).toEqual(["POST /api/security/flags/fl1/review failed with 500"]);
+  expect(s.errors).not.toContain("POST /api/security/flags/fl1/review failed with 500");
   expect(s.refreshes()).toBe(1);
   expect(s.hidden().has("flag:fl1")).toBe(false);
+});
+
+test("an immediate action right after a failed deferred commit clears only immediate errors", async () => {
+  const s = setup({ reviewFlag: new Error("deferred commit failed") });
+  s.handlers.reviewFlag("fl1", "acknowledged");
+  s.timers.advance(DELAY);
+  await settle();
+  expect(s.deferredErrors).toEqual(["deferred commit failed"]);
+  // Within the 5 s the user acts again: the immediate path clears its own error channel only.
+  s.handlers.urgentStatus("m1", "acknowledged");
+  await settle();
+  expect(s.errors.at(-1)).toBeNull();
+  expect(s.deferredErrors).toEqual(["deferred commit failed"]);
 });

@@ -2,12 +2,12 @@
 
 import { useState } from "react";
 import type { UrgencyStatusDto, UrgentItemDto } from "../../../lib/api";
+import { conversationLabel } from "../../../lib/format";
 import { Button } from "../ui/Button";
 import {
   Actions,
   absoluteTime,
   CardFrame,
-  conversationLabel,
   Explainer,
   MAX_TEXT,
   metaLine,

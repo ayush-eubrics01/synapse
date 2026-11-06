@@ -143,10 +143,16 @@
   background: var(--subtle);
 }
 
-.syn-prio .syn-seg-option[aria-checked="true"][data-value="high"],
-.syn-prio .syn-seg-option[aria-checked="true"][data-value="critical"] {
+.syn-prio .syn-seg-option[aria-checked="true"][data-value="high"] {
   background: var(--high);
   color: var(--onHigh);
+  box-shadow: none;
+}
+
+/* Critical reads as more severe than High: the red tone. */
+.syn-prio .syn-seg-option[aria-checked="true"][data-value="critical"] {
+  background: var(--redBg);
+  color: var(--redFg);
   box-shadow: none;
 }
 

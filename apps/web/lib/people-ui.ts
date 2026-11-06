@@ -24,24 +24,31 @@ export function topUnqueued(
     .map((c) => c.slackUserId);
 }
 
+/** One evaluation request: queued, or a notice saying why not (a refusal or an error). */
+export type EvalOutcome = { queued: true; notice: null } | { queued: false; notice: string };
+
 /**
- * Requests evaluations one after another, in order. `evaluate` resolves true when the server
- * queued the run; a refusal (false) or an error leaves that id out and the loop carries on.
- * Returns the ids that were queued.
+ * Requests evaluations one after another, in order. A refusal or an error leaves that id out and
+ * the loop carries on. Every notice is kept (a later success can't clear an earlier refusal) and
+ * returned once, de-duplicated and joined, for the caller to show after the batch.
  */
 export async function evaluateInOrder(
   ids: readonly string[],
-  evaluate: (id: string) => Promise<boolean>,
-): Promise<string[]> {
+  evaluate: (id: string) => Promise<EvalOutcome>,
+): Promise<{ queued: string[]; notice: string | null }> {
   const queued: string[] = [];
+  const notices: string[] = [];
   for (const id of ids) {
+    let r: EvalOutcome;
     try {
-      if (await evaluate(id)) queued.push(id);
-    } catch {
-      // The caller's handler reports its own errors; keep going with the rest.
+      r = await evaluate(id);
+    } catch (e) {
+      r = { queued: false, notice: String(e) };
     }
+    if (r.queued) queued.push(id);
+    else if (!notices.includes(r.notice)) notices.push(r.notice);
   }
-  return queued;
+  return { queued, notice: notices.length > 0 ? notices.join(" · ") : null };
 }
 
 export function evaluationsToast(n: number): string {

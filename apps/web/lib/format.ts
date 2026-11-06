@@ -82,3 +82,9 @@ export function dayLabel(iso: string, now: Date): string {
   const label = weekdayDate(d);
   return d.getFullYear() === now.getFullYear() ? label : `${label} ${d.getFullYear()}`;
 }
+
+/** A conversation's display name: "#name" for a channel, the bare name otherwise, the id when unnamed. */
+export function conversationLabel(c: { name: string | null; id: string; type: string }): string {
+  if (c.name === null) return c.id;
+  return c.type === "channel" ? `#${c.name}` : c.name;
+}

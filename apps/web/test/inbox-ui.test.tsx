@@ -13,9 +13,9 @@ const conv = (o: Partial<ConversationSummary> = {}): ConversationSummary => ({
   type: "im",
   name: null,
   isSelfDm: false,
-  partner: { id: "U2", name: "Priya Shah" },
+  partner: { id: "U2", name: "Barbara Liskov" },
   lastMessageAt: "2026-11-06T11:55:00Z",
-  lastSender: { id: "U2", name: "Priya Shah", isSelf: false },
+  lastSender: { id: "U2", name: "Barbara Liskov", isSelf: false },
   preview: "can you look at this?",
   messageCount: 3,
   theyWroteLast: true,
@@ -27,7 +27,7 @@ const conv = (o: Partial<ConversationSummary> = {}): ConversationSummary => ({
 const msg = (id: string, o: Partial<ThreadMessage> = {}): ThreadMessage => ({
   id,
   conversation: { id: "D1", name: null, type: "im" },
-  sender: { id: "U2", name: "Priya Shah" },
+  sender: { id: "U2", name: "Barbara Liskov" },
   sentAt: "2026-11-06T11:55:00Z",
   text: "hello",
   permalink: null,
@@ -88,7 +88,7 @@ test("list rows: avatar, title, time, preview, chip, count", () => {
       conv({ id: "S", isSelfDm: true, partner: null }),
     ],
   });
-  expect(html).toContain("Priya Shah");
+  expect(html).toContain("Barbara Liskov");
   expect(html).toContain("5 min ago");
   expect(html).toContain("can you look at this?");
   expect(html).toContain("They wrote last");

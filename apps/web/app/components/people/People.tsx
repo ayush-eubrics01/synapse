@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import type { PersonDto, PersonPriorityDto } from "../../../lib/api";
 import { TOASTS } from "../../../lib/needs-you-actions";
 import {
+  type EvalOutcome,
   evaluateInOrder,
   evaluationsToast,
   pruneQueued,
@@ -19,8 +20,10 @@ export interface PeopleProps {
   people: PersonDto[];
   /** The confirmed Slack id of the user, left out of the Priority list. */
   self: string | null;
-  /** Resolves true when the run was queued; a refusal is reported by the caller and resolves false. */
-  onEvaluate: (slackUserId: string) => Promise<boolean>;
+  /** Requests one evaluation; never rejects. A refusal or error comes back as a notice. */
+  onEvaluate: (slackUserId: string) => Promise<EvalOutcome>;
+  /** Shows (or, with null, clears) the evaluation notice. */
+  onNotice: (notice: string | null) => void;
   onPriority: (person: PersonDto, priority: PersonPriorityDto, extraAttention: boolean) => void;
   onOpen: (slackUserId: string) => void;
 }
@@ -41,19 +44,24 @@ export function People(p: PeopleProps) {
 
   const markQueued = (ids: string[]) => setQueued((q) => new Set([...q, ...ids]));
   const evaluateOne = async (id: string) => {
-    if (await p.onEvaluate(id)) {
+    p.onNotice(null);
+    const r = await p.onEvaluate(id);
+    if (r.queued) {
       markQueued([id]);
       toast.show(TOASTS.evaluationQueued);
-    }
+    } else p.onNotice(r.notice);
   };
+  // Refusals are collected over the whole batch and shown together once it ends.
   const evaluateTop = async () => {
     if (!p.candidates) return;
+    p.onNotice(null);
     const ids = topUnqueued(p.candidates.candidates, queued);
-    const done = await evaluateInOrder(ids, p.onEvaluate);
+    const { queued: done, notice } = await evaluateInOrder(ids, p.onEvaluate);
     if (done.length > 0) {
       markQueued(done);
       toast.show(evaluationsToast(done.length));
     }
+    if (notice !== null) p.onNotice(notice);
   };
 
   return (

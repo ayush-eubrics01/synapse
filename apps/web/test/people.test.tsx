@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { CandidatesResponse, EvidenceView, PersonDetail } from "@synapse/contracts";
 import { renderToString } from "react-dom/server";
 import { People } from "../app/components/people/People";
@@ -60,7 +62,8 @@ const render = (
         candidates={c}
         people={people}
         self={self}
-        onEvaluate={async () => true}
+        onEvaluate={async () => ({ queued: true, notice: null })}
+        onNotice={() => {}}
         onPriority={() => {}}
         onOpen={() => {}}
       />,
@@ -144,23 +147,51 @@ test("evaluateInOrder is sequential, skips refusals and errors, and returns the 
   const calls: string[] = [];
   let running = 0;
   let overlap = false;
-  const queued = await evaluateInOrder(["U1", "U2", "U3"], async (id) => {
+  const r = await evaluateInOrder(["U1", "U2", "U3"], async (id) => {
     running++;
     if (running > 1) overlap = true;
     calls.push(id);
     await Promise.resolve();
     running--;
-    if (id === "U2") return false;
-    return true;
+    if (id === "U2") return { queued: false, notice: "Not queued: already queued" };
+    return { queued: true, notice: null };
   });
   expect(calls).toEqual(["U1", "U2", "U3"]);
   expect(overlap).toBe(false);
-  expect(queued).toEqual(["U1", "U3"]);
+  expect(r.queued).toEqual(["U1", "U3"]);
   const withError = await evaluateInOrder(["U1", "U2"], async (id) => {
     if (id === "U1") throw new Error("boom");
-    return true;
+    return { queued: true, notice: null };
   });
-  expect(withError).toEqual(["U2"]);
+  expect(withError.queued).toEqual(["U2"]);
+  expect(withError.notice).toBe("Error: boom");
+});
+
+test("evaluateInOrder keeps every refusal in a batch, joined once after it (a later success can't clear one)", async () => {
+  const r = await evaluateInOrder(["U1", "U2", "U3"], async (id) =>
+    id === "U3"
+      ? { queued: true, notice: null }
+      : { queued: false, notice: id === "U1" ? "Not queued: no identity" : "Not queued: busy" },
+  );
+  expect(r.queued).toEqual(["U3"]);
+  expect(r.notice).toBe("Not queued: no identity · Not queued: busy");
+  const same = await evaluateInOrder(["U1", "U2"], async () => ({
+    queued: false,
+    notice: "Not queued: no identity",
+  }));
+  expect(same.notice).toBe("Not queued: no identity");
+  const clean = await evaluateInOrder(["U1"], async () => ({ queued: true, notice: null }));
+  expect(clean.notice).toBeNull();
+});
+
+test("people.css: a selected Critical uses the red tone, High uses --high", () => {
+  const css = readFileSync(join(import.meta.dir, "../app/styles/people.css"), "utf8");
+  expect(css).toMatch(
+    /\.syn-seg-option\[aria-checked="true"\]\[data-value="high"\]\s*\{[^}]*background: var\(--high\);[^}]*color: var\(--onHigh\)/,
+  );
+  expect(css).toMatch(
+    /\.syn-seg-option\[aria-checked="true"\]\[data-value="critical"\]\s*\{[^}]*background: var\(--redBg\);[^}]*color: var\(--redFg\)/,
+  );
 });
 
 test("evaluationsToast uses the actual count", () => {

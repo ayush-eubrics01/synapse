@@ -307,6 +307,8 @@ test("sends needing attention become outgoing cards ahead of approvals", () => {
   const out = cards.find((c) => c.key === "outgoing:o1");
   expect(out?.kind === "outgoing" && out.data.origin).toBe("urgent");
   expect(out?.kind === "outgoing" && out.data.actions).toEqual(["mark_sent", "resend", "discard"]);
+  // A channel is labelled "#ops", the same as the urgent card's conversationLabel().
+  expect(out?.kind === "outgoing" && out.data.conversation).toBe("#ops");
   // The follow-up itself has no draft card: its decision is on the outgoing card.
   expect(cards.some((c) => c.key === "followup:f1")).toBe(false);
 });

@@ -20,6 +20,11 @@ export interface ProfileDrawerProps {
   onClose: () => void;
   onEvaluate: (slackUserId: string) => void;
   onPriority: (person: PersonDetail, priority: PersonPriority, extraAttention: boolean) => void;
+  /**
+   * The control that opened the drawer, captured at click time by the caller. The profile loads
+   * asynchronously, so by mount time focus may already have moved; this is where focus returns.
+   */
+  opener?: HTMLElement | null;
 }
 
 /** Right-side modal drawer (spec D13). Esc and Close dismiss; focus returns to the opener. */
@@ -33,14 +38,19 @@ function Drawer({
   onClose,
   onEvaluate,
   onPriority,
+  opener: openerProp,
 }: ProfileDrawerProps & { person: PersonDetail }) {
   const titleId = useId();
   const panel = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  const openerRef = useRef(openerProp);
 
   useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // An opener that is already gone (e.g. the command palette's input) falls back to the
+    // element focused at mount, where the palette returned focus.
+    const opener = openerRef.current?.isConnected ? openerRef.current : active;
     panel.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {

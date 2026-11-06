@@ -12,7 +12,7 @@ This list amends the phase plan in `pre-project-concept-document/concept.md`. Wh
 | 5 | People Memory | Built; PR #6 open for merge |
 | 6 | Commitments, follow-ups and approved sending | Built; PR open (stacked on Phase 5) |
 | 6b | Away-mode auto-replies (ADR-033) and the return digest | Planned. Split out of Phase 6; it builds on Phase 6's send path |
-| 7 | **Design revamp** | Planned. Inserted at the user's request (2026-11-06), before the Jira integration |
+| 7 | **Design revamp** | Built; PR open (stacked on Phase 6). Inserted at the user's request (2026-11-06), before the Jira integration. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-7-followups.md` |
 | 8 | Jira integration | Planned. Was Phase 7 |
 | 9 | Engineering Brain | Planned. Was Phase 8 |
 | 10 | Engineering automation | Planned. Was Phase 9 |

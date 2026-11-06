@@ -46,21 +46,25 @@ export function Running({
         <span className="syn-running-live">live</span>
       </div>
       <div className="syn-panel">
-        <ol className="syn-stages">
-          {pipeline.map((s, i) => (
-            <li key={s.id} className="syn-stage">
-              <div className="syn-stage-rail">
-                <span className="syn-stage-dot" data-state={s.state} />
-                {i < pipeline.length - 1 && (
-                  <span className="syn-stage-line" data-state={s.state} aria-hidden="true" />
-                )}
-              </div>
-              <div className="syn-stage-name">{s.label}</div>
-              <div className="syn-stage-what">{s.what}</div>
-              <div className="syn-stage-summary">{s.summary}</div>
-            </li>
-          ))}
-        </ol>
+        {pipeline.length === 0 ? (
+          <p className="syn-stages-empty">Waiting for the API.</p>
+        ) : (
+          <ol className="syn-stages">
+            {pipeline.map((s, i) => (
+              <li key={s.id} className="syn-stage">
+                <div className="syn-stage-rail">
+                  <span className="syn-stage-dot" data-state={s.state} />
+                  {i < pipeline.length - 1 && (
+                    <span className="syn-stage-line" data-state={s.state} aria-hidden="true" />
+                  )}
+                </div>
+                <div className="syn-stage-name">{s.label}</div>
+                <div className="syn-stage-what">{s.what}</div>
+                <div className="syn-stage-summary">{s.summary}</div>
+              </li>
+            ))}
+          </ol>
+        )}
         <p className="syn-panel-explainer">
           Messages are collected every 10 minutes, screened with cheap rules, and only likely-urgent
           ones go to Claude.

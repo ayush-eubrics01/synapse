@@ -82,9 +82,10 @@ test("cards carry a direction chip and the other person", () => {
   expect(owe).toContain("syn-chip--amber");
   expect(owe).toContain("Grace");
   expect(owe).toContain("due ");
-  expect(renderCommitments([commitment({ stalledAt: "2026-01-05T00:00:00.000Z" })])).toContain(
-    "stalled",
-  );
+  const stalled = renderCommitments([commitment({ stalledAt: "2026-01-05T00:00:00.000Z" })]);
+  // Stalled shows once: the chip, no second "(stalled)" in the meta line.
+  expect(stalled.match(/stalled/g)?.length).toBe(1);
+  expect(stalled).not.toContain("(stalled)");
 });
 
 test("the review queue is decided in Needs you: a quiet line, no Accept/Reject here", () => {

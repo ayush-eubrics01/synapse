@@ -17,6 +17,20 @@ export function readTheme(storage: Pick<Storage, "getItem"> | null, prefersDark:
   return prefersDark ? "dark" : "light";
 }
 
+/**
+ * The system preference, with one rule shared with THEME_BOOT_SCRIPT: matchMedia missing or
+ * throwing means light.
+ */
+export function systemPrefersDark(
+  win: { matchMedia?: (query: string) => { matches: boolean } } | null,
+): boolean {
+  try {
+    return !!win?.matchMedia?.("(prefers-color-scheme: dark)").matches;
+  } catch {
+    return false;
+  }
+}
+
 /** Best effort: a blocked storage only means the choice is not remembered. */
 export function writeTheme(storage: Pick<Storage, "setItem"> | null, t: Theme): void {
   try {
@@ -28,7 +42,8 @@ export function writeTheme(storage: Pick<Storage, "setItem"> | null, t: Theme): 
 
 /**
  * Runs in <head> before first paint, so the page never flashes the wrong theme (spec D3).
- * Same rules as readTheme, written as plain ES5 because it runs before any bundle.
+ * Same rules as readTheme and systemPrefersDark, written as plain ES5 because it runs before any
+ * bundle.
  */
 export const THEME_BOOT_SCRIPT = `(function(){var t=null;try{t=localStorage.getItem(${JSON.stringify(
   THEME_STORAGE_KEY,

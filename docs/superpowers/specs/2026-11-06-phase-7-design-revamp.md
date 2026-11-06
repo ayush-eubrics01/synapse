@@ -126,3 +126,15 @@ Any other check gets `hint: null`. Check labels come from a sibling map, for exa
 - Per-user dashboard customisation (Phase 11).
 - Any new AI job.
 - Any change to approval, send or verification semantics.
+
+## Deviations during implementation
+
+- **Priority control.** The control offers the API's own values: Normal, High and Critical. There is no Low. A selected Critical uses the red tone, and High uses the amber `--high` tone.
+- **Commitments section.** It has no review queue. Possible commitments are reviewed in Needs you. The section shows a quiet line pointing there.
+- **Running.** "How Synapse is running" is its own section, `id="running"`. It isn't part of Overview, and it has no sidebar entry. From 1100 px it shares a two-column row with Needs you. It always renders, showing "Waiting for the API." until the overview loads.
+- **Job labels.** The System section shows plain-language labels for the job types that are actually registered (`lib/job-labels.ts`), with the raw type beside each one, not the design's sample names.
+- **Badges.** The Inbox badge is the number of conversations where they wrote last (`theyWroteLast`). The Needs-you badge is the number of actionable cards in the feed. A running backfill card has nothing to act on, so it isn't counted.
+- **Self DM.** `isSelfDm` needs the stored conversation name to equal the self user's stored name (see `docs/modules/slack.md`, Inbox views). The collector stores no names for DMs, so in practice no conversation is labelled "Notes to self" yet. A partner-less DM is titled by its name, or "Direct message".
+- **Assess pipeline.** Jobs in RETRY count as waiting, alongside due PENDING jobs and RUNNING jobs.
+
+Deferred items and the smoke result are in `docs/superpowers/plans/2026-11-06-phase-7-followups.md`.

@@ -81,7 +81,6 @@ function CommitmentCard({
         <Avatar id={otherId} name={otherName} size={20} />
         <span>{otherName ?? otherId}</span>
         {c.dueAt && <span>due {new Date(c.dueAt).toLocaleString()}</span>}
-        {c.stalledAt && <span>(stalled)</span>}
       </div>
       <Sources c={c} />
       {c.proposals.length > 0 &&

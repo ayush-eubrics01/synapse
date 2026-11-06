@@ -12,6 +12,7 @@ import type {
   RecommendationView,
 } from "@synapse/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { type ActionErrors, actionErrorText, NO_ACTION_ERRORS } from "../lib/action-errors";
 import {
   type ClaudeRun,
   type ClaudeStatus,
@@ -51,7 +52,7 @@ import {
   type UrgentItemDto,
 } from "../lib/api";
 import { trailingDebounce } from "../lib/debounce";
-import { filterConversations, type InboxFilter } from "../lib/inbox";
+import { conversationTitle, filterConversations, type InboxFilter } from "../lib/inbox";
 import { LIVE_EVENT_TYPES } from "../lib/live-events";
 import { SECTION_IDS, type SectionId, sidebarItems } from "../lib/nav";
 import {
@@ -63,6 +64,7 @@ import {
 } from "../lib/needs-you";
 import { TOASTS } from "../lib/needs-you-actions";
 import type { PaletteItem } from "../lib/palette";
+import type { EvalOutcome } from "../lib/people-ui";
 import { writeTheme } from "../lib/theme";
 import { Commitments } from "./components/commitments/Commitments";
 import { CommandPalette } from "./components/header/CommandPalette";
@@ -188,7 +190,19 @@ export default function Dashboard() {
   const [reviewQueue, setReviewQueue] = useState<CommitmentViewDto[]>([]);
   const [followups, setFollowups] = useState<FollowupViewDto[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionErrors, setActionErrors] = useState<ActionErrors>(NO_ACTION_ERRORS);
+  // Immediate actions clear only their own channel; a deferred commit's failure stays until Dismiss.
+  const setActionError = useCallback(
+    (e: string | null) => setActionErrors((s) => ({ ...s, immediate: e })),
+    [],
+  );
+  const setDeferredError = useCallback(
+    (e: string) => setActionErrors((s) => ({ ...s, deferred: e })),
+    [],
+  );
+  const actionError = actionErrorText(actionErrors);
+  // The control that opened the profile drawer, captured at click time (focus returns to it).
+  const personOpenerRef = useRef<HTMLElement | null>(null);
   const [backfillSignal, setBackfillSignal] = useState(0);
   const toast = useToast();
   // The selected conversation falls back to the first one in the current filter (spec D10).
@@ -260,7 +274,8 @@ export default function Dashboard() {
       });
       return next;
     });
-    const failed = [a, j, cs, cr, ss, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv].find(
+    // A failed thread refetch surfaces like any other fetch failure.
+    const failed = [a, j, cs, cr, ss, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv, td].find(
       (r) => r.status === "rejected",
     );
     const message = failed?.status === "rejected" ? String(failed.reason) : null;
@@ -297,7 +312,7 @@ export default function Dashboard() {
         if (threadIdRef.current === id) setActionError(String(e));
       },
     );
-  }, [effectiveConversationId]);
+  }, [effectiveConversationId, setActionError]);
 
   const skipPage = async () => {
     setActionError(null);
@@ -319,25 +334,29 @@ export default function Dashboard() {
   };
 
   const openPerson = (slackUserId: string | null) => {
+    // Captured now, synchronously: the profile loads later, when focus may have moved.
+    if (slackUserId !== null)
+      personOpenerRef.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
     personRef.current = slackUserId;
     if (slackUserId === null) setPerson(null);
     void refresh();
   };
 
-  // A refusal (no identity, already queued) is a normal result; show it as a notice and resolve
-  // false. The caller toasts a success, so one click or a batch gives one confirmation.
-  const evaluateQuiet = async (slackUserId: string): Promise<boolean> => {
-    setActionError(null);
-    let queued = false;
+  // A refusal (no identity, already queued) is a normal result, returned as a notice; the caller
+  // shows it (after a whole batch, for Evaluate top 3) and toasts a success.
+  const requestEvaluation = async (slackUserId: string): Promise<EvalOutcome> => {
+    let out: EvalOutcome;
     try {
       const r = await evaluatePerson(slackUserId);
-      queued = r.queued;
-      if (!r.queued) setActionError(`Not queued: ${r.reason ?? "unknown reason"}`);
+      out = r.queued
+        ? { queued: true, notice: null }
+        : { queued: false, notice: `Not queued: ${r.reason ?? "unknown reason"}` };
     } catch (e) {
-      setActionError(String(e));
+      out = { queued: false, notice: String(e) };
     }
     await refresh();
-    return queued;
+    return out;
   };
 
   const act = async (fn: () => Promise<unknown>) => {
@@ -374,6 +393,7 @@ export default function Dashboard() {
   const feed = useNeedsYouActions({
     refresh,
     setActionError,
+    setDeferredError,
     toggleHistory,
     seeAllPeople: () => goTo("people"),
   });
@@ -420,7 +440,7 @@ export default function Dashboard() {
     ...conversations.map(
       (c): PaletteItem => ({
         id: `conv-${c.id}`,
-        label: c.isSelfDm ? "Notes to self" : (c.partner?.name ?? c.name ?? c.id),
+        label: conversationTitle(c),
         group: "conversation",
         run: () => openConversation(c.id),
       }),
@@ -495,40 +515,45 @@ export default function Dashboard() {
               backfillStarted={backfillStarted(slackStatus)}
               openHealthSignal={openHealthSignal}
             />
-            {loadError && <p style={{ color: "var(--redFg)" }}>{loadError}</p>}
+            {loadError && <p className="syn-alert">{loadError}</p>}
             {actionError && (
-              <p style={{ color: "var(--redFg)" }}>
+              <p className="syn-alert">
                 {actionError}{" "}
-                <button type="button" onClick={() => setActionError(null)}>
+                <button
+                  type="button"
+                  className="syn-link-btn"
+                  onClick={() => setActionErrors(NO_ACTION_ERRORS)}
+                >
                   Dismiss
                 </button>
               </p>
             )}
           </section>
-          <section id="triage" className="syn-section">
-            <NeedsYou
-              cards={cards}
-              allClear={allClearRows(needsInput)}
-              now={now}
-              handlers={feed.handlers}
-              expanded={expanded}
-              history={history}
-              hidden={feed.hidden}
-              sevenDay={claudeStatus?.quota?.sevenDay?.utilization ?? null}
-              onCopy={copy}
-              backfillConfirmSignal={backfillSignal}
-            />
-          </section>
-          {overview && (
+          {/* Needs you and How Synapse is running sit side by side from 1100 px, stacked below. */}
+          <div className="syn-top">
+            <section id="triage" className="syn-section">
+              <NeedsYou
+                cards={cards}
+                allClear={allClearRows(needsInput)}
+                now={now}
+                handlers={feed.handlers}
+                expanded={expanded}
+                history={history}
+                hidden={feed.hidden}
+                sevenDay={claudeStatus?.quota?.sevenDay?.utilization ?? null}
+                onCopy={copy}
+                backfillConfirmSignal={backfillSignal}
+              />
+            </section>
             <section id="running" className="syn-section">
               <Running
-                pipeline={overview.pipeline}
+                pipeline={overview?.pipeline ?? []}
                 status={claudeStatus}
                 runs={claudeRuns}
                 now={now}
               />
             </section>
-          )}
+          </div>
           <section id="inbox" className="syn-section">
             <Inbox
               conversations={conversations}
@@ -574,16 +599,20 @@ export default function Dashboard() {
               candidates={candidates}
               people={people}
               self={identity?.selfUserId ?? null}
-              onEvaluate={evaluateQuiet}
+              onEvaluate={requestEvaluation}
+              onNotice={setActionError}
               onPriority={setPriority}
               onOpen={openPerson}
             />
             <ProfileDrawer
               person={person}
               onClose={() => openPerson(null)}
+              opener={personOpenerRef.current}
               onEvaluate={(u) => {
-                void evaluateQuiet(u).then((ok) => {
-                  if (ok) toast.show(TOASTS.evaluationQueued);
+                setActionError(null);
+                void requestEvaluation(u).then((r) => {
+                  if (r.queued) toast.show(TOASTS.evaluationQueued);
+                  else setActionError(r.notice);
                 });
               }}
               onPriority={setPriority}

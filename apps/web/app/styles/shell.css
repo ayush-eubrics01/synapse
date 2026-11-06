@@ -158,6 +158,40 @@
   padding-bottom: 12px;
 }
 
+.syn-alert {
+  margin: 0 0 12px;
+  color: var(--redFg);
+}
+
+/* Needs you and How Synapse is running side by side from 1100 px (as the design does); stacked below. */
+@media (min-width: 1100px) {
+  .syn-main-inner {
+    max-width: 1180px;
+  }
+
+  .syn-top {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(320px, 1fr);
+    gap: 28px;
+    align-items: start;
+  }
+
+  /* The narrow column: the pipeline track wraps to two rows and the facts stack. */
+  .syn-top .syn-stages {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 16px;
+  }
+
+  .syn-top .syn-stage:nth-child(2n) .syn-stage-line {
+    display: none;
+  }
+
+  .syn-top .syn-run-facts {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+}
+
 /* D15: below 900px the sidebar becomes a top strip and grids stack. */
 @media (max-width: 900px) {
   .syn-sidebar {

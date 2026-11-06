@@ -34,6 +34,11 @@
   list-style: none;
 }
 
+.syn-stages-empty {
+  margin: 0;
+  opacity: 0.6;
+}
+
 .syn-stage-rail {
   position: relative;
   display: flex;
@@ -289,12 +294,12 @@
   justify-content: space-between;
   gap: 12px;
   padding: 8px 0;
-  border-top: 1px solid var(--line2);
   font-size: 13px;
 }
 
-.syn-kv:first-of-type {
-  border-top: 0;
+/* A divider between rows only: the card head comes first, so :first-of-type never matched a kv row. */
+.syn-kv + .syn-kv {
+  border-top: 1px solid var(--line2);
 }
 
 .syn-kv-label {

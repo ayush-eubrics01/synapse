@@ -12,6 +12,7 @@ import { TOAST_MS, useToast } from "../ui/Toasts";
 export interface NeedsYouActionsOptions {
   refresh: () => Promise<string | null>;
   setActionError: (error: string | null) => void;
+  setDeferredError: (error: string) => void;
   toggleHistory: (slackUserId: string) => void;
   seeAllPeople: () => void;
 }

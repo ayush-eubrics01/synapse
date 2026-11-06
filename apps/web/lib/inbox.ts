@@ -41,6 +41,8 @@ export function conversationChip(c: ConversationSummary): { label: string; tone:
 export function conversationTitle(c: ConversationSummary): string {
   if (c.isSelfDm) return "Notes to self";
   if (c.type === "channel") return `#${c.name ?? c.id}`;
+  // A partner-less DM that isn't the self DM (e.g. one I started, no reply yet): never the raw id.
+  if (c.type === "im") return c.partner?.name ?? c.name ?? "Direct message";
   return c.partner?.name ?? c.name ?? c.id;
 }
 

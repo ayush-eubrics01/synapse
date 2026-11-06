@@ -16,9 +16,9 @@ const conv = (o: Partial<ConversationSummary> = {}): ConversationSummary => ({
   type: "im",
   name: null,
   isSelfDm: false,
-  partner: { id: "U2", name: "Priya Shah" },
+  partner: { id: "U2", name: "Barbara Liskov" },
   lastMessageAt: "2026-11-06T10:00:00Z",
-  lastSender: { id: "U2", name: "Priya Shah", isSelf: false },
+  lastSender: { id: "U2", name: "Barbara Liskov", isSelf: false },
   preview: "hi",
   messageCount: 3,
   theyWroteLast: false,
@@ -58,9 +58,12 @@ test("conversationChip precedence", () => {
 });
 
 test("titles, sub-lines and summary", () => {
-  expect(conversationTitle(conv())).toBe("Priya Shah");
+  expect(conversationTitle(conv())).toBe("Barbara Liskov");
   expect(conversationTitle(conv({ type: "channel", name: "ops", partner: null }))).toBe("#ops");
   expect(conversationTitle(conv({ isSelfDm: true, partner: null }))).toBe("Notes to self");
+  // A partner-less DM that isn't the self DM: its name, else "Direct message" (never the raw id).
+  expect(conversationTitle(conv({ partner: null, name: "invented-dm" }))).toBe("invented-dm");
+  expect(conversationTitle(conv({ partner: null, name: null }))).toBe("Direct message");
   expect(conversationSub(conv({ messageCount: 4 }))).toBe("Direct message · 4 messages");
   expect(conversationSub(conv({ type: "channel" }))).toBe("Channel");
   expect(conversationSub(conv({ isSelfDm: true }))).toBe("Self DM");

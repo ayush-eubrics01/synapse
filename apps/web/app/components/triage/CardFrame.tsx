@@ -86,11 +86,6 @@ export function SlackLink({ href }: { href: string | null }) {
   );
 }
 
-export function conversationLabel(c: { name: string | null; id: string; type: string }): string {
-  if (c.name === null) return c.id;
-  return c.type === "channel" ? `#${c.name}` : c.name;
-}
-
 /** "in_progress" → "in progress", for the small neutral status chip. */
 export function statusLabel(status: string): string {
   return status.replace(/_/g, " ");
