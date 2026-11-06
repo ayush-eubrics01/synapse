@@ -98,7 +98,8 @@ async function main(): Promise<number> {
       return 1;
     }
     const { target } = prepared;
-    const request = buildInspectRequest(
+    // The smoke has no queued job; a claude_runs row must not reference a made-up job id.
+    const { jobId: _noJob, ...request } = buildInspectRequest(
       { name: target.name, localPath: target.localPath },
       "inspect-smoke",
       {

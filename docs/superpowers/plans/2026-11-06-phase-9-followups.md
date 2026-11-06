@@ -17,4 +17,8 @@ Phase 9 delivered the Engineering Brain (`docs/modules/engineering-brain.md`, sp
 
 ## Real-CLI smoke
 
-TBD. The controller runs `bun scripts/dev/scope-smoke.ts` and `bun scripts/dev/inspect-smoke.ts` and records the printed lines here (counts and statuses only).
+Run by the controller on 2026-11-06 against the real CLI. Temp dirs only; counts recorded, nothing kept.
+
+- **`scope-smoke`.** `inside: ok`, `outside: blocked`, `permissionDenials: 1`, `scope-smoke: blocked`. A path-scoped `Read(<dir>/**)` reads inside its directory and is denied outside it, with no content leaked.
+- **`inspect-smoke`, first run.** It failed with `FOREIGN KEY constraint failed`. The script passed a made-up `jobId`, and `claude_runs.job_id` references `jobs`. The smoke now drops `jobId`. This was a script bug only; the worker always runs with a real job id.
+- **`inspect-smoke`, after the fix.** Model haiku, a throwaway 3-file repo: `turns: 8`, `permissionDenials: 0`, `proposed: 9`, `inserted: 8`, `dropped: sensitive_path=1`. The run stayed inside the repo, evidence verification held, and the sensitive-path filter fired.
