@@ -620,6 +620,38 @@ describe("final-review fixes", () => {
     });
   });
 
+  test("ADR-040: a sandbox-unavailable failure keeps details.sandboxUnavailable", async () => {
+    provider.next = () =>
+      result({
+        status: "failed",
+        error: {
+          kind: "provider_error",
+          message: "sandbox unavailable",
+          details: { sandboxUnavailable: true, stderrBytes: 40 },
+        },
+      });
+    const e = await fails(run(req()));
+    expect(e.classified).toEqual({
+      kind: "provider_error",
+      message: "sandbox unavailable",
+      details: { sandboxUnavailable: true },
+    });
+    expect(e.classified.details?.sandboxUnavailable).toBe(true);
+    // Only a boolean true survives, and only for the same kind.
+    provider.next = () =>
+      result({
+        status: "failed",
+        error: { kind: "provider_error", message: "m", details: { sandboxUnavailable: "yes" } },
+      });
+    expect((await fails(run(req()))).classified.details).toBeUndefined();
+    provider.next = () =>
+      result({
+        status: "timed_out",
+        error: { kind: "provider_error", message: "m", details: { sandboxUnavailable: true } },
+      });
+    expect((await fails(run(req()))).classified.details).toBeUndefined();
+  });
+
   test("I6: an aborted waiter frees its queue spot and writes no run row", async () => {
     settings.set("orchestrator.maxConcurrent", 1);
     const gate = deferred();

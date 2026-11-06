@@ -8,7 +8,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Approval, EngineeringTaskDetail } from "@synapse/contracts";
 import { schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
@@ -162,6 +162,7 @@ const seen = (kind: "investigate" | "develop") =>
     args: string[];
     cwd: string;
     autoMemory: string | null;
+    tmpdir: string | null;
   };
 const head = (dir: string, ref: string) => git(dir, "rev-parse", ref);
 const branches = () => git(fx.repo, "branch", "--format=%(refname:short)").split("\n");
@@ -257,6 +258,19 @@ describe("engineering end to end (real provider, fake claude and gh)", () => {
     expect(dev.args).toContain("--no-session-persistence");
     expect(dev.autoMemory).toBe("1");
     expect(seen("investigate").autoMemory).toBe("1");
+    // ADR-040: the develop run is sandboxed with a per-run TMPDIR, removed after the step job.
+    const devSettings = JSON.parse(dev.args[dev.args.indexOf("--settings") + 1] ?? "{}");
+    expect(devSettings.sandbox.enabled).toBe(true);
+    expect(devSettings.sandbox.failIfUnavailable).toBe(true);
+    expect(devSettings.sandbox.filesystem.allowRead).toEqual([dev.tmpdir]);
+    expect(dev.tmpdir).toEndWith("/tmp");
+    expect(dev.tmpdir).toContain("/runs/");
+    expect(existsSync(dev.tmpdir as string)).toBe(false);
+    expect(existsSync(dirname(dev.tmpdir as string))).toBe(false);
+    // The investigation is not sandboxed.
+    const invSettings = JSON.parse(inv.args[inv.args.indexOf("--settings") + 1] ?? "{}");
+    expect(invSettings).not.toHaveProperty("sandbox");
+    expect(seen("investigate").tmpdir).toBeNull();
     const devAllowed = (dev.args[dev.args.indexOf("--allowedTools") + 1] ?? "").split(",").sort();
     expect(devAllowed).toEqual(
       [

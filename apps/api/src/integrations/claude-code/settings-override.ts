@@ -25,14 +25,36 @@ const WIDENING_MODES = new Set(["bypassPermissions", "acceptEdits", "auto"]);
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
+const nonEmptyArray = (v: unknown): boolean => Array.isArray(v) && v.length > 0;
+
+/**
+ * ADR-040: user-level `sandbox` settings whose arrays would merge into a develop run's sandbox
+ * (`--setting-sources user`; arrays merge across sources) and loosen it: excluded commands, extra
+ * writable or readable paths, allowed domains or unix sockets, or an unsandboxed escape. Scalars
+ * such as `enabled` are not checked: the `--settings` flag outranks user settings for them.
+ */
+function userSandboxWidens(sandbox: unknown): boolean {
+  if (!isRecord(sandbox)) return false;
+  if (sandbox.allowUnsandboxedCommands === true) return true;
+  if (nonEmptyArray(sandbox.excludedCommands)) return true;
+  const fs = sandbox.filesystem;
+  if (isRecord(fs) && (nonEmptyArray(fs.allowWrite) || nonEmptyArray(fs.allowRead))) return true;
+  const net = sandbox.network;
+  return (
+    isRecord(net) && (nonEmptyArray(net.allowedDomains) || nonEmptyArray(net.allowUnixSockets))
+  );
+}
+
 /**
  * True when parsed user settings widen file or shell scope: a `permissions.allow` entry for one
  * of the fs or write built-ins (bare or with a specifier), a non-empty
- * `permissions.additionalDirectories`, or a `permissions.defaultMode` of `bypassPermissions`,
- * `acceptEdits` or `auto`. Only this boolean is derived; no entry is kept.
+ * `permissions.additionalDirectories`, a `permissions.defaultMode` of `bypassPermissions`,
+ * `acceptEdits` or `auto`, or user `sandbox` settings that would loosen a develop run's sandbox
+ * (`userSandboxWidens`). Only this boolean is derived; no entry is kept.
  */
 export function userPermissionsWidenScope(settings: unknown): boolean {
   if (!isRecord(settings)) return false;
+  if (userSandboxWidens(settings.sandbox)) return true;
   const p = settings.permissions;
   if (!isRecord(p)) return false;
   if (Array.isArray(p.allow)) {

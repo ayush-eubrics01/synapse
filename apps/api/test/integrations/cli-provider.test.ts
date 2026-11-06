@@ -1,5 +1,14 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AIExecutionRequest } from "@synapse/contracts";
@@ -258,6 +267,7 @@ describe("ClaudeCliProvider.execute", () => {
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
       hasPath: true,
       hasHome: true,
+      TMPDIR: null,
     });
     rmSync(envFile);
     await provider({ FAKE_CLAUDE_MODE: "success", FAKE_CLAUDE_ENV_FILE: envFile }).execute(
@@ -337,6 +347,235 @@ describe("ClaudeCliProvider.execute", () => {
       details: { notSpawned: true },
     });
     expect(existsSync(argvFile)).toBe(false);
+  });
+});
+
+describe("ADR-040: the develop-run sandbox", () => {
+  const sandboxed = (tmpDir: string): Partial<AIExecutionRequest> => ({
+    workerProfile: "engineering",
+    allowedTools: ["Bash(bun test:*)"],
+    disallowedTools: [],
+    sandbox: { tmpDir, denyRead: ["/home/u/.ssh"] },
+  });
+  const settingsIn = (argvFile: string): Record<string, unknown> => {
+    const argv: string[] = JSON.parse(readFileSync(argvFile, "utf8"));
+    return JSON.parse(argv[argv.indexOf("--settings") + 1] ?? "");
+  };
+
+  test("the sandbox is merged into --settings, TMPDIR is set and tmpDir is created 0700", async () => {
+    const dir = mkdtempSync(join(tmp, "sbx-"));
+    const tmpDir = join(dir, "runs", "j1", "tmp");
+    const argvFile = join(dir, "argv.json");
+    const envFile = join(dir, "env.json");
+    const r = await provider({
+      FAKE_CLAUDE_MODE: "success",
+      FAKE_CLAUDE_ARGV_FILE: argvFile,
+      FAKE_CLAUDE_ENV_FILE: envFile,
+    }).execute(req(sandboxed(tmpDir)), sig());
+    expect(r.status).toBe("succeeded");
+    const o = settingsIn(argvFile) as {
+      enabledPlugins: unknown;
+      hooks: unknown;
+      sandbox: {
+        enabled: boolean;
+        failIfUnavailable: boolean;
+        filesystem: { denyRead: string[]; allowRead: string[] };
+        network: { deniedDomains: string[] };
+      };
+    };
+    expect(o.enabledPlugins).toEqual({});
+    expect(o.hooks).toEqual({});
+    expect(o.sandbox.enabled).toBe(true);
+    expect(o.sandbox.failIfUnavailable).toBe(true);
+    expect(o.sandbox.network.deniedDomains).toEqual(["*"]);
+    expect(o.sandbox.filesystem.denyRead).toEqual(["/home/u/.ssh", "/run", "/var/run", "/tmp"]);
+    expect(o.sandbox.filesystem.allowRead).toEqual([tmpDir]);
+    expect(JSON.parse(readFileSync(envFile, "utf8")).TMPDIR).toBe(tmpDir);
+    expect(statSync(tmpDir).mode & 0o777).toBe(0o700);
+  });
+
+  test("an existing, looser tmpDir is tightened to 0700", async () => {
+    const dir = mkdtempSync(join(tmp, "sbx-"));
+    const tmpDir = join(dir, "tmp");
+    mkdirSync(tmpDir, { mode: 0o755 });
+    const r = await provider({ FAKE_CLAUDE_MODE: "success" }).execute(
+      req(sandboxed(tmpDir)),
+      sig(),
+    );
+    expect(r.status).toBe("succeeded");
+    expect(statSync(tmpDir).mode & 0o777).toBe(0o700);
+  });
+
+  test("without a sandbox, --settings has no sandbox key and TMPDIR is not set", async () => {
+    const dir = mkdtempSync(join(tmp, "sbx-"));
+    const argvFile = join(dir, "argv.json");
+    const envFile = join(dir, "env.json");
+    await provider({
+      FAKE_CLAUDE_MODE: "success",
+      FAKE_CLAUDE_ARGV_FILE: argvFile,
+      FAKE_CLAUDE_ENV_FILE: envFile,
+    }).execute(req(), sig());
+    expect(settingsIn(argvFile)).not.toHaveProperty("sandbox");
+    expect(JSON.parse(readFileSync(envFile, "utf8")).TMPDIR).toBeNull();
+  });
+
+  test("the user's plugin override is kept, and a send guard does not drop the sandbox", async () => {
+    const dir = mkdtempSync(join(tmp, "sbx-"));
+    const argvFile = join(dir, "argv.json");
+    const custom = '{"enabledPlugins":{"x@y":false},"hooks":{}}';
+    const SEND = "mcp__claude_ai_Slack__slack_send_message";
+    const sha = "b".repeat(64);
+    const r = await new ClaudeCliProvider({
+      binary: process.execPath,
+      prefixArgs: ["run", fixture],
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: process.env.HOME ?? "",
+        FAKE_CLAUDE_MODE: "success",
+        FAKE_CLAUDE_ARGV_FILE: argvFile,
+      },
+      clock: new FakeClock("2026-11-05T00:00:00Z"),
+      settingsOverride: custom,
+    }).execute(
+      req({
+        ...sandboxed(join(dir, "tmp")),
+        sendGuard: { toolName: SEND, expectedInputSha256: sha },
+      }),
+      sig(),
+    );
+    expect(r.status).toBe("succeeded");
+    const o = settingsIn(argvFile) as {
+      enabledPlugins: unknown;
+      disableAllHooks: boolean;
+      hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
+      sandbox: { enabled: boolean; filesystem: { allowRead: string[] } };
+    };
+    expect(o.enabledPlugins).toEqual({ "x@y": false });
+    expect(o.disableAllHooks).toBe(false);
+    expect(o.hooks.PreToolUse[0]?.matcher).toBe(SEND);
+    expect(o.hooks.PreToolUse[0]?.hooks[0]?.command).toContain(sha);
+    expect(o.sandbox.enabled).toBe(true);
+    expect(o.sandbox.filesystem.allowRead).toEqual([join(dir, "tmp")]);
+  });
+
+  test("a sandbox that fails at startup is sandboxUnavailable", async () => {
+    const dir = mkdtempSync(join(tmp, "sbx-"));
+    const r = await provider({ FAKE_CLAUDE_MODE: "sandbox_unavailable" }).execute(
+      req(sandboxed(join(dir, "tmp"))),
+      sig(),
+    );
+    expect(r.status).toBe("failed");
+    expect(r.error?.kind).toBe("provider_error");
+    expect(r.error?.message).toBe("sandbox unavailable");
+    expect(r.error?.details?.sandboxUnavailable).toBe(true);
+    expect(r.error?.details?.stderrBytes).toBeGreaterThan(0);
+    // stderr is matched, never returned
+    expect(JSON.stringify(r)).not.toMatch(/required but not available/);
+  });
+
+  test("an error result naming the sandbox is sandboxUnavailable", async () => {
+    const dir = mkdtempSync(join(tmp, "sbx-"));
+    const r = await provider({ FAKE_CLAUDE_MODE: "sandbox_error_result" }).execute(
+      req(sandboxed(join(dir, "tmp"))),
+      sig(),
+    );
+    expect(r.error?.message).toBe("sandbox unavailable");
+    expect(r.error?.details?.sandboxUnavailable).toBe(true);
+  });
+
+  test("the same failures without a sandbox are not sandboxUnavailable", async () => {
+    const r = await provider({ FAKE_CLAUDE_MODE: "sandbox_unavailable" }).execute(req(), sig());
+    expect(r.status).toBe("failed");
+    expect(r.error?.message).toBe("claude exited without a result event");
+    expect(r.error?.details?.sandboxUnavailable).toBeUndefined();
+    const e = await provider({ FAKE_CLAUDE_MODE: "sandbox_error_result" }).execute(req(), sig());
+    expect(e.error?.message).toBe("claude reported an error result");
+    expect(e.error?.details?.sandboxUnavailable).toBeUndefined();
+  });
+
+  test("a sandboxed failure whose stderr does not name the sandbox is not sandboxUnavailable", async () => {
+    const dir = mkdtempSync(join(tmp, "sbx-"));
+    const r = await provider({ FAKE_CLAUDE_MODE: "success_exit1" }).execute(
+      req(sandboxed(join(dir, "tmp"))),
+      sig(),
+    );
+    expect(r.status).toBe("failed");
+    expect(r.error?.message).toBe("claude exited abnormally despite a result event");
+    expect(r.error?.details?.sandboxUnavailable).toBeUndefined();
+  });
+
+  test("a successful sandboxed run is never sandboxUnavailable", async () => {
+    const dir = mkdtempSync(join(tmp, "sbx-"));
+    const r = await provider({ FAKE_CLAUDE_MODE: "success" }).execute(
+      req(sandboxed(join(dir, "tmp"))),
+      sig(),
+    );
+    expect(r.status).toBe("succeeded");
+    expect(r.error).toBeUndefined();
+  });
+
+  test("a tmpDir that cannot be created fails closed before spawning", async () => {
+    const dir = mkdtempSync(join(tmp, "sbx-"));
+    const file = join(dir, "file");
+    writeFileSync(file, "x");
+    const argvFile = join(dir, "argv.json");
+    const r = await provider({
+      FAKE_CLAUDE_MODE: "success",
+      FAKE_CLAUDE_ARGV_FILE: argvFile,
+    }).execute(req(sandboxed(join(file, "tmp"))), sig());
+    expect(r.status).toBe("failed");
+    expect(r.error).toEqual({
+      kind: "provider_error",
+      message: "sandbox tmp dir could not be created",
+      details: { notSpawned: true },
+    });
+    expect(existsSync(argvFile)).toBe(false);
+  });
+
+  test("a tmpDir that is a symlink fails closed before spawning", async () => {
+    const dir = mkdtempSync(join(tmp, "sbx-"));
+    const target = join(dir, "elsewhere");
+    mkdirSync(target, { mode: 0o700 });
+    const link = join(dir, "tmp");
+    symlinkSync(target, link);
+    const argvFile = join(dir, "argv.json");
+    const r = await provider({
+      FAKE_CLAUDE_MODE: "success",
+      FAKE_CLAUDE_ARGV_FILE: argvFile,
+    }).execute(req(sandboxed(link)), sig());
+    expect(r.error).toEqual({
+      kind: "provider_error",
+      message: "sandbox tmp dir could not be created",
+      details: { notSpawned: true },
+    });
+    expect(existsSync(argvFile)).toBe(false);
+  });
+
+  test("settings that cannot take the sandbox fail closed before spawning", async () => {
+    const dir = mkdtempSync(join(tmp, "sbx-"));
+    const argvFile = join(dir, "argv.json");
+    const tmpDir = join(dir, "tmp");
+    const r = await new ClaudeCliProvider({
+      binary: process.execPath,
+      prefixArgs: ["run", fixture],
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: process.env.HOME ?? "",
+        FAKE_CLAUDE_MODE: "success",
+        FAKE_CLAUDE_ARGV_FILE: argvFile,
+      },
+      clock: new FakeClock("2026-11-05T00:00:00Z"),
+      settingsOverride: "[]",
+    }).execute(req(sandboxed(tmpDir)), sig());
+    expect(r.status).toBe("failed");
+    expect(r.error).toEqual({
+      kind: "provider_error",
+      message: "sandbox settings could not be built",
+      details: { notSpawned: true },
+    });
+    expect(existsSync(argvFile)).toBe(false);
+    // Fails before the dir is created.
+    expect(existsSync(tmpDir)).toBe(false);
   });
 });
 

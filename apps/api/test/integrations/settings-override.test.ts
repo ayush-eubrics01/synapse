@@ -168,3 +168,41 @@ test("connector allow entries give their server names only; the widening flag is
   }
   expect(loadUserSettings(join(tmp, "nowhere")).userAllowedConnectorServers).toEqual([]);
 });
+
+test("ADR-040: user sandbox settings that would widen a develop run's sandbox widen scope", () => {
+  for (const sandbox of [
+    { excludedCommands: ["bun"] },
+    { filesystem: { allowWrite: ["/home/u"] } },
+    { filesystem: { allowRead: ["/home/u/.ssh"] } },
+    { network: { allowedDomains: ["x.test"] } },
+    { network: { allowUnixSockets: ["/run/docker.sock"] } },
+    { allowUnsandboxedCommands: true },
+  ]) {
+    expect(userPermissionsWidenScope({ sandbox })).toBe(true);
+    // Clean permissions do not hide it.
+    expect(userPermissionsWidenScope({ permissions: { allow: ["WebSearch"] }, sandbox })).toBe(
+      true,
+    );
+  }
+  for (const settings of [
+    { sandbox: { excludedCommands: [] } },
+    { sandbox: { filesystem: { allowWrite: [], denyRead: ["/x"] } } },
+    { sandbox: { network: { allowedDomains: [] } } },
+    { sandbox: { allowUnsandboxedCommands: false } },
+    // Scalars: the --settings flag outranks user settings.
+    { sandbox: { enabled: false, autoAllowBashIfSandboxed: true } },
+    { sandbox: { excludedCommands: "bun" } },
+    { sandbox: null },
+    { sandbox: [] },
+    {},
+  ]) {
+    expect(userPermissionsWidenScope(settings)).toBe(false);
+  }
+  expect(
+    loadUserSettings(home("sandbox-widen", { sandbox: { excludedCommands: ["bun"] } })),
+  ).toEqual({
+    override: DEFAULT_SETTINGS_OVERRIDE,
+    userPermissionsWidenScope: true,
+    userAllowedConnectorServers: [],
+  });
+});

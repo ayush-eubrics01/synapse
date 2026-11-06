@@ -564,10 +564,13 @@ export class ClaudeOrchestrator {
     const safeRetry = SAFE_MESSAGE_KINDS.has(kind) ? e?.retryAfter : undefined;
     const retryAfter =
       kind === "quota_exhausted" ? clampQuotaRetry(safeRetry, this.deps.clock.now()) : safeRetry;
-    // R16: the max-turns marker survives classification (a boolean, never content).
+    // R16 and ADR-040: the max-turns and sandbox-unavailable markers survive classification
+    // (booleans, never content).
     const maxTurns = e?.kind === kind && e.details?.maxTurns === true;
+    const sandboxUnavailable = e?.kind === kind && e.details?.sandboxUnavailable === true;
     const details = {
       ...(maxTurns ? { maxTurns: true } : {}),
+      ...(sandboxUnavailable ? { sandboxUnavailable: true } : {}),
       ...(uncertain ? { uncertain: true } : {}),
     };
     return {

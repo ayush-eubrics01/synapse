@@ -18,6 +18,7 @@ if (process.env.FAKE_CLAUDE_ENV_FILE) {
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: e.CLAUDE_CODE_DISABLE_CLAUDE_MDS ?? null,
       hasPath: typeof e.PATH === "string",
       hasHome: typeof e.HOME === "string",
+      TMPDIR: e.TMPDIR ?? null,
     }),
   );
 }
@@ -40,6 +41,10 @@ if (args.includes("--version")) {
 } else if (mode === "hang") {
   stream("success", true);
   setTimeout(() => {}, 60_000);
+} else if (mode === "sandbox_unavailable") {
+  // failIfUnavailable: the CLI refuses to start; nothing on stdout.
+  process.stderr.write("Error: sandbox required but not available\n");
+  process.exitCode = 1;
 } else if (mode === "success_exit1") {
   stream("success");
   process.exitCode = 1;
