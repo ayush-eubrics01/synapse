@@ -192,6 +192,24 @@ describe("GET /api/inbox/conversations/:id/thread", () => {
     expect(w.messages.map((m) => m.id)).toEqual(["m6", "m4"]);
   });
 
+  test("permalinks pass through safePermalink: a javascript: link becomes null", async () => {
+    seed();
+    c.db
+      .update(schema.slackMessages)
+      .set({ permalink: "javascript:alert(1)" })
+      .where(eq(schema.slackMessages.id, "m4"))
+      .run();
+    c.db
+      .update(schema.slackMessages)
+      .set({ permalink: "https://example.slack.com/archives/C0OPS0001/p1793880006000100" })
+      .where(eq(schema.slackMessages.id, "m6"))
+      .run();
+    const t = (await (await thread("C0OPS0001")).json()) as ConversationThread;
+    const link = (id: string) => t.messages.find((m) => m.id === id)?.permalink;
+    expect(link("m4")).toBeNull();
+    expect(link("m6")).toBe("https://example.slack.com/archives/C0OPS0001/p1793880006000100");
+  });
+
   test("highest-severity flag and commitment", async () => {
     seed();
     const flag = (id: string, severity: string, ruleId: string) =>

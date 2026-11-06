@@ -8,6 +8,7 @@ import type {
 import { type Db, schema } from "@synapse/database";
 import { and, asc, desc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import type { SettingsService } from "../../core/config/settings";
+import { safePermalink } from "./permalink";
 import type { UrgentInbox } from "./urgent";
 
 const { slackConversations, slackMessages, slackUsers, securityFlags, commitments } = schema;
@@ -113,7 +114,7 @@ export class InboxConversations {
         sender: { id: r.senderId, name: r.senderName },
         sentAt: r.sentAt,
         text: r.text,
-        permalink: r.permalink,
+        permalink: safePermalink(r.permalink),
         threadTs: r.threadTs,
         replyCount: r.replyCount,
         isSelf,

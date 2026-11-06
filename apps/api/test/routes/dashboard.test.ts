@@ -152,6 +152,102 @@ describe("GET /api/dashboard/overview", () => {
     expect(surface).toMatchObject({ state: "ok", summary: "1 urgent · 1 approvals" });
   });
 
+  const commitment = (id: string, reviewStatus: "accepted" | "rejected") =>
+    c.db
+      .insert(schema.commitments)
+      .values({
+        id,
+        description: "invented commitment",
+        ownerSlackUserId: SELF,
+        direction: "mine",
+        status: "open",
+        reviewStatus,
+        dedupKey: id,
+        createdAt: NOW,
+        updatedAt: NOW,
+      })
+      .run();
+
+  test("commitmentsToReview counts only pending_review rows (the Needs-you rule)", async () => {
+    seed();
+    commitment("cm-rejected", "rejected");
+    commitment("cm-accepted", "accepted");
+    expect((await overview()).counts.commitmentsToReview).toBe(1);
+  });
+
+  test("approvals excludes an approval decided on a pending profile suggestion", async () => {
+    seed();
+    c.db
+      .insert(schema.people)
+      .values({ id: "p-ada", slackUserId: "UADA000001", name: "Ada", createdAt: NOW })
+      .run();
+    c.db
+      .insert(schema.approvals)
+      .values({
+        id: "a-profile",
+        action: "people.profile.apply",
+        payload: {},
+        riskLevel: "low",
+        status: "pending",
+        idempotencyKey: "k-profile",
+        createdAt: NOW,
+      })
+      .run();
+    c.db
+      .insert(schema.peopleProfileRecommendations)
+      .values({
+        id: "r1",
+        personId: "p-ada",
+        kind: "initial",
+        content: {},
+        status: "pending",
+        approvalId: "a-profile",
+        createdAt: NOW,
+      })
+      .run();
+    const o = await overview();
+    expect(o.counts.approvals).toBe(1);
+    expect(o.counts.profileRecommendations).toBe(1);
+    expect(o.pipeline.find((s) => s.id === "surface")?.summary).toBe("1 urgent · 1 approvals");
+  });
+
+  test("peopleToEvaluate counts only candidates with the evaluate action", async () => {
+    seed();
+    c.db
+      .insert(schema.slackUsers)
+      .values({ id: "u-linus", externalId: "ULINUS0001", name: "Linus" })
+      .run();
+    c.db
+      .insert(schema.slackMessages)
+      .values({
+        id: "m-linus",
+        conversationId: "c1",
+        ts: "1793880003.000100",
+        senderUserId: "u-linus",
+        text: "invented text",
+        sentAt: NOW,
+        collectedAt: NOW,
+      })
+      .run();
+    // Ada already has a profile, so only Linus can be evaluated.
+    c.db
+      .insert(schema.people)
+      .values({ id: "p-ada", slackUserId: "UADA000001", name: "Ada", createdAt: NOW })
+      .run();
+    c.db
+      .insert(schema.peopleProfiles)
+      .values({ id: "pp-ada", personId: "p-ada", currentVersion: 1, content: {}, updatedAt: NOW })
+      .run();
+    const o = await overview();
+    expect(o.counts.peopleToEvaluate).toBe(1);
+  });
+
+  test("peopleToEvaluate is 0 while identity is required", async () => {
+    seed();
+    c.settings.clear("slack.selfUserId");
+    expect((await overview()).counts.peopleToEvaluate).toBe(0);
+  });
+
   test("outgoingAttention counts needs_attention rows only", async () => {
     seed();
     c.db

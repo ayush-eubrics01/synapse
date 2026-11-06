@@ -31,7 +31,10 @@ const DAY_MS = 86_400_000;
 /** The same default the candidates endpoint applies. */
 const CANDIDATE_LIMIT = 50;
 
-/** Read-only aggregate behind `GET /api/dashboard/overview`. Counts reuse the list endpoints' own methods. */
+/**
+ * Read-only aggregate behind `GET /api/dashboard/overview`. Counts reuse the list endpoints' own
+ * methods and apply the Needs-you feed's rules, so each count matches the cards the user sees.
+ */
 export class DashboardService {
   constructor(private readonly deps: DashboardDeps) {}
 
@@ -44,7 +47,15 @@ export class DashboardService {
     const backfill = this.deps.sync.get("slack.backfill");
 
     const urgent = this.deps.urgent.listUrgent({ status: "open" }).length;
-    const approvals = this.deps.approvals.listPending().length;
+    const recommendations = this.deps.peopleViews.listRecommendations("pending");
+    // Mirrors the Needs-you feed: a profile approval is decided on its recommendation card.
+    const onRecommendation = new Set(
+      recommendations.map((r) => r.approvalId).filter((id): id is string => id !== null),
+    );
+    const approvals = this.deps.approvals
+      .listPending()
+      .filter((a) => !onRecommendation.has(a.id)).length;
+    const candidates = this.deps.peopleViews.candidates(CANDIDATE_LIMIT);
     const redFlags = this.deps.securityFlags
       .listGroupedByPerson({
         minSeverity: settings.get("security.flags.widgetMinSeverity"),
@@ -72,10 +83,15 @@ export class DashboardService {
             .where(eq(schema.outgoingMessages.status, "needs_attention"))
             .get()?.n ?? 0,
         redFlags,
-        commitmentsToReview: this.deps.commitmentLifecycle.listViews("review").length,
+        // The review filter also returns rejected rows; only pending ones can be accepted.
+        commitmentsToReview: this.deps.commitmentLifecycle
+          .listViews("review")
+          .filter((v) => v.reviewStatus === "pending_review").length,
         followupDrafts: this.deps.followups.listViews("draft").length,
-        profileRecommendations: this.deps.peopleViews.listRecommendations("pending").length,
-        peopleToEvaluate: this.deps.peopleViews.candidates(CANDIDATE_LIMIT).candidates.length,
+        profileRecommendations: recommendations.length,
+        peopleToEvaluate: candidates.identityRequired
+          ? 0
+          : candidates.candidates.filter((x) => x.actions.includes("evaluate")).length,
         conversations:
           db
             .select({ n: countDistinct(schema.slackMessages.conversationId) })
