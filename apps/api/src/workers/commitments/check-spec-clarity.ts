@@ -185,7 +185,8 @@ export function registerSpecClarity(deps: CommitmentJobDeps, c: CommitmentContex
               threadTs: prepared.threadTs,
               recipientSlackUserId: prepared.sender,
               draftText: draft,
-              confidence: null,
+              // A7: gates an away-mode auto-send of the question.
+              confidence: value.confidence,
               status: "draft",
               claudeRunId: runId,
               createdAt: now,

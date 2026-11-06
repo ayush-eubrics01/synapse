@@ -500,9 +500,10 @@ export class OutgoingService {
         // Not spawned, so certainly not sent: cancelled and held, never uncertain. If even this
         // write fails, the row stays `sending` and the sweep hands it to the user.
         try {
-          db.transaction((tx) => this.holdAutoSend(tx, row, autoReply, blocked), {
-            behavior: "immediate",
-          });
+          db.transaction(
+            (tx) => this.holdAutoSend(tx, row, autoReply, blocked, { allowSending: true }),
+            { behavior: "immediate" },
+          );
         } catch (w) {
           console.error(
             `outgoing outcome not recorded outgoing=${outgoingId} error=${errorName(w)}`,
@@ -999,22 +1000,36 @@ export class OutgoingService {
    * Cancels a pending auto-send (failure `cancelled_<block>`, follow-up back to draft) and holds its
    * auto-reply (A16: a held row keeps no text). `autoreply.held` is published once, on the
    * transition from `sent` to `held`.
+   *
+   * A `sending` row is cancelled only with `allowSending`, which only the pre-spawn path (I2)
+   * passes: there the process was certainly not spawned. Anywhere else a `sending` row's process
+   * may be running, so it is left alone and its auto-reply is not held (the outcome decides).
    */
-  private holdAutoSend(tx: DbOrTx, row: Row, ar: AutoReplyRow, block: AutoSendBlock): void {
+  private holdAutoSend(
+    tx: DbOrTx,
+    row: Row,
+    ar: AutoReplyRow,
+    block: AutoSendBlock,
+    opts: { allowSending: boolean } = { allowSending: false },
+  ): void {
     const now = isoNow(this.deps.clock);
     const failure: SendFailure = `cancelled_${block}`;
+    const cancellable: OutgoingStatus[] = opts.allowSending ? ["pending", "sending"] : ["pending"];
     const cancelled = tx
       .update(outgoingMessages)
       .set({ status: "failed", failure, updatedAt: now })
-      .where(
-        and(
-          eq(outgoingMessages.id, row.id),
-          // `sending` only when cancelled before spawn (I2): nothing was posted.
-          inArray(outgoingMessages.status, ["pending", "sending"]),
-        ),
-      )
+      .where(and(eq(outgoingMessages.id, row.id), inArray(outgoingMessages.status, cancellable)))
       .returning({ id: outgoingMessages.id })
       .all();
+    if (cancelled.length === 0) {
+      const cur = tx
+        .select({ status: outgoingMessages.status })
+        .from(outgoingMessages)
+        .where(eq(outgoingMessages.id, row.id))
+        .get();
+      // Claimed or past it: the message may be (or is) in Slack, so the auto-reply stays `sent`.
+      if (cur && cur.status !== "pending" && cur.status !== "failed") return;
+    }
     if (cancelled.length > 0) {
       this.statusChanged(tx, row.id, "failed");
       this.moveFollowup(tx, row, "draft", "auto_send_cancelled");

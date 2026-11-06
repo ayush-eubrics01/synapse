@@ -373,6 +373,26 @@ test("revalidate: a follow-up auto-send that is cancelled returns the follow-up 
   expect(f?.status).toBe("draft");
 });
 
+test("holdAutoSend never cancels a `sending` row outside the pre-spawn path", async () => {
+  const s = setup();
+  s.autoReply();
+  const { outgoingId } = s.requestAuto();
+  // An executor elsewhere already claimed it; its process may be running.
+  s.db
+    .update(schema.outgoingMessages)
+    .set({ status: "sending", sendingAt: NOW })
+    .where(eq(schema.outgoingMessages.id, outgoingId))
+    .run();
+  s.settings.set("autoReply.awayMode", false, { emit: false });
+  await s.run();
+  expect(s.sink.sends).toHaveLength(0);
+  expect(s.out(outgoingId)?.status).toBe("sending");
+  expect(s.out(outgoingId)?.failure).toBeNull();
+  // The auto-reply is not marked held while its message may still go out.
+  expect(s.ar()?.decision).toBe("sent");
+  expect(s.eventsOf("autoreply.held")).toHaveLength(0);
+});
+
 test("revalidate: the permission tightened after the request holds with policy_disabled", async () => {
   const s = setup();
   s.autoReply();

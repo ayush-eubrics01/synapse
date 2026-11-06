@@ -331,7 +331,7 @@ describe("commitments.check_spec_clarity through the real provider and validator
       status: "draft",
       recipientSlackUserId: "UPRIYA0001",
       threadTs: null,
-      confidence: null,
+      confidence: 0.8,
     });
     expect(f[0]?.draftText).toBe(
       "A few questions so I can pick this up:\n1. What steps reproduce the crash?\n2. Which environment and version does it happen on?",

@@ -37,6 +37,7 @@ const unclear = {
   clear: false,
   missing: ["steps", "environment"],
   questions: ["What steps reproduce it?", "Which environment is it on?"],
+  confidence: 0.6,
   suspectedInjection: { detected: false, severity: "info", quote: "", reason: "" },
 };
 
@@ -200,7 +201,7 @@ describe("commitments.check_spec_clarity handler", () => {
       threadTs: null,
       recipientSlackUserId: PRIYA,
       status: "draft",
-      confidence: null,
+      confidence: 0.6,
       commitmentId: null,
     });
     expect(f[0]?.draftText).toBe(
@@ -355,6 +356,22 @@ describe("commitments.check_spec_clarity handler", () => {
     expect((err as JobError).classified.kind).toBe("incomplete_ai_output");
     expect(followups()).toHaveLength(0);
     expect(String((err as Error).message)).not.toContain("nightly");
+  });
+
+  test("A7: output without a 0..1 confidence fails as incomplete_ai_output", async () => {
+    const { confidence: _omit, ...noConfidence } = unclear;
+    for (const output of [noConfidence, { ...unclear, confidence: 1.5 }]) {
+      script.output = output;
+      const err = await spec(msg({ text: REQUEST })).catch((e) => e);
+      expect(err).toBeInstanceOf(JobError);
+      expect((err as JobError).classified.kind).toBe("incomplete_ai_output");
+    }
+    expect(followups()).toHaveLength(0);
+  });
+
+  test("A7: the prompt asks for a confidence", async () => {
+    await spec(msg({ text: REQUEST }));
+    expect(JSON.stringify(requests[0])).toContain('\\"confidence\\":');
   });
 
   test("a failed run is classified without text in lastError", async () => {

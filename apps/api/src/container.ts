@@ -43,6 +43,7 @@ import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
+import { AutoReplyService } from "./modules/auto-reply/service";
 import { ExtractionQueue } from "./modules/commitments/extraction-queue";
 import { FollowupService } from "./modules/commitments/followups";
 import { CommitmentLifecycle } from "./modules/commitments/lifecycle";
@@ -64,6 +65,7 @@ import { PeopleService } from "./modules/people/service";
 import { TemporaryContacts } from "./modules/people/temporary";
 import { PeopleViews } from "./modules/people/views";
 import { SecurityFlagsService } from "./modules/security-flags/service";
+import { registerAutoReplyJobs } from "./workers/auto-reply/evaluate";
 import { registerCommitmentJobs } from "./workers/commitments";
 import { createRunHelpers } from "./workers/intelligence-shared";
 import { registerOutgoingJobs } from "./workers/outgoing";
@@ -112,6 +114,8 @@ export interface Container {
   followups: FollowupService;
   /** Urgent-reply drafts sent through approval. */
   urgentReplies: UrgentReplies;
+  /** Away mode (ADR-033): sessions, triggers, policy-gated auto-replies and the return digest. */
+  autoReply: AutoReplyService;
   /** Run by startup recovery and the reaper (main.ts), so core never imports workers. */
   recoverySweeps: RecoverySweep[];
   /** Job handler registry; the urgency smoke script runs one handler directly. */
@@ -300,6 +304,24 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   outgoing.register(approvals, dispatcher);
   const urgentReplies = new UrgentReplies({ db, clock, audit, outgoing });
   registerOutgoingJobs({ handlers, outgoing });
+  const autoReply = new AutoReplyService({
+    db,
+    clock,
+    events,
+    audit,
+    queue,
+    settings,
+    people,
+    securityFlags,
+    outgoing,
+  });
+  registerAutoReplyJobs({ handlers, autoReply });
+  dispatcher.subscribe("message.urgent_detected", "autoreply.acknowledgement", (event, tx) =>
+    autoReply.onUrgentDetected(event, tx),
+  );
+  dispatcher.subscribe("followup.draft_created", "autoreply.followup", (event, tx) =>
+    autoReply.onFollowupDraftCreated(event, tx),
+  );
   const profiles = new ProfileRecommendations({
     db,
     clock,
@@ -441,6 +463,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     securityFlags,
     outgoing,
     urgentReplies,
+    autoReply,
     commitments,
     commitmentLifecycle,
     followups: followupService,

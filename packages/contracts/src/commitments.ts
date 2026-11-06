@@ -67,6 +67,8 @@ export const specClarityOutputSchema = z
       .array(z.enum(["expected_behaviour", "steps", "scope", "environment", "acceptance_criteria"]))
       .max(5),
     questions: z.array(z.string().min(1).max(300)).max(5),
+    /** A7: how confident the model is that the questions are needed and right; gates auto-send. */
+    confidence: z.number().min(0).max(1),
     suspectedInjection: strictSuspectedInjectionSchema,
   })
   .strict();
