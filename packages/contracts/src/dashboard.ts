@@ -1,3 +1,4 @@
+import type { HealthStatus } from "./health";
 import type { ConversationType } from "./messages";
 import type { FlagSeverity, UrgencyLevel, UrgencyStatus } from "./urgency";
 
@@ -66,4 +67,43 @@ export interface PersonFlag {
   detector: string;
   excerpt: string;
   createdAt: string;
+}
+
+export type PipelineStageId = "collect" | "screen" | "assess" | "surface";
+export type PipelineState = "ok" | "waiting" | "failing" | "idle";
+
+/** `GET /api/dashboard/overview`: read-only aggregate for the dashboard shell. */
+export interface DashboardOverview {
+  generatedAt: string;
+  self: { slackUserId: string | null; name: string | null };
+  counts: {
+    urgent: number;
+    approvals: number;
+    outgoingAttention: number;
+    redFlags: number;
+    commitmentsToReview: number;
+    followupDrafts: number;
+    profileRecommendations: number;
+    peopleToEvaluate: number;
+    conversations: number;
+  };
+  lastSlackSyncAt: string | null;
+  health: {
+    status: HealthStatus;
+    issues: Array<{
+      check: string;
+      label: string;
+      status: HealthStatus;
+      detail: string | null;
+      hint: string | null;
+    }>;
+  };
+  pipeline: Array<{
+    id: PipelineStageId;
+    label: string;
+    what: string;
+    state: PipelineState;
+    summary: string;
+  }>;
+  engineeringLock: null;
 }

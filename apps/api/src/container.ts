@@ -48,6 +48,7 @@ import { FollowupService } from "./modules/commitments/followups";
 import { CommitmentLifecycle } from "./modules/commitments/lifecycle";
 import { StallService } from "./modules/commitments/stall";
 import { CommitmentStore } from "./modules/commitments/store";
+import { DashboardService } from "./modules/dashboard/service";
 import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
@@ -113,6 +114,7 @@ export interface Container {
   recoverySweeps: RecoverySweep[];
   /** Job handler registry; the urgency smoke script runs one handler directly. */
   handlers: ReadonlyMap<string, HandlerRegistration>;
+  dashboard: DashboardService;
   slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
@@ -383,6 +385,20 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     "desktop-notifier": desktopNotifierCheck(notifier),
   });
 
+  const dashboard = new DashboardService({
+    db,
+    clock,
+    settings,
+    urgent,
+    approvals,
+    securityFlags,
+    commitmentLifecycle,
+    followups: followupService,
+    peopleViews,
+    sync,
+    health,
+  });
+
   return {
     config,
     clock,
@@ -419,6 +435,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     commitments,
     commitmentLifecycle,
     followups: followupService,
+    dashboard,
     handlers,
     recoverySweeps: [
       { name: "urgency.assess", run: urgency.recoverySweep },
