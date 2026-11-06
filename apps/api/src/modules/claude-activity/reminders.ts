@@ -6,7 +6,7 @@
 import type { PullRequestProvider } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { type Clock, isoNow } from "@synapse/shared";
-import { and, eq, gte, isNull } from "drizzle-orm";
+import { and, asc, eq, gte, isNull } from "drizzle-orm";
 import type { SettingsService } from "../../core/config/settings";
 import type { NotificationService } from "../../core/notifications/notifications";
 
@@ -17,6 +17,8 @@ const DAY_MS = 86_400_000;
 const ACTIVE_WITHIN_DAYS = 14;
 const DEDUPE_DAYS = 7;
 const DUE_MINUTES = 9 * 60 + 30;
+/** Cap on gh calls per run: the job has a 120 s timeout and calls are sequential. */
+export const MAX_PR_VIEWS_PER_RUN = 10;
 const EXCLUDED_BRANCHES = new Set(["main", "master", "HEAD"]);
 
 export interface ReminderSummary {
@@ -155,19 +157,32 @@ export class WipReminders {
     }
 
     // (b) pull requests seen a while ago that are still open.
+    // `reminded_at` means "settled": set after a reminder, on a dedupe hit, or once gh reported
+    // MERGED/CLOSED, so the PR is never queried again. Oldest first; the rest wait for the next run.
     const rows = db
       .select()
       .from(schema.claudeSessionPrs)
       .where(isNull(schema.claudeSessionPrs.remindedAt))
+      .orderBy(asc(schema.claudeSessionPrs.firstSeenAt))
       .all();
+    const settle = (id: string) =>
+      db
+        .update(schema.claudeSessionPrs)
+        .set({ remindedAt: nowIso })
+        .where(eq(schema.claudeSessionPrs.id, id))
+        .run();
+    let views = 0;
     for (const pr of rows) {
       const seen = Date.parse(pr.firstSeenAt);
       if (seen > now - prMs) continue;
       const ref = `pr:${pr.prUrl}`;
       if (reminded(ref)) {
+        settle(pr.id);
         summary.skippedDedupe++;
         continue;
       }
+      if (views >= MAX_PR_VIEWS_PER_RUN) break;
+      views++;
       let state: string;
       try {
         state = (await prs.view(pr.prUrl)).state;
@@ -175,6 +190,7 @@ export class WipReminders {
         summary.prErrors++;
         continue;
       }
+      if (state === "MERGED" || state === "CLOSED") settle(pr.id);
       if (state !== "OPEN") continue;
       const repoName = repos.get(pr.repositoryId)?.name ?? "repository";
       const days = Math.floor((now - seen) / DAY_MS);
@@ -185,10 +201,7 @@ export class WipReminders {
         body: `#${pr.prNumber} (${pr.prRepository}) has been open for ${days} days.`,
         ref,
       });
-      db.update(schema.claudeSessionPrs)
-        .set({ remindedAt: nowIso })
-        .where(eq(schema.claudeSessionPrs.id, pr.id))
-        .run();
+      settle(pr.id);
       summary.openPrs++;
     }
     return summary;

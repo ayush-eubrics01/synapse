@@ -198,13 +198,52 @@ describe("open PRs", () => {
     expect(views).toEqual([]);
   });
 
-  test("a merged PR notifies nothing and stays unreminded", async () => {
+  test("a merged PR notifies nothing and is settled", async () => {
     viewImpl = async () => ({ state: "MERGED" });
     pr(session("f", 5, 1), "f", 4);
     const r = await build().run();
     expect(r.openPrs).toBe(0);
     expect(notes()).toHaveLength(0);
-    expect(db.select().from(schema.claudeSessionPrs).get()?.remindedAt).toBeNull();
+    expect(db.select().from(schema.claudeSessionPrs).get()?.remindedAt).not.toBeNull();
+  });
+
+  test("a merged or closed PR is settled and not queried again", async () => {
+    viewImpl = async () => ({ state: "CLOSED" });
+    pr(session("f", 5, 1), "f", 4);
+    await build().run();
+    expect(db.select().from(schema.claudeSessionPrs).get()?.remindedAt).not.toBeNull();
+    await build().run();
+    expect(views).toHaveLength(1);
+  });
+
+  test("a dedupe hit settles the PR without calling gh", async () => {
+    pr(session("f", 5, 1), "f", 4);
+    db.insert(schema.notifications)
+      .values({
+        id: "old",
+        kind: REMINDER_KIND,
+        severity: "info",
+        title: "t",
+        ref: `pr:${URL7}`,
+        createdAt: daysAgo(1),
+      })
+      .run();
+    const r = await build().run();
+    expect(r.skippedDedupe).toBe(1);
+    expect(views).toEqual([]);
+    expect(db.select().from(schema.claudeSessionPrs).get()?.remindedAt).not.toBeNull();
+  });
+
+  test("gh calls are capped per run, oldest first", async () => {
+    viewImpl = async () => ({ state: "MERGED" });
+    const s = session("f", 20, 1);
+    for (let i = 1; i <= 12; i++)
+      pr(s, "f", 20 - i * 0.5, `https://github.com/demo-org/demo-app/pull/${i}`);
+    await build().run();
+    expect(views).toHaveLength(10);
+    expect(views[0]).toBe("https://github.com/demo-org/demo-app/pull/1");
+    await build().run();
+    expect(views).toHaveLength(12);
   });
 
   test("a provider error is counted and skipped without throwing", async () => {
