@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildDevelopRequest,
-  repoInHomeMask,
+  repoInDenyMask,
   repoInMaskedPath,
   SANDBOX_HOME_DENY,
   sandboxDenyRead,
@@ -50,49 +50,21 @@ describe("sandboxDenyRead (F1.3)", () => {
   });
 
   test("the 14 home entries, then the protected dirs, in order", () => {
-    expect(sandboxDenyRead(HOME, [DATA, BACKUPS], REPO)).toEqual([...HOME_ENTRIES, DATA, BACKUPS]);
+    expect(sandboxDenyRead(HOME, [DATA, BACKUPS])).toEqual([...HOME_ENTRIES, DATA, BACKUPS]);
   });
 
-  test("a home entry is never dropped, even when it contains the repository (fix round 1)", () => {
-    // Such a repository is refused (repoInHomeMask), never unmasked with its whole directory.
-    expect(sandboxDenyRead(HOME, [DATA, BACKUPS], "/home/u/.docker/demo")).toEqual([
-      ...HOME_ENTRIES,
-      DATA,
-      BACKUPS,
-    ]);
-    expect(sandboxDenyRead(HOME, [], "/home/u/.config")).toEqual(HOME_ENTRIES);
+  test("no entry is ever dropped: a repository inside one is refused instead (fix rounds 1-2)", () => {
+    // repoInDenyMask refuses such a repository; nothing here depends on it.
+    expect(sandboxDenyRead(HOME, [DATA, BACKUPS])).toHaveLength(16);
   });
 
-  test("entries inside the repository stay masked", () => {
-    expect(sandboxDenyRead(HOME, [DATA], HOME)).toEqual([...HOME_ENTRIES, DATA]);
-  });
-
-  test("a repository equal to a protected dir drops that entry", () => {
-    const out = sandboxDenyRead(HOME, [DATA, BACKUPS], DATA);
-    expect(out).toEqual([...HOME_ENTRIES, BACKUPS]);
-  });
-
-  test("a protected dir containing the repository is dropped; a sibling prefix is kept", () => {
-    expect(sandboxDenyRead(HOME, [DATA, BACKUPS], `${DATA}/scratch/demo`)).toEqual([
-      ...HOME_ENTRIES,
-      BACKUPS,
-    ]);
-    // `/home/u/.sshx` is not inside `/home/u/.ssh`.
-    expect(sandboxDenyRead(HOME, [], "/home/u/.sshx/demo")).toEqual(HOME_ENTRIES);
-  });
-
-  test("trailing slashes on home, the dirs and the repository change nothing", () => {
-    const base = sandboxDenyRead(HOME, [DATA, BACKUPS], REPO);
-    expect(sandboxDenyRead(`${HOME}/`, [DATA, BACKUPS], REPO)).toEqual(base);
-    expect(sandboxDenyRead(HOME, [`${DATA}/`, `${BACKUPS}/`], `${REPO}/`)).toEqual(base);
-    expect(sandboxDenyRead(`${HOME}/`, [`${DATA}/`], `${DATA}/`)).toEqual(HOME_ENTRIES);
+  test("trailing slashes on home and the dirs change nothing", () => {
+    const base = sandboxDenyRead(HOME, [DATA, BACKUPS]);
+    expect(sandboxDenyRead(`${HOME}/`, [`${DATA}/`, `${BACKUPS}/`])).toEqual(base);
   });
 
   test("duplicates are dropped in first-seen order", () => {
-    expect(sandboxDenyRead(HOME, ["/home/u/.ssh", DATA, DATA], REPO)).toEqual([
-      ...HOME_ENTRIES,
-      DATA,
-    ]);
+    expect(sandboxDenyRead(HOME, ["/home/u/.ssh", DATA, DATA])).toEqual([...HOME_ENTRIES, DATA]);
   });
 });
 
@@ -113,7 +85,7 @@ describe("repoInMaskedPath (controller ruling)", () => {
   });
 });
 
-describe("repoInHomeMask (fix round 1 ruling)", () => {
+describe("repoInDenyMask (fix rounds 1-2 rulings)", () => {
   test("a repository at or inside a home deny entry is masked", () => {
     for (const p of [
       "/home/u/.config/nvim",
@@ -121,13 +93,19 @@ describe("repoInHomeMask (fix round 1 ruling)", () => {
       "/home/u/.docker/demo/",
       "/home/u/.cargo/credentials/x",
     ]) {
-      expect(repoInHomeMask(HOME, p)).toBe(true);
-      expect(repoInHomeMask(`${HOME}/`, p)).toBe(true);
+      expect(repoInDenyMask(HOME, [], p)).toBe(true);
+      expect(repoInDenyMask(`${HOME}/`, [], p)).toBe(true);
+    }
+  });
+  test("a repository at or inside the data or backup dir is masked", () => {
+    for (const p of [DATA, `${DATA}/`, `${DATA}/scratch/demo`, `${BACKUPS}/x`]) {
+      expect(repoInDenyMask(HOME, [DATA, BACKUPS], p)).toBe(true);
+      expect(repoInDenyMask(HOME, [`${DATA}/`, `${BACKUPS}/`], p)).toBe(true);
     }
   });
   test("other repositories are not, including shared prefixes and home itself", () => {
-    for (const p of [REPO, "/home/u/.configx/demo", "/home/u/.cargo/demo", HOME, DATA]) {
-      expect(repoInHomeMask(HOME, p)).toBe(false);
+    for (const p of [REPO, "/home/u/.configx/demo", "/home/u/.cargo/demo", HOME, `${DATA}x/demo`]) {
+      expect(repoInDenyMask(HOME, [DATA, BACKUPS], p)).toBe(false);
     }
   });
 });

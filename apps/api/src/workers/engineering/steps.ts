@@ -9,7 +9,7 @@ import type { ClaudeOrchestrator } from "../../core/orchestrator/orchestrator";
 import {
   buildDevelopRequest,
   REPO_IN_MASKED_PATH,
-  repoInHomeMask,
+  repoInDenyMask,
   repoInMaskedPath,
 } from "../../intelligence/engineering/develop-prompt";
 import { STEP_JOB } from "../../modules/engineering-tasks/lock";
@@ -107,10 +107,10 @@ export function registerStepJob(deps: StepJobDeps): void {
             if (
               sandboxed &&
               (repoInMaskedPath(t.localPath, maskedRoots) ||
-                repoInHomeMask(sandbox.home, t.localPath))
+                repoInDenyMask(sandbox.home, sandbox.protectedDirs, t.localPath))
             ) {
               // Refused before any run: the sandbox would hide the repository from itself, or
-              // unmasking it would expose a whole credential directory.
+              // unmasking it would expose a credential dir, synapse.db or the backups.
               throw new JobError({ kind: "invalid_input", message: REPO_IN_MASKED_PATH });
             }
             const runScratch = join(sandbox.scratchDir, "runs", job.id);

@@ -632,6 +632,34 @@ describe("develop sandbox (ADR-040)", () => {
     }
   });
 
+  test("a repository inside the data dir is refused (repo_in_masked_path, fix round 2)", async () => {
+    handlers.delete(STEP_JOB);
+    registerStepJob({
+      db,
+      settings,
+      steps,
+      handlers,
+      orchestrator: {
+        run: async (req: ClaudeJobRequest) => {
+          requests.push(req);
+          return reply(req);
+        },
+      },
+      // The repository's parent stands in for the Synapse data dir.
+      sandbox: {
+        scratchDir: sandboxScratch,
+        home: fx.home,
+        protectedDirs: [join(repo, "..")],
+        maskedRoots: [],
+      },
+    });
+    const id = await developed();
+    expect(requests).toHaveLength(0);
+    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("repo_in_masked_path");
+    expect(leaseRow()).toBeUndefined();
+  });
+
   test("a repository inside a home deny entry is refused (repo_in_masked_path, fix round 1)", async () => {
     // A second fixture whose repository lives under `<home>/.config`.
     const home = scratch();

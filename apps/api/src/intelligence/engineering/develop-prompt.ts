@@ -81,30 +81,28 @@ const homeEntries = (home: string) => SANDBOX_HOME_DENY.map((rel) => stripSlashe
 
 /**
  * The sandbox `denyRead` list (F1.3): each SANDBOX_HOME_DENY entry under `home`, then
- * `protectedDirs`. Home entries are always kept: a repository at or inside one is refused
- * (`repoInHomeMask`), never unmasked with its whole directory. A protected dir equal to the
- * repository or containing it is dropped, since masking it would hide the code under test (Review
- * Focus 1); entries inside the repository stay masked. Trailing slashes are stripped and
- * duplicates dropped in first-seen order. Pure.
+ * `protectedDirs` (the Synapse data and backup dirs). No entry is ever dropped: a repository at or
+ * inside one is refused (`repoInDenyMask`), since unmasking it would expose credentials,
+ * `synapse.db` or backups to test code. Trailing slashes are stripped and duplicates dropped in
+ * first-seen order. Pure.
  */
-export function sandboxDenyRead(
-  home: string,
-  protectedDirs: readonly string[],
-  repoRoot: string,
-): string[] {
-  const repo = stripSlashes(repoRoot);
-  const kept = protectedDirs.map(stripSlashes).filter((e) => !atOrUnder(repo, e));
-  return [...new Set([...homeEntries(home), ...kept])];
+export function sandboxDenyRead(home: string, protectedDirs: readonly string[]): string[] {
+  return [...new Set([...homeEntries(home), ...protectedDirs.map(stripSlashes)])];
 }
 
 /**
- * True when the repository is at or inside a SANDBOX_HOME_DENY entry under `home` (a dotfile repo
- * under `~/.config`, say). Develop refuses it (`repo_in_masked_path`): unmasking the entry would
- * expose every credential in that directory. Pure.
+ * True when the repository is at or inside a `sandboxDenyRead` entry: a SANDBOX_HOME_DENY entry
+ * under `home` (a dotfile repo under `~/.config`, say) or a protected dir. Develop refuses it
+ * (`repo_in_masked_path`): masking would hide the code under test, and unmasking would expose the
+ * whole directory. Pure.
  */
-export function repoInHomeMask(home: string, repoRoot: string): boolean {
+export function repoInDenyMask(
+  home: string,
+  protectedDirs: readonly string[],
+  repoRoot: string,
+): boolean {
   const repo = stripSlashes(repoRoot);
-  return homeEntries(home).some((e) => atOrUnder(repo, e));
+  return sandboxDenyRead(home, protectedDirs).some((e) => atOrUnder(repo, e));
 }
 
 /** The fixed develop failure (and `JobError` message) for a repository in a masked path. */
@@ -193,7 +191,7 @@ export function buildDevelopRequest(
       ? {
           sandbox: {
             tmpDir: s.sandbox.tmpDir,
-            denyRead: sandboxDenyRead(s.sandbox.home, s.sandbox.protectedDirs, root),
+            denyRead: sandboxDenyRead(s.sandbox.home, s.sandbox.protectedDirs),
           },
         }
       : {}),
