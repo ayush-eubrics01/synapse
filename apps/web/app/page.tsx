@@ -5,6 +5,7 @@ import type {
   AwayDigest,
   CandidatesResponse,
   ClaudeActivityView,
+  CodeAnswerView,
   CommitmentFilter,
   ConversationSummary,
   ConversationThread,
@@ -79,6 +80,7 @@ import {
   type SecurityFlagDto,
   type SlackIdentityDto,
   type SlackStatusDto,
+  sendCodeAnswer,
   setCommitmentStatus,
   setPersonPriority,
   skipUnreadablePage,
@@ -244,6 +246,13 @@ export default function Dashboard() {
   const [jiraIssues, setJiraIssues] = useState<JiraIssueView[]>([]);
   const [jiraAttention, setJiraAttention] = useState<JiraIssueView[]>([]);
   const [repos, setRepos] = useState<RepositoryView[] | null>(null);
+  // Code answers (Phase 10b C5): the answer chosen as a reply, and a counter bumped by live events.
+  const [codeDraft, setCodeDraft] = useState<{
+    codeAnswerId: string;
+    draft: string;
+    useAnyway: boolean;
+  } | null>(null);
+  const [codeAnswerTick, setCodeAnswerTick] = useState(0);
   const [projectDetails, setProjectDetails] = useState<ProjectDetail[]>([]);
   const [claudeActivity, setClaudeActivity] = useState<ClaudeActivityView | null>(null);
   const [claudeSettings, setClaudeSettings] = useState<ClaudeSettingsDto | null>(null);
@@ -454,11 +463,29 @@ export default function Dashboard() {
     source.onmessage = () => debounced.call();
     // Events are named (`event: <type>`), so onmessage alone would miss them.
     for (const t of LIVE_EVENT_TYPES) source.addEventListener(t, () => debounced.call());
+    source.addEventListener("code_answer.status_changed", () => setCodeAnswerTick((n) => n + 1));
     return () => {
       debounced.cancel();
       source.close();
     };
   }, [refresh]);
+
+  // A code-answer draft belongs to the conversation it was made in.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clears on a conversation change only
+  useEffect(() => setCodeDraft(null), [effectiveConversationId]);
+
+  // The backend refuses a suspected injection without `useAnyway`, whatever this UI sends.
+  const sendCodeAnswerDraft = async (id: string, text: string, useAnyway: boolean) => {
+    setActionError(null);
+    try {
+      await sendCodeAnswer(id, text, useAnyway);
+      setCodeDraft(null);
+      toast.show("Approval request created · nothing is sent until you approve");
+    } catch (e) {
+      setActionError(String(e));
+    }
+    await refresh();
+  };
 
   // Fetches the thread when the shown conversation changes; refresh() keeps it current after that.
   useEffect(() => {
@@ -828,6 +855,15 @@ export default function Dashboard() {
               now={now}
               hidden={feed.hidden}
               handlers={feed.handlers}
+              codeAnswers={{
+                repositories: repos ?? [],
+                tick: codeAnswerTick,
+                draft: codeDraft,
+                onUseAsReply: (v: CodeAnswerView, useAnyway: boolean) =>
+                  setCodeDraft({ codeAnswerId: v.id, draft: v.answer ?? "", useAnyway }),
+                onSend: (id, text, useAnyway) => void sendCodeAnswerDraft(id, text, useAnyway),
+                onDiscard: () => setCodeDraft(null),
+              }}
             />
           </section>
           <section id="commitments" className="syn-section">

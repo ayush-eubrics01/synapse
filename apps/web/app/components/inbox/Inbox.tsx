@@ -1,6 +1,11 @@
 "use client";
 
-import type { ConversationSummary, ConversationThread } from "@synapse/contracts";
+import type {
+  CodeAnswerView,
+  ConversationSummary,
+  ConversationThread,
+  RepositoryView,
+} from "@synapse/contracts";
 import type { UrgentItemDto } from "../../../lib/api";
 import {
   composerState,
@@ -25,6 +30,16 @@ export interface InboxProps {
   urgentById: ReadonlyMap<string, UrgentItemDto>;
   now: Date | null;
   hidden: Set<string>;
+  /** Code answers (Phase 10b C5): hidden when absent. */
+  codeAnswers?: {
+    repositories: RepositoryView[];
+    tick: number;
+    /** The answer the user chose to reply with; it replaces the composer until sent or discarded. */
+    draft: { codeAnswerId: string; draft: string; useAnyway: boolean } | null;
+    onUseAsReply: (v: CodeAnswerView, useAnyway: boolean) => void;
+    onSend: (codeAnswerId: string, text: string, useAnyway: boolean) => void;
+    onDiscard: () => void;
+  };
   handlers: Pick<NeedsYouHandlers, "trackCommitment" | "rejectCommitment" | "urgentReply"> &
     Partial<Pick<NeedsYouHandlers, "createTaskFromSlack">>;
 }
@@ -74,10 +89,28 @@ export function Inbox(p: InboxProps) {
                   onTrack={p.handlers.trackCommitment}
                   onIgnore={p.handlers.rejectCommitment}
                   onCreateTask={p.handlers.createTaskFromSlack}
+                  codeAnswers={
+                    p.codeAnswers && {
+                      repositories: p.codeAnswers.repositories,
+                      tick: p.codeAnswers.tick,
+                      onUseAsReply: p.codeAnswers.onUseAsReply,
+                    }
+                  }
                 />
                 <Composer
-                  state={composerState(loaded.conversation, p.urgentById)}
+                  state={
+                    p.codeAnswers?.draft
+                      ? {
+                          mode: "code_answer",
+                          codeAnswerId: p.codeAnswers.draft.codeAnswerId,
+                          draft: p.codeAnswers.draft.draft,
+                        }
+                      : composerState(loaded.conversation, p.urgentById)
+                  }
                   onReply={p.handlers.urgentReply}
+                  onSendCodeAnswer={p.codeAnswers?.onSend}
+                  useAnyway={p.codeAnswers?.draft?.useAnyway}
+                  onDiscardCodeAnswer={p.codeAnswers?.onDiscard}
                 />
               </>
             ) : (

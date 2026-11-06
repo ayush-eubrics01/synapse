@@ -83,6 +83,7 @@ export function groupThread(
 
 export type ComposerState =
   | { mode: "reply"; urgentId: string; draft: string | null }
+  | { mode: "code_answer"; codeAnswerId: string; draft: string }
   | { mode: "note"; text: string };
 
 /**

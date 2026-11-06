@@ -160,6 +160,8 @@ export interface ThreadMessage {
   } | null;
   /** `auto` is true when an away-mode auto-reply sent it (an `auto_replies` row links the message). */
   sentViaSynapse: { status: "sent" | "sent_unverified"; auto: boolean } | null;
+  /** Code answers for this message that are not dismissed (the thread view loads them lazily). */
+  codeAnswerCount: number;
 }
 
 /** Messages are oldest first. */

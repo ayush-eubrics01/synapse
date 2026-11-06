@@ -4,6 +4,7 @@ import type {
   AwayDigest,
   CandidatesResponse,
   ClaudeActivityView,
+  CodeAnswerView,
   CommitmentFilter,
   CommitmentStatus,
   CommitmentView,
@@ -934,6 +935,53 @@ export function cancelEngineeringTask(
   return request(
     `/api/engineering/tasks/${encodeURIComponent(id)}/cancel`,
     { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export function requestCodeAnswer(
+  messageId: string,
+  repositoryId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ codeAnswerId: string }> {
+  return send(
+    "POST",
+    `/api/inbox/messages/${encodeURIComponent(messageId)}/code-answer`,
+    { repositoryId },
+    fetchImpl,
+  );
+}
+
+export function getCodeAnswers(
+  messageId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CodeAnswerView[]> {
+  return request(
+    `/api/inbox/messages/${encodeURIComponent(messageId)}/code-answers`,
+    undefined,
+    fetchImpl,
+  );
+}
+
+export function dismissCodeAnswer(id: string, fetchImpl: typeof fetch = fetch): Promise<void> {
+  return request(
+    `/api/code-answers/${encodeURIComponent(id)}/dismiss`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+/** Requests approval for the (edited) answer; the backend refuses a suspected injection without `useAnyway`. */
+export function sendCodeAnswer(
+  id: string,
+  text: string,
+  useAnyway: boolean,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ outgoingId: string; approvalId: string }> {
+  return send(
+    "POST",
+    `/api/code-answers/${encodeURIComponent(id)}/send`,
+    { text, useAnyway },
     fetchImpl,
   );
 }

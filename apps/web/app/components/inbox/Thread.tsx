@@ -5,6 +5,7 @@ import { useEffect, useRef } from "react";
 import { conversationSub, conversationTitle, groupThread } from "../../../lib/inbox";
 import { Avatar } from "../ui/Avatar";
 import { Button } from "../ui/Button";
+import { CodeAnswerPanel, type CodeAnswersContext } from "./CodeAnswerPanel";
 
 export interface ThreadProps {
   thread: ConversationThread;
@@ -15,6 +16,8 @@ export interface ThreadProps {
   onIgnore: (commitmentId: string) => void;
   /** Proposes an engineering task from a message (Phase 10); the action is hidden without it. */
   onCreateTask?: (messageId: string) => void;
+  /** Code answers (Phase 10b C5); the action is hidden without it. */
+  codeAnswers?: CodeAnswersContext;
 }
 
 function clock(iso: string): string {
@@ -96,7 +99,15 @@ function Annotations({
 }
 
 /** Messages render as plain text (React escaping): untrusted, never HTML, never auto-linked. */
-export function Thread({ thread, now, hidden, onTrack, onIgnore, onCreateTask }: ThreadProps) {
+export function Thread({
+  thread,
+  now,
+  hidden,
+  onTrack,
+  onIgnore,
+  onCreateTask,
+  codeAnswers,
+}: ThreadProps) {
   const ref = useRef<HTMLDivElement>(null);
   // The pane is mounted per conversation (keyed by the caller), so this runs when one opens.
   useEffect(() => {
@@ -133,6 +144,9 @@ export function Thread({ thread, now, hidden, onTrack, onIgnore, onCreateTask }:
                     Create task
                   </Button>
                 </div>
+              )}
+              {codeAnswers && !m.isSelf && m.text !== null && m.text !== "" && (
+                <CodeAnswerPanel messageId={m.id} count={m.codeAnswerCount} {...codeAnswers} />
               )}
               <Annotations m={m} hidden={hidden} onTrack={onTrack} onIgnore={onIgnore} />
             </div>

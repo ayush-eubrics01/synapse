@@ -37,6 +37,7 @@ const msg = (id: string, o: Partial<ThreadMessage> = {}): ThreadMessage => ({
   flag: null,
   commitment: null,
   sentViaSynapse: null,
+  codeAnswerCount: 0,
   ...o,
 });
 

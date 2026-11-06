@@ -8,6 +8,7 @@ import { awayRoutes } from "./routes/away";
 import { brainRoutes } from "./routes/brain";
 import { claudeRoutes } from "./routes/claude";
 import { claudeActivityRoutes } from "./routes/claude-activity";
+import { codeAnswerRoutes } from "./routes/code-answers";
 import { commitmentRoutes } from "./routes/commitments";
 import { dashboardRoutes } from "./routes/dashboard";
 import { engineeringRoutes } from "./routes/engineering";
@@ -35,6 +36,7 @@ export function createApp(c: Container): Hono {
   app.route("/", settingsRoutes(c));
   app.route("/", notificationRoutes(c));
   app.route("/", inboxRoutes(c));
+  app.route("/", codeAnswerRoutes(c));
   app.route("/", slackRoutes(c));
   app.route("/", jiraRoutes(c));
   app.route("/", urgentRoutes(c));

@@ -17,12 +17,15 @@ import type { SettingsService } from "../../core/config/settings";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
 import { BUILTIN_WRITE, classifyTool, normalizeTool } from "../../core/orchestrator/tool-catalog";
-import type { OutgoingService } from "../outgoing/service";
+import { InvalidOutgoingText, type OutgoingService, type SendRequested } from "../outgoing/service";
 import type { SecurityFlagsService } from "../security-flags/service";
 
 const { codeAnswers, slackMessages, repositories } = schema;
 const MODULE = "code-answers";
 const DAY_MS = 86_400_000;
+/** Same bound as `OutgoingService`: a longer reply is refused up front. */
+const MAX_REPLY_TEXT = 4000;
+const DISMISSABLE: CodeAnswerStatus[] = ["ready", "held", "not_answerable", "unverified", "failed"];
 
 /** C2: the reader run for one (message, repository, trigger). Input `{codeAnswerId}`. */
 export const CODE_ANSWER_JOB = "code_answer.generate";
@@ -484,6 +487,126 @@ export class CodeAnswerService {
       .orderBy(desc(codeAnswers.createdAt))
       .all()
       .map((r) => this.toView(r.row, r.repoName, r.outStatus));
+  }
+
+  /**
+   * C5: the user asks for an answer from one repository. Returns the new queued row's id, and
+   * throws `CodeAnswerError` for an unknown message or repository, or a live/settled row.
+   */
+  requestUser(messageId: string, repositoryId: string): { codeAnswerId: string } {
+    const { db, audit } = this.deps;
+    return db.transaction(
+      (tx) => {
+        const codeAnswerId = this.create(tx, { messageId, repositoryId, trigger: "user" });
+        audit.record(tx, {
+          actor: "user",
+          module: MODULE,
+          action: "code_answer.requested",
+          targetRef: codeAnswerId,
+          result: "ok",
+          details: { codeAnswerId, messageId, repositoryId },
+        });
+        return { codeAnswerId };
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  /** The user drops an answer. Only a settled row can be dismissed (not queued, running or sent). */
+  dismiss(id: string): void {
+    const { db, audit } = this.deps;
+    db.transaction(
+      (tx) => {
+        const row = this.row(tx, id);
+        if (!row) throw new CodeAnswerError("not_found");
+        if (!DISMISSABLE.includes(row.status)) throw new CodeAnswerError("invalid_state");
+        tx.update(codeAnswers)
+          .set({ status: "dismissed", updatedAt: this.now() })
+          .where(eq(codeAnswers.id, id))
+          .run();
+        this.publishStatus(tx, row, "dismissed");
+        audit.record(tx, {
+          actor: "user",
+          module: MODULE,
+          action: "code_answer.dismissed",
+          targetRef: id,
+          result: "ok",
+          details: { codeAnswerId: id, from: row.status },
+        });
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  /**
+   * The user's (edited) reply becomes a normal pending `slack.send` approval: exact text and
+   * recipient, no auto-reply tag. A suspected injection needs `useAnyway`, enforced here (not
+   * only in the UI). Nothing is sent until the user approves.
+   */
+  requestSend(id: string, rawText: string, useAnyway: boolean): SendRequested {
+    const { db, audit, outgoing } = this.deps;
+    const text = rawText.trimEnd();
+    if (text.length < 1 || text.length > MAX_REPLY_TEXT) throw new CodeAnswerError("invalid_text");
+    return db.transaction(
+      (tx) => {
+        const row = this.row(tx, id);
+        if (!row) throw new CodeAnswerError("not_found");
+        if ((row.status !== "ready" && row.status !== "held") || row.outgoingId !== null) {
+          throw new CodeAnswerError("invalid_state");
+        }
+        if (row.suspectedInjection?.detected && !useAnyway) {
+          throw new CodeAnswerError("injection_unacknowledged");
+        }
+        const m = tx
+          .select({
+            ts: slackMessages.ts,
+            threadTs: slackMessages.threadTs,
+            conversation: schema.slackConversations.externalId,
+          })
+          .from(slackMessages)
+          .innerJoin(
+            schema.slackConversations,
+            eq(schema.slackConversations.id, slackMessages.conversationId),
+          )
+          .where(eq(slackMessages.id, row.messageId))
+          .get();
+        if (!m) throw new CodeAnswerError("not_found");
+        let requested: SendRequested;
+        try {
+          requested = outgoing.requestSend(tx, {
+            followupId: null,
+            conversationExternalId: m.conversation,
+            threadTs: m.threadTs ?? m.ts,
+            text,
+            requestedByModule: "code-answer",
+          });
+        } catch (e) {
+          if (e instanceof InvalidOutgoingText) throw new CodeAnswerError("invalid_text");
+          throw e;
+        }
+        tx.update(codeAnswers)
+          .set({ outgoingId: requested.outgoingId, status: "sent", updatedAt: this.now() })
+          .where(eq(codeAnswers.id, id))
+          .run();
+        this.publishStatus(tx, row, "sent");
+        audit.record(tx, {
+          actor: "user",
+          module: MODULE,
+          action: "code_answer.send_requested",
+          targetIntegration: "slack",
+          targetRef: m.conversation,
+          approvalId: requested.approvalId,
+          result: "ok",
+          details: {
+            codeAnswerId: id,
+            outgoingId: requested.outgoingId,
+            useAnyway: row.suspectedInjection?.detected ? useAnyway : false,
+          },
+        });
+        return requested;
+      },
+      { behavior: "immediate" },
+    );
   }
 
   get(id: string): CodeAnswerView | null {
