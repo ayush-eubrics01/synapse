@@ -12,7 +12,12 @@ import {
 import { createContainer } from "../../src/container";
 import { loadConfig } from "../../src/core/config/config";
 import { sendInputSha256 } from "../../src/integrations/claude-code/send-guard";
-import { buildSendRequest, SEND, SlackSender } from "../../src/integrations/slack/sender";
+import {
+  buildSendRequest,
+  matchesCommand,
+  SEND,
+  SlackSender,
+} from "../../src/integrations/slack/sender";
 
 const signal = new AbortController().signal;
 const TEXT = "SYNTH-APPROVED-TEXT: deploy is done";
@@ -155,6 +160,29 @@ describe("buildSendRequest", () => {
     const policy = buildSendRequest(cmd({ authorisedBy: "policy" }));
     expect(policy.parts?.[1]?.content).toBe(JSON.stringify(args));
     expect(policy.sendGuard).toEqual(buildSendRequest(cmd()).sendGuard);
+  });
+});
+
+describe("J2 parity: the send guard accepts exactly what matchesCommand accepts", () => {
+  const noThread = { channel_id: "C0SYNTHCHN1", message: TEXT };
+  test.each([
+    ["exact args", cmd(), args, true],
+    ["unfurl_app_links false", cmd(), { ...args, unfurl_app_links: false }, true],
+    ["trailing spaces in message", cmd(), { ...args, message: `${TEXT}  ` }, true],
+    ["approved text with trailing spaces", cmd({ text: `${TEXT} \n` }), args, true],
+    ["unfurl_app_links true", cmd(), { ...args, unfurl_app_links: true }, false],
+    ["reply_broadcast true", cmd(), { ...args, reply_broadcast: true }, false],
+    ["other channel", cmd(), { ...args, channel_id: "C0OTHER" }, false],
+    ["leading space in message", cmd(), { ...args, message: ` ${TEXT}` }, false],
+    ["thread_ts dropped", cmd(), noThread, false],
+    ["thread_ts added", cmd({ threadTs: undefined }), args, false],
+    ["no thread, exact", cmd({ threadTs: undefined }), noThread, true],
+    ["message not a string", cmd(), { ...args, message: 7 }, false],
+  ])("%s", (_n, c, input, expected) => {
+    const guardAllows =
+      sendInputSha256(input) === buildSendRequest(c).sendGuard?.expectedInputSha256;
+    expect(matchesCommand(input, c)).toBe(expected);
+    expect(guardAllows).toBe(expected);
   });
 });
 

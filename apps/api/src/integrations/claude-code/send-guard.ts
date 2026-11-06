@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import type { SendGuard } from "@synapse/contracts";
 
-export { canonicalSendInput, sendInputSha256 } from "./send-guard-canonical";
+export { canonicalSendInput, normaliseSendInput, sendInputSha256 } from "./send-guard-canonical";
 
 /** Absolute path of the hook script Claude Code runs before the guarded tool (J2). */
 export const SEND_GUARD_HOOK_PATH = fileURLToPath(new URL("./send-guard-hook.ts", import.meta.url));

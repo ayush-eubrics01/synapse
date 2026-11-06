@@ -97,8 +97,10 @@ export function buildSendRequest(cmd: SendMessageCommand): ClaudeJobRequest {
  * True when the tool_use input carries exactly the approved arguments: channel_id and thread_ts
  * exact (both absent matches), message exact after trimEnd on both sides. The only extra key
  * tolerated is `unfurl_app_links: false`; anything else (reply_broadcast, draft_id, ...) mismatches.
+ * The J2 send guard (`normaliseSendInput` + `sendInputSha256`) accepts exactly the same inputs; a
+ * parity test keeps the two in step.
  */
-function matchesCommand(input: unknown, cmd: SendMessageCommand): boolean {
+export function matchesCommand(input: unknown, cmd: SendMessageCommand): boolean {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return false;
   const a = input as Record<string, unknown>;
   for (const k of Object.keys(a)) {

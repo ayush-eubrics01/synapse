@@ -44,7 +44,9 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *  I. send run with untrusted content (rule 5; subsumed by D, kept as defence in depth)
  *  J. untrusted content contains the boundary (rule 6)
  *  K. policy_approved content outside a send run (rule F's single write connector; J1, ADR-033);
- *     alongside untrusted content it already fails rule D
+ *     alongside untrusted content it already fails rule D. A send run must carry a sendGuard
+ *     whose toolName is its write tool (J2), so every send is blocked by the PreToolUse hook
+ *     unless its arguments are the approved ones
  * Tool names are normalised (specifier stripped) before classification.
  */
 export function validateRequest(
@@ -161,6 +163,9 @@ export function validateRequest(
     req.promptParts.some((p) => p.provenance === "policy_approved")
   ) {
     return fail("policy_approved content outside a send run");
+  }
+  if (w !== undefined && req.sendGuard?.toolName !== w) {
+    return fail("send run without a matching send guard");
   }
 
   return { ok: true };

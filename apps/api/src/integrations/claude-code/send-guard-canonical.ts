@@ -22,7 +22,24 @@ export function canonicalSendInput(input: unknown): string {
   return canon(input);
 }
 
-/** Lowercase hex sha256 of `canonicalSendInput(input)`. */
+/**
+ * Parity with the sender's after-the-fact `matchesCommand`: on a plain object, drop
+ * `unfurl_app_links` when it is exactly `false` and `trimEnd` a string `message`. Everything else is
+ * kept, so an unknown key or `unfurl_app_links: true` still changes the hash. Idempotent; applied to
+ * both the expected arguments and the observed `tool_input`.
+ */
+export function normaliseSendInput(input: unknown): unknown {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input;
+  return Object.fromEntries(
+    Object.entries(input)
+      .filter(([k, v]) => !(k === "unfurl_app_links" && v === false))
+      .map(([k, v]) => [k, k === "message" && typeof v === "string" ? v.trimEnd() : v]),
+  );
+}
+
+/** Lowercase hex sha256 of `canonicalSendInput(normaliseSendInput(input))`. */
 export function sendInputSha256(input: unknown): string {
-  return createHash("sha256").update(canonicalSendInput(input), "utf8").digest("hex");
+  return createHash("sha256")
+    .update(canonicalSendInput(normaliseSendInput(input)), "utf8")
+    .digest("hex");
 }

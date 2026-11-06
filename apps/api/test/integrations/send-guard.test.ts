@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import {
   buildGuardedOverride,
   canonicalSendInput,
+  normaliseSendInput,
   SEND_GUARD_HOOK_PATH,
   sendInputSha256,
   shellQuote,
@@ -75,12 +76,30 @@ describe("canonicalSendInput / sendInputSha256", () => {
   test.each([
     ["channel_id", { ...args, channel_id: "D0SYNTH2" }],
     ["message", { ...args, message: "SYNTH: on it!" }],
-    ["message whitespace", { ...args, message: "SYNTH: on it " }],
+    ["leading message whitespace", { ...args, message: " SYNTH: on it" }],
     ["thread_ts", { ...args, thread_ts: "1793872900.000301" }],
     ["thread_ts absent", { channel_id: args.channel_id, message: args.message }],
     ["extra key", { ...args, reply_broadcast: true }],
+    ["unfurl_app_links true", { ...args, unfurl_app_links: true }],
+    ["unfurl_app_links null", { ...args, unfurl_app_links: null }],
   ])("the sha256 changes when %s changes", (_n, other) => {
     expect(sendInputSha256(other)).not.toBe(sendInputSha256(args));
+  });
+  test.each([
+    ["unfurl_app_links false", { ...args, unfurl_app_links: false }],
+    ["trailing message spaces", { ...args, message: "SYNTH: on it  \n" }],
+    ["both", { ...args, message: "SYNTH: on it ", unfurl_app_links: false }],
+  ])("parity with matchesCommand: %s hashes like the approved args", (_n, other) => {
+    expect(sendInputSha256(other)).toBe(sendInputSha256(args));
+  });
+  test("normaliseSendInput leaves non-objects and other keys alone", () => {
+    expect(normaliseSendInput("x")).toBe("x");
+    expect(normaliseSendInput([1])).toEqual([1]);
+    expect(normaliseSendInput({ message: 3, unfurl_app_links: 0, a: " b " })).toEqual({
+      message: 3,
+      unfurl_app_links: 0,
+      a: " b ",
+    });
   });
 });
 
@@ -158,9 +177,20 @@ describe("send-guard-hook.ts", () => {
     expect(r.stderr).not.toContain("SYNTH");
   });
 
-  test("an extra key exits 2", async () => {
-    const r = await runHook(sha, hookJson({ ...args, unfurl_app_links: false }));
+  test.each([
+    ["unfurl_app_links false", { ...args, unfurl_app_links: false }],
+    ["trailing message spaces", { ...args, message: "SYNTH: on it   " }],
+  ])("parity: %s is allowed (exit 0)", async (_n, input) => {
+    expect((await runHook(sha, hookJson(input))).code).toBe(0);
+  });
+
+  test.each([
+    ["unfurl_app_links true", { ...args, unfurl_app_links: true }],
+    ["reply_broadcast true", { ...args, reply_broadcast: true }],
+  ])("parity: %s is blocked (exit 2)", async (_n, input) => {
+    const r = await runHook(sha, hookJson(input));
     expect(r.code).toBe(2);
+    expect(r.stderr.trim()).toBe(REASON);
   });
 
   test.each([

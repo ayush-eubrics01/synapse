@@ -13,6 +13,7 @@ import { validateRequest } from "../../src/core/orchestrator/validator";
 const SEARCH = "mcp__claude_ai_Slack__slack_search_public";
 const SEND = "mcp__claude_ai_Slack__slack_send_message";
 const untrusted: PromptPart = { provenance: "untrusted", source: "slack", content: "hi" };
+const GUARD = { toolName: SEND, expectedInputSha256: "d".repeat(64) };
 
 function make(over: Partial<AIExecutionRequest> & { allowed?: string[] } = {}): AIExecutionRequest {
   const allowedTools = over.allowed ?? [SEARCH, "ToolSearch"];
@@ -57,6 +58,7 @@ describe("validateRequest", () => {
     const r = make({
       allowed: [SEND, "ToolSearch"],
       promptParts: [{ provenance: "user_approved", content: "t" }],
+      sendGuard: GUARD,
     });
     expect(v(r)).toEqual({ ok: true });
   });
@@ -201,8 +203,24 @@ describe("rule K: policy_approved only in a send run (J1)", () => {
   const policy: PromptPart = { provenance: "policy_approved", content: '{"channel_id":"D1"}' };
   const sys: PromptPart = { provenance: "system", content: "send it" };
   test("policy_approved with system parts in a send run is ok", () => {
-    const r = make({ allowed: [SEND, "ToolSearch"], promptParts: [sys, policy] });
+    const r = make({ allowed: [SEND, "ToolSearch"], promptParts: [sys, policy], sendGuard: GUARD });
     expect(v(r)).toEqual({ ok: true });
+  });
+  test.each([
+    ["no guard", undefined],
+    ["a guard for another tool", { ...GUARD, toolName: SEARCH }],
+  ])("a send run with %s fails", (_n, sendGuard) => {
+    for (const provenance of ["user_approved", "policy_approved"] as const) {
+      const r = make({
+        allowed: [SEND, "ToolSearch"],
+        promptParts: [sys, { provenance, content: "{}" }],
+        ...(sendGuard ? { sendGuard } : {}),
+      });
+      expect(reason(v(r))).toBe("send run without a matching send guard");
+    }
+  });
+  test("a guard on a run without a write tool is harmless", () => {
+    expect(v(make({ sendGuard: GUARD }))).toEqual({ ok: true });
   });
   test("policy_approved in an intelligence run with no write tool fails", () => {
     const r = make({
@@ -221,7 +239,11 @@ describe("rule K: policy_approved only in a send run (J1)", () => {
     expect(reason(v(r))).toBe("policy_approved content outside a send run");
   });
   test("policy_approved with untrusted content in a send run fails (rule D)", () => {
-    const r = make({ allowed: [SEND, "ToolSearch"], promptParts: [sys, policy, untrusted] });
+    const r = make({
+      allowed: [SEND, "ToolSearch"],
+      promptParts: [sys, policy, untrusted],
+      sendGuard: GUARD,
+    });
     expect(reason(v(r))).toBe(`untrusted content with write-capable tool ${SEND}`);
   });
 });

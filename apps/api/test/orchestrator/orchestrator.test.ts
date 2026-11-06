@@ -415,6 +415,21 @@ describe("run", () => {
     expect("sendGuard" in (provider.requests[1] ?? {})).toBe(false);
   });
 
+  test("J2: a send run without a guard is rejected before the provider", async () => {
+    const e = await fails(
+      run(
+        req({
+          priorityClass: "send",
+          allowedTools: ["mcp__claude_ai_Slack__slack_send_message"],
+          parts: [{ provenance: "user_approved", content: "{}" }],
+        }),
+      ),
+    );
+    expect(e.classified.kind).toBe("invalid_input");
+    expect(e.classified.message).toBe("send run without a matching send guard");
+    expect(provider.requests).toHaveLength(0);
+  });
+
   test("J2: a malformed sendGuard is invalid_input and never reaches the provider", async () => {
     const e = await fails(
       run(
@@ -437,6 +452,7 @@ const sendReq = () =>
     priorityClass: "send",
     allowedTools: [SEND],
     parts: [{ provenance: "user_approved", content: "reply text" }],
+    sendGuard: { toolName: SEND, expectedInputSha256: "e".repeat(64) },
   });
 const deferred = () => {
   let release: () => void = () => {};
@@ -763,6 +779,10 @@ describe("auth pause (ADR-037 §4)", () => {
           priorityClass: "send",
           allowedTools: ["mcp__claude_ai_Slack__slack_send_message"],
           parts: [{ provenance: "user_approved", content: "reply text" }],
+          sendGuard: {
+            toolName: "mcp__claude_ai_Slack__slack_send_message",
+            expectedInputSha256: "e".repeat(64),
+          },
         }),
       ),
     );
