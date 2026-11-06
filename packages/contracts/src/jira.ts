@@ -72,3 +72,18 @@ export const jiraStatusDtoSchema = z.object({
   lastError: z.string().nullable(),
 });
 export type JiraStatusDto = z.infer<typeof jiraStatusDtoSchema>;
+
+/**
+ * The read port the Jira workers use (the `jira/claude-connector` adapter implements it). One call
+ * is one page or one resource lookup; each is a separate collector run.
+ */
+export interface JiraIssueSource {
+  resolveCloudId(signal: AbortSignal): Promise<{ id: string; url: string; name: string }[]>;
+  searchPage(
+    args: { cloudId: string; jql: string; maxResults: number; nextPageToken?: string },
+    signal: AbortSignal,
+  ): Promise<{ issues: SourceIssue[]; nextPageToken: string | null; total: number | null }>;
+}
+
+export const jiraIssueViewKindSchema = z.enum(["attention", "open", "done", "all"]);
+export type JiraIssueViewKind = z.infer<typeof jiraIssueViewKindSchema>;

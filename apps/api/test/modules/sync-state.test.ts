@@ -36,3 +36,24 @@ test("countSearches accumulates and resets on a new UTC day", () => {
   expect(db.transaction((tx) => sync.countSearches(tx, "slack.messages", 1))).toBe(1);
   expect(sync.get("slack.messages").searchCountDate).toBe("2026-11-06");
 });
+
+test("jira streams live under their own integration row", () => {
+  db.transaction((tx) =>
+    sync.update(tx, "jira.issues", { checkpoint: "2026-11-05T00:00:00.000Z" }),
+  );
+  sync.get("slack.messages");
+  sync.get("jira.reconcile");
+  const kinds = db
+    .select()
+    .from(schema.integrations)
+    .all()
+    .map((i) => i.kind)
+    .sort();
+  expect(kinds).toEqual(["jira", "slack"]);
+  expect(sync.get("jira.issues").checkpoint).toBe("2026-11-05T00:00:00.000Z");
+  expect(sync.get("slack.messages").checkpoint).toBeNull();
+  const rows = db.select().from(schema.integrationSyncStates).all();
+  const byStream = new Map(rows.map((r) => [r.stream, r.integrationId]));
+  expect(byStream.get("jira.issues")).toBe(byStream.get("jira.reconcile"));
+  expect(byStream.get("jira.issues")).not.toBe(byStream.get("slack.messages"));
+});

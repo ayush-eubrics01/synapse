@@ -3,7 +3,12 @@ import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
 import { and, eq } from "drizzle-orm";
 
-export type SyncStream = "slack.messages" | "slack.backfill";
+export type SyncStream = "slack.messages" | "slack.backfill" | "jira.issues" | "jira.reconcile";
+type IntegrationKind = "slack" | "jira";
+
+/** Each stream belongs to the integration named by its prefix. */
+const kindOf = (stream: SyncStream): IntegrationKind =>
+  stream.startsWith("jira.") ? "jira" : "slack";
 export type SyncStatus = "idle" | "running" | "paused" | "complete" | "error";
 
 export interface SyncState {
@@ -25,14 +30,14 @@ export interface SyncState {
 const { integrations, integrationSyncStates } = schema;
 
 export class SyncStateService {
-  private integrationId: string | null = null;
+  private readonly integrationIds = new Map<IntegrationKind, string>();
 
   constructor(
     private readonly db: Db,
     private readonly clock: Clock,
   ) {}
 
-  ensureIntegration(kind: "slack", adapter: "claude-connector"): string {
+  ensureIntegration(kind: IntegrationKind, adapter: "claude-connector"): string {
     this.db
       .insert(integrations)
       .values({ id: newId(), kind, adapter, createdAt: this.clock.now().toISOString() })
@@ -44,13 +49,13 @@ export class SyncStateService {
       .where(and(eq(integrations.kind, kind), eq(integrations.adapter, adapter)))
       .get();
     if (!row) throw new Error("integration row vanished");
-    this.integrationId = row.id;
+    this.integrationIds.set(kind, row.id);
     return row.id;
   }
 
   /** Reads (creating on first use) the stream's state. Pass `tx` to read inside a transaction. */
   get(stream: SyncStream, tx: DbOrTx = this.db): SyncState {
-    const integrationId = this.integrationId ?? this.ensureIntegration("slack", "claude-connector");
+    const integrationId = this.integrationFor(stream);
     this.ensureRow(tx, integrationId, stream);
     const row = tx
       .select()
@@ -81,7 +86,7 @@ export class SyncStateService {
   }
 
   update(tx: DbOrTx, stream: SyncStream, patch: Partial<SyncState>): void {
-    const integrationId = this.integrationId ?? this.ensureIntegration("slack", "claude-connector");
+    const integrationId = this.integrationFor(stream);
     this.ensureRow(tx, integrationId, stream);
     const { stream: _ignored, ...fields } = patch;
     const set = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
@@ -104,6 +109,11 @@ export class SyncStateService {
     const count = (state.searchCountDate === today ? state.searchCount : 0) + n;
     this.update(tx, stream, { searchCount: count, searchCountDate: today });
     return count;
+  }
+
+  private integrationFor(stream: SyncStream): string {
+    const kind = kindOf(stream);
+    return this.integrationIds.get(kind) ?? this.ensureIntegration(kind, "claude-connector");
   }
 
   private ensureRow(tx: DbOrTx, integrationId: string, stream: SyncStream): void {

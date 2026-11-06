@@ -41,6 +41,7 @@ import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
 import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notifier";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
+import { JiraConnectorSource } from "./integrations/jira/connector-source";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
 import { AutoReplyService } from "./modules/auto-reply/service";
@@ -55,6 +56,9 @@ import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
 import { UrgentInbox } from "./modules/inbox/urgent";
+import { JiraService } from "./modules/jira-tracking/service";
+import { JiraStore } from "./modules/jira-tracking/store";
+import { participantLabel } from "./modules/outgoing/preview";
 import { OutgoingService } from "./modules/outgoing/service";
 import { replyStates, UrgentReplies } from "./modules/outgoing/urgent-reply";
 import { ContactDiscovery } from "./modules/people/discovery";
@@ -68,6 +72,7 @@ import { SecurityFlagsService } from "./modules/security-flags/service";
 import { registerAutoReplyJobs } from "./workers/auto-reply/evaluate";
 import { registerCommitmentJobs } from "./workers/commitments";
 import { createRunHelpers } from "./workers/intelligence-shared";
+import { registerJiraJobs } from "./workers/jira";
 import { registerOutgoingJobs } from "./workers/outgoing";
 import { registerPeopleJobs } from "./workers/people";
 import { registerSlackJobs } from "./workers/slack";
@@ -121,6 +126,8 @@ export interface Container {
   /** Job handler registry; the urgency smoke script runs one handler directly. */
   handlers: ReadonlyMap<string, HandlerRegistration>;
   dashboard: DashboardService;
+  /** Read-only Jira tracking (Phase 8): status, issue views, manual sync and scope settings. */
+  jira: JiraService;
   slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
@@ -406,6 +413,27 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     guidelinesFor: responseGuidelinesLookup(db, (id) => profileStore.getResponseGuidelines(id)),
   });
 
+  const jiraStore = new JiraStore({
+    db,
+    clock,
+    events,
+    settings,
+    conversationLabel: (tx, conv) => participantLabel(tx, conv, settings.get("slack.selfUserId")),
+  });
+  const jira = new JiraService({ db, clock, settings, sync, store: jiraStore, queue });
+  registerJiraJobs({
+    db,
+    clock,
+    settings,
+    sync,
+    store: jiraStore,
+    queue,
+    events,
+    scheduler,
+    handlers,
+    source: new JiraConnectorSource({ orchestrator, clock }),
+  });
+
   const health = new HealthService({
     database: databaseCheck(sqlite),
     jobs: jobsCheck(db, clock),
@@ -473,6 +501,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     commitmentLifecycle,
     followups: followupService,
     dashboard,
+    jira,
     handlers,
     recoverySweeps: [
       { name: "urgency.assess", run: urgency.recoverySweep },

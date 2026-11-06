@@ -1,0 +1,168 @@
+import type { JiraIssueView, JiraIssueViewKind, JiraStatusDto } from "@synapse/contracts";
+import { type Db, schema, type Tx } from "@synapse/database";
+import { type Clock, isoNow, newId } from "@synapse/shared";
+import { and, eq, inArray } from "drizzle-orm";
+import type { SettingsService } from "../../core/config/settings";
+import type { JobQueue } from "../../core/jobs/queue";
+import type { SyncStateService } from "../inbox/sync-state";
+import type { JiraStore } from "./store";
+
+export const JIRA_JOB = {
+  resolveCloudId: "jira.resolve_cloud_id",
+  sync: "jira.sync_incremental",
+  reconcile: "jira.reconcile",
+} as const;
+export type JiraJobType = (typeof JIRA_JOB)[keyof typeof JIRA_JOB];
+
+/** Cloud-id problems the user fixes by hand (spec B4); shown as the status's `lastError`. */
+export const CLOUD_ID_REASONS = ["multiple_sites", "no_sites"] as const;
+
+/** `requestSync` while `jira.enabled` is false. The route maps it to 409. */
+export class JiraDisabled extends Error {
+  constructor() {
+    super("jira is disabled");
+    this.name = "JiraDisabled";
+  }
+}
+
+export interface JiraSettingsPatch {
+  enabled?: boolean;
+  scopeJql?: string;
+  excludedProjects?: string[];
+}
+
+export interface JiraServiceDeps {
+  db: Db;
+  clock: Clock;
+  settings: SettingsService;
+  sync: SyncStateService;
+  store: JiraStore;
+  queue: JobQueue;
+}
+
+const LIVE = ["PENDING", "RETRY", "RUNNING"] as const;
+
+export class JiraService {
+  constructor(private readonly deps: JiraServiceDeps) {}
+
+  status(): JiraStatusDto {
+    const { settings, sync, store } = this.deps;
+    const issues = sync.get("jira.issues");
+    const reconcile = sync.get("jira.reconcile");
+    const err = issues.lastError ?? reconcile.lastError;
+    return {
+      enabled: settings.get("jira.enabled"),
+      cloudIdSet: settings.get("jira.cloudId") !== null,
+      lastSyncAt: issues.lastSuccessAt,
+      lastReconcileAt: reconcile.lastSuccessAt,
+      issueCount: store.inScopeCount(),
+      // Kinds and fixed reasons only, never connector text.
+      lastError:
+        err === null
+          ? null
+          : err.kind === "needs_attention" &&
+              (CLOUD_ID_REASONS as readonly string[]).includes(err.message)
+            ? err.message
+            : err.kind,
+    };
+  }
+
+  list(view: JiraIssueViewKind): JiraIssueView[] {
+    return this.deps.store.list(view);
+  }
+
+  get(key: string): JiraIssueView | null {
+    return this.deps.store.get(key);
+  }
+
+  /**
+   * Queues an incremental sync now, or the cloudId lookup when none is set. A job of that type
+   * already waiting or running is returned instead of a second one.
+   */
+  requestSync(): { jobId: string; type: JiraJobType; created: boolean } {
+    const { db, settings } = this.deps;
+    if (!settings.get("jira.enabled")) throw new JiraDisabled();
+    return db.transaction(
+      (tx) => {
+        const type =
+          settings.get("jira.cloudId") === null ? JIRA_JOB.resolveCloudId : JIRA_JOB.sync;
+        return { type, ...this.enqueueOnce(tx, type, "manual") };
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  /**
+   * Applies validated settings in one transaction (a bad value throws and nothing is written).
+   * Turning Jira on queues the cloudId lookup, or a sync when the cloudId is known. A scope or
+   * exclusion change resets the incremental checkpoint (the next sync takes the full window),
+   * supersedes running chains, takes newly excluded projects out of scope and queues a reconcile.
+   */
+  updateSettings(patch: JiraSettingsPatch): JiraStatusDto {
+    const { db, settings, sync, store } = this.deps;
+    db.transaction(
+      (tx) => {
+        const wasEnabled = settings.get("jira.enabled");
+        const oldScope = settings.get("jira.scope.jql");
+        const oldExcluded = settings.get("jira.excludedProjects");
+        if (patch.enabled !== undefined) settings.setIn(tx, "jira.enabled", patch.enabled);
+        if (patch.scopeJql !== undefined) settings.setIn(tx, "jira.scope.jql", patch.scopeJql);
+        if (patch.excludedProjects !== undefined) {
+          settings.setIn(tx, "jira.excludedProjects", patch.excludedProjects);
+        }
+        const enabled = patch.enabled ?? wasEnabled;
+        const scopeChanged = patch.scopeJql !== undefined && patch.scopeJql !== oldScope;
+        const excluded = patch.excludedProjects ?? oldExcluded;
+        const excludedChanged =
+          patch.excludedProjects !== undefined &&
+          JSON.stringify([...excluded].sort()) !== JSON.stringify([...oldExcluded].sort());
+        const hasCloudId = settings.get("jira.cloudId") !== null;
+
+        if (scopeChanged || excludedChanged) {
+          sync.update(tx, "jira.issues", { checkpoint: null, generation: newId(), status: "idle" });
+          sync.update(tx, "jira.reconcile", { generation: newId(), status: "idle" });
+          if (excludedChanged) store.dropExcluded(tx, excluded);
+          if (enabled && hasCloudId) this.enqueueOnce(tx, JIRA_JOB.reconcile, "settings", true);
+        }
+        if (enabled && !wasEnabled) {
+          this.enqueueOnce(tx, hasCloudId ? JIRA_JOB.sync : JIRA_JOB.resolveCloudId, "enabled");
+        }
+      },
+      { behavior: "immediate" },
+    );
+    return this.status();
+  }
+
+  private enqueueOnce(tx: Tx, type: JiraJobType, trigger: string, fresh = false) {
+    return enqueueJiraJob(tx, this.deps.queue, this.deps.clock, type, trigger, fresh);
+  }
+}
+
+/**
+ * Enqueues `type` unless one is already pending or running (that job is returned). `fresh` skips
+ * the check for a reconcile that must run against a new scope; the older run is superseded by its
+ * generation.
+ */
+export function enqueueJiraJob(
+  tx: Tx,
+  queue: JobQueue,
+  clock: Clock,
+  type: JiraJobType,
+  trigger: string,
+  fresh = false,
+): { jobId: string; created: boolean } {
+  if (!fresh) {
+    const live = tx
+      .select({ id: schema.jobs.id })
+      .from(schema.jobs)
+      .where(and(eq(schema.jobs.type, type), inArray(schema.jobs.status, [...LIVE])))
+      .limit(1)
+      .get();
+    if (live) return { jobId: live.id, created: false };
+  }
+  const r = queue.enqueue(tx, {
+    type,
+    idempotencyKey: `${type}:${trigger}:${isoNow(clock)}:${newId()}`,
+  });
+  return { jobId: r.id, created: r.created };
+}
