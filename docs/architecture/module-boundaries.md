@@ -51,6 +51,7 @@ Rules:
 | `inbox` | `slack_conversations`, `slack_messages`, `slack_users`, `slack_attachments`, `slack_message_references`, urgency state | `MessageSource` port, urgency results | `message.*` |
 | `people` | `people`, `temporary_contacts`, `people_profiles*`, `people_priority_settings` | `message.received`, approvals | `person.*` |
 | `commitments` | `commitments`, `commitment_sources`, `commitment_updates`, `followups`, `followup_history` | messages, Jira updates, approvals | `commitment.*`, `followup.*` |
+| `auto-reply` | `away_sessions`, `auto_replies`; writes `auto_replies.{decision,reason,text,outgoing_id,approval_id}` (the last two through `OutgoingService.requestAutoSend`) | `message.urgent_detected`, `followup.draft_created`, people priority, security flags, settings; requests sends only via `OutgoingService` | `away.changed`, `autoreply.*` |
 | `jira-tracking` | `jira_*` tables | `IssueSource` port | `jira.*` |
 | `engineering-brain` | `repositories`, `repository_environments`, `projects`, `project_*` tables | `RepositoryProvider` port, messages, Jira | `project.*` |
 | `engineering-tasks` | `engineering_tasks`, `engineering_task_steps` | approvals, orchestrator, `RepositoryProvider` | `engineering.*` |
@@ -58,6 +59,8 @@ Rules:
 | `claude-activity` | `claude_sessions`, `claude_session_prs` | `~/.claude/projects` session metadata (read-only, registered repos only) | `claude_session.*` |
 | `dashboard` | `dashboard_*` tables | read APIs of other modules | — |
 | `settings` | user-facing settings over `app_settings` | `ConfigService` | `settings.changed` |
+
+`auto-reply` never imports adapters or the orchestrator, and never sends: it asks `OutgoingService` for a policy-approved send, which runs through the approval engine and `SlackSender`. `AUTO_REPLY_TAG` lives in `packages/contracts` so the module, the outgoing service and the web share one constant.
 
 ## Intelligence (`apps/api/src/intelligence`)
 

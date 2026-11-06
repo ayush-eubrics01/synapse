@@ -210,13 +210,22 @@ interface SendResult {
   runId?: string;
 }
 
+interface SendOptions {
+  /** false (or a throw) cancels the send before Claude spawns: the sink rethrows cancelled_before_spawn. */
+  beforeSpawn?: () => boolean;
+}
+
 interface MessageSink {
-  send(cmd: SendMessageCommand, signal: AbortSignal): Promise<SendResult>;
+  send(cmd: SendMessageCommand, signal: AbortSignal, opts?: SendOptions): Promise<SendResult>;
   /** true / false when found / not found after sinceTs; null when it could not be checked.
    *  Throws auth_paused / quota_exhausted / rate_limited (R18). */
   findSent(cmd: SendMessageCommand, sinceTs: string): Promise<boolean | null>;
 }
 ```
+
+**Policy sends (`requestAutoSend`, Phase 6b).** `OutgoingService.requestAutoSend(tx, { autoReplyId, conversationExternalId, threadTs, text, followupId })` runs inside the caller's transaction. It requires `text` to end with `Sent using @claude`, an `auto_replies` row with `decision = 'sent'` and no outgoing yet, and a request that matches that row exactly. It throws `AutoSendBlocked` when away is off or another session is open, and `AutoReplyDisabledByPermission` when the user tightened `slack.auto_reply`. Otherwise it records the outgoing row plus a policy approval and links both to the row. The executor then calls `sink.send` with `authorisedBy: "policy"` and a `beforeSpawn` that re-checks away mode, the session and the gate.
+
+**`sendGuard`.** `ClaudeJobRequest` and `AIExecutionRequest` accept `sendGuard?: { toolName, expectedInputSha256 }`. `SlackSender` sets it on every send. See `docs/modules/claude-orchestrator.md`, "Send runs".
 
 **Send run (`SlackSender.send`).** One orchestrator run: profile `collector`, priority class `send`, model haiku, `maxTurns: 3`, `allowedTools: [slack_send_message, ToolSearch]`. The prompt has a system part (call the tool once with exactly the given arguments) and one approved part, `user_approved` (or `policy_approved` when `SendMessageCommand.authorisedBy` is `"policy"`, ADR-033): the JSON of `{channel_id, message, thread_ts?}`. There are no untrusted parts and no `expectedToolNames`; the adapter classifies the raw tool results itself. The request validator rejects a send request with more than one allowed tool or with untrusted content, a `policy_approved` part anywhere else, and a send request without a `sendGuard` for its write tool (rule K). It cannot check the tool arguments the model will use. Since Phase 6b the request carries a `sendGuard`: a per-run `PreToolUse` hook blocks the send call unless its canonical `tool_input` hashes to the approved arguments' sha256 (J2; see `docs/modules/claude-orchestrator.md`). The after-the-fact check below stays as a second layer.
 

@@ -12,7 +12,7 @@ One scrolling page with anchored sections. The sidebar scrolls to a section and 
 
 | Section id | Content |
 |---|---|
-| `overview` | Header: date, greeting with the confirmed identity's name, a one-line briefing, ⌘K, the Away mode toggle (disabled until Phase 6b), and the health pill with its fix hints |
+| `overview` | Header: date, greeting with the confirmed identity's name, a one-line briefing, ⌘K, the Away mode toggle (Phase 6b: starts and ends an away session), and the health pill with its fix hints |
 | `triage` | Needs you: one decision feed in a fixed order, then the all-clear checklist |
 | `running` | How Synapse is running: the pipeline, quota bars with threshold markers, Claude login, the last run, and the engineering lock ("not in use yet") |
 | `inbox` | Conversation list (All, Direct, Channels, They wrote last), the annotated thread, and a composer that acts only on an open urgent item |

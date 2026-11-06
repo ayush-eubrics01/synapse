@@ -82,6 +82,16 @@ Auto-send happens only if away mode is on, the recipient is a priority person, t
 
 The drafting run has no send tool. The send run's only tool is `slack_send_message`, with arguments fixed by the policy (ADR-032). Its approved part carries the `policy_approved` provenance, which the validator allows only in a send run (rule K), and the send guard (J2) blocks any call whose arguments differ from the policy-approved ones.
 
+### Auto-send path and send guard
+
+1. `AutoReplyService.evaluate` decides deterministically (`decideAutoReply`) and records an `auto_replies` row.
+2. `OutgoingService.requestAutoSend` inserts the outgoing row and calls `ApprovalEngine.recordPolicyApproval`, which accepts only action `slack.auto_reply` and only while its effective permission is `policy_gated`. The approval is `approved` with `decided_by = 'policy'`, audited as actor `system`, action `approval.policy_approved`. The user can tighten the permission (auto-replies then hold as `policy_disabled`) but not loosen it.
+3. The normal executor runs the send: revalidate, claim, then a `beforeSpawn` check. If away was switched off before the run spawned, the send is cancelled (`cancelled_before_spawn`) and the auto-reply is held. A spawned send finishes.
+4. **Send guard (J2).** `ClaudeCliProvider` writes a per-run `--settings` override with one PreToolUse hook on the send tool. The hook hashes the canonical `tool_input` (keys sorted, `unfurl_app_links: false` dropped, `message` `trimEnd`ed), checks `tool_name`, and exits 2 on any difference. The command ends `|| exit 2` so a hook that cannot start blocks rather than allows, and the override forces `disableAllHooks: false`. Proven on the real CLI on 2026-11-06 (`scripts/dev/hook-smoke.ts`: wrong hash blocked, `--allow` allowed).
+5. **Residual risk.** If the hook times out (10 s) the CLI may let the call proceed. The after-the-fact argument check on the raw tool result (`argument_mismatch`, high flag, needs attention) is the backstop.
+
+Away mode is the only exception to approval for external writes, and it is bounded by the checks above. Audit rows, events and logs never contain reply text.
+
 ## 7. Audit
 
 Audit events record: who initiated, which module proposed, which worker profile and Claude run produced it, what was approved, when it ran, the result, and the external record affected. Audit rows are never removed by retention.

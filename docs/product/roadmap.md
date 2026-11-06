@@ -11,7 +11,7 @@ This list amends the phase plan in `pre-project-concept-document/concept.md`. Wh
 | 4 | Urgency engine and inbox | Done |
 | 5 | People Memory | Built; PR #6 open for merge |
 | 6 | Commitments, follow-ups and approved sending | Built; PR open (stacked on Phase 5) |
-| 6b | Away-mode auto-replies (ADR-033) and the return digest | Planned. Split out of Phase 6; it builds on Phase 6's send path |
+| 6b | Away-mode auto-replies (ADR-033) and the return digest | Built; PR open (stacked on Phase 7). Module doc: `docs/modules/auto-reply.md`. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-6b-followups.md` |
 | 7 | **Design revamp** | Built; PR open (stacked on Phase 6). Inserted at the user's request (2026-11-06), before the Jira integration. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-7-followups.md` |
 | 8 | Jira integration | Planned. Was Phase 7 |
 | 9 | Engineering Brain | Planned. Was Phase 8 |
@@ -38,4 +38,4 @@ Constraints the plan must respect:
 - Business logic stays in the backend (CLAUDE.md rule 6), so new aggregate views get API endpoints.
 - Fonts are self-hosted, using `next/font` at build time, so the dashboard makes no runtime requests to Google.
 - Every existing capability stays reachable.
-- The Away mode toggle is only wired once Phase 6b exists. Until then it is shown disabled, with an explanation.
+- The Away mode toggle is wired by Phase 6b (`docs/modules/auto-reply.md`).
