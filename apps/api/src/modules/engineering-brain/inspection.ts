@@ -3,6 +3,7 @@ import {
   type FactKind,
   INSPECTION_MAX_FACTS,
   isSafeAbsolutePath,
+  type RawToolResult,
   type RepositoryProvider,
 } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
@@ -12,7 +13,7 @@ import type { AuditLogger } from "../../core/audit/audit";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
 import type { RawInspection } from "../../intelligence/brain/inspect-prompt";
-import { type DropReason, normaliseFactContent, verifyFacts } from "./evidence";
+import { type DropReason, normaliseFactContent, observedPaths, verifyFacts } from "./evidence";
 
 const { repositories, projectRepositories, projectFacts, jobs } = schema;
 const MODULE = "engineering-brain";
@@ -197,7 +198,8 @@ export class InspectionService {
   }
 
   /**
-   * Verifies the run's facts against the repository, inserts the survivors as `needs_review`
+   * Verifies the run's facts against the repository and against the run's own tool results
+   * (evidence the run never observed is dropped; ADR-026), inserts the survivors as `needs_review`
    * (skipping any whose kind and normalised content match an approved, rejected or pending fact of
    * the project), at most 40, sets `inspected_head_sha` and publishes `brain.facts_proposed`.
    * Approved facts are never touched (C9). One transaction, which first re-checks that the
@@ -208,10 +210,16 @@ export class InspectionService {
     output: RawInspection;
     claudeRunId: string | null;
     permissionDenials: readonly string[];
+    /** The run's raw tool results: the only record of what it actually read. */
+    toolResults: readonly RawToolResult[];
   }): InspectionSummary | { skipped: "unregistered" } {
     const { db, clock, events, audit } = this.deps;
     const { target, output } = input;
-    const verified = verifyFacts(target.localPath, output.facts);
+    const verified = verifyFacts(
+      target.localPath,
+      output.facts,
+      observedPaths(target.localPath, input.toolResults),
+    );
     const kept = verified.kept.slice(0, INSPECTION_MAX_FACTS);
     return db.transaction(
       (tx) => {

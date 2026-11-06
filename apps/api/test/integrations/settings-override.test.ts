@@ -90,6 +90,7 @@ test("user permissions that widen file or shell scope are detected, and nothing 
     { additionalDirectories: ["/home/x/other"] },
     { defaultMode: "bypassPermissions" },
     { defaultMode: "acceptEdits" },
+    { defaultMode: "auto" },
   ]) {
     expect(userPermissionsWidenScope({ permissions })).toBe(true);
   }

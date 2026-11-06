@@ -1,7 +1,9 @@
 /**
  * Fake `claude` for the Phase 9 inspection e2e. It records its argv and working directory to
  * FAKE_BRAIN_OUT, then replies with a fenced JSON block of facts: two that cite real files of the
- * repository and one that cites a file that does not exist (which code must drop).
+ * repository and one that cites a file that does not exist (which code must drop). It reads
+ * README.md by relative path and globs src/ by absolute path, as the real CLI reports them.
+ * FAKE_BRAIN_MODE=no_reads makes no tool call at all (ADR-026: the run must fail).
  */
 import { writeFileSync } from "node:fs";
 
@@ -27,18 +29,31 @@ if (args.includes("--version")) {
     unknowns: ["Deployment target"],
   };
   out({ type: "system", subtype: "init", tools: ["Read", "Grep", "Glob"], mcp_servers: [] });
-  out({
-    type: "assistant",
-    message: {
-      content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "README.md" } }],
-    },
-  });
-  out({
-    type: "user",
-    message: {
-      content: [{ type: "tool_result", tool_use_id: "t1", content: "# Demo", is_error: false }],
-    },
-  });
+  if (process.env.FAKE_BRAIN_MODE !== "no_reads") {
+    out({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "t1", name: "Read", input: { file_path: "README.md" } },
+          { type: "tool_use", id: "t2", name: "Glob", input: { pattern: "src/**" } },
+        ],
+      },
+    });
+    out({
+      type: "user",
+      message: {
+        content: [
+          { type: "tool_result", tool_use_id: "t1", content: "# Demo", is_error: false },
+          {
+            type: "tool_result",
+            tool_use_id: "t2",
+            content: `${process.cwd()}/src/index.ts`,
+            is_error: false,
+          },
+        ],
+      },
+    });
+  }
   out({
     type: "result",
     subtype: "success",

@@ -5,8 +5,8 @@ export type ToolClass = "read" | "write" | "builtin_read" | "builtin_write";
 export const BUILTIN_WRITE = ["Bash", "Edit", "Write", "NotebookEdit", "MultiEdit", "Monitor"];
 export const BUILTIN_READ = ["Read", "Grep", "Glob", "ToolSearch"];
 /**
- * Filesystem readers: engineering only until Phase 8 adds path scoping (R33/I4). Collector and
- * intelligence runs may not allow them and always deny them (they need no permission prompt).
+ * Filesystem readers: engineering only, path-scoped by validator rule L (R33/I4). Collector and
+ * intelligence runs may not allow them, and every run denies the ones it does not allow.
  */
 export const BUILTIN_FS_READ = ["Read", "Grep", "Glob"];
 /** Network-capable built-ins; classified as write. */
@@ -158,14 +158,16 @@ export function connectorServerOf(tool: string): string | null {
 export function buildDenylist(
   allowed: string[],
   knownServers: string[],
-  profile: WorkerProfile,
+  /** Kept for callers; every profile now denies the write and fs-read built-ins it does not allow. */
+  _profile: WorkerProfile,
 ): string[] {
   const allowedSet = new Set(allowed.map(normalizeTool));
   const deny = new Set<string>(BUILTIN_NETWORK);
-  // Engineering runs keep the write built-ins they allow (filtered out below) and deny the rest,
-  // so a user-level `permissions.allow` cannot widen a read-only inspection run.
+  // Engineering runs keep the write and fs-read built-ins they allow (filtered out below) and
+  // deny the rest, so a user-level `permissions.allow` cannot widen a read-only inspection run.
+  // Collector and intelligence runs may not allow either, so they deny all of them.
   for (const t of BUILTIN_WRITE) deny.add(t);
-  if (profile !== "engineering") for (const t of BUILTIN_FS_READ) deny.add(t);
+  for (const t of BUILTIN_FS_READ) deny.add(t);
   const used = new Set<string>();
   for (const t of allowed.map(normalizeTool)) {
     const s = connectorServerOf(t);

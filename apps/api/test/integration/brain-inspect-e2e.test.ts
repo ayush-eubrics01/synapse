@@ -36,7 +36,7 @@ afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 const NOW = "2026-11-06T12:00:00.000Z";
 const signal = new AbortController().signal;
 
-async function build() {
+async function build(mode?: "no_reads") {
   const credsPath = join(tmp, "creds.json");
   writeFileSync(
     credsPath,
@@ -58,6 +58,7 @@ async function build() {
       PATH: process.env.PATH ?? "",
       HOME: process.env.HOME ?? "",
       FAKE_BRAIN_OUT: argvOut,
+      ...(mode ? { FAKE_BRAIN_MODE: mode } : {}),
     },
     clock,
     killGraceMs: 200,
@@ -131,8 +132,9 @@ describe("brain inspection through the real provider", () => {
     expect(seen.cwd).toBe(repo);
     const allowed = seen.args[seen.args.indexOf("--allowedTools") + 1] ?? "";
     expect(allowed.split(",").sort()).toEqual(
-      [`Glob(${repo}/**)`, `Grep(${repo}/**)`, `Read(${repo}/**)`].sort(),
+      [`Glob(/${repo}/**)`, `Grep(/${repo}/**)`, `Read(/${repo}/**)`].sort(),
     );
+    expect(seen.args[seen.args.indexOf("--permission-mode") + 1]).toBe("default");
     expect(seen.args).not.toContain("--tools");
     expect(seen.args).toContain("--no-session-persistence");
 
@@ -165,6 +167,34 @@ describe("brain inspection through the real provider", () => {
     // A re-inspection never touches the approved fact and proposes nothing new.
     await run();
     expect(brain.getProject(projectId)?.facts).toHaveLength(2);
+  });
+
+  test("ADR-026: a run that read nothing fails as incomplete_ai_output and stores nothing", async () => {
+    const { db, repoId, projectId, run } = await build("no_reads");
+    db.delete(schema.jobs).run();
+    const err = (await run().catch((e) => e)) as { classified?: { kind: string } };
+    expect(err.classified?.kind).toBe("incomplete_ai_output");
+    expect(
+      db
+        .select()
+        .from(schema.projectFacts)
+        .where(eq(schema.projectFacts.projectId, projectId))
+        .all(),
+    ).toHaveLength(0);
+    const repoRow = db
+      .select()
+      .from(schema.repositories)
+      .where(eq(schema.repositories.id, repoId))
+      .get();
+    expect(repoRow?.inspectedHeadSha).toBeNull();
+    const failed = db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "brain.inspect_failed"))
+      .all();
+    expect(failed.map((a) => a.details)).toEqual([
+      { repositoryId: repoId, kind: "incomplete_ai_output" },
+    ]);
   });
 
   test("while one inspection is live a second request is already_queued", async () => {

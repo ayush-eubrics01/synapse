@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { classifyScope, summarizeScope } from "../scope-smoke";
+import {
+  buildScopeRequest,
+  classifyControl,
+  classifyScope,
+  smokeVerdict,
+  summarizeScope,
+} from "../scope-smoke";
 
 const paths = { insidePath: "/tmp/x/inside/a.txt", outsidePath: "/tmp/x/outside/b.txt" };
 const markers = { insideMarker: "INSIDE-MARK", outsideMarker: "OUTSIDE-MARK" };
@@ -67,10 +73,65 @@ test("inconclusive: no results at all", () => {
   });
 });
 
-test("summarizeScope prints only the three status lines, never content", () => {
-  const lines = summarizeScope({ inside: "ok", outside: "blocked", verdict: "blocked" });
-  expect(lines).toEqual(["inside: ok", "outside: blocked", "scope-smoke: blocked"]);
-  expect(summarizeScope({ inside: "ok", outside: "leaked", verdict: "leaked" }).at(-1)).toBe(
-    "scope-smoke: LEAKED",
+const BLOCKED = { inside: "ok", outside: "blocked", verdict: "blocked" } as const;
+
+test("control: denied when the inside read errors or only a denial is recorded", () => {
+  expect(
+    classifyControl([read(paths.insidePath, "denied", true)], [], paths.insidePath, "INSIDE-MARK"),
+  ).toBe("denied");
+  expect(classifyControl([], ["Read"], paths.insidePath, "INSIDE-MARK")).toBe("denied");
+  expect(classifyControl([], [], paths.insidePath, "INSIDE-MARK")).toBe("not_attempted");
+});
+
+test("control: ok when the inside content came back by any tool", () => {
+  expect(
+    classifyControl(
+      [read(paths.insidePath, "1\tINSIDE-MARK")],
+      [],
+      paths.insidePath,
+      "INSIDE-MARK",
+    ),
+  ).toBe("ok");
+  expect(
+    classifyControl(
+      [{ toolName: "Grep", input: {}, isError: false, content: "INSIDE-MARK" }],
+      ["Read"],
+      paths.insidePath,
+      "INSIDE-MARK",
+    ),
+  ).toBe("ok");
+});
+
+test("verdict: blocked needs double blocked AND the control denied", () => {
+  expect(smokeVerdict(BLOCKED, "denied")).toBe("blocked");
+  // A control that read the file means something other than the rule grants access.
+  expect(smokeVerdict(BLOCKED, "ok")).toBe("leaked");
+  expect(smokeVerdict(BLOCKED, "not_attempted")).toBe("inconclusive");
+  expect(smokeVerdict({ inside: "ok", outside: "leaked", verdict: "leaked" }, "denied")).toBe(
+    "leaked",
   );
+  expect(
+    smokeVerdict({ inside: "missing", outside: "blocked", verdict: "inconclusive" }, "denied"),
+  ).toBe("inconclusive");
+});
+
+test("summarizeScope prints only the three status lines, never content", () => {
+  expect(summarizeScope(BLOCKED, "denied")).toEqual([
+    "double: inside=ok outside=blocked",
+    "single(control): inside=denied",
+    "scope-smoke: blocked",
+  ]);
+  expect(summarizeScope(BLOCKED, "ok").at(-1)).toBe("scope-smoke: LEAKED");
+  expect(summarizeScope(BLOCKED, "not_attempted").at(-1)).toBe("scope-smoke: inconclusive");
+});
+
+test("buildScopeRequest: one allowed tool, engineering denylist, cwd as given", () => {
+  const r = buildScopeRequest("Read(//tmp/x/inside/**)", "/tmp/x/cwd", "go");
+  expect(r.allowedTools).toEqual(["Read(//tmp/x/inside/**)"]);
+  expect(r.workingDirectory).toBe("/tmp/x/cwd");
+  expect(r.workerProfile).toBe("engineering");
+  for (const t of ["Bash", "Edit", "Write", "Grep", "Glob", "WebFetch"]) {
+    expect(r.disallowedTools).toContain(t);
+  }
+  expect(r.disallowedTools).not.toContain("Read");
 });

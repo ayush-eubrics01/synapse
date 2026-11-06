@@ -8,6 +8,19 @@ const mode = process.env.FAKE_CLAUDE_MODE ?? "success";
 if (process.env.FAKE_CLAUDE_ARGV_FILE) {
   writeFileSync(process.env.FAKE_CLAUDE_ARGV_FILE, JSON.stringify(args));
 }
+if (process.env.FAKE_CLAUDE_ENV_FILE) {
+  // Only the hermetic switches and PATH/HOME presence: never the whole environment.
+  const e = process.env;
+  writeFileSync(
+    process.env.FAKE_CLAUDE_ENV_FILE,
+    JSON.stringify({
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: e.CLAUDE_CODE_DISABLE_AUTO_MEMORY ?? null,
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: e.CLAUDE_CODE_DISABLE_CLAUDE_MDS ?? null,
+      hasPath: typeof e.PATH === "string",
+      hasHome: typeof e.HOME === "string",
+    }),
+  );
+}
 if (process.env.FAKE_CLAUDE_PID_FILE) {
   writeFileSync(process.env.FAKE_CLAUDE_PID_FILE, String(process.pid));
 }

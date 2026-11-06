@@ -912,7 +912,7 @@ describe("user settings that widen engineering scope (Phase 9 guard)", () => {
     req({
       workerProfile: "engineering",
       priorityClass: "batch",
-      allowedTools: ["Read(/tmp/demo-repo/**)"],
+      allowedTools: ["Read(//tmp/demo-repo/**)"],
       workingDirectory: "/tmp/demo-repo",
     });
 

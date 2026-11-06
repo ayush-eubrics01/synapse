@@ -10,6 +10,7 @@ import {
   buildInspectRequest,
   parseInspection,
 } from "../../apps/api/src/intelligence/brain/inspect-prompt";
+import { hasInspectionToolResult } from "../../apps/api/src/modules/engineering-brain/evidence";
 import type { InspectionSummary } from "../../apps/api/src/modules/engineering-brain/inspection";
 import { RepositoryRegistry } from "../../apps/api/src/modules/engineering-brain/registry";
 
@@ -117,6 +118,11 @@ async function main(): Promise<number> {
     }
     console.log(`turns: ${result.numTurns}`);
     console.log(`permissionDenials: ${result.permissionDenials.length}`);
+    if (!hasInspectionToolResult(result.toolResults)) {
+      // ADR-026: a run that read nothing is not evidence of anything.
+      console.log("status: run_failed (incomplete_ai_output)");
+      return 1;
+    }
     const parsed = parseInspection(result.finalText);
     if (!parsed.ok) {
       for (const l of summarizeInspect("parse_failed", null)) console.log(l);
@@ -127,6 +133,7 @@ async function main(): Promise<number> {
       output: parsed.value,
       claudeRunId: null,
       permissionDenials: result.permissionDenials,
+      toolResults: result.toolResults,
     });
     if ("skipped" in summary) {
       console.log("status: skipped");

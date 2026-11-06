@@ -7,6 +7,10 @@ const ALLOWED = [
   /^apps\/api\/src\/container\.ts$/,
   // Defines ClaudeCliProvider itself and runs no other provider.
   /^apps\/api\/src\/integrations\/claude-code\/cli-provider\.ts$/,
+  // Phase 9 final review (controller ruling): the deliberate, user-run scope proof must send the
+  // single-slash negative control that validator rule L refuses, so it runs at provider level.
+  // It is never imported by the API; it runs only two read-only runs with one Read tool each.
+  /^scripts\/dev\/scope-smoke\.ts$/,
 ];
 // Over-matching outside the allowed paths is acceptable (R55).
 const EXECUTE = /\bprovider\s*\??\s*\.\s*execute\b/;

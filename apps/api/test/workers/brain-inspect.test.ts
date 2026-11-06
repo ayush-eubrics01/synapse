@@ -9,6 +9,7 @@ import {
   type ClaudeJobRequest,
   type Job,
   JobError,
+  type RawToolResult,
 } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
@@ -53,10 +54,31 @@ const ctx = {
   getCheckpoint: () => undefined,
 } as never;
 
+/** A raw tool_result as the stream parser reports it (ADR-026: the only trusted data). */
+const tool = (
+  toolName: string,
+  input: unknown,
+  content: string,
+  isError = false,
+): RawToolResult => ({
+  toolUseId: `t-${Math.random()}`,
+  toolName,
+  input,
+  isError,
+  content,
+});
+const readOf = (filePath: string, isError = false) =>
+  tool("Read", { file_path: filePath }, isError ? "File does not exist." : "1\tx", isError);
+/** By default the run read every file the tests cite, by absolute path as the real CLI does. */
+const defaultReads = () =>
+  ["README.md", "package.json", "src/index.ts", "CONTRIBUTING.md"].map((p) =>
+    readOf(join(repo, p)),
+  );
+
 function result(finalText: string, over: Partial<AIExecutionResult> = {}): AIExecutionResult {
   return {
     status: "succeeded",
-    toolResults: [],
+    toolResults: defaultReads(),
     finalText,
     numTurns: 4,
     durationMs: 50,
@@ -196,7 +218,13 @@ describe("buildInspectRequest", () => {
     const req = requests[0] as ClaudeJobRequest;
     expect(req.workerProfile).toBe("engineering");
     expect(req.workingDirectory).toBe(repo);
-    expect(req.allowedTools).toEqual([`Read(${repo}/**)`, `Grep(${repo}/**)`, `Glob(${repo}/**)`]);
+    // Double slash: `//abs/**` is an absolute path; `/abs/**` would be cwd-relative (final review).
+    expect(req.allowedTools).toEqual([
+      `Read(/${repo}/**)`,
+      `Grep(/${repo}/**)`,
+      `Glob(/${repo}/**)`,
+    ]);
+    expect(req.expectedToolNames).toEqual(["Read", "Grep", "Glob"]);
     expect(req.parts?.length).toBeGreaterThan(0);
     expect(req.parts?.every((p) => p.provenance === "system")).toBe(true);
     expect(req.model).toBe("opus");
@@ -418,6 +446,61 @@ describe("brain.inspect_repository", () => {
     expect(facts()).toHaveLength(0);
     expect(repoRow()?.inspectedHeadSha).toBeNull();
     expect(proposedEvents()).toHaveLength(0);
+  });
+
+  test("ADR-026: a run with no successful Read, Grep or Glob result fails; nothing is kept", async () => {
+    for (const toolResults of [
+      [],
+      [readOf(join(repo, "README.md"), true)],
+      [tool("Bash", { command: "cat README.md" }, "# Demo")],
+    ]) {
+      reply = () => result(fenced({ facts: FACTS, unknowns: [] }), { toolResults });
+      const err = (await runInspect().catch((e) => e)) as JobError;
+      expect(err).toBeInstanceOf(JobError);
+      expect(err.classified.kind).toBe("incomplete_ai_output");
+      expect(err.message).toBe("no successful Read, Grep or Glob result");
+    }
+    expect(facts()).toHaveLength(0);
+    expect(repoRow()?.inspectedHeadSha).toBeNull();
+    expect(proposedEvents()).toHaveLength(0);
+    const audits = db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "brain.inspect_failed"))
+      .all();
+    expect(audits.map((a) => a.details)).toEqual(
+      Array(3).fill({ repositoryId: repoId, kind: "incomplete_ai_output" }),
+    );
+  });
+
+  test("evidence the run never observed is dropped as not_read", async () => {
+    reply = () =>
+      result(fenced({ facts: FACTS, unknowns: [] }), {
+        toolResults: [readOf(join(repo, "README.md"))],
+      });
+    const out = await runInspect();
+    expect(out).toMatchObject({ proposed: 3, inserted: 1, dropped: { not_read: 2 } });
+    expect(facts().map((f) => f.kind)).toEqual(["purpose"]);
+  });
+
+  test("a Grep or Glob result naming the file, or a relative Read path, counts as observed", async () => {
+    reply = () =>
+      result(fenced({ facts: FACTS, unknowns: [] }), {
+        toolResults: [
+          tool("Grep", { pattern: "export" }, `Found 1 file\n${repo}/src/index.ts`),
+          readOf("package.json"),
+          // A failed read observes nothing; a longer name is not the cited file.
+          readOf(join(repo, "README.md"), true),
+          tool("Glob", { pattern: "*.md" }, `${repo}/README.md.bak\n${repo}/xREADME.md`),
+        ],
+      });
+    const out = await runInspect();
+    expect(out).toMatchObject({ inserted: 2, dropped: { not_read: 1 } });
+    expect(
+      facts()
+        .map((f) => f.kind)
+        .sort(),
+    ).toEqual(["risk", "stack"]);
   });
 
   test("output with no JSON at all also fails as parse_failed", async () => {

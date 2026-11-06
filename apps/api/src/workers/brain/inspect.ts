@@ -11,6 +11,7 @@ import type { HandlerRegistration, JobContext } from "../../core/jobs/worker";
 import type { ClaudeOrchestrator } from "../../core/orchestrator/orchestrator";
 import type { SchedulerService } from "../../core/scheduler/scheduler";
 import { buildInspectRequest, parseInspection } from "../../intelligence/brain/inspect-prompt";
+import { hasInspectionToolResult } from "../../modules/engineering-brain/evidence";
 import {
   INSPECT_JOB,
   INSPECT_WEEKLY_JOB,
@@ -24,6 +25,7 @@ const INSPECT_HANDLER_TIMEOUT_MS = 65 * 60_000;
 /** A few git calls per repository, each with a 10 s timeout. */
 const WEEKLY_HANDLER_TIMEOUT_MS = 10 * 60_000;
 const REGISTERED_CONSUMER = "brain.inspect_on_register";
+const NO_READ_MESSAGE = "no successful Read, Grep or Glob result";
 
 /** `max_turns` or `timeout` when the run stopped on its budget; null for any other failure. */
 function stopKind(err: unknown): "max_turns" | "timeout" | null {
@@ -82,16 +84,24 @@ export function registerInspectionJobs(deps: InspectionJobDeps): InspectionServi
         timeoutMinutes: settings.get("brain.inspect.timeoutMinutes"),
       },
     );
+    // ADR-026: a run with no successful Read, Grep or Glob result read nothing, so its reply is
+    // not evidence of anything. The provider enforces it (expectedToolNames) and so does this.
+    const readNothing = (): never => {
+      service.recordFailure(repositoryId, "incomplete_ai_output");
+      throw new JobError({ kind: "incomplete_ai_output", message: NO_READ_MESSAGE });
+    };
     let result: Awaited<ReturnType<typeof orchestrator.run>>;
     try {
       result = await orchestrator.run(request, ctx.signal);
     } catch (err) {
+      if (err instanceof JobError && err.classified.kind === "incomplete_ai_output") readNothing();
       const stop = stopKind(err);
       if (!stop) throw err;
       // A run that ran out of turns or time is not retried: the user can "Inspect now".
       service.recordFailure(repositoryId, stop);
       throw new JobError({ kind: "needs_attention", message: `inspection run stopped (${stop})` });
     }
+    if (!hasInspectionToolResult(result.toolResults)) readNothing();
     const parsed = parseInspection(result.finalText);
     // Not retried: a second expensive run is unlikely to fix the shape. Reason is content-free.
     if (!parsed.ok) throw new JobError({ kind: "parse_failed", message: parsed.reason });
@@ -100,6 +110,7 @@ export function registerInspectionJobs(deps: InspectionJobDeps): InspectionServi
       output: parsed.value,
       claudeRunId: latestRunId(job.id),
       permissionDenials: result.permissionDenials,
+      toolResults: result.toolResults,
     });
   };
 

@@ -42,6 +42,16 @@ test("provider boundary scanner covers scripts/", () => {
   expect(providerBoundaryViolations("scripts/dev/x.ts", "a.provider.execute(r)")).toHaveLength(1);
 });
 
+test("the scope smoke is the only script excepted, by its exact path", () => {
+  const exec = "await provider.execute(r)";
+  expect(providerBoundaryViolations("scripts/dev/scope-smoke.ts", exec)).toEqual([]);
+  expect(providerBoundaryViolations("scripts/dev/scope-smoke.ts.bak", exec)).toHaveLength(1);
+  expect(providerBoundaryViolations("scripts/dev/inspect-smoke.ts", exec)).toHaveLength(1);
+  expect(providerBoundaryViolations("apps/api/src/scripts/dev/scope-smoke.ts", exec)).toHaveLength(
+    1,
+  );
+});
+
 test("only the orchestrator and container touch the AI provider", async () => {
   const offenders: string[] = [];
   for (const pattern of ["apps/*/src/**/*.{ts,tsx}", "packages/*/src/**/*.ts", "scripts/**/*.ts"]) {

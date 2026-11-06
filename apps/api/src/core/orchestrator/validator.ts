@@ -40,16 +40,20 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *  G. ToolSearch required for connector tools (rule 3)
  *  H. denylist covers every unused known server (rule 4)
  *  H2. denylist contains every network built-in, and every write and filesystem-read built-in
- *     unless engineering (R26, I4)
+ *     unless engineering (R26, I4); an engineering run must deny each filesystem-read built-in it
+ *     does not allow (final review)
  *  I. send run with untrusted content (rule 5; subsumed by D, kept as defence in depth)
  *  J. untrusted content contains the boundary (rule 6)
  *  K. policy_approved content outside a send run (rule F's single write connector; J1, ADR-033);
  *     alongside untrusted content it already fails rule D. A send run must carry a sendGuard
  *     whose toolName is its write tool (J2), so every send is blocked by the PreToolUse hook
  *     unless its arguments are the approved ones
- *  L. engineering Read/Grep/Glob must each be exactly `Tool(<workingDirectory>/**)`, and the
- *     working directory must satisfy isSafeAbsolutePath (no dot or empty segments, two or more segments) (C7; a bare Read fails). Last, so the other
- *     rules keep their order. Tools other than the fs reads are unaffected
+ *  L. every engineering run's working directory must satisfy isSafeAbsolutePath (no dot or empty
+ *     segments, two or more segments), and its Read/Grep/Glob must each be exactly
+ *     `Tool(/<workingDirectory>/**)`: the CLI's double-slash absolute form `//abs/dir/**`. The
+ *     single-slash form `/abs/dir/**` is cwd-relative on the CLI and grants nothing (final review),
+ *     so it fails, as does a bare Read (C7). Last, so the other rules keep their order. Tools
+ *     other than the fs reads are unaffected
  * Tool names are normalised (specifier stripped) before classification.
  */
 export function validateRequest(
@@ -144,7 +148,9 @@ export function validateRequest(
   // H2
   const required = [
     ...BUILTIN_NETWORK,
-    ...(req.workerProfile === "engineering" ? [] : [...BUILTIN_WRITE, ...BUILTIN_FS_READ]),
+    ...(req.workerProfile === "engineering"
+      ? BUILTIN_FS_READ.filter((t) => !allowed.includes(t))
+      : [...BUILTIN_WRITE, ...BUILTIN_FS_READ]),
   ];
   for (const t of required) {
     if (!req.disallowedTools.includes(t)) return fail(`denylist missing ${t}`);
@@ -173,16 +179,14 @@ export function validateRequest(
 
   // L
   if (req.workerProfile === "engineering") {
-    const scopedFs = raw.filter((t) => BUILTIN_FS_READ.includes(normalizeTool(t)));
-    if (scopedFs.length > 0) {
-      if (!isSafeAbsolutePath(req.workingDirectory)) {
-        return fail("working directory must be an absolute path of safe characters");
-      }
-      const dir = req.workingDirectory.replace(/\/+$/, "");
-      for (const t of scopedFs) {
-        if (t !== `${normalizeTool(t)}(${dir}/**)`) {
-          return fail("fs read tools must be scoped to the working directory");
-        }
+    if (!isSafeAbsolutePath(req.workingDirectory)) {
+      return fail("working directory must be an absolute path of safe characters");
+    }
+    const dir = req.workingDirectory.replace(/\/+$/, "");
+    for (const t of raw.filter((t) => BUILTIN_FS_READ.includes(normalizeTool(t)))) {
+      // `dir` starts with "/", so this is `Tool(//abs/dir/**)`: the CLI's absolute form.
+      if (t !== `${normalizeTool(t)}(/${dir}/**)`) {
+        return fail("fs read tools must be scoped to the working directory");
       }
     }
   }

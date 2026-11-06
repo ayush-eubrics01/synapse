@@ -19,7 +19,8 @@ const WIDENING_TOOLS = new Set([
   "NotebookEdit",
   "MultiEdit",
 ]);
-const WIDENING_MODES = new Set(["bypassPermissions", "acceptEdits"]);
+/** `auto` approves tool calls by classifier; `--permission-mode default` overrides all of them. */
+const WIDENING_MODES = new Set(["bypassPermissions", "acceptEdits", "auto"]);
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
@@ -27,8 +28,8 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 /**
  * True when parsed user settings widen file or shell scope: a `permissions.allow` entry for one
  * of the fs or write built-ins (bare or with a specifier), a non-empty
- * `permissions.additionalDirectories`, or a `permissions.defaultMode` of `bypassPermissions` or
- * `acceptEdits`. Only this boolean is derived; no entry is kept.
+ * `permissions.additionalDirectories`, or a `permissions.defaultMode` of `bypassPermissions`,
+ * `acceptEdits` or `auto`. Only this boolean is derived; no entry is kept.
  */
 export function userPermissionsWidenScope(settings: unknown): boolean {
   if (!isRecord(settings)) return false;

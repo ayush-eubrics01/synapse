@@ -61,10 +61,23 @@ export interface InspectSettings {
   timeoutMinutes: number;
 }
 
+/** The tools an inspection may use; one successful result from one of them is required (ADR-026). */
+export const INSPECT_TOOLS = ["Read", "Grep", "Glob"] as const;
+
+/**
+ * The CLI's absolute-path permission specifier for everything under `root` (which starts with
+ * `/`): `//abs/root/**`. A single leading slash (`/abs/root/**`) is relative to the settings
+ * source, i.e. the cwd, and grants nothing outside it (verified on the real CLI, final review).
+ */
+export function absoluteScope(tool: string, root: string): string {
+  return `${tool}(/${root}/**)`;
+}
+
 /**
  * C6: `brain.inspect_repository`. Engineering profile, path-scoped `Read`/`Grep`/`Glob` and
  * nothing else (validator rule L), `system` parts only: the run reads the repository itself, so no
  * untrusted content is sent. The repository name and root are user-confirmed registry values.
+ * `expectedToolNames` makes the provider fail a run with no successful read (ADR-026).
  */
 export function buildInspectRequest(
   repo: InspectRepository,
@@ -87,7 +100,8 @@ export function buildInspectRequest(
         content: `Repository: ${repo.name}\nRepository root (the current working directory): ${root}`,
       },
     ],
-    allowedTools: [`Read(${root}/**)`, `Grep(${root}/**)`, `Glob(${root}/**)`],
+    allowedTools: INSPECT_TOOLS.map((t) => absoluteScope(t, root)),
+    expectedToolNames: [...INSPECT_TOOLS],
     maxTurns,
     timeoutMs: s.timeoutMinutes * 60_000,
     workingDirectory: root,
