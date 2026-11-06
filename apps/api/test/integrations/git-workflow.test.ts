@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -42,6 +43,7 @@ const HARDENING = [
 interface Fixture {
   root: string;
   home: string;
+  xdg: string;
   repo: string;
   origin: string;
   upstream: string;
@@ -86,15 +88,18 @@ function setup(): Fixture {
   git(repo, "remote", "set-url", "--push", "upstream", "DISABLED");
   git(repo, "fetch", "-q", "upstream");
   const calls: GitInvocation[] = [];
+  const xdg = join(root, "xdg");
   const wf = new LocalGitWorkflow({
     home,
+    xdgConfigHome: xdg,
+    systemConfig: join(root, "etc-gitconfig"),
     extraEnv: { GIT_CONFIG_NOSYSTEM: "1" },
     exec: (inv) => {
       calls.push(inv);
       return spawnGit(inv);
     },
   });
-  return { root, home, repo, origin, upstream, wf, calls };
+  return { root, home, xdg, repo, origin, upstream, wf, calls };
 }
 
 /** Commits `content` to `file` on `branch` of a bare repo through a throwaway clone. */
@@ -602,6 +607,225 @@ describe("cleanup (E15)", () => {
   });
 });
 
+describe("no configured auto-resolution or rewriting (review fixes)", () => {
+  test("branch.<parent>.mergeOptions=-Xtheirs cannot resolve an updateParent conflict", async () => {
+    const f = setup();
+    await f.wf.createTaskBranch(f.repo, "stage", "synapse/t");
+    git(f.repo, "config", "branch.stage.mergeOptions", "-Xtheirs");
+    git(f.repo, "config", "rerere.enabled", "true");
+    const o = pushCommit(f, f.origin, "stage", "a.txt", "origin\n");
+    pushCommit(f, f.upstream, "stage", "a.txt", "upstream\n");
+    expect(await f.wf.updateParent(f.repo, "stage")).toEqual({ ok: false, conflict: true });
+    expect(mergeHead(f.repo)).toBe(false);
+    expect(git(f.repo, "status", "--porcelain")).toBe("");
+    expect(head(f.repo)).toBe(o);
+    const merges = f.calls.filter((c) => c.argv.includes("merge"));
+    for (const m of merges) {
+      expect(m.argv).toContain("branch.stage.mergeOptions=");
+      expect(m.argv).toContain("rerere.enabled=false");
+      expect(m.argv).toContain("rerere.autoUpdate=false");
+    }
+  });
+
+  test("branch.<parent>.mergeOptions=-Xtheirs cannot resolve a mergeLocal conflict", async () => {
+    const f = setup();
+    await taskWithCommit(f, "a.txt", "task\n");
+    pushCommit(f, f.origin, "stage", "a.txt", "parent\n");
+    expect(await f.wf.updateParent(f.repo, "stage")).toEqual({ ok: true });
+    git(f.repo, "config", "branch.stage.mergeOptions", "-Xtheirs");
+    const before = head(f.repo);
+    expect(await f.wf.mergeLocal(f.repo, "stage", "synapse/t")).toEqual({
+      ok: false,
+      conflict: true,
+    });
+    expect(mergeHead(f.repo)).toBe(false);
+    expect(head(f.repo)).toBe(before);
+  });
+
+  test("pull.rebase=true never turns updateParent into a rebase", async () => {
+    const f = setup();
+    await f.wf.createTaskBranch(f.repo, "stage", "synapse/t");
+    git(f.repo, "config", "pull.rebase", "true");
+    const o = pushCommit(f, f.origin, "stage", "o.txt", "o\n");
+    const u = pushCommit(f, f.upstream, "stage", "u.txt", "u\n");
+    expect(await f.wf.updateParent(f.repo, "stage")).toEqual({ ok: true });
+    const parents = git(f.repo, "rev-list", "--parents", "-n", "1", "HEAD").split(" ");
+    expect(parents.slice(1)).toEqual([o, u]);
+  });
+
+  test("merge.ff=only does not stop --no-ff or the merge fallback", async () => {
+    const f = setup();
+    git(f.repo, "config", "merge.ff", "only");
+    await taskWithCommit(f);
+    pushCommit(f, f.upstream, "stage", "u.txt", "u\n");
+    expect(await f.wf.updateParent(f.repo, "stage")).toEqual({ ok: true });
+    const r = await f.wf.mergeLocal(f.repo, "stage", "synapse/t");
+    expect(r.ok).toBe(true);
+    expect(git(f.repo, "rev-list", "--parents", "-n", "1", "HEAD").split(" ")).toHaveLength(3);
+  });
+
+  test("url.*.pushInsteadOf rewriting origin to upstream is refused", async () => {
+    const f = setup();
+    git(f.repo, "switch", "-q", "-c", "stage", "origin/stage");
+    git(f.repo, "config", `url.file://${f.upstream}.pushInsteadOf`, `file://${f.origin}`);
+    const before = head(f.upstream, "stage");
+    expect(
+      await codeOf(f.wf.pushParent(f.repo, "stage", { protectedBranches: [], upstreamUrl: null })),
+    ).toBe("push_target_is_upstream");
+    expect(head(f.upstream, "stage")).toBe(before);
+  });
+
+  test("the same owner/repo on another host or scheme is refused", async () => {
+    const f = setup();
+    git(
+      f.repo,
+      "remote",
+      "set-url",
+      "--push",
+      "origin",
+      "ssh://git@gh-alias/ExampleOrg/demo-app.git",
+    );
+    expect(
+      await codeOf(
+        f.wf.pushParent(f.repo, "stage", {
+          protectedBranches: [],
+          upstreamUrl: "https://github.com/exampleorg/demo-app",
+        }),
+      ),
+    ).toBe("push_target_is_upstream");
+  });
+
+  test("no registered upstream URL and no upstream remote is refused", async () => {
+    const f = setup();
+    git(f.repo, "remote", "remove", "upstream");
+    expect(
+      await codeOf(f.wf.pushParent(f.repo, "stage", { protectedBranches: [], upstreamUrl: null })),
+    ).toBe("no_upstream_reference");
+    expect(f.calls.filter((c) => c.argv.includes("push"))).toHaveLength(0);
+  });
+});
+
+describe("fingerprints (review fixes)", () => {
+  test("a filter in .git/config named by .gitattributes never runs: fingerprint first", async () => {
+    const f = setup();
+    const base = await f.wf.gitDirFingerprint(f.repo);
+    const marker = join(f.root, "filter-ran");
+    const cfg = join(f.repo, ".git", "config");
+    writeFileSync(
+      cfg,
+      `${readFileSync(cfg, "utf8")}[filter "evil"]\n\tclean = touch ${marker}; cat\n\tsmudge = cat\n`,
+    );
+    writeFileSync(join(f.repo, ".gitattributes"), "* filter=evil\n");
+    writeFileSync(join(f.repo, "a.txt"), "changed\n");
+    f.calls.length = 0;
+    const d = await f.wf.diffSummary(f.repo, { gitDirBaseline: base });
+    expect(d.unsafe).toBe(true);
+    expect(d.unsafeReasons).toEqual(["git_dir_changed"]);
+    expect(d.files).toEqual([]);
+    expect(f.calls).toHaveLength(0);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("a change to the global git config is detected", async () => {
+    const f = setup();
+    const base = await f.wf.gitDirFingerprint(f.repo);
+    const cfg = await f.wf.configFingerprint(f.repo);
+    writeFileSync(join(f.home, ".gitconfig"), "[core]\n\tpager = evil\n");
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(cfg);
+    expect((await f.wf.diffSummary(f.repo, { gitDirBaseline: base })).unsafeReasons).toEqual([
+      "git_dir_changed",
+    ]);
+    const cfg2 = await f.wf.configFingerprint(f.repo);
+    mkdirSync(join(f.xdg, "git"), { recursive: true });
+    writeFileSync(join(f.xdg, "git", "attributes"), "* merge=union\n");
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(cfg2);
+  });
+
+  test("the config fingerprint ignores refs and commits", async () => {
+    const f = setup();
+    const cfg = await f.wf.configFingerprint(f.repo);
+    await taskWithCommit(f);
+    expect(await f.wf.configFingerprint(f.repo)).toBe(cfg);
+    writeFileSync(join(f.repo, ".git", "hooks", "pre-push"), "#!/bin/sh\n");
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(cfg);
+  });
+
+  test("a stale config fingerprint refuses push, merge, update and commit before git runs", async () => {
+    const f = setup();
+    const stale = await f.wf.configFingerprint(f.repo);
+    git(f.repo, "config", "core.sshCommand", "evil");
+    f.calls.length = 0;
+    const guard = { expectedConfigFingerprint: stale };
+    expect(
+      await codeOf(
+        f.wf.pushParent(f.repo, "stage", { protectedBranches: [], upstreamUrl: null, ...guard }),
+      ),
+    ).toBe("config_changed");
+    expect(await codeOf(f.wf.updateParent(f.repo, "stage", guard))).toBe("config_changed");
+    expect(await codeOf(f.wf.mergeLocal(f.repo, "stage", "synapse/t", guard))).toBe(
+      "config_changed",
+    );
+    expect(await codeOf(f.wf.commitAll(f.repo, "m", "x", guard))).toBe("config_changed");
+    expect(f.calls).toHaveLength(0);
+    // (switch -c from a remote branch writes tracking config, so fingerprint after it)
+    git(f.repo, "switch", "-q", "-c", "stage", "origin/stage");
+    const fresh = await f.wf.configFingerprint(f.repo);
+    expect(
+      await f.wf.pushParent(f.repo, "stage", {
+        protectedBranches: [],
+        upstreamUrl: null,
+        expectedConfigFingerprint: fresh,
+      }),
+    ).toEqual({ ok: true });
+  });
+
+  test("commitAll re-checks the git dir baseline", async () => {
+    const f = setup();
+    const base = await f.wf.gitDirFingerprint(f.repo);
+    writeFileSync(join(f.repo, "a.txt"), "edit\n");
+    const { hash } = await f.wf.diffSummary(f.repo, { gitDirBaseline: base });
+    writeFileSync(join(f.repo, ".git", "hooks", "x"), "#!/bin/sh\n");
+    expect(await codeOf(f.wf.commitAll(f.repo, "m", hash, { gitDirBaseline: base }))).toBe(
+      "unsafe_change",
+    );
+  });
+});
+
+describe("safer diff checks (review fixes)", () => {
+  test(".gitattributes, .gitmodules and .lfsconfig changes at any depth are unsafe", async () => {
+    for (const name of [".gitattributes", "sub/.gitmodules", "deep/er/.lfsconfig"]) {
+      const f = setup();
+      mkdirSync(join(f.repo, name, ".."), { recursive: true });
+      writeFileSync(join(f.repo, name), "x\n");
+      const d = await f.wf.diffSummary(f.repo);
+      expect(d.unsafe).toBe(true);
+      expect(d.unsafeReasons).toEqual(["git_metadata_changed"]);
+    }
+  });
+
+  test("an unreadable file is unsafe and no fs error escapes", async () => {
+    const f = setup();
+    const p = join(f.repo, "locked.txt");
+    writeFileSync(p, "secret\n");
+    chmodSync(p, 0o000);
+    try {
+      const d = await f.wf.diffSummary(f.repo);
+      expect(d.unsafeReasons).toEqual(["unreadable"]);
+      expect(d.diffText).not.toContain("secret");
+    } finally {
+      chmodSync(p, 0o644);
+    }
+  });
+
+  test("reasons are reported for symlinks and an empty list for a safe diff", async () => {
+    const f = setup();
+    writeFileSync(join(f.repo, "ok.txt"), "ok\n");
+    expect((await f.wf.diffSummary(f.repo)).unsafeReasons).toEqual([]);
+    symlinkSync("/etc/hostname", join(f.repo, "link"));
+    expect((await f.wf.diffSummary(f.repo)).unsafeReasons).toEqual(["symlink_outside"]);
+  });
+});
+
 describe("failure paths", () => {
   test("a git timeout surfaces as git_timeout with no detail", async () => {
     const wf = new LocalGitWorkflow({
@@ -638,6 +862,7 @@ describe("hardening on every call (spy runner)", () => {
   test("a whole task flow runs git only as argv with the E17 flags", async () => {
     const f = setup();
     expect(await f.wf.preflight(f.repo, "stage")).toEqual({ ok: true });
+    const cfg = await f.wf.configFingerprint(f.repo);
     await taskWithCommit(f);
     const base = await f.wf.gitDirFingerprint(f.repo);
     await f.wf.diffSummary(f.repo, { gitDirBaseline: base });
@@ -646,6 +871,8 @@ describe("hardening on every call (spy runner)", () => {
     await f.wf.commitsAhead(f.repo, "stage");
     await f.wf.pushParent(f.repo, "stage", { protectedBranches: [], upstreamUrl: null });
     await f.wf.cleanup(f.repo, "synapse/t", "main", { force: false });
+    // The whole flow leaves the config untouched (no tracking config, no rerere state).
+    expect(await f.wf.configFingerprint(f.repo)).toBe(cfg);
 
     expect(f.calls.length).toBeGreaterThan(20);
     const allowedEnv = new Set([
@@ -657,6 +884,7 @@ describe("hardening on every call (spy runner)", () => {
       "GIT_CONFIG_NOSYSTEM",
       "SSH_AUTH_SOCK",
       "XDG_RUNTIME_DIR",
+      "XDG_CONFIG_HOME",
       "DBUS_SESSION_BUS_ADDRESS",
     ]);
     for (const c of f.calls) {
@@ -669,7 +897,9 @@ describe("hardening on every call (spy runner)", () => {
       expect(c.env.GIT_OPTIONAL_LOCKS).toBe("0");
       expect(c.env.HOME).toBe(f.home);
       for (const k of Object.keys(c.env)) expect(allowedEnv.has(k)).toBe(true);
-      const sub = c.argv[9] ?? "";
+      let at = 9;
+      while (c.argv[at] === "-c") at += 2;
+      const sub = c.argv[at] ?? "";
       const network = ["push", "fetch", "pull", "ls-remote"].includes(sub);
       expect(c.timeoutMs).toBe(network ? 120_000 : 60_000);
       expect(c.argv).not.toContain("--force");

@@ -75,7 +75,10 @@ export function gitInvocation(dir: string, args: string[], opts: GitOptions): Gi
     GIT_OPTIONAL_LOCKS: "0",
     LC_ALL: "C",
   });
-  const sub = args[0] ?? "";
+  // The subcommand follows any per-call `-c key=value` pairs.
+  let i = 0;
+  while (args[i] === "-c") i += 2;
+  const sub = args[i] ?? "";
   return {
     argv: [opts.binary ?? "git", ...GIT_HARDENING_ARGS, "-C", dir, ...args],
     env,

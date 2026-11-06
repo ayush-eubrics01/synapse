@@ -136,6 +136,10 @@ export const GIT_WORKFLOW_ERROR_CODES = [
   "protected_branch",
   /** pushParent: the origin push URL is the upstream repository (hard rule 13). */
   "push_target_is_upstream",
+  /** pushParent: no registered upstream URL and no `upstream` remote to compare against. */
+  "no_upstream_reference",
+  /** The git config (repo, hooks, attributes, global) differs from the expected fingerprint. */
+  "config_changed",
 ] as const;
 export type GitWorkflowErrorCode = (typeof GIT_WORKFLOW_ERROR_CODES)[number];
 
@@ -147,6 +151,25 @@ export class GitWorkflowError extends Error {
 }
 
 export type GitPreflightResult = { ok: true } | { ok: false; reason: GitPreflightReason };
+
+/** Why a diff is unsafe (GitDiffSummary.unsafeReasons). */
+export const GIT_UNSAFE_REASONS = [
+  /** The git directory or git config differs from `gitDirBaseline` (nothing else was run). */
+  "git_dir_changed",
+  /** A changed path has a `.git` segment. */
+  "git_path",
+  /** A changed path is absolute, contains `..`, or its directory resolves outside the repo. */
+  "outside_repo",
+  /** A symlink whose target resolves outside the repo or into `.git`. */
+  "symlink_outside",
+  /** A directory entry (submodule, embedded repository) or a special file. */
+  "not_a_file",
+  /** A changed path could not be read or inspected. */
+  "unreadable",
+  /** `.gitattributes`, `.gitmodules` or `.lfsconfig` changed (they can name filters/commands). */
+  "git_metadata_changed",
+] as const;
+export type GitUnsafeReason = (typeof GIT_UNSAFE_REASONS)[number];
 
 export interface GitDiffFile {
   /** Repo-relative path, as git reports it. */
@@ -169,10 +192,13 @@ export interface GitDiffSummary {
   hash: string;
   /**
    * True when a path is under `.git/` (any `.git` segment), contains `..`, resolves outside the
-   * repo realpath, is a symlink whose target resolves outside the repo (or into `.git`), or is an
-   * embedded repository; or when the git directory differs from `gitDirBaseline`.
+   * repo realpath, is a symlink whose target resolves outside the repo (or into `.git`), is an
+   * embedded repository or special file, is unreadable, or is a `.gitattributes`, `.gitmodules`
+   * or `.lfsconfig`; or when the git directory differs from `gitDirBaseline`. See unsafeReasons.
    */
   unsafe: boolean;
+  /** Sorted, unique reasons; empty exactly when `unsafe` is false. */
+  unsafeReasons: GitUnsafeReason[];
   /** The plain-text diff (tracked plus new files), cut at GIT_DIFF_TEXT_MAX_BYTES. */
   diffText: string;
   truncated: boolean;
@@ -181,12 +207,26 @@ export interface GitDiffSummary {
 export interface GitDiffOptions {
   /**
    * A `gitDirFingerprint` taken before the develop run. git status never reports files inside
-   * `.git/`, so a write there (hooks, config) is caught only by comparing fingerprints.
+   * `.git/`, so a write there (hooks, config) is caught only by comparing fingerprints. It is
+   * compared before any git command runs: on a mismatch nothing else runs (`git_dir_changed`).
    */
   gitDirBaseline?: string;
 }
 
-export interface GitPushOptions {
+export interface GitConfigGuard {
+  /**
+   * A `configFingerprint` taken earlier (e.g. at pickup). When given and different, the call is
+   * refused with `config_changed` before any git command runs.
+   */
+  expectedConfigFingerprint?: string;
+}
+
+export interface GitCommitOptions extends GitConfigGuard {
+  /** Re-checked before any git command; a mismatch is `unsafe_change`. */
+  gitDirBaseline?: string;
+}
+
+export interface GitPushOptions extends GitConfigGuard {
   /** Branches of protected environments: never pushed (ADR-035). */
   protectedBranches: readonly string[];
   /** The registered (credential-stripped) upstream fetch URL. */
@@ -212,24 +252,48 @@ export interface GitWorkflow {
    * `origin/<parent>` only when that is a fast-forward, then `git switch -c <taskBranch> <parent>`.
    */
   createTaskBranch(repo: string, parent: string, taskBranch: string): Promise<{ baseSha: string }>;
-  /** A hash of the git directory (config, hooks, info, refs, index; not objects). */
+  /**
+   * A hash of the git directory (config, hooks, info, refs, HEAD, index; not objects or reflogs)
+   * plus `configFingerprint`. Filesystem reads only: no git command runs.
+   */
   gitDirFingerprint(repo: string): Promise<string>;
+  /**
+   * A hash of everything that can make git run a command or change how content is filtered or
+   * merged: `.git/config` (and `config.worktree`), `.git/info/attributes`, `.git/hooks/**`, and the
+   * global `~/.gitconfig`, `$XDG_CONFIG_HOME/git/{config,attributes}` and `/etc/gitconfig`.
+   * Unaffected by refs and commits. Filesystem reads only.
+   */
+  configFingerprint(repo: string): Promise<string>;
   /** E10: the working tree's changes against HEAD. Read-only. */
   diffSummary(repo: string, opts?: GitDiffOptions): Promise<GitDiffSummary>;
   /** E10: `git add -A` and `git commit -m <message>`, only when the hash still matches. */
-  commitAll(repo: string, message: string, expectedHash: string): Promise<{ sha: string }>;
+  commitAll(
+    repo: string,
+    message: string,
+    expectedHash: string,
+    opts?: GitCommitOptions,
+  ): Promise<{ sha: string }>;
   /**
    * E11: switch to the parent and merge `origin/<parent>` then `upstream/<parent>`, fast-forward
    * when possible, otherwise a merge commit. Any conflict is aborted and reported.
    */
-  updateParent(repo: string, parent: string): Promise<{ ok: true } | { ok: false; conflict: true }>;
+  updateParent(
+    repo: string,
+    parent: string,
+    opts?: GitConfigGuard,
+  ): Promise<{ ok: true } | { ok: false; conflict: true }>;
   /** E12: `git merge --no-ff <taskBranch>` into the parent; a conflict is aborted and reported. */
   mergeLocal(
     repo: string,
     parent: string,
     taskBranch: string,
+    opts?: GitConfigGuard,
   ): Promise<{ ok: true; sha: string } | { ok: false; conflict: true }>;
-  /** E13: `git push origin <parent>` (never upstream, never forced). */
+  /**
+   * E13: `git push origin <parent>` (never upstream, never forced). Refused when the parent is
+   * protected, when an origin push URL is the upstream repository (same normalised URL or same
+   * `owner/repo`), or when there is nothing to compare against.
+   */
   pushParent(repo: string, parent: string, opts: GitPushOptions): Promise<{ ok: true }>;
   /** Commits on the local parent that `origin/<parent>` lacks, newest first. */
   commitsAhead(repo: string, parent: string): Promise<GitCommitSummary[]>;
