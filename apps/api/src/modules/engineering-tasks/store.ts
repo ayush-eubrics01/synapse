@@ -61,7 +61,8 @@ export const ACTIVE_STATUSES: readonly EngineeringTaskStatus[] = [
  * re-investigation. `approved` is kept for a future two-step approval; plan approval goes straight
  * to `queued`. A terminal status moves on only to `needs_attention`, and only from the cleanup
  * step: the local cleanup found a dirty tree, so the task keeps the lock until the user tidies up
- * and cancels again (which re-runs cleanup).
+ * and cancels again (which re-runs cleanup). The one exception is `cancelled → completed`: the PR
+ * merged while the cancel was being recorded (M5, `merged_after_cancel`).
  */
 export const ALLOWED_TRANSITIONS: Readonly<
   Record<EngineeringTaskStatus, readonly EngineeringTaskStatus[]>
@@ -83,7 +84,8 @@ export const ALLOWED_TRANSITIONS: Readonly<
   ],
   completed: ["needs_attention"],
   failed: ["needs_attention"],
-  cancelled: ["needs_attention"],
+  // M5: a PR that merged while the cancel was being recorded makes the task completed.
+  cancelled: ["needs_attention", "completed"],
 };
 
 export function canTransition(from: EngineeringTaskStatus, to: EngineeringTaskStatus): boolean {
@@ -109,6 +111,17 @@ export function priorTerminalStatus(tx: DbOrTx, taskId: string): EngineeringTask
     : null;
 }
 
+/** M8: the failure reason a task had when its cleanup failed (`output.priorFailure`), or null. */
+export function priorFailureOf(tx: DbOrTx, taskId: string): string | null {
+  const row = tx
+    .select({ output: engineeringTaskSteps.output })
+    .from(engineeringTaskSteps)
+    .where(and(eq(engineeringTaskSteps.taskId, taskId), eq(engineeringTaskSteps.step, "cleanup")))
+    .get();
+  const f = (row?.output as { priorFailure?: unknown } | null)?.priorFailure;
+  return typeof f === "string" ? f : null;
+}
+
 export function toView(r: TaskRow): EngineeringTaskView {
   return {
     id: r.id,
@@ -124,6 +137,7 @@ export function toView(r: TaskRow): EngineeringTaskView {
     prUrl: r.prUrl,
     prNumber: r.prNumber,
     failure: r.failure,
+    lastPickupError: r.lastPickupError,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -203,10 +217,14 @@ export class EngineeringTaskStore {
     if (!canTransition(current.status, to)) throw new EngineeringTaskError("invalid_state");
     if (current.status === "needs_attention") {
       // A task that already ended (its cleanup failed) never resumes; it is closed as
-      // `completed` again only if it had completed (after a successful re-cleanup).
+      // `completed` or `failed` again only with the outcome it had (after a successful
+      // re-cleanup, M8).
       const prior = priorTerminalStatus(tx, id);
       if (prior && RESUMING.includes(to)) throw new EngineeringTaskError("invalid_state");
       if (to === "completed" && prior !== "completed") {
+        throw new EngineeringTaskError("invalid_state");
+      }
+      if (to === "failed" && prior && prior !== "failed") {
         throw new EngineeringTaskError("invalid_state");
       }
     }

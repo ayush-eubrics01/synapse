@@ -18,7 +18,7 @@ function configure(dir: string): void {
 }
 
 /**
- * Placeholder data only: bare `origin.git` and `upstream.git` under `root`, both holding main,
+ * Placeholder data only: bare `fork/app.git` (origin) and `up/app.git` (upstream) under `root`, both holding main,
  * stage and prod at one commit (`README.md`, `src/index.ts`), and a working clone `work` of
  * origin with `upstream` added and its push URL set to `DISABLED`.
  */
@@ -35,8 +35,10 @@ export function remoteRepoFixture(root: string): RemoteRepoFixture {
   git(seed, "commit", "-q", "-m", "init");
   git(seed, "branch", "stage");
   git(seed, "branch", "prod");
-  const origin = join(root, "origin.git");
-  const upstream = join(root, "upstream.git");
+  // `<root>/fork/app.git` and `<root>/up/app.git`: their owner/repo match the GitHub URLs the
+  // tests register (`github.com/fork/app`, `github.com/up/app`), so the M10 origin check passes.
+  const origin = join(root, "fork", "app.git");
+  const upstream = join(root, "up", "app.git");
   for (const bare of [origin, upstream]) {
     git(root, "init", "-q", "--bare", "-b", "main", bare);
     git(seed, "push", "-q", `file://${bare}`, "main", "stage", "prod");

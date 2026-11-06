@@ -1,9 +1,9 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { rmSync, writeFileSync } from "node:fs";
+import { renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { GitWorkflow, PlanApprovalInput } from "@synapse/contracts";
+import { type GitWorkflow, GitWorkflowError, type PlanApprovalInput } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
-import { FakeClock } from "@synapse/shared";
+import { FakeClock, newId } from "@synapse/shared";
 import { eq } from "drizzle-orm";
 import { ApprovalEngine } from "../../src/core/approvals/approvals";
 import { AuditLogger } from "../../src/core/audit/audit";
@@ -66,7 +66,10 @@ let lock: EngineeringLock;
 let approvals: ApprovalEngine;
 let service: EngineeringTaskService;
 let repo: string;
+let origin: string;
 let repoId: string;
+let events: EventPublisher;
+let audit: AuditLogger;
 let prodEnvId: string;
 let stageEnvId: string;
 
@@ -82,6 +85,42 @@ const eventsOf = (type: string) =>
   db.select().from(schema.domainEvents).where(eq(schema.domainEvents.type, type)).all();
 const auditDump = () => JSON.stringify(db.select().from(schema.auditEvents).all());
 const eventDump = () => JSON.stringify(db.select().from(schema.domainEvents).all());
+
+/** Sets the task's cleanup step row (as the step runner would have left it). */
+function setCleanup(
+  taskId: string,
+  status: "done" | "running" | "skipped",
+  output: unknown = null,
+) {
+  db.insert(schema.engineeringTaskSteps)
+    .values({
+      id: newId(),
+      taskId,
+      step: "cleanup",
+      status,
+      output,
+      createdAt: NOW,
+      updatedAt: NOW,
+    })
+    .onConflictDoUpdate({
+      target: [schema.engineeringTaskSteps.taskId, schema.engineeringTaskSteps.step],
+      set: { status, output },
+    })
+    .run();
+}
+
+const restartLock = () =>
+  new EngineeringLock({
+    db,
+    clock,
+    leases,
+    settings,
+    events,
+    audit,
+    git: workflow,
+    queue,
+    approvals,
+  });
 
 const handler = (type: string) => {
   const h = handlers.get(type);
@@ -136,13 +175,14 @@ beforeEach(async () => {
   runMigrations(db);
   clock = new FakeClock(NOW);
   settings = new SettingsService(db, clock, () => "e");
-  const events = new EventPublisher(clock);
-  const audit = new AuditLogger(clock);
+  events = new EventPublisher(clock);
+  audit = new AuditLogger(clock);
   queue = new JobQueue(db, clock);
   leases = new LeaseService(db, clock);
   handlers = new Map();
   const fx = remoteRepoFixture(scratch());
   repo = fx.repo;
+  origin = fx.origin;
   const provider = new LocalGitProvider({ home: fx.home });
   registry = new RepositoryRegistry({ db, clock, audit, events, provider });
   const view = await registry.register({
@@ -191,10 +231,11 @@ beforeEach(async () => {
 });
 
 describe("status transitions", () => {
-  test("terminal statuses move only to needs_attention (a dirty cleanup); queued only to pickup outcomes or cancel", () => {
-    for (const s of ["completed", "failed", "cancelled"] as const) {
+  test("terminal statuses move only to needs_attention (a dirty cleanup), plus cancelled → completed (a PR merged after the cancel); queued only to pickup outcomes or cancel", () => {
+    for (const s of ["completed", "failed"] as const) {
       expect(ALLOWED_TRANSITIONS[s]).toEqual(["needs_attention"]);
     }
+    expect(ALLOWED_TRANSITIONS.cancelled).toEqual(["needs_attention", "completed"]);
     expect(canTransition("queued", "in_progress")).toBe(true);
     expect(canTransition("queued", "completed")).toBe(false);
     expect(canTransition("proposed", "queued")).toBe(false);
@@ -571,13 +612,14 @@ describe("lock and pickup (E6, E7)", () => {
     expect(leaseRow()?.holder).toBe(`task:${id}`);
   });
 
-  test("renew releases a terminal holder whose lease expired and that has no live step job", async () => {
+  test("renew releases a terminal holder whose lease expired, whose cleanup is done and that has no live step job", async () => {
     const id = await queuedTask();
     await handler(PICKUP_JOB);
     db.update(schema.engineeringTasks)
       .set({ status: "cancelled" })
       .where(eq(schema.engineeringTasks.id, id))
       .run();
+    setCleanup(id, "done");
     // Not expired yet: kept (its cleanup may still be coming).
     db.update(schema.jobs).set({ status: "COMPLETED" }).where(eq(schema.jobs.type, STEP_JOB)).run();
     expect(lock.renew()).toBe(false);
@@ -602,6 +644,7 @@ describe("lock and pickup (E6, E7)", () => {
       .set({ status: "cancelled" })
       .where(eq(schema.engineeringTasks.id, id))
       .run();
+    setCleanup(id, "done");
     db.update(schema.jobs).set({ status: "COMPLETED" }).where(eq(schema.jobs.type, STEP_JOB)).run();
     const a = approvals.request(db, {
       action: "engineering.push_pr",
@@ -741,12 +784,13 @@ describe("startup recovery (E6)", () => {
     }
   });
 
-  test("a lease whose task is terminal with no live step job is released", async () => {
+  test("a lease whose task is terminal, cleaned up, with no live step job is released", async () => {
     const id = await inProgressWithExpiredLease();
     db.update(schema.engineeringTasks)
       .set({ status: "completed" })
       .where(eq(schema.engineeringTasks.id, id))
       .run();
+    setCleanup(id, "done");
     db.update(schema.jobs).set({ status: "COMPLETED" }).where(eq(schema.jobs.type, STEP_JOB)).run();
     expect(await lock.recover()).toEqual({ action: "released", taskId: id });
     expect(leaseRow()).toBeUndefined();
@@ -803,5 +847,173 @@ describe("list and get", () => {
     expect(service.list("queued").map((t) => t.id)).toEqual([b]);
     expect(service.get("missing")).toBeNull();
     expect(service.get(b)?.plan).toEqual(PLAN);
+  });
+});
+
+describe("final review: network-independent recovery and retryable pickup (I1)", () => {
+  test("pickup with an unreachable remote leaves the task queued, releases the lock, records lastPickupError and retries next tick", async () => {
+    const id = await queuedTask();
+    const away = `${origin}-away`;
+    renameSync(origin, away);
+    expect(await handler(PICKUP_JOB)).toEqual({ deferred: id, reason: "fetch_failed" });
+    expect(taskRow(id)?.status).toBe("queued");
+    expect(taskRow(id)?.failure).toBeNull();
+    expect(service.get(id)?.lastPickupError).toBe("fetch_failed");
+    expect(leaseRow()).toBeUndefined();
+    expect(jobsOf(STEP_JOB)).toHaveLength(0);
+    expect(auditDump()).toContain("engineering.pickup_deferred");
+    // The network is back: the next tick picks it up and clears the error.
+    renameSync(away, origin);
+    expect(await handler(PICKUP_JOB)).toEqual({ pickedUp: id });
+    expect(service.get(id)?.lastPickupError).toBeNull();
+    expect(taskRow(id)?.status).toBe("in_progress");
+  });
+
+  test("a git timeout at preflight is retryable too; a deterministic failure still needs attention", async () => {
+    const timingOut = new EngineeringTaskService({
+      db,
+      clock,
+      events,
+      audit,
+      queue,
+      provider: new LocalGitProvider({ home: repo }),
+      registry,
+      lock,
+      git: {
+        preflight: async () => {
+          throw new GitWorkflowError("git_timeout");
+        },
+      },
+    });
+    const id = await queuedTask();
+    expect(await timingOut.pickupNext()).toEqual({ deferred: id, reason: "git_timeout" });
+    expect(taskRow(id)?.status).toBe("queued");
+    expect(taskRow(id)?.lastPickupError).toBe("git_timeout");
+    expect(leaseRow()).toBeUndefined();
+    const missing = new EngineeringTaskService({
+      db,
+      clock,
+      events,
+      audit,
+      queue,
+      provider: new LocalGitProvider({ home: repo }),
+      registry,
+      lock,
+      git: { preflight: async () => ({ ok: false, reason: "missing_remote" }) },
+    });
+    expect(await missing.pickupNext()).toEqual({ needsAttention: id, reason: "missing_remote" });
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("startup recovery checks the tree locally only: an unreachable origin still resumes a clean task", async () => {
+    const id = await queuedTask();
+    await handler(PICKUP_JOB);
+    clock.advance(30 * 60_000);
+    rmSync(origin, { recursive: true, force: true });
+    expect(await lock.recover()).toEqual({ action: "resumed", taskId: id });
+    expect(taskRow(id)?.status).toBe("in_progress");
+    // A dirty tree is still caught without the network.
+    writeFileSync(join(repo, "half.ts"), "x\n");
+    expect(await restartLock().recover()).toEqual({
+      action: "needs_attention",
+      taskId: id,
+      reason: "dirty_tree",
+    });
+  });
+});
+
+describe("final review: lost cleanup (M3)", () => {
+  async function terminalHolder(status: "cancelled" | "completed" | "failed" = "cancelled") {
+    const id = await queuedTask();
+    await handler(PICKUP_JOB);
+    db.update(schema.engineeringTasks)
+      .set({ status })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+    db.update(schema.jobs).set({ status: "COMPLETED" }).where(eq(schema.jobs.type, STEP_JOB)).run();
+    clock.advance(30 * 60_000);
+    return id;
+  }
+  const pendingCleanups = (id: string) =>
+    jobsOf(STEP_JOB).filter(
+      (j) =>
+        j.status === "PENDING" &&
+        JSON.stringify(j.input) === JSON.stringify({ taskId: id, step: "cleanup" }),
+    );
+
+  test("renew enqueues the cleanup of a terminal holder that never cleaned up, instead of releasing", async () => {
+    const id = await terminalHolder();
+    expect(lock.renew()).toBe(false);
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+    expect(pendingCleanups(id)).toHaveLength(1);
+    // Not twice while that job is live.
+    lock.renew();
+    expect(pendingCleanups(id)).toHaveLength(1);
+    // Its cleanup ran (and released); a later tick with the cleanup done releases a leftover lease.
+    db.update(schema.jobs).set({ status: "COMPLETED" }).where(eq(schema.jobs.type, STEP_JOB)).run();
+    setCleanup(id, "done");
+    lock.renew();
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("a cleanup skipped for a changed config counts as done (it released the lock)", async () => {
+    const id = await terminalHolder("completed");
+    setCleanup(id, "skipped", { reason: "config_changed" });
+    lock.renew();
+    expect(leaseRow()).toBeUndefined();
+    expect(pendingCleanups(id)).toHaveLength(0);
+  });
+
+  test("a cleanup that died (running, no live job) cannot be redone by renew: needs attention, lock kept", async () => {
+    const id = await terminalHolder("completed");
+    setCleanup(id, "running");
+    lock.renew();
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("cleanup_incomplete");
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+    expect(pendingCleanups(id)).toHaveLength(0);
+    // The prior outcome is kept, so a retried cleanup closes it as completed again.
+    const cleanup = db
+      .select()
+      .from(schema.engineeringTaskSteps)
+      .where(eq(schema.engineeringTaskSteps.taskId, id))
+      .all()
+      .find((r) => r.step === "cleanup");
+    expect(cleanup?.status).toBe("failed");
+    expect(cleanup?.output).toMatchObject({
+      failure: "cleanup_incomplete",
+      priorStatus: "completed",
+    });
+  });
+
+  test("startup recovery enqueues a missing or interrupted cleanup and keeps the lock", async () => {
+    const id = await terminalHolder();
+    expect(await lock.recover()).toEqual({ action: "kept", taskId: id });
+    expect(pendingCleanups(id)).toHaveLength(1);
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+    // A cleanup interrupted by the restart (running) is redone once at boot.
+    db.update(schema.jobs).set({ status: "COMPLETED" }).where(eq(schema.jobs.type, STEP_JOB)).run();
+    setCleanup(id, "running");
+    expect(await restartLock().recover()).toEqual({ action: "kept", taskId: id });
+    expect(pendingCleanups(id)).toHaveLength(1);
+  });
+});
+
+describe("final review: unregister guard (M4)", () => {
+  test("a repository with a non-terminal engineering task cannot be unregistered", async () => {
+    const id = await queuedTask();
+    let code = "";
+    try {
+      registry.unregister(repoId);
+    } catch (e) {
+      code = e instanceof RegistryError ? e.code : "other";
+    }
+    expect(code).toBe("repo_has_active_task");
+    expect(repoRow()).toBeDefined();
+    expect(taskRow(id)).toBeDefined();
+    service.cancel(id);
+    registry.unregister(repoId);
+    expect(repoRow()).toBeUndefined();
   });
 });

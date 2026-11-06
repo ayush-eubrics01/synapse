@@ -37,8 +37,6 @@ const PRE_QUEUE: readonly EngineeringTaskStatus[] = [
   "planned",
   "approved",
 ];
-/** Preflight results that mean the tree is not as Synapse left it (E6). */
-const UNSAFE_TREE = new Set(["dirty_tree", "merge_in_progress", "not_a_repository"]);
 
 export const holderOf = (taskId: string) => `${HOLDER_PREFIX}${taskId}`;
 
@@ -67,7 +65,7 @@ export interface EngineeringLockDeps {
   audit: Pick<AuditLogger, "record">;
   git: Pick<
     GitWorkflow,
-    "preflight" | "diffSummary" | "configFingerprint" | "gitDirFingerprint" | "branchExists"
+    "localState" | "diffSummary" | "configFingerprint" | "gitDirFingerprint" | "branchExists"
   >;
   /** Re-drives an idempotent step after a restart (E6 "resumed"). */
   queue: Pick<JobQueue, "enqueue">;
@@ -122,8 +120,10 @@ export class EngineeringLock {
    * The 2-minute tick: extends the current holder's lease while its task is `in_progress` or
    * `awaiting_approval`. A `needs_attention` task's lease expires but is kept (it keeps blocking
    * others until the user resolves it). A terminal task whose lease expired and that has no live
-   * step job left (its cleanup failed or never ran) is released, so one failed cleanup never
-   * blocks engineering until a restart.
+   * step job and no running executor is looked at (M3): its cleanup done (or skipped for a changed
+   * config, which releases) → released; its cleanup never ran → the cleanup step is enqueued (it
+   * releases on success); its cleanup started but died (`running` with no live job) → the task
+   * goes to `needs_attention` (`cleanup_incomplete`) with its prior outcome kept, lock kept.
    */
   renew(): boolean {
     const h = this.holder();
@@ -131,7 +131,10 @@ export class EngineeringLock {
     const task = this.store.get(this.deps.db, h.taskId);
     if (task && TERMINAL_STATUSES.includes(task.status)) {
       if (h.expired && !this.liveStepJob(task.id) && !this.executingApproval(task.id)) {
-        this.release(task.id);
+        const cleanup = this.cleanupState(task.id);
+        if (cleanup === "settled") this.release(task.id);
+        else if (cleanup === "missing") this.enqueueCleanup(task.id);
+        else this.cleanupIncomplete(task.id, task.status);
       }
       return false;
     }
@@ -151,16 +154,18 @@ export class EngineeringLock {
    * starts, for any lease row: at boot every lease belongs to a process that is gone, so a fast
    * restart (lease not yet expired) is checked exactly like an expired one.
    * - No task, or an unparseable holder: released.
-   * - A terminal task: released unless a step job (its cleanup) is still queued or running.
+   * - A terminal task: kept while a step job (its cleanup) is queued or running; kept with its
+   *   cleanup step enqueued when that cleanup never finished (M3); otherwise released.
    * - A `needs_attention` task: kept as it is.
    * - A task before plan approval (corrupt state) or `queued` (crash between acquire and pickup;
    *   Synapse never touched the tree): released, so pickup can start it again.
    * - `awaiting_approval` at `commit`: the tree is dirty by design. Resumed (approval left
    *   pending) when the config fingerprint and the diff hash still equal the ones the approval
    *   shows; otherwise `needs_attention` (`config_changed`, `unsafe_change` or `diff_changed`).
-   * - Otherwise the repository is checked as preflight does: a dirty tree, a merge in progress or
-   *   a repository that is no longer the registered top level sets `needs_attention` (reason in
-   *   `failure`) and the lease is kept. Clean and `awaiting_approval`: resumed. Clean and
+   * - Otherwise the repository is checked locally (`GitWorkflow.localState`, I1: no remote is
+   *   contacted, so a boot without network never strands a task): a dirty tree, a merge in
+   *   progress or a repository that is no longer the registered top level sets `needs_attention`
+   *   (reason in `failure`) and the lease is kept. Clean and `awaiting_approval`: resumed. Clean and
    *   `in_progress`: the current step is re-driven when that is safe (`branch` while the task
    *   branch doesn't exist, `develop` while the git dir is untouched, `update_parent`), else
    *   `needs_attention` with `resume_unsafe`.
@@ -177,6 +182,11 @@ export class EngineeringLock {
     }
     if (TERMINAL_STATUSES.includes(task.status)) {
       if (this.liveStepJob(task.id)) return this.kept(task.id);
+      // M3: a cleanup that never ran, or that the restart interrupted, is run (once) now.
+      if (this.cleanupState(task.id) !== "settled") {
+        this.enqueueCleanup(task.id);
+        return this.kept(task.id);
+      }
       this.release(task.id);
       return { action: "released", taskId: task.id };
     }
@@ -325,23 +335,85 @@ export class EngineeringLock {
     }
   }
 
-  /** The E7 tree checks that matter after a crash; null when the tree is as Synapse left it. */
+  /** The E7 tree checks that matter after a crash, local only (I1); null when the tree is as Synapse left it. */
   private async treeProblem(task: typeof engineeringTasks.$inferSelect): Promise<string | null> {
-    const repo = this.deps.db
-      .select({ localPath: repositories.localPath })
-      .from(repositories)
-      .where(eq(repositories.id, task.repositoryId))
-      .get();
-    if (!repo) return "not_a_repository";
+    const path = this.repoPath(task);
+    if (!path) return "not_a_repository";
     if (!task.parentBranch) return "invalid_state";
     try {
-      const r = await this.deps.git.preflight(repo.localPath, task.parentBranch, {
-        allowUpstreamPush: true,
-      });
-      return !r.ok && UNSAFE_TREE.has(r.reason) ? r.reason : null;
+      const r = await this.deps.git.localState(path);
+      return r.ok ? null : r.reason;
     } catch (e) {
       return e instanceof GitWorkflowError ? e.code : "git_failed";
     }
+  }
+
+  /**
+   * M3: where a terminal task's cleanup stands. `settled`: done, or skipped for a changed config
+   * (that skip releases the lock); `missing`: not run since the task ended (no row, pending,
+   * failed on an earlier attempt, or skipped while another task held the lock); `died`: started
+   * (`running`) but its job is gone.
+   */
+  private cleanupState(taskId: string): "settled" | "missing" | "died" {
+    const row = this.deps.db
+      .select({ status: engineeringTaskSteps.status, output: engineeringTaskSteps.output })
+      .from(engineeringTaskSteps)
+      .where(and(eq(engineeringTaskSteps.taskId, taskId), eq(engineeringTaskSteps.step, "cleanup")))
+      .get();
+    if (!row) return "missing";
+    if (row.status === "done") return "settled";
+    const reason = (row.output as { reason?: unknown } | null)?.reason;
+    if (row.status === "skipped" && reason === "config_changed") return "settled";
+    if (row.status === "running") return "died";
+    return "missing";
+  }
+
+  private enqueueCleanup(taskId: string): void {
+    this.deps.db.transaction((tx) => {
+      this.deps.queue.enqueue(tx, {
+        type: STEP_JOB,
+        input: { taskId, step: "cleanup" },
+        idempotencyKey: `${STEP_JOB}:${taskId}:cleanup:${newId()}`,
+        maxAttempts: 1,
+      });
+      this.deps.audit.record(tx, {
+        actor: "system",
+        module: MODULE,
+        action: "engineering.cleanup_requeued",
+        workerProfile: "engineering",
+        targetRef: taskId,
+        result: "ok",
+        details: { taskId },
+      });
+    });
+  }
+
+  /** M3: a terminal task whose cleanup died cannot be cleaned by the tick; the user decides. */
+  private cleanupIncomplete(taskId: string, prior: EngineeringTaskStatus): void {
+    const reason = "cleanup_incomplete";
+    this.deps.db.transaction(
+      (tx) => {
+        const priorFailure = this.store.get(tx, taskId)?.failure ?? null;
+        this.store.transition(tx, taskId, "needs_attention", { failure: reason }, [prior]);
+        this.store.upsertStep(tx, taskId, "cleanup", "failed", {
+          output: {
+            failure: reason,
+            priorStatus: prior,
+            ...(priorFailure ? { priorFailure } : {}),
+          },
+        });
+        this.deps.audit.record(tx, {
+          actor: "system",
+          module: MODULE,
+          action: "engineering.cleanup_failed",
+          workerProfile: "engineering",
+          targetRef: taskId,
+          result: "needs_attention",
+          details: { taskId, reason },
+        });
+      },
+      { behavior: "immediate" },
+    );
   }
 
   private kept(taskId: string): RecoveryResult {

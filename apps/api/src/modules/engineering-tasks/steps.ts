@@ -14,6 +14,9 @@ import {
   type PullRequestProvider,
   type RiskLevel,
   retryDecision,
+  type TestRun,
+  testResultLabel,
+  testRunSchema,
 } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
@@ -30,6 +33,7 @@ import { type EngineeringLock, STEP_JOB } from "./lock";
 import {
   ACTIVE_STATUSES,
   EngineeringTaskStore,
+  priorFailureOf,
   priorTerminalStatus,
   type TaskRow,
   TERMINAL_STATUSES,
@@ -75,6 +79,8 @@ export const commitPayloadSchema = z.object({
   files: z.array(fileSchema),
   filesTotal: z.number().int(),
   testsPassed: z.boolean(),
+  /** M1: absent on approvals requested before the final review (read as exact/none). */
+  testRun: testRunSchema.optional(),
   message: z.string().min(1).max(8000),
 });
 export type CommitPayload = z.infer<typeof commitPayloadSchema>;
@@ -113,6 +119,8 @@ export const mergePrPayloadSchema = z.object({
       mergeable: z.string(),
       checks: z.string(),
       headSha: z.string().nullable(),
+      /** M6: when the status was read (the card shows "checks at <time>"). */
+      checkedAt: z.string().optional(),
     })
     .nullable(),
   /** The commit pushed to the fork: the PR is merged only while its head is still this. */
@@ -343,6 +351,7 @@ export class EngineeringStepService {
       truncated: diff.truncated,
       testsPassed: tests.testsPassed,
       testOutputTail: tests.testOutputTail,
+      testRun: tests.testRun,
       modelSummary: reply?.summary ?? null,
       modelNotes: reply?.notes ?? null,
       // Tool names only: a denial means the run tried to step outside its scope.
@@ -369,6 +378,7 @@ export class EngineeringStepService {
       files: diff.files.slice(0, PAYLOAD_FILES_MAX),
       filesTotal: diff.files.length,
       testsPassed: tests.testsPassed,
+      testRun: tests.testRun,
       message: commitMessage(task),
     };
     return this.settle(taskId, "develop", output, (tx) => {
@@ -381,6 +391,7 @@ export class EngineeringStepService {
       this.audit(tx, "engineering.developed", taskId, "ok", {
         files: diff.files.length,
         testsPassed: tests.testsPassed,
+        testRun: tests.testRun,
         permissionDenials: output.permissionDenials,
       });
       return { status: "awaiting_approval", step: "commit" };
@@ -520,7 +531,7 @@ export class EngineeringStepService {
       commitsTotal: commits.length,
       mergeSha: sha,
       prTitle: clip(task.title, 256),
-      prBody: prBody(task, this.stepOutput(task.id, "develop")?.testsPassed === true),
+      prBody: prBody(task, developTestResult(this.stepOutput(task.id, "develop"))),
       configFingerprint: configNow,
       ...deploy,
     };
@@ -559,6 +570,8 @@ export class EngineeringStepService {
       await this.deps.git.pushParent(path, parent, {
         protectedBranches: this.protectedBranches(task.repositoryId),
         upstreamUrl: repo.upstreamUrl,
+        // M10: the push goes only to the origin the user registered (normalised, owner/repo).
+        expectedOriginUrl: repo.originUrl,
         expectedConfigFingerprint: p.configFingerprint,
         expectedSha: p.mergeSha,
       });
@@ -601,11 +614,24 @@ export class EngineeringStepService {
       this.attention(task.id, "push_pr", codeOf(e), pushed);
       throw new Error(codeOf(e));
     }
-    let status: PrStatus | null = null;
+    // M5: the PR exists now, whatever happens next (a cancel meanwhile included): record it.
+    this.deps.db.transaction(
+      (tx) => {
+        this.store.update(tx, task.id, { prUrl: pr.url, prNumber: pr.number });
+        this.store.upsertStep(tx, task.id, "push_pr", "running", {
+          output: { ...pushed, prUrl: pr.url, prNumber: pr.number },
+        });
+      },
+      { behavior: "immediate" },
+    );
+    let status: (PrStatus & { checkedAt: string }) | null = null;
     try {
-      status = await this.deps.prs.prStatus({ upstream, number: pr.number });
+      status = {
+        ...(await this.deps.prs.prStatus({ upstream, number: pr.number })),
+        checkedAt: this.deps.clock.now().toISOString(),
+      };
     } catch {
-      status = null; // shown as unknown; merge_pr is high risk and re-checked by GitHub anyway
+      status = null; // shown as unknown; merge_pr is high risk and re-checked at revalidation
     }
     const deploy = this.deployNotice(task);
     // The fingerprint stays on the output: cleanup compares against the latest one checked.
@@ -666,6 +692,10 @@ export class EngineeringStepService {
       throw new Error(codeOf(e));
     }
     const out = { merged: merged.merged, ...(merged.sha ? { sha: merged.sha } : {}) };
+    if (merged.merged && this.mergedAfterCancel(task.id, out, merged.sha ?? pushedSha)) {
+      this.#cleanupWanted.add(task.id);
+      return { merged: true };
+    }
     const settled = await this.settle(task.id, "merge_pr", out, (tx) => {
       this.store.upsertStep(tx, task.id, "merge_pr", "done", { output: out });
       this.store.transition(tx, task.id, "completed", { currentStep: "cleanup", failure: null });
@@ -676,6 +706,36 @@ export class EngineeringStepService {
     return { merged: merged.merged };
   }
 
+  /**
+   * M5: the PR merged although the task was cancelled while gh ran. The merge is the truth: the
+   * task becomes `completed` with `merged_after_cancel` in `failure` and on the step output, plus
+   * the merge commit (gh's, else the PR head that merged). False when the task was not cancelled.
+   */
+  private mergedAfterCancel(
+    taskId: string,
+    out: Record<string, unknown>,
+    mergeSha: string,
+  ): boolean {
+    return this.deps.db.transaction(
+      (tx) => {
+        if (this.store.get(tx, taskId)?.status !== "cancelled") return false;
+        this.store.upsertStep(tx, taskId, "merge_pr", "done", {
+          output: { ...out, outcome: "merged_after_cancel", mergeSha },
+        });
+        this.store.transition(
+          tx,
+          taskId,
+          "completed",
+          { currentStep: "cleanup", failure: "merged_after_cancel" },
+          ["cancelled"],
+        );
+        this.audit(tx, "engineering.completed", taskId, "ok", { outcome: "merged_after_cancel" });
+        return true;
+      },
+      { behavior: "immediate" },
+    );
+  }
+
   // ---- executors and revalidation (E18) -------------------------------------------------------
 
   private async execute(a: Approval, step: ApprovalStep): Promise<unknown> {
@@ -684,7 +744,12 @@ export class EngineeringStepService {
     const taskId = parsed.data.taskId;
     return this.track(taskId, async () => {
       const ctx = this.context(taskId);
-      if ("skip" in ctx) throw new Error(ctx.skip);
+      if ("skip" in ctx) {
+        // M9: revalidation passed but the repository went away since: never leave the task
+        // waiting on an approval that can no longer run.
+        this.executeRefused(a, step, taskId, ctx.skip);
+        throw new Error(ctx.skip);
+      }
       // Claim the step: awaiting this approval → in_progress. A cancelled task never executes.
       const claimed = this.deps.db.transaction(
         (tx) => {
@@ -718,6 +783,39 @@ export class EngineeringStepService {
           return this.executeMergePr(ctx, parsed.data as z.infer<typeof mergePrPayloadSchema>);
       }
     });
+  }
+
+  /**
+   * M9: the executor found the task unworkable after revalidation passed. Like a failed
+   * revalidation: the task (still waiting on this approval) goes to `needs_attention` with the
+   * reason. The approval was already claimed, so it cannot be revoked; the engine records it
+   * `failed` when the executor throws.
+   */
+  private executeRefused(a: Approval, step: ApprovalStep, taskId: string, reason: string): void {
+    this.deps.db.transaction(
+      (tx) => {
+        const task = this.store.get(tx, taskId);
+        const row = this.stepRow(tx, taskId, step);
+        if (
+          task?.status !== "awaiting_approval" ||
+          task.currentStep !== step ||
+          row?.approvalId !== a.id
+        ) {
+          return;
+        }
+        try {
+          this.deps.approvals.revokeAsSystem(tx, a.id, reason);
+        } catch {
+          // claimed by execute(): the engine marks it failed
+        }
+        this.store.transition(tx, taskId, "needs_attention", { failure: reason });
+        this.store.upsertStep(tx, taskId, step, "failed", {
+          output: { ...((row.output as object | null) ?? {}), failure: reason },
+        });
+        this.audit(tx, "engineering.step_failed", taskId, "needs_attention", { step, reason });
+      },
+      { behavior: "immediate" },
+    );
   }
 
   /**
@@ -801,7 +899,16 @@ export class EngineeringStepService {
         const upstream = this.deps.prs.repoRef(ctx.repo.upstreamUrl ?? "");
         if (!upstream) return "unsupported_remote";
         const status = await this.deps.prs.prStatus({ upstream, number: p.prNumber });
-        return status.headSha === p.pushedSha ? null : "pr_head_moved";
+        // M6: the fresh status is kept on the step for the task view; failing checks refuse.
+        const freshStatus = { ...status, checkedAt: this.deps.clock.now().toISOString() };
+        this.deps.db.transaction((tx) => {
+          const r = this.stepRow(tx, task.id, "merge_pr");
+          this.store.upsertStep(tx, task.id, "merge_pr", r?.status ?? "awaiting_approval", {
+            output: { ...((r?.output as object | null) ?? {}), freshStatus },
+          });
+        });
+        if (status.headSha !== p.pushedSha) return "pr_head_moved";
+        return status.checks === "failing" ? "checks_failing" : null;
       }
     }
   }
@@ -853,10 +960,10 @@ export class EngineeringStepService {
       this.mark(taskId, "cleanup", "skipped", { output: { reason: "lock_held_by_other" } });
       return { status: "skipped", step: "cleanup", reason: "lock_held_by_other" };
     }
-    // A completed task whose cleanup found a dirty tree is retried from needs_attention and is
-    // closed as completed again only by a successful cleanup.
-    const retry =
-      task.status === "needs_attention" && priorTerminalStatus(db, taskId) === "completed";
+    // A completed or failed task whose cleanup found a dirty tree is retried from needs_attention
+    // and is closed with that outcome again only by a successful cleanup (M8 adds `failed`).
+    const priorNow = task.status === "needs_attention" ? priorTerminalStatus(db, taskId) : null;
+    const retry = priorNow === "completed" || priorNow === "failed";
     if (!TERMINAL_STATUSES.includes(task.status) && !retry) {
       return { status: "skipped", step: "cleanup", reason: "not_terminal" };
     }
@@ -864,11 +971,12 @@ export class EngineeringStepService {
       this.#cleanupWanted.add(taskId);
       return { status: "skipped", step: "cleanup", reason: "step_running" };
     }
-    const prior = retry ? "completed" : null;
+    const prior = retry ? priorNow : null;
     db.transaction((tx) => {
       this.expirePending(tx, taskId);
+      const priorFailure = prior ? priorFailureOf(tx, taskId) : null;
       this.store.upsertStep(tx, taskId, "cleanup", "running", {
-        output: prior ? { priorStatus: prior } : null,
+        output: prior ? { priorStatus: prior, ...(priorFailure ? { priorFailure } : {}) } : null,
       });
     });
     const release = () => {
@@ -911,8 +1019,7 @@ export class EngineeringStepService {
           // Changed since the run (the user's own edits?): left alone; cleanup sees it dirty.
         }
       }
-      const stored = out("branch")?.returnTo;
-      const returnTo = typeof stored === "string" ? stored : task.parentBranch;
+      const returnTo = await this.returnBranch(path, task, out("branch")?.returnTo);
       // Forced only while the branch holds no commit at all (its tip is still the base). Any
       // commit (Synapse's, even one whose bookkeeping a crash lost, or the user's) is deleted
       // only when another local branch contains it; otherwise the branch is kept.
@@ -920,7 +1027,8 @@ export class EngineeringStepService {
       const force = tip !== null && task.baseSha !== null && tip === task.baseSha;
       const r = await git.cleanup(path, task.taskBranch, returnTo, { force });
       if (!r.ok) return this.cleanupAttention(taskId, "dirty_tree");
-      const kept = !r.deleted && tip !== null && returnTo !== task.taskBranch;
+      // Not deleted while it exists: unmerged commits, or no branch to step off it to (I2).
+      const kept = !r.deleted && tip !== null;
       return this.cleaned(
         taskId,
         { git: true, deleted: r.deleted, ...(kept ? { outcome: "branch_kept" } : {}) },
@@ -940,12 +1048,20 @@ export class EngineeringStepService {
       (tx) => {
         const task = this.store.get(tx, taskId);
         const prior = task?.status === "needs_attention" ? priorTerminalStatus(tx, taskId) : null;
+        const priorFailure = prior ? priorFailureOf(tx, taskId) : null;
         this.store.upsertStep(tx, taskId, "cleanup", "done", {
-          output: { ...output, ...(prior ? { priorStatus: prior } : {}) },
+          output: {
+            ...output,
+            ...(prior ? { priorStatus: prior } : {}),
+            ...(priorFailure ? { priorFailure } : {}),
+          },
         });
-        // The re-cleanup of a completed task closes it as completed again.
+        // The re-cleanup of a completed or failed task closes it with that outcome again; a
+        // failed task keeps its failure reason (M8).
         if (prior === "completed") {
           this.store.transition(tx, taskId, "completed", { failure: null });
+        } else if (prior === "failed") {
+          this.store.transition(tx, taskId, "failed", { failure: priorFailure });
         }
         this.audit(tx, "engineering.cleaned", taskId, "ok", {
           deleted: output.deleted === true,
@@ -963,15 +1079,19 @@ export class EngineeringStepService {
       (tx) => {
         const task = this.store.get(tx, taskId);
         // The terminal outcome it had (or, on a retry, the one recorded before) is kept.
-        const priorStatus =
-          task && TERMINAL_STATUSES.includes(task.status)
-            ? task.status
-            : priorTerminalStatus(tx, taskId);
+        const terminal = task !== null && TERMINAL_STATUSES.includes(task.status);
+        const priorStatus = terminal ? task.status : priorTerminalStatus(tx, taskId);
+        // M8: the failure reason of a failed task, restored when a retried cleanup succeeds.
+        const priorFailure = terminal ? task.failure : priorFailureOf(tx, taskId);
         if (task && task.status !== "needs_attention") {
           this.store.transition(tx, taskId, "needs_attention", { failure: reason });
         }
         this.store.upsertStep(tx, taskId, "cleanup", "failed", {
-          output: { failure: reason, ...(priorStatus ? { priorStatus } : {}) },
+          output: {
+            failure: reason,
+            ...(priorStatus ? { priorStatus } : {}),
+            ...(priorFailure ? { priorFailure } : {}),
+          },
         });
         this.audit(tx, "engineering.cleanup_failed", taskId, "needs_attention", { reason });
       },
@@ -981,6 +1101,19 @@ export class EngineeringStepService {
   }
 
   // ---- helpers --------------------------------------------------------------------------------
+
+  /**
+   * I2: where cleanup switches to: the branch checked out at pickup, else the parent, whichever
+   * still exists locally; null (stay on the current branch) when neither does. The task branch is
+   * never a return target.
+   */
+  private async returnBranch(path: string, task: TaskRow, stored: unknown): Promise<string | null> {
+    const candidates = [typeof stored === "string" ? stored : null, task.parentBranch];
+    for (const b of candidates) {
+      if (b && b !== task.taskBranch && (await this.deps.git.branchExists(path, b))) return b;
+    }
+    return null;
+  }
 
   /**
    * Runs `fn` with the task marked in flight, then any cleanup that was asked for meanwhile (a
@@ -1258,11 +1391,26 @@ export function commitMessage(task: Pick<TaskRow, "id" | "title" | "approvedDesc
     : `${task.title}\n\n${desc}\n\nTask: ${task.id}`;
 }
 
-/** E13: the PR body: the approved description, the task id and the test result. */
+/** M1: the develop step's test result; output from before the final review has no `testRun`. */
+export function developTestResult(out: Record<string, unknown> | null): {
+  testsPassed: boolean;
+  testRun: TestRun;
+} {
+  const testsPassed = out?.testsPassed === true;
+  const parsed = testRunSchema.safeParse(out?.testRun);
+  const testRun: TestRun = parsed.success
+    ? parsed.data
+    : typeof out?.testOutputTail === "string"
+      ? "exact"
+      : "none";
+  return { testsPassed, testRun };
+}
+
+/** E13: the PR body: the approved description, the task id and the test result (M1 wording). */
 export function prBody(
   task: Pick<TaskRow, "id" | "approvedDescription">,
-  testsPassed: boolean,
+  tests: { testsPassed: boolean; testRun: TestRun },
 ): string {
   const desc = clip((task.approvedDescription ?? "").trim(), PR_BODY_MAX);
-  return `${desc}\n\nTask: ${task.id}\nTests: ${testsPassed ? "passed" : "not passing"}`;
+  return `${desc}\n\nTask: ${task.id}\n${testResultLabel(tests.testsPassed, tests.testRun)}`;
 }

@@ -1,5 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type {
   AIExecutionResult,
@@ -94,7 +102,7 @@ if (sub === "pr view") {
   const { base } = JSON.parse(readFileSync(d + "/pr.json", "utf8"));
   const r = Bun.spawnSync(["git", "--git-dir", cfg.origin, "rev-parse", "refs/heads/" + base]);
   const headRefOid = r.stdout.toString().trim();
-  process.stdout.write(JSON.stringify({ number: 7, url: "u", state: "OPEN", mergeable: "MERGEABLE", statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }], headRefOid }));
+  process.stdout.write(JSON.stringify({ number: 7, url: "u", state: "OPEN", mergeable: "MERGEABLE", statusCheckRollup: [{ status: "COMPLETED", conclusion: cfg.conclusion ?? "SUCCESS" }], headRefOid }));
 }
 process.exit(0);
 `,
@@ -533,6 +541,7 @@ describe("happy path (E8–E15)", () => {
     const cp = commit.payload as Record<string, unknown>;
     expect(cp.taskId).toBe(id);
     expect(cp.testsPassed).toBe(true);
+    expect(cp.testRun).toBe("exact");
     expect((cp.files as { path: string }[]).map((f) => f.path)).toEqual([
       "src/index.ts",
       `src/${FILE_MARKER}.ts`,
@@ -565,6 +574,7 @@ describe("happy path (E8–E15)", () => {
     expect(pp.commitsTotal).toBe(2);
     expect(pp.mergeSha).toBe(head(repo, "main"));
     expect(pp.prTitle).toBe("Fix redirect");
+    expect(String(pp.prBody)).toContain(`Task: ${id}\nTests passed`);
 
     const upstreamBefore = head(fx.upstream, "main");
     expect((await approve("engineering.push_pr")).outcome.status).toBe("executed");
@@ -590,6 +600,7 @@ describe("happy path (E8–E15)", () => {
       mergeable: "MERGEABLE",
       checks: "passing",
       headSha: pp.mergeSha,
+      checkedAt: NOW,
     });
     expect((mp.payload as Record<string, unknown>).pushedSha).toBe(pp.mergeSha);
 
@@ -643,13 +654,22 @@ describe("test result source (ADR-026)", () => {
     expect(testResultFrom([bad, ok], "bun test")).toEqual({
       testsPassed: true,
       testOutputTail: "pass",
+      testRun: "exact",
     });
-    expect(testResultFrom([ok, bad, other], "bun test").testsPassed).toBe(false);
+    expect(testResultFrom([ok, bad, other], "bun test")).toMatchObject({
+      testsPassed: false,
+      testRun: "partial",
+    });
     expect(testResultFrom([other], "bun test")).toEqual({
       testsPassed: false,
       testOutputTail: null,
+      testRun: "none",
     });
-    expect(testResultFrom([], "bun test")).toEqual({ testsPassed: false, testOutputTail: null });
+    expect(testResultFrom([], "bun test")).toEqual({
+      testsPassed: false,
+      testOutputTail: null,
+      testRun: "none",
+    });
     const long = tool("Bash", { command: "bun test" }, `${"x".repeat(5000)}END`);
     const tail = testResultFrom([long], "bun test").testOutputTail as string;
     expect(tail.length).toBe(2000);
@@ -1176,5 +1196,180 @@ describe("cancel and lock edge cases (review fixes)", () => {
     expect(taskRow(id)?.status).toBe("completed");
     expect(stepRow(id, "cleanup")?.status).toBe("done");
     expect(leaseRow()).toBeUndefined();
+  });
+});
+
+describe("final review fixes", () => {
+  const setGh = (extra: Record<string, unknown>) =>
+    writeFileSync(join(ghDir, "cfg.json"), JSON.stringify({ origin: fx.origin, ...extra }));
+
+  test("I2: the branch checked out at pickup was deleted meanwhile: cleanup returns to the parent and releases the lock", async () => {
+    git(repo, "switch", "-q", "-c", "feature-x");
+    const id = await developed();
+    expect(stepRow(id, "branch")?.output).toMatchObject({ returnTo: "feature-x" });
+    git(repo, "update-ref", "-d", "refs/heads/feature-x");
+    await reject("engineering.commit");
+    expect(taskRow(id)?.status).toBe("cancelled");
+    expect(stepRow(id, "cleanup")?.status).toBe("done");
+    expect(git(repo, "symbolic-ref", "--short", "HEAD")).toBe("main");
+    expect(branches()).not.toContain(taskRow(id)?.taskBranch as string);
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("I2: neither the return branch nor the parent exists: cleanup stays on the task branch, keeps it (branch_kept), releases the lock", async () => {
+    const id = await developed();
+    const taskBranch = taskRow(id)?.taskBranch as string;
+    // update-ref keeps .git/config as it is (branch -D drops branch.main.*: config_changed).
+    git(repo, "update-ref", "-d", "refs/heads/main");
+    await reject("engineering.commit");
+    expect(taskRow(id)?.status).toBe("cancelled");
+    expect(stepRow(id, "cleanup")?.status).toBe("done");
+    expect(stepRow(id, "cleanup")?.output).toMatchObject({
+      outcome: "branch_kept",
+      deleted: false,
+    });
+    expect(git(repo, "symbolic-ref", "--short", "HEAD")).toBe(taskBranch);
+    expect(git(repo, "status", "--porcelain")).toBe("");
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("M1: a test run with extra arguments is a partial run, on the commit payload and the PR body", async () => {
+    reply = editingRun(undefined, [tool("Bash", { command: "bun test src/x.test.ts" }, "1 pass")]);
+    const id = await developed();
+    expect(stepRow(id, "develop")?.output).toMatchObject({ testsPassed: true, testRun: "partial" });
+    expect(pendingOf("engineering.commit")?.payload).toMatchObject({
+      testsPassed: true,
+      testRun: "partial",
+    });
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    const body = String(
+      ((pendingOf("engineering.push_pr") as Approval).payload as { prBody: string }).prBody,
+    );
+    expect(body).toContain("Partial test run (passed)");
+    expect(body).not.toContain("Tests passed");
+  });
+
+  test("M1: no test run at all is 'Tests not run'", async () => {
+    reply = editingRun(undefined, []);
+    const id = await developed();
+    expect(pendingOf("engineering.commit")?.payload).toMatchObject({
+      testsPassed: false,
+      testRun: "none",
+    });
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    const body = String(
+      ((pendingOf("engineering.push_pr") as Approval).payload as { prBody: string }).prBody,
+    );
+    expect(body).toContain(`Task: ${id}\nTests not run`);
+  });
+
+  test("M5: a cancel while the PR is being created still records the PR on the task", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    hooks.createPr = () => {
+      service.cancel(id);
+    };
+    await approve("engineering.push_pr");
+    expect(taskRow(id)?.status).toBe("cancelled");
+    expect(taskRow(id)?.prNumber).toBe(7);
+    expect(taskRow(id)?.prUrl).toBe("https://github.com/up/app/pull/7");
+    expect(pendingOf("engineering.merge_pr")).toBeUndefined();
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("M5: a PR merged after a cancel is the truth: completed, merged_after_cancel recorded, cleaned up", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    await approve("engineering.push_pr");
+    const pushedSha = (
+      (pendingOf("engineering.merge_pr") as Approval).payload as { pushedSha: string }
+    ).pushedSha;
+    hooks.mergePr = () => {
+      service.cancel(id);
+    };
+    expect((await approve("engineering.merge_pr")).outcome.status).toBe("executed");
+    expect(taskRow(id)?.status).toBe("completed");
+    expect(taskRow(id)?.failure).toBe("merged_after_cancel");
+    expect(stepRow(id, "merge_pr")?.output).toMatchObject({
+      merged: true,
+      outcome: "merged_after_cancel",
+      mergeSha: pushedSha,
+    });
+    expect(stepRow(id, "cleanup")?.status).toBe("done");
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("M6: failing checks at merge time refuse the merge (checks_failing); the fresh status is recorded; gh never merges", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    await approve("engineering.push_pr");
+    const a = pendingOf("engineering.merge_pr") as Approval;
+    setGh({ conclusion: "FAILURE" });
+    clock.advance(60_000);
+    expect((await approve("engineering.merge_pr")).outcome.status).toBe("skipped");
+    expect(ghCalls().some((c) => c[1] === "merge")).toBe(false);
+    expect(approvalRow(a.id)?.status).toBe("revoked");
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("checks_failing");
+    expect(stepRow(id, "merge_pr")?.output).toMatchObject({
+      freshStatus: { checks: "failing", checkedAt: "2026-11-06T09:01:00.000Z" },
+    });
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+  });
+
+  test("M8: a failed task whose cleanup found a dirty tree keeps 'failed'; cancel retries cleanup and restores it", async () => {
+    reply = editingRun({});
+    hooks.branchTip = () => writeFileSync(join(repo, "wip.ts"), "user wip\n");
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(stepRow(id, "cleanup")?.output).toMatchObject({
+      failure: "dirty_tree",
+      priorStatus: "failed",
+    });
+    rmSync(join(repo, "wip.ts"));
+    expect(service.cancel(id).status).toBe("needs_attention");
+    await drain();
+    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("no_changes");
+    expect(stepRow(id, "cleanup")?.status).toBe("done");
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("M9: the repository vanishing between revalidation and execution sends the task to needs_attention", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    const away = `${repo}-away`;
+    hooks.diffSummary = () => renameSync(repo, away);
+    try {
+      expect((await approve("engineering.commit")).outcome.status).toBe("failed");
+    } finally {
+      renameSync(away, repo);
+    }
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("path_unavailable");
+    expect(stepRow(id, "commit")?.status).toBe("failed");
+    expect(approvalRow(a.id)?.status).not.toBe("approved");
+    expect(approvals.listPending()).toEqual([]);
+  });
+
+  test("M10: an origin push URL that is not the registered origin refuses the push (origin_changed)", async () => {
+    const elsewhere = join(scratch(), "elsewhere.git");
+    git(scratch(), "init", "-q", "--bare", elsewhere);
+    git(repo, "remote", "set-url", "--push", "origin", `file://${elsewhere}`);
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    const originBefore = head(fx.origin, "main");
+    await approve("engineering.push_pr");
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("origin_changed");
+    expect(head(fx.origin, "main")).toBe(originBefore);
+    expect(git(elsewhere, "for-each-ref")).toBe("");
+    expect(ghCalls().some((c) => c[1] === "create")).toBe(false);
   });
 });

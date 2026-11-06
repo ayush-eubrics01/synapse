@@ -101,7 +101,15 @@ export interface InvestigationSummary {
 export type PickupResult =
   | { pickedUp: string }
   | { needsAttention: string; reason: string }
+  | { deferred: string; reason: string }
   | { skipped: "lock_held" | "nothing_queued" | "state_changed" };
+
+/**
+ * I1: preflight failures that say nothing about the repository (the network, a slow remote). The
+ * task stays `queued` and the next tick tries again; every other reason is deterministic and sets
+ * `needs_attention`.
+ */
+const RETRYABLE_PREFLIGHT = new Set(["fetch_failed", "git_timeout"]);
 
 function realpathOrNull(p: string): string | null {
   try {
@@ -470,9 +478,12 @@ export class EngineeringTaskService {
 
   /**
    * The minute tick. When no lease row exists (an expired one still counts as held) and a task
-   * is queued, takes the lock for the highest-priority, oldest task and runs preflight. A failure
-   * (including a parent that became protected) sets `needs_attention` with the fixed reason and
-   * releases the lock. Success sets `in_progress` at step `branch` and enqueues the step job.
+   * is queued, takes the lock for the highest-priority, oldest task and runs preflight. A passing
+   * failure (`fetch_failed`, `git_timeout`: the network, not the repository) releases the lock,
+   * leaves the task `queued` with `lastPickupError` set, and the next tick retries (I1). Any other
+   * failure (including a parent that became protected) sets `needs_attention` with the fixed
+   * reason and releases the lock. Success clears `lastPickupError`, sets `in_progress` at step
+   * `branch` and enqueues the step job.
    */
   async pickupNext(): Promise<PickupResult> {
     const { db, lock } = this.deps;
@@ -482,11 +493,37 @@ export class EngineeringTaskService {
     if (!lock.acquire(task.id)) return { skipped: "lock_held" };
 
     const reason = await this.preflightReason(task);
+    if (reason && RETRYABLE_PREFLIGHT.has(reason)) {
+      db.transaction(
+        (tx) => {
+          if (this.store.get(tx, task.id)?.status !== "queued") return; // cancelled meanwhile
+          this.store.update(tx, task.id, { lastPickupError: reason });
+          this.deps.audit.record(tx, {
+            actor: "system",
+            module: MODULE,
+            action: "engineering.pickup_deferred",
+            workerProfile: "engineering",
+            targetRef: task.id,
+            result: "deferred",
+            details: { taskId: task.id, reason },
+          });
+        },
+        { behavior: "immediate" },
+      );
+      lock.release(task.id);
+      return { deferred: task.id, reason };
+    }
     if (reason) {
       db.transaction(
         (tx) => {
           try {
-            this.store.transition(tx, task.id, "needs_attention", { failure: reason }, ["queued"]);
+            this.store.transition(
+              tx,
+              task.id,
+              "needs_attention",
+              { failure: reason, lastPickupError: null },
+              ["queued"],
+            );
           } catch (e) {
             if (!(e instanceof EngineeringTaskError)) throw e;
             return; // cancelled while preflight ran
@@ -514,7 +551,7 @@ export class EngineeringTaskService {
             tx,
             task.id,
             "in_progress",
-            { currentStep: "branch", failure: null },
+            { currentStep: "branch", failure: null, lastPickupError: null },
             ["queued"],
           );
           this.enqueueStep(tx, task.id, "branch");
@@ -567,8 +604,9 @@ export class EngineeringTaskService {
    * enqueued: the step runner expires its pending approvals, cleans up the local branch and then
    * releases the lock (E15, E16). A `queued` task was never touched by Synapse, so nothing is
    * cleaned (if pickup holds the lock for it right now, pickup releases it when its transition
-   * fails). A `needs_attention` task that had completed before its cleanup failed keeps that
-   * status and only gets its cleanup retried (it becomes `completed` again on success).
+   * fails). A `needs_attention` task that had completed or failed before its cleanup failed keeps
+   * that status and only gets its cleanup retried (it becomes `completed` or `failed` again on
+   * success, M8).
    */
   cancel(id: string): EngineeringTaskDetail {
     const { db, lock, audit } = this.deps;
@@ -579,10 +617,10 @@ export class EngineeringTaskService {
         if (TERMINAL_STATUSES.includes(task.status))
           throw new EngineeringTaskError("invalid_state");
         const holdsLock = lock.holder()?.taskId === id && task.status !== "queued";
-        // A completed task whose cleanup found a dirty tree is not cancelled: cleanup is retried
-        // and closes it as completed again once the tree is tidy.
-        const retryCompleted =
-          task.status === "needs_attention" && priorTerminalStatus(tx, id) === "completed";
+        // A completed or failed task whose cleanup found a dirty tree is not cancelled: cleanup
+        // is retried and closes it with that outcome again once the tree is tidy (M8).
+        const prior = task.status === "needs_attention" ? priorTerminalStatus(tx, id) : null;
+        const retryCompleted = prior === "completed" || prior === "failed";
         if (!retryCompleted) this.store.transition(tx, id, "cancelled");
         if (holdsLock) this.enqueueStep(tx, id, "cleanup");
         audit.record(tx, {

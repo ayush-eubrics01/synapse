@@ -1,0 +1,1 @@
+ALTER TABLE `engineering_tasks` ADD `last_pickup_error` text;

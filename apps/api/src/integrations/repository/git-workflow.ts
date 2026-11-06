@@ -16,6 +16,7 @@ import {
   type GitDiffFile,
   type GitDiffOptions,
   type GitDiffSummary,
+  type GitLocalStateResult,
   type GitMergeOptions,
   type GitPreflightResult,
   type GitPushOptions,
@@ -210,19 +211,8 @@ export class LocalGitWorkflow implements GitWorkflow {
     opts: { allowUpstreamPush?: boolean } = {},
   ): Promise<GitPreflightResult> {
     this.ref(parent);
-    let real: string;
-    try {
-      real = realpathSync(repo);
-    } catch {
-      return { ok: false, reason: "not_a_repository" };
-    }
-    const top = await this.git(repo, ["rev-parse", "--show-toplevel"]);
-    if (top.timedOut) throw new GitWorkflowError("git_timeout");
-    if (top.code !== 0 || top.stdout.trim() !== real || real !== repo) {
-      return { ok: false, reason: "not_a_repository" };
-    }
-    if (await this.mergeInProgress(repo)) return { ok: false, reason: "merge_in_progress" };
-    if (await this.dirty(repo)) return { ok: false, reason: "dirty_tree" };
+    const local = await this.localState(repo);
+    if (!local.ok) return local;
     const remotes = new Set(lines(await this.must(repo, ["remote"])));
     if (!remotes.has("origin") || !remotes.has("upstream")) {
       return { ok: false, reason: "missing_remote" };
@@ -241,6 +231,23 @@ export class LocalGitWorkflow implements GitWorkflow {
     if (!(await this.remoteHasBranch(repo, "upstream", parent))) {
       return { ok: false, reason: "parent_missing_upstream" };
     }
+    return { ok: true };
+  }
+
+  async localState(repo: string): Promise<GitLocalStateResult> {
+    let real: string;
+    try {
+      real = realpathSync(repo);
+    } catch {
+      return { ok: false, reason: "not_a_repository" };
+    }
+    const top = await this.git(repo, ["rev-parse", "--show-toplevel"]);
+    if (top.timedOut) throw new GitWorkflowError("git_timeout");
+    if (top.code !== 0 || top.stdout.trim() !== real || real !== repo) {
+      return { ok: false, reason: "not_a_repository" };
+    }
+    if (await this.mergeInProgress(repo)) return { ok: false, reason: "merge_in_progress" };
+    if (await this.dirty(repo)) return { ok: false, reason: "dirty_tree" };
     return { ok: true };
   }
 
@@ -516,6 +523,20 @@ export class LocalGitWorkflow implements GitWorkflow {
     if (pushUrls.some(isUpstream)) {
       throw new GitWorkflowError("push_target_is_upstream");
     }
+    if (opts.expectedOriginUrl !== undefined) {
+      // The effective URLs (insteadOf/pushInsteadOf expanded) must all be the registered origin.
+      const expected = opts.expectedOriginUrl === null ? null : remoteKey(opts.expectedOriginUrl);
+      const expectedRepo = expected === null ? null : ownerRepo(expected);
+      const isOrigin = (u: string) => {
+        const k = remoteKey(u);
+        if (!k || !expected) return false;
+        const or = ownerRepo(k);
+        return k === expected || (or !== null && or === expectedRepo);
+      };
+      if (pushUrls.length === 0 || !pushUrls.every(isOrigin)) {
+        throw new GitWorkflowError("origin_changed");
+      }
+    }
     if (!(await this.refExists(repo, `refs/heads/${parent}`))) {
       throw new GitWorkflowError("branch_missing");
     }
@@ -606,24 +627,24 @@ export class LocalGitWorkflow implements GitWorkflow {
   async cleanup(
     repo: string,
     taskBranch: string,
-    returnTo: string,
+    returnTo: string | null,
     opts: { force: boolean },
   ): Promise<{ ok: true; deleted: boolean } | { ok: false; dirty: true }> {
     this.ref(taskBranch);
-    this.ref(returnTo);
+    if (returnTo !== null) this.ref(returnTo);
     if ((await this.mergeInProgress(repo)) || (await this.dirty(repo))) {
       return { ok: false, dirty: true };
     }
-    if ((await this.currentBranch(repo)) !== returnTo) {
+    if (returnTo !== null && (await this.currentBranch(repo)) !== returnTo) {
       if (!(await this.refExists(repo, `refs/heads/${returnTo}`))) {
         throw new GitWorkflowError("branch_missing");
       }
       await this.must(repo, ["switch", "--no-guess", "--no-recurse-submodules", returnTo]);
     }
     const task = `refs/heads/${taskBranch}`;
-    if (returnTo === taskBranch || !(await this.refExists(repo, task))) {
-      return { ok: true, deleted: false };
-    }
+    if (!(await this.refExists(repo, task))) return { ok: true, deleted: false };
+    // Never delete the branch that is checked out (no return branch to go to).
+    if ((await this.currentBranch(repo)) === taskBranch) return { ok: true, deleted: false };
     if (!opts.force) {
       const containing = lines(
         await this.must(repo, [

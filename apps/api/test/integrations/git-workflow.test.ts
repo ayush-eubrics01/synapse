@@ -1036,3 +1036,73 @@ describe("hardening on every call (spy runner)", () => {
     expect(f.calls.some((c) => c.argv[9] === "fetch")).toBe(true);
   });
 });
+
+describe("final review: local-only checks, cleanup fallbacks, origin check", () => {
+  test("localState runs no remote command: it passes with origin unreachable, and reports the tree", async () => {
+    const f = setup();
+    rmSync(f.origin, { recursive: true, force: true });
+    rmSync(f.upstream, { recursive: true, force: true });
+    expect(await f.wf.localState(f.repo)).toEqual({ ok: true });
+    expect(f.calls.some((c) => c.argv.some((a) => ["ls-remote", "fetch"].includes(a)))).toBe(false);
+    writeFileSync(join(f.repo, "wip.txt"), "x\n");
+    expect(await f.wf.localState(f.repo)).toEqual({ ok: false, reason: "dirty_tree" });
+    expect(await f.wf.localState(join(f.repo, "missing"))).toEqual({
+      ok: false,
+      reason: "not_a_repository",
+    });
+    // Preflight still needs the remotes.
+    rmSync(join(f.repo, "wip.txt"));
+    expect(await codeOf(f.wf.preflight(f.repo, "main"))).toBe("fetch_failed");
+  });
+
+  test("cleanup with no return branch stays where it is and never deletes the checked-out task branch", async () => {
+    const f = setup();
+    await f.wf.createTaskBranch(f.repo, "stage", "synapse/t");
+    expect(await f.wf.cleanup(f.repo, "synapse/t", null, { force: true })).toEqual({
+      ok: true,
+      deleted: false,
+    });
+    expect(await f.wf.currentBranch(f.repo)).toBe("synapse/t");
+    expect(git(f.repo, "branch", "--list", "synapse/t")).not.toBe("");
+    // From another branch, null still deletes (nothing is checked out on the task branch).
+    git(f.repo, "switch", "-q", "main");
+    expect(await f.wf.cleanup(f.repo, "synapse/t", null, { force: true })).toEqual({
+      ok: true,
+      deleted: true,
+    });
+    expect(await f.wf.currentBranch(f.repo)).toBe("main");
+  });
+
+  test("pushParent refuses when origin's effective push URL is not the registered origin (origin_changed)", async () => {
+    const f = setup();
+    git(f.repo, "switch", "-q", "-c", "stage", "origin/stage");
+    writeFileSync(join(f.repo, "x.txt"), "x\n");
+    git(f.repo, "add", "-A");
+    git(f.repo, "commit", "-q", "-m", "x");
+    const elsewhere = join(f.root, "elsewhere.git");
+    git(f.root, "init", "-q", "--bare", elsewhere);
+    const before = head(f.origin, "stage");
+    const opts = (expectedOriginUrl: string | null) => ({
+      protectedBranches: [],
+      upstreamUrl: `file://${f.upstream}`,
+      expectedOriginUrl,
+    });
+    // A pushInsteadOf rewrite counts: the effective URL is what git would push to.
+    git(f.repo, "config", `url.file://${elsewhere}.pushInsteadOf`, `file://${f.origin}`);
+    expect(await codeOf(f.wf.pushParent(f.repo, "stage", opts(`file://${f.origin}`)))).toBe(
+      "origin_changed",
+    );
+    git(f.repo, "config", "--unset", `url.file://${elsewhere}.pushInsteadOf`);
+    git(f.repo, "remote", "set-url", "--push", "origin", `file://${elsewhere}`);
+    expect(await codeOf(f.wf.pushParent(f.repo, "stage", opts(`file://${f.origin}`)))).toBe(
+      "origin_changed",
+    );
+    expect(f.calls.filter((c) => c.argv.includes("push"))).toHaveLength(0);
+    expect(head(f.origin, "stage")).toBe(before);
+    // The registered URL (normalised: scheme, .git and case) matches: pushed.
+    git(f.repo, "remote", "set-url", "--push", "origin", `file://${f.origin}`);
+    expect(
+      await f.wf.pushParent(f.repo, "stage", opts(`FILE://${f.origin.replace(/\.git$/, "")}`)),
+    ).toEqual({ ok: true });
+  });
+});

@@ -5,6 +5,7 @@ import {
   type InvestigationOutput,
   isSafeTestCommand,
   type RawToolResult,
+  type TestRun,
 } from "@synapse/contracts";
 import { extractJson } from "../../core/orchestrator/structured";
 import { absoluteScope } from "../brain/inspect-prompt";
@@ -113,30 +114,40 @@ const tail = (s: string, n: number) => {
   return cps.length <= n ? s : cps.slice(cps.length - n).join("");
 };
 
-/** True when a Bash call ran the test command (optionally with arguments). */
-function runsTestCommand(input: unknown, testCommand: string): boolean {
+/** How a Bash call ran the test command: as is, with arguments, or not at all. */
+function testRunOf(input: unknown, testCommand: string): TestRun {
   const cmd = (input as { command?: unknown } | null)?.command;
-  if (typeof cmd !== "string") return false;
+  if (typeof cmd !== "string") return "none";
   const c = cmd.trim();
-  return c === testCommand || c.startsWith(`${testCommand} `);
+  if (c === testCommand) return "exact";
+  return c.startsWith(`${testCommand} `) ? "partial" : "none";
 }
 
 /**
  * ADR-026: the test result comes from the last real Bash tool_result for the test command, never
  * from the model's reply. `isError` (a non-zero exit) or no such result means `testsPassed=false`.
+ * `testRun` (M1) says whether that last run was the confirmed command exactly, the command with
+ * extra arguments (`partial`: possibly a subset of the suite), or that it never ran (`none`).
  */
 export function testResultFrom(
   toolResults: readonly RawToolResult[],
   testCommand: string,
-): { testsPassed: boolean; testOutputTail: string | null } {
+): { testsPassed: boolean; testOutputTail: string | null; testRun: TestRun } {
   let last: RawToolResult | undefined;
+  let run: TestRun = "none";
   for (const r of toolResults) {
-    if (r.toolName === "Bash" && runsTestCommand(r.input, testCommand)) last = r;
+    if (r.toolName !== "Bash") continue;
+    const kind = testRunOf(r.input, testCommand);
+    if (kind !== "none") {
+      last = r;
+      run = kind;
+    }
   }
-  if (!last) return { testsPassed: false, testOutputTail: null };
+  if (!last) return { testsPassed: false, testOutputTail: null, testRun: "none" };
   return {
     testsPassed: !last.isError,
     testOutputTail: tail(last.content, TEST_OUTPUT_TAIL_MAX),
+    testRun: run,
   };
 }
 

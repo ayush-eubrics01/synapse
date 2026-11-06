@@ -903,6 +903,8 @@ export const engineeringTasks = sqliteTable(
     baseSha: text("base_sha"),
     mergeSha: text("merge_sha"),
     failure: text("failure"),
+    /** I1: last retryable pickup failure (`fetch_failed`, `git_timeout`); null after a pickup. */
+    lastPickupError: text("last_pickup_error"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },

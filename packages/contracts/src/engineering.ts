@@ -1,7 +1,13 @@
 import { z } from "zod";
-import { isSafeTestCommand } from "./patterns";
+import { isSafeTestCommand, TEST_RUNS, type TestRun } from "./patterns";
 
-export { isSafeTestCommand, taskBranchName } from "./patterns";
+export {
+  isSafeTestCommand,
+  TEST_RUNS,
+  type TestRun,
+  taskBranchName,
+  testResultLabel,
+} from "./patterns";
 
 export const engineeringSourceSchema = z.enum(["manual", "jira", "slack"]);
 export type EngineeringSource = z.infer<typeof engineeringSourceSchema>;
@@ -59,6 +65,9 @@ export const parentBranchSchema = z
       !b.endsWith(".lock"),
     "unsafe branch name",
   );
+
+/** M1: `exact` (the confirmed command as is), `partial` (with extra arguments) or `none`. */
+export const testRunSchema = z.enum(TEST_RUNS as [TestRun, ...TestRun[]]);
 
 export const testCommandSchema = z.string().refine(isSafeTestCommand, "unsafe test command");
 
@@ -119,6 +128,12 @@ export interface EngineeringTaskView {
   prUrl: string | null;
   prNumber: number | null;
   failure: string | null;
+  /**
+   * I1: the fixed code of the last pickup that could not run preflight for a passing reason
+   * (`fetch_failed`, `git_timeout`): the task stays `queued` and is retried on the next tick.
+   * Cleared by a successful pickup.
+   */
+  lastPickupError: string | null;
   createdAt: string;
   updatedAt: string;
 }

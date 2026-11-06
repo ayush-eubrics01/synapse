@@ -142,6 +142,8 @@ export const GIT_WORKFLOW_ERROR_CODES = [
   "config_changed",
   /** A branch no longer points at the commit the approval pinned. */
   "branch_moved",
+  /** pushParent: origin's effective push URL is no longer the registered origin (owner/repo). */
+  "origin_changed",
 ] as const;
 export type GitWorkflowErrorCode = (typeof GIT_WORKFLOW_ERROR_CODES)[number];
 
@@ -153,6 +155,11 @@ export class GitWorkflowError extends Error {
 }
 
 export type GitPreflightResult = { ok: true } | { ok: false; reason: GitPreflightReason };
+
+/** I1: the local-only part of preflight (no remote is contacted). */
+export type GitLocalStateResult =
+  | { ok: true }
+  | { ok: false; reason: "not_a_repository" | "merge_in_progress" | "dirty_tree" };
 
 /** Why a diff is unsafe (GitDiffSummary.unsafeReasons). */
 export const GIT_UNSAFE_REASONS = [
@@ -246,6 +253,13 @@ export interface GitPushOptions extends GitConfigGuard {
   protectedBranches: readonly string[];
   /** The registered (credential-stripped) upstream fetch URL. */
   upstreamUrl: string | null;
+  /**
+   * M10: the registered (credential-stripped) origin URL. When given, every effective push URL of
+   * `origin` (`git remote get-url --push --all origin`, insteadOf rules expanded) must be it, by
+   * normalised URL or `owner/repo`; otherwise `origin_changed` and nothing is pushed. Null (no
+   * registered origin) always refuses.
+   */
+  expectedOriginUrl?: string | null;
 }
 
 export interface GitCommitSummary {
@@ -260,6 +274,12 @@ export interface GitWorkflow {
     parent: string,
     opts?: { allowUpstreamPush?: boolean },
   ): Promise<GitPreflightResult>;
+  /**
+   * I1: the local checks of preflight only: the registered path is git's top level (realpath), no
+   * merge, rebase, cherry-pick or revert is in progress, and the tree is clean. No remote is
+   * contacted, so startup recovery never depends on the network.
+   */
+  localState(repo: string): Promise<GitLocalStateResult>;
   /** The checked-out branch, or null when HEAD is detached. */
   currentBranch(repo: string): Promise<string | null>;
   /**
@@ -325,13 +345,14 @@ export interface GitWorkflow {
   /** Commits on the local parent that `origin/<parent>` lacks, newest first. */
   commitsAhead(repo: string, parent: string): Promise<GitCommitSummary[]>;
   /**
-   * E15: with a clean tree, switch to `returnTo` and delete the task branch (only when merged
-   * into another local branch, unless `force`). A dirty tree is left exactly as it is.
+   * E15: with a clean tree, switch to `returnTo` (null: stay on the current branch) and delete the
+   * task branch (only when merged into another local branch, unless `force`). The task branch is
+   * never deleted while it is checked out (`deleted: false`). A dirty tree is left exactly as it is.
    */
   cleanup(
     repo: string,
     taskBranch: string,
-    returnTo: string,
+    returnTo: string | null,
     opts: { force: boolean },
   ): Promise<{ ok: true; deleted: boolean } | { ok: false; dirty: true }>;
 }
