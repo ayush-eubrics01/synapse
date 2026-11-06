@@ -168,3 +168,42 @@ test("connector allow entries give their server names only; the widening flag is
   }
   expect(loadUserSettings(join(tmp, "nowhere")).userAllowedConnectorServers).toEqual([]);
 });
+
+test("ADR-040: any user-level sandbox key widens scope (controller ruling, fix round 1)", () => {
+  for (const sandbox of [
+    { excludedCommands: ["bun"] },
+    { filesystem: { allowWrite: ["/home/u"] } },
+    { filesystem: { allowRead: ["/home/u/.ssh"] } },
+    { network: { allowedDomains: ["x.test"] } },
+    { network: { allowUnixSockets: ["/run/docker.sock"] } },
+    { allowUnsandboxedCommands: true },
+    // Keys F1.2 does not set, so --settings cannot outrank them.
+    { network: { httpProxyPort: 8080 } },
+    { network: { socksProxyPort: 1080 } },
+    { enableWeakerNestedSandbox: true },
+    { network: { allowLocalBinding: true } },
+    // Any value at all: empty, scalar-only, falsy, malformed.
+    { excludedCommands: [] },
+    { enabled: false },
+    {},
+    null,
+    [],
+    "on",
+  ]) {
+    expect(userPermissionsWidenScope({ sandbox })).toBe(true);
+    // Clean permissions do not hide it.
+    expect(userPermissionsWidenScope({ permissions: { allow: ["WebSearch"] }, sandbox })).toBe(
+      true,
+    );
+  }
+  for (const settings of [{}, { permissions: {} }, { sandboxing: {} }, { env: { sandbox: "1" } }]) {
+    expect(userPermissionsWidenScope(settings)).toBe(false);
+  }
+  expect(
+    loadUserSettings(home("sandbox-widen", { sandbox: { network: { httpProxyPort: 8080 } } })),
+  ).toEqual({
+    override: DEFAULT_SETTINGS_OVERRIDE,
+    userPermissionsWidenScope: true,
+    userAllowedConnectorServers: [],
+  });
+});

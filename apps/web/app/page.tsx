@@ -116,7 +116,7 @@ import { backupStartMessage } from "../lib/backup";
 import { brainPaletteItems, projectRowId } from "../lib/brain";
 import { codeAnswerErrorText, codeAnswerEventMessageId } from "../lib/code-answers";
 import { trailingDebounce } from "../lib/debounce";
-import { engineeringErrorText, isTerminal, lockText } from "../lib/engineering";
+import { engineeringErrorText, isTerminal, lockText, type TaskSource } from "../lib/engineering";
 import { conversationTitle, filterConversations, type InboxFilter } from "../lib/inbox";
 import { jiraPaletteItems, jiraRowId } from "../lib/jira";
 import {
@@ -149,6 +149,7 @@ import type { MilestoneDraft } from "./components/brain/ProjectCard";
 import { ProjectsSection } from "./components/brain/ProjectsSection";
 import { Commitments } from "./components/commitments/Commitments";
 import { EngineeringSection, engineeringRowId } from "./components/engineering/EngineeringSection";
+import { RepositoryPicker } from "./components/engineering/RepositoryPicker";
 import { AwayBanner } from "./components/header/AwayBanner";
 import { CommandPalette } from "./components/header/CommandPalette";
 import { Header } from "./components/header/Header";
@@ -325,6 +326,7 @@ export default function Dashboard() {
   const [projectDetails, setProjectDetails] = useState<ProjectDetail[]>([]);
   const [claudeActivity, setClaudeActivity] = useState<ClaudeActivityView | null>(null);
   const [claudeSettings, setClaudeSettings] = useState<SettingsDto | null>(null);
+  const [repoChoice, setRepoChoice] = useState<TaskSource | null>(null);
   const [runtime, setRuntime] = useState<RuntimeView | null>(null);
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [settingsReset, setSettingsReset] = useState(0);
@@ -779,6 +781,7 @@ export default function Dashboard() {
     seeAllJira: () => goTo("jira"),
     seeAllProjects: () => goTo("projects"),
     registerRepository: () => openRegister(),
+    pickRepository: setRepoChoice,
     seeAllEngineering: (taskId) => {
       setActive("engineering");
       navigateTo("engineering", taskId ? engineeringRowId(taskId) : "engineering");
@@ -1017,6 +1020,17 @@ export default function Dashboard() {
   const sectionBodies: Record<DashboardSectionId, ReactNode> = {
     triage: (
       <>
+        {repoChoice && (
+          <RepositoryPicker
+            source={repoChoice}
+            repos={repos ?? []}
+            onPick={(source, repositoryId) => {
+              setRepoChoice(null);
+              feed.handlers.createTaskInRepository(source, repositoryId);
+            }}
+            onCancel={() => setRepoChoice(null)}
+          />
+        )}
         <NeedsYou
           cards={cards}
           allClear={allClearRows(needsInput)}
@@ -1141,6 +1155,7 @@ export default function Dashboard() {
     engineering: (
       <>
         <EngineeringSection
+          sandboxEnabled={claudeSettings?.["engineering.sandbox.enabled"] ?? null}
           tasks={engineeringTasks}
           details={engineeringDetails}
           repos={repos ?? []}

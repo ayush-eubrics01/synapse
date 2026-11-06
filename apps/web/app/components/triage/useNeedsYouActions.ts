@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useDeferred } from "../../../lib/deferred";
+import type { TaskSource } from "../../../lib/engineering";
 import {
   createNeedsYouActions,
   type NeedsYouHandlers,
@@ -20,6 +21,7 @@ export interface NeedsYouActionsOptions {
   seeAllProjects: () => void;
   registerRepository: () => void;
   seeAllEngineering?: (taskId?: string) => void;
+  pickRepository?: (s: TaskSource) => void;
   onEvaluationQueued?: (slackUserId: string) => void;
 }
 

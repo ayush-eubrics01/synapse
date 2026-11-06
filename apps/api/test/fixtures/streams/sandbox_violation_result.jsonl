@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","tools":["Bash"],"mcp_servers":[]}
+{"type":"result","subtype":"success","is_error":true,"num_turns":2,"duration_ms":300,"total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0},"permission_denials":[],"result":"The tests failed.\n<sandbox_violations>\nnetwork: connection to example.test denied by sandbox\nfilesystem: write to /home/u/out.txt denied by sandbox\n</sandbox_violations>"}

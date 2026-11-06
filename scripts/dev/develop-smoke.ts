@@ -2,26 +2,55 @@
 // `upstream.git` (file://, upstream push DISABLED), a one-line bug and a `bun test` test. It runs
 // the REAL investigate and develop runs (haiku) through the step runner, approves the commit and
 // merge_local approvals programmatically, and stops before push_pr: the push approval stays
-// pending and the task is cancelled. gh is never invoked and nothing leaves the temp dir.
-// Spends a little Claude quota (two haiku runs). Temp DB and repo, deleted afterwards; prints
-// statuses and counts only (never task text, diff text, test output, paths or branch names).
+// pending and the task is cancelled. gh is never invoked and nothing is pushed beyond the local
+// bare repos. Spends a little Claude quota (two haiku runs). Temp DB and repo under
+// ~/.cache/synapse-develop-smoke-*, plus this instance's own develop-run root
+// ~/.cache/synapse/<8 hex of its data dir>; the run's private TMPDIR is <that>/r/<8 hex>/t, kept
+// short for the sandbox's unix sockets (ADR-040; over 64 bytes the step fails
+// sandbox_path_too_long). Both are deleted afterwards, also on SIGINT/SIGTERM. Only the shared, empty ~/.cache/synapse base
+// may remain. Prints statuses and counts only (never task text, diff text, test output, paths or
+// branch names).
 //
-// $HOME stays the real one on purpose: the Claude CLI needs it to authenticate. The repo lives in
-// the temp dir (outside $HOME, so the registry's path rules pass) and carries its own git identity.
+// The develop run's tests execute in the sandbox (ADR-040). The repo also carries a probe test that
+// tries to write outside the repo, read a planted placeholder secret and fetch a URL; the last line
+// printed is `sandbox: outside_write=<r> secret=<r> network=<r>` and the exit code is 1 on any
+// `allowed`.
+//
+// $HOME stays the real one on purpose: the Claude CLI needs it to authenticate. The run directory
+// is created under ~/.cache, NOT /tmp: inside the sandbox /tmp is a private tmpfs, which would make
+// every probe inconclusive. The repo (root/work) is outside the masked data dir (root/data).
 //
 //   bun scripts/dev/develop-smoke.ts
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Approval, EngineeringTaskDetail } from "@synapse/contracts";
 import { createContainer } from "../../apps/api/src/container";
-import { loadConfig } from "../../apps/api/src/core/config/config";
+import {
+  defaultRunScratchRoot,
+  instanceRunRoot,
+  loadConfig,
+} from "../../apps/api/src/core/config/config";
 import { NoopDesktopNotifier } from "../../apps/api/src/infrastructure/notifier";
 import { STEP_JOB } from "../../apps/api/src/modules/engineering-tasks/lock";
 import { INVESTIGATE_JOB, PICKUP_JOB } from "../../apps/api/src/modules/engineering-tasks/service";
 
 export type StepOutcome = { ok: true } | { ok: false; code: string };
+
+export type ProbeResult = "blocked" | "allowed" | "unknown";
+
+export interface SandboxSummary {
+  outsideWrite: ProbeResult;
+  secret: ProbeResult;
+  network: ProbeResult;
+}
+
+export interface ProbePaths {
+  outsideFile: string;
+  secretFile: string;
+  url: string;
+}
 
 export interface SmokeSummary {
   investigate: StepOutcome;
@@ -31,6 +60,7 @@ export interface SmokeSummary {
   mergeLocal: StepOutcome;
   cancelledBeforePush: boolean;
   lockReleased: boolean;
+  sandbox: SandboxSummary;
 }
 
 const outcomeLine = (label: string, o: StepOutcome) =>
@@ -47,7 +77,58 @@ export function formatSummary(s: SmokeSummary): string[] {
     outcomeLine("merge_local", s.mergeLocal),
     `cancelled_before_push: ${s.cancelledBeforePush}`,
     `lock_released: ${s.lockReleased}`,
+    `sandbox: outside_write=${s.sandbox.outsideWrite} secret=${s.sandbox.secret} network=${s.sandbox.network}`,
   ];
+}
+
+const MARKER = /^SANDBOX_PROBE outside_write=(\S+) secret=(\S+) network=(\S+)\s*$/;
+const asProbe = (v: string | undefined): ProbeResult =>
+  v === "blocked" || v === "allowed" ? v : "unknown";
+
+/** Reads the last SANDBOX_PROBE line of the test output tail; anything else is `unknown`. Pure. */
+export function parseSandboxProbe(tail: string | null): SandboxSummary {
+  const unknown: SandboxSummary = {
+    outsideWrite: "unknown",
+    secret: "unknown",
+    network: "unknown",
+  };
+  if (!tail) return unknown;
+  let m: RegExpMatchArray | null = null;
+  for (const line of tail.split("\n")) m = line.match(MARKER) ?? m;
+  if (!m) return unknown;
+  return { outsideWrite: asProbe(m[1]), secret: asProbe(m[2]), network: asProbe(m[3]) };
+}
+
+/** 1 when any sandbox probe got through; `unknown` is not a failure. Pure. */
+export function smokeExitCode(s: SmokeSummary): 0 | 1 {
+  const { outsideWrite, secret, network } = s.sandbox;
+  return [outsideWrite, secret, network].includes("allowed") ? 1 : 0;
+}
+
+const SECRET_SENTINEL = "synapse-smoke-placeholder-sentinel";
+
+/** Source of the probe test. It prints one marker line and never the content it read. Pure. */
+export function probeTestSource(probe: ProbePaths): string {
+  return `import { test } from "bun:test";
+import { readFileSync, writeFileSync } from "node:fs";
+
+test("sandbox probe", async () => {
+  const tries = async (f: () => unknown): Promise<"allowed" | "blocked"> => {
+    try {
+      await f();
+      return "allowed";
+    } catch {
+      return "blocked";
+    }
+  };
+  const outsideWrite = await tries(() => writeFileSync(${JSON.stringify(probe.outsideFile)}, "x"));
+  const secret = await tries(() => readFileSync(${JSON.stringify(probe.secretFile)}, "utf8"));
+  const network = await tries(async () => {
+    await fetch(${JSON.stringify(probe.url)}, { signal: AbortSignal.timeout(5000) });
+  });
+  console.log(\`SANDBOX_PROBE outside_write=\${outsideWrite} secret=\${secret} network=\${network}\`);
+});
+`;
 }
 
 /** A step's outcome: `done` is ok, anything else is its status or fixed failure code. Pure. */
@@ -74,7 +155,7 @@ function git(cwd: string, ...args: string[]): void {
 }
 
 /** Placeholder repo: `main` and `stage` pushed to bare origin.git and upstream.git. */
-export function buildRepo(root: string): string {
+export function buildRepo(root: string, probe: ProbePaths): string {
   const repo = join(root, "work");
   mkdirSync(join(repo, "src"), { recursive: true });
   git(repo, "init", "-q", "-b", "main");
@@ -84,6 +165,7 @@ export function buildRepo(root: string): string {
   writeFileSync(join(repo, "package.json"), `${JSON.stringify({ type: "module" })}\n`);
   writeFileSync(join(repo, "src", "math.ts"), MATH_SRC);
   writeFileSync(join(repo, "src", "math.test.ts"), MATH_TEST);
+  writeFileSync(join(repo, "src", "sandbox-probe.test.ts"), probeTestSource(probe));
   git(repo, "add", "-A");
   git(repo, "commit", "-q", "-m", "init");
   git(repo, "branch", "stage");
@@ -101,8 +183,16 @@ export function buildRepo(root: string): string {
 if (import.meta.main) await main();
 
 async function main(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "synapse-develop-smoke-"));
-  const cleanup = () => rmSync(dir, { recursive: true, force: true });
+  const cache = join(homedir(), ".cache");
+  mkdirSync(cache, { recursive: true });
+  const dir = mkdtempSync(join(cache, "synapse-develop-smoke-"));
+  mkdirSync(join(dir, "data"), { recursive: true });
+  // This instance's run root (hashed from its own data dir): never the live service's.
+  const runRoot = instanceRunRoot(defaultRunScratchRoot(process.env), join(dir, "data"));
+  const cleanup = () => {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(runRoot, { recursive: true, force: true });
+  };
   for (const sig of ["SIGINT", "SIGTERM"] as const) {
     process.on(sig, () => {
       cleanup();
@@ -110,16 +200,25 @@ async function main(): Promise<void> {
     });
   }
   try {
-    await run(dir);
+    process.exitCode = await run(dir, runRoot);
   } finally {
     cleanup();
   }
 }
 
-async function run(dir: string): Promise<void> {
-  const repo = buildRepo(dir);
-  const config = { ...loadConfig(process.env), dbPath: join(dir, "t.db") };
+async function run(dir: string, runRoot: string): Promise<0 | 1> {
+  mkdirSync(join(dir, "data"), { recursive: true });
+  const probe: ProbePaths = {
+    outsideFile: join(dir, "outside-probe.txt"),
+    secretFile: join(dir, "data", "probe-secret.txt"),
+    url: "https://example.com/",
+  };
+  writeFileSync(probe.secretFile, SECRET_SENTINEL);
+  const repo = buildRepo(dir, probe);
+  const config = { ...loadConfig(process.env), dbPath: join(dir, "data", "t.db") };
   const c = createContainer(config, { notifier: new NoopDesktopNotifier() });
+  // The cleanup deletes exactly this dir; it must be the one the container uses.
+  if (c.runRoot !== runRoot) throw new Error("develop-smoke: unexpected run root");
   c.settings.set("engineering.model", "haiku");
 
   const signal = () => AbortSignal.timeout(35 * 60_000);
@@ -210,6 +309,7 @@ async function run(dir: string): Promise<void> {
   const dev = developStep?.output as {
     files?: unknown[];
     testsPassed?: boolean;
+    testOutputTail?: string | null;
     unsafeReasons?: unknown[];
     failure?: string;
   } | null;
@@ -239,6 +339,15 @@ async function run(dir: string): Promise<void> {
     cancelled = get().status === "cancelled";
   }
 
+  // Ground truth on the host: a file at outsideFile means the write got through.
+  const probed = parseSandboxProbe(
+    typeof dev?.testOutputTail === "string" ? dev.testOutputTail : null,
+  );
+  const sandbox: SandboxSummary = {
+    ...probed,
+    outsideWrite: existsSync(probe.outsideFile) ? "allowed" : probed.outsideWrite,
+  };
+
   const summary: SmokeSummary = {
     investigate,
     develop,
@@ -246,7 +355,9 @@ async function run(dir: string): Promise<void> {
     mergeLocal: outcome("merge_local"),
     cancelledBeforePush: cancelled && step("push_pr")?.status !== "done",
     lockReleased: !c.engineeringLock.view().held,
+    sandbox,
   };
   for (const line of formatSummary(summary)) console.log(line);
   c.sqlite.close();
+  return smokeExitCode(summary);
 }

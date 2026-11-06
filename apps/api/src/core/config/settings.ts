@@ -94,6 +94,9 @@ const settingSchemas = {
   "engineering.develop.maxTurns": z.number().int().min(1).max(50).default(50),
   "engineering.develop.timeoutMinutes": z.number().int().min(1).max(120).default(30),
   "engineering.lock.ttlMinutes": z.number().int().min(1).max(120).default(10),
+  // ADR-040: develop runs execute the test command in the Claude Code sandbox. Off means no
+  // develop runs at all (validator rule M refuses them), never an unsandboxed one.
+  "engineering.sandbox.enabled": z.boolean().default(true),
   "claudeActivity.enabled": z.boolean().default(true),
   // null: resolved at startup (~/.claude/projects). Tests point it at a temp dir.
   "claudeActivity.projectsDir": z.string().startsWith("/").nullable().default(null),
@@ -169,7 +172,10 @@ const settingSchemas = {
 };
 
 export type SettingKey = keyof typeof settingSchemas;
-/** Keys the settings API may change: the Phase 10b and Phase 11 keys except the test-only and internal ones. */
+/**
+ * Keys the settings API may change: the Phase 10b and Phase 11 keys except the test-only and
+ * internal ones, and the ADR-040 sandbox switch.
+ */
 export const USER_EDITABLE_SETTINGS = [
   "claudeActivity.enabled",
   "claudeActivity.activeWindowMinutes",
@@ -191,6 +197,7 @@ export const USER_EDITABLE_SETTINGS = [
   "retention.notificationsDays",
   "retention.claudeRunsDays",
   "retention.auditDays",
+  "engineering.sandbox.enabled",
 ] as const satisfies readonly SettingKey[];
 export type UserEditableKey = (typeof USER_EDITABLE_SETTINGS)[number];
 

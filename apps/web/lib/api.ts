@@ -1,5 +1,6 @@
 import type {
   Approval,
+  ApprovalTextEdit,
   ApprovalView,
   AwayDigest,
   BackupEntry,
@@ -197,6 +198,7 @@ export interface ClaudeSettingsDto {
   "codeAnswer.away.enabled": boolean;
   "codeAnswer.away.autoSend": boolean;
   "codeAnswer.away.maxRunsPerDay": number;
+  "engineering.sandbox.enabled": boolean;
 }
 export type ClaudeSettingsKey = keyof ClaudeSettingsDto;
 
@@ -943,6 +945,33 @@ export function approveTaskPlan(
     "POST",
     `/api/engineering/tasks/${encodeURIComponent(id)}/approve-plan`,
     body,
+    fetchImpl,
+  );
+}
+
+/** Saves edited commit or PR text on a pending approval; the API validates it. */
+export function editEngineeringApproval(
+  taskId: string,
+  approvalId: string,
+  edit: ApprovalTextEdit,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Approval> {
+  return send(
+    "PUT",
+    `/api/engineering/tasks/${encodeURIComponent(taskId)}/approvals/${encodeURIComponent(approvalId)}`,
+    edit,
+    fetchImpl,
+  );
+}
+
+/** Asks for a new merge approval after failing checks; a refusal is an ApiError with a code. */
+export function retryEngineeringMerge(
+  taskId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EngineeringTaskDetail> {
+  return request(
+    `/api/engineering/tasks/${encodeURIComponent(taskId)}/retry-merge`,
+    { method: "POST" },
     fetchImpl,
   );
 }

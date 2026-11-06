@@ -1,24 +1,32 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type {
-  AIExecutionResult,
-  Approval,
-  ClaudeJobRequest,
-  Operation,
-  RawToolResult,
+import {
+  type AIExecutionResult,
+  type Approval,
+  type ClaudeJobRequest,
+  COMMIT_SUBJECT_MAX,
+  isValidApprovalText,
+  JobError,
+  type Operation,
+  type RawToolResult,
 } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock, newId } from "@synapse/shared";
 import { and, eq, sql } from "drizzle-orm";
+import type { Container } from "../../src/container";
 import { ApprovalEngine } from "../../src/core/approvals/approvals";
 import { AuditLogger } from "../../src/core/audit/audit";
 import { SettingsService } from "../../src/core/config/settings";
@@ -30,13 +38,14 @@ import type { HandlerRegistration } from "../../src/core/jobs/worker";
 import { LeaseService } from "../../src/core/leases/leases";
 import { assemblePrompt } from "../../src/core/orchestrator/prompt";
 import { buildDenylist, DEFAULT_KNOWN_SERVERS } from "../../src/core/orchestrator/tool-catalog";
-import { validateRequest } from "../../src/core/orchestrator/validator";
+import { SANDBOX_REQUIRED_REASON, validateRequest } from "../../src/core/orchestrator/validator";
 import { PermissionManager } from "../../src/core/permissions/permissions";
 import { GitHubCliProvider } from "../../src/integrations/github/gh-cli";
 import { LocalGitWorkflow } from "../../src/integrations/repository/git-workflow";
 import { LocalGitProvider } from "../../src/integrations/repository/local-git";
 import {
   buildDevelopRequest,
+  SANDBOX_PATH_TOO_LONG_HINT,
   testResultFrom,
 } from "../../src/intelligence/engineering/develop-prompt";
 import { RepositoryRegistry } from "../../src/modules/engineering-brain/registry";
@@ -46,12 +55,18 @@ import {
   STEP_JOB,
 } from "../../src/modules/engineering-tasks/lock";
 import { EngineeringTaskService } from "../../src/modules/engineering-tasks/service";
-import { EngineeringStepService } from "../../src/modules/engineering-tasks/steps";
+import { commitMessage, EngineeringStepService } from "../../src/modules/engineering-tasks/steps";
 import {
   EngineeringTaskError,
   EngineeringTaskStore,
 } from "../../src/modules/engineering-tasks/store";
-import { registerStepJob } from "../../src/workers/engineering/steps";
+import { engineeringRoutes } from "../../src/routes/engineering";
+import {
+  RUN_TMP_MAX_BYTES,
+  registerStepJob,
+  runScratchDir,
+  sweepRunScratch,
+} from "../../src/workers/engineering/steps";
 import { type RemoteRepoFixture, remoteRepoFixture } from "../fixtures/engineering";
 import { git, tempDir } from "../fixtures/git-repo";
 
@@ -102,7 +117,8 @@ if (sub === "pr view") {
   const { base } = JSON.parse(readFileSync(d + "/pr.json", "utf8"));
   const r = Bun.spawnSync(["git", "--git-dir", cfg.origin, "rev-parse", "refs/heads/" + base]);
   const headRefOid = r.stdout.toString().trim();
-  process.stdout.write(JSON.stringify({ number: 7, url: "u", state: "OPEN", mergeable: "MERGEABLE", statusCheckRollup: [{ status: "COMPLETED", conclusion: cfg.conclusion ?? "SUCCESS" }], headRefOid }));
+  const rollup = cfg.checks === "none" ? [] : [{ status: cfg.checkStatus ?? "COMPLETED", conclusion: cfg.checkStatus ? "" : (cfg.conclusion ?? "SUCCESS") }];
+  process.stdout.write(JSON.stringify({ number: 7, url: "u", state: cfg.state ?? "OPEN", mergeable: cfg.mergeable ?? "MERGEABLE", statusCheckRollup: rollup, headRefOid: cfg.headRefOid ?? headRefOid }));
 }
 process.exit(0);
 `,
@@ -209,6 +225,8 @@ let repo: string;
 let repoId: string;
 let requests: ClaudeJobRequest[];
 let reply: (req: ClaudeJobRequest) => AIExecutionResult;
+/** The step worker's run root: develop runs get `<it>/r/<8 hex of sha256(jobId)>/t` (ADR-040). */
+let sandboxScratch: string;
 
 const taskRow = (id: string) =>
   db.select().from(schema.engineeringTasks).where(eq(schema.engineeringTasks.id, id)).get();
@@ -433,6 +451,7 @@ beforeEach(async () => {
   steps.register(approvals, dispatcher);
   requests = [];
   reply = editingRun();
+  sandboxScratch = scratch();
   registerStepJob({
     db,
     settings,
@@ -443,6 +462,13 @@ beforeEach(async () => {
         requests.push(req);
         return reply(req);
       },
+    },
+    // The test repositories live under the OS temp dir, which the real sandbox masks.
+    sandbox: {
+      runRoot: sandboxScratch,
+      home: fx.home,
+      protectedDirs: [join(sandboxScratch, "data")],
+      maskedRoots: [],
     },
   });
   rmSync(join(ghDir, "argv.log"), { force: true });
@@ -496,7 +522,16 @@ describe("develop request (E9)", () => {
     const req = buildDevelopRequest(
       { approvedDescription: APPROVED, plan: PLAN },
       { localPath: "/home/demo/app", testCommand: "bun test" },
-      { model: "sonnet", maxTurns: 60, timeoutMinutes: 30 },
+      {
+        model: "sonnet",
+        maxTurns: 60,
+        timeoutMinutes: 30,
+        sandbox: {
+          tmpDir: "/home/demo/.cache/synapse/0123abcd/r/89abcdef/t",
+          home: "/home/demo",
+          protectedDirs: ["/home/demo/.local/share/synapse"],
+        },
+      },
     );
     expect(req.maxTurns).toBe(50);
     const parts = req.parts ?? [];
@@ -514,11 +549,450 @@ describe("develop request (E9)", () => {
         maxTurns: req.maxTurns,
         timeoutMs: req.timeoutMs ?? 0,
         workingDirectory: req.workingDirectory ?? "",
+        ...(req.sandbox ? { sandbox: req.sandbox } : {}),
       },
       DEFAULT_KNOWN_SERVERS,
       { instructions: req.instructions, boundary: "BND" },
     );
     expect(r).toEqual({ ok: true });
+  });
+});
+
+describe("develop sandbox (ADR-040)", () => {
+  const hex = (jobId: string) => createHash("sha256").update(jobId).digest("hex");
+  const runDir = (jobId: string) => join(sandboxScratch, "r", hex(jobId).slice(0, 8));
+
+  test("the develop request carries the per-run tmpDir and the deny list", async () => {
+    await developed();
+    const req = requests[0] as ClaudeJobRequest;
+    const jobId = req.jobId as string;
+    expect(jobId).toBeTruthy();
+    expect(req.sandbox?.tmpDir).toBe(join(runDir(jobId), "t"));
+    expect(req.sandbox?.denyRead).toContain(join(fx.home, ".ssh"));
+    expect(req.sandbox?.denyRead).toContain(join(sandboxScratch, "data"));
+  });
+
+  test("the run root and r dir are created 0700, outside every deny entry (Task 4b)", async () => {
+    const root = join(scratch(), "cache", "synapse");
+    handlers.delete(STEP_JOB);
+    registerStepJob({
+      db,
+      settings,
+      steps,
+      handlers,
+      orchestrator: {
+        run: async (req: ClaudeJobRequest) => {
+          requests.push(req);
+          return reply(req);
+        },
+      },
+      sandbox: {
+        runRoot: root,
+        home: fx.home,
+        protectedDirs: [join(sandboxScratch, "data")],
+        maskedRoots: [],
+      },
+    });
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+    const req = requests[0] as ClaudeJobRequest;
+    expect(req.sandbox?.tmpDir).toBe(join(root, "r", hex(req.jobId as string).slice(0, 8), "t"));
+    expect(statSync(root).mode & 0o777).toBe(0o700);
+    expect(statSync(join(root, "r")).mode & 0o777).toBe(0o700);
+    const tmp = req.sandbox?.tmpDir as string;
+    for (const e of req.sandbox?.denyRead ?? []) {
+      expect(tmp === e || tmp.startsWith(`${e}/`)).toBe(false);
+    }
+  });
+
+  test("sandbox placeholders left by the run are removed before the diff check (Task 4b)", async () => {
+    // Some git templates ship an empty branches/: make the observed set exactly new.
+    rmSync(join(repo, ".git", "branches"), { recursive: true, force: true });
+    const edit = editingRun();
+    reply = (req) => {
+      const wd = req.workingDirectory as string;
+      for (const d of [
+        "branches",
+        "remotes",
+        "objects/info/commit-graphs/.claude-sandbox-noreplace",
+        "info/.claude-sandbox-noreplace",
+        "objects/info/.claude-sandbox-noreplace",
+      ]) {
+        mkdirSync(join(wd, ".git", d), { recursive: true });
+      }
+      writeFileSync(join(wd, ".git", "config.worktree"), "");
+      writeFileSync(join(wd, ".git", "objects", "info", "alternates"), "");
+      mkdirSync(join(wd, ".claude", ".cc-writes"), { recursive: true });
+      return edit(req);
+    };
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.sandboxPlaceholdersRemoved).toBe(10);
+    expect(out.unsafeReasons).toEqual([]);
+    expect(existsSync(join(repo, ".claude"))).toBe(false);
+    expect(existsSync(join(repo, ".git", "config.worktree"))).toBe(false);
+    expect(pendingOf("engineering.commit")).toBeDefined();
+  });
+
+  test("a non-empty placeholder is kept and the run is unsafe (Task 4b)", async () => {
+    const edit = editingRun();
+    reply = (req) => {
+      const wd = req.workingDirectory as string;
+      mkdirSync(join(wd, ".git", "info", ".claude-sandbox-noreplace"), { recursive: true });
+      writeFileSync(join(wd, ".git", "objects", "info", "alternates"), "/elsewhere/objects\n");
+      return edit(req);
+    };
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("unsafe_change");
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.sandboxPlaceholdersRemoved).toBe(1);
+    expect(out.unsafeReasons).toEqual(["git_dir_changed"]);
+    expect(existsSync(join(repo, ".git", "objects", "info", "alternates"))).toBe(true);
+    expect(pendingOf("engineering.commit")).toBeUndefined();
+  });
+
+  test("placeholders are also removed after a failed run, so a clean tree fails cleanly (Task 4b)", async () => {
+    rmSync(join(repo, ".git", "branches"), { recursive: true, force: true });
+    reply = (req) => {
+      const wd = req.workingDirectory as string;
+      mkdirSync(join(wd, ".git", "branches"), { recursive: true });
+      writeFileSync(join(wd, ".git", "config.worktree"), "");
+      throw new JobError({ kind: "timeout", message: "timed out" });
+    };
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("timeout");
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.sandboxPlaceholdersRemoved).toBe(2);
+    expect(existsSync(join(repo, ".git", "branches"))).toBe(false);
+  });
+
+  test("run dir names: 8 hex of sha256(jobId), longer on a collision, null when all are taken (fix round 2)", () => {
+    const h = hex("job-1");
+    const taken = new Set<string>();
+    const exists = (p: string) => taken.has(p);
+    expect(runScratchDir("/c/s/0123abcd", "job-1", exists)).toBe(
+      `/c/s/0123abcd/r/${h.slice(0, 8)}`,
+    );
+    taken.add(`/c/s/0123abcd/r/${h.slice(0, 8)}`);
+    expect(runScratchDir("/c/s/0123abcd", "job-1", exists)).toBe(
+      `/c/s/0123abcd/r/${h.slice(0, 12)}`,
+    );
+    taken.add(`/c/s/0123abcd/r/${h.slice(0, 12)}`);
+    taken.add(`/c/s/0123abcd/r/${h.slice(0, 16)}`);
+    expect(runScratchDir("/c/s/0123abcd", "job-1", exists)).toBeNull();
+    // The path the observed real-CLI layout needs: well under the 64-byte limit.
+    const t = `${runScratchDir("/home/demo1/.cache/synapse/0123abcd", "job-1", () => false)}/t`;
+    expect(Buffer.byteLength(t)).toBeLessThanOrEqual(RUN_TMP_MAX_BYTES);
+    expect(RUN_TMP_MAX_BYTES).toBe(64);
+  });
+
+  test("a tmpDir over 64 bytes refuses the run: sandbox_path_too_long, nothing created (fix round 2)", async () => {
+    const root = join(scratch(), "x".repeat(70));
+    handlers.delete(STEP_JOB);
+    registerStepJob({
+      db,
+      settings,
+      steps,
+      handlers,
+      orchestrator: {
+        run: async (req: ClaudeJobRequest) => {
+          requests.push(req);
+          return reply(req);
+        },
+      },
+      sandbox: { runRoot: root, home: fx.home, protectedDirs: [], maskedRoots: [] },
+    });
+    const id = await developed();
+    expect(requests).toHaveLength(0);
+    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("sandbox_path_too_long");
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.hint).toBe(SANDBOX_PATH_TOO_LONG_HINT);
+    expect(SANDBOX_PATH_TOO_LONG_HINT).toContain("XDG_CACHE_HOME");
+    expect(existsSync(root)).toBe(false);
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("a sandbox init failure inside the Bash tool_result is sandbox_unavailable, not failed tests (fix round 2)", async () => {
+    const msg =
+      "Sandbox is required but failed to initialize: Failed to create bridge sockets after 5 attempts. Restart to retry. Running it outside the sandbox (dangerouslyDisableSandbox) is not allowed either.";
+    reply = editingRun(undefined, [tool("Bash", { command: "bun test" }, msg, true)], false);
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("sandbox_unavailable");
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.failure).toBe("sandbox_unavailable");
+    expect(out.testsPassed).toBeUndefined();
+    expect(pendingOf("engineering.commit")).toBeUndefined();
+    expect(leaseRow()).toBeDefined();
+  });
+
+  test("a failing test run that merely mentions a sandbox stays an ordinary result (fix round 2)", async () => {
+    reply = editingRun(
+      undefined,
+      [tool("Bash", { command: "bun test" }, "1 fail\nexpected sandbox to be ready", true)],
+      false,
+    );
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.testsPassed).toBe(false);
+  });
+
+  test("passing test output that mentions an unavailable sandbox stays an ordinary result (final review)", async () => {
+    reply = editingRun(
+      undefined,
+      [
+        tool(
+          "Bash",
+          { command: "bun test" },
+          "(pass) api > returns 503 when the sandbox is unavailable\n1 pass\n0 fail",
+          false,
+        ),
+      ],
+      true,
+    );
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+    expect(taskRow(id)?.failure).toBeNull();
+  });
+
+  test("the CLI sandbox message after an Exit code line is still sandbox_unavailable (final review)", async () => {
+    reply = editingRun(
+      undefined,
+      [
+        tool(
+          "Bash",
+          { command: "bun test" },
+          "Exit code 1\nSandbox is required but failed to initialize: x",
+          true,
+        ),
+      ],
+      false,
+    );
+    const id = await developed();
+    expect(taskRow(id)?.failure).toBe("sandbox_unavailable");
+  });
+
+  test("generated commit subject and PR title are capped at the edit limits (final review)", () => {
+    const title = "t".repeat(300);
+    const msg = commitMessage({ id: "tk", title, approvedDescription: null });
+    expect((msg.split("\n")[0] ?? "").length).toBe(COMMIT_SUBJECT_MAX);
+    expect(isValidApprovalText("commitMessage", msg.split("\n")[0] ?? "")).toBe(true);
+  });
+
+  test("with the setting off the request has no sandbox", async () => {
+    settings.set("engineering.sandbox.enabled", false);
+    await developed();
+    expect(requests).toHaveLength(1);
+    expect("sandbox" in (requests[0] as ClaudeJobRequest)).toBe(false);
+  });
+
+  test("the run scratch is removed after a run that returns (Review Focus 5)", async () => {
+    const seen: string[] = [];
+    const edit = editingRun();
+    reply = (req) => {
+      const tmp = req.sandbox?.tmpDir as string;
+      mkdirSync(tmp, { recursive: true });
+      writeFileSync(join(tmp, "x"), "x");
+      seen.push(req.jobId as string);
+      return edit(req);
+    };
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+    expect(seen).toHaveLength(1);
+    expect(existsSync(runDir(seen[0] as string))).toBe(false);
+  });
+
+  test("the run scratch is removed after a run that throws (Review Focus 5)", async () => {
+    const seen: string[] = [];
+    reply = (req) => {
+      mkdirSync(req.sandbox?.tmpDir as string, { recursive: true });
+      seen.push(req.jobId as string);
+      throw new JobError({ kind: "timeout", message: "timed out" });
+    };
+    const id = await developed();
+    expect(taskRow(id)?.failure).toBe("timeout");
+    expect(seen).toHaveLength(1);
+    expect(existsSync(runDir(seen[0] as string))).toBe(false);
+  });
+
+  test("a sandbox that cannot start needs attention, keeps the lock, makes no approval (F1.4)", async () => {
+    reply = () => {
+      throw new JobError({
+        kind: "provider_error",
+        message: "sandbox unavailable",
+        details: { sandboxUnavailable: true },
+      });
+    };
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("sandbox_unavailable");
+    expect((stepRow(id, "develop")?.output as Record<string, unknown> | null)?.failure).toBe(
+      "sandbox_unavailable",
+    );
+    expect(leaseRow()).toBeDefined();
+    expect(pendingOf("engineering.commit")).toBeUndefined();
+  });
+
+  test("rule M's refusal surfaces as sandbox_disabled and releases the lock (F1.5)", async () => {
+    reply = () => {
+      throw new JobError({ kind: "invalid_input", message: SANDBOX_REQUIRED_REASON });
+    };
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("sandbox_disabled");
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("sandbox denial text in a passing run does not flip testsPassed (F1.4)", () => {
+    expect(
+      testResultFrom(
+        [tool("Bash", { command: "bun test" }, "1 pass\nsandbox: network request denied")],
+        "bun test",
+      ).testsPassed,
+    ).toBe(true);
+  });
+
+  test("a cleanup failure never replaces the run's result (fix round 1)", async () => {
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    let locked = "";
+    const edit = editingRun();
+    reply = (req) => {
+      locked = join(req.sandbox?.tmpDir as string, "locked");
+      mkdirSync(join(locked, "inner"), { recursive: true });
+      chmodSync(locked, 0o000);
+      return edit(req);
+    };
+    try {
+      const id = await developed();
+      expect(taskRow(id)?.status).toBe("awaiting_approval");
+      expect(errors.mock.calls).toEqual([["engineering.step: run scratch cleanup failed"]]);
+    } finally {
+      errors.mockRestore();
+      chmodSync(locked, 0o755);
+    }
+  });
+
+  test("a cleanup failure never replaces the run's error (fix round 1)", async () => {
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    let locked = "";
+    reply = (req) => {
+      locked = join(req.sandbox?.tmpDir as string, "locked");
+      mkdirSync(join(locked, "inner"), { recursive: true });
+      chmodSync(locked, 0o000);
+      throw new JobError({ kind: "timeout", message: "timed out" });
+    };
+    try {
+      const id = await developed();
+      expect(taskRow(id)?.failure).toBe("timeout");
+      expect(errors.mock.calls).toEqual([["engineering.step: run scratch cleanup failed"]]);
+    } finally {
+      errors.mockRestore();
+      chmodSync(locked, 0o755);
+    }
+  });
+
+  test("a repository inside the data dir is refused (repo_in_masked_path, fix round 2)", async () => {
+    handlers.delete(STEP_JOB);
+    registerStepJob({
+      db,
+      settings,
+      steps,
+      handlers,
+      orchestrator: {
+        run: async (req: ClaudeJobRequest) => {
+          requests.push(req);
+          return reply(req);
+        },
+      },
+      // The repository's parent stands in for the Synapse data dir.
+      sandbox: {
+        runRoot: sandboxScratch,
+        home: fx.home,
+        protectedDirs: [join(repo, "..")],
+        maskedRoots: [],
+      },
+    });
+    const id = await developed();
+    expect(requests).toHaveLength(0);
+    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("repo_in_masked_path");
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("a repository inside a home deny entry is refused (repo_in_masked_path, fix round 1)", async () => {
+    // A second fixture whose repository lives under `<home>/.config`.
+    const home = scratch();
+    mkdirSync(join(home, ".config"));
+    const fx2 = remoteRepoFixture(join(home, ".config"));
+    const registry2 = new RepositoryRegistry({
+      db,
+      clock,
+      audit,
+      events,
+      provider: new LocalGitProvider({ home: fx2.home }),
+    });
+    const view = await registry2.register({
+      path: fx2.repo,
+      name: "demo",
+      trackedBranch: "main",
+      environments: [],
+      jiraProjectKeys: [],
+    });
+    repoId = view.id;
+    repo = fx2.repo;
+    handlers.delete(STEP_JOB);
+    registerStepJob({
+      db,
+      settings,
+      steps,
+      handlers,
+      orchestrator: {
+        run: async (req: ClaudeJobRequest) => {
+          requests.push(req);
+          return reply(req);
+        },
+      },
+      sandbox: { runRoot: sandboxScratch, home, protectedDirs: [], maskedRoots: [] },
+    });
+    const id = await developed();
+    expect(requests).toHaveLength(0);
+    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("repo_in_masked_path");
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("a repository in a masked path is refused before any run (repo_in_masked_path)", async () => {
+    handlers.delete(STEP_JOB);
+    registerStepJob({
+      db,
+      settings,
+      steps,
+      handlers,
+      orchestrator: {
+        run: async (req: ClaudeJobRequest) => {
+          requests.push(req);
+          return reply(req);
+        },
+      },
+      // The repository's parent stands in for /tmp (the default roots are tested in
+      // develop-prompt.test.ts).
+      sandbox: {
+        runRoot: sandboxScratch,
+        home: fx.home,
+        protectedDirs: [],
+        maskedRoots: [join(repo, "..")],
+      },
+    });
+    const id = await developed();
+    expect(requests).toHaveLength(0);
+    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("repo_in_masked_path");
+    expect(leaseRow()).toBeUndefined();
   });
 });
 
@@ -1372,5 +1846,313 @@ describe("final review fixes", () => {
     expect(head(fx.origin, "main")).toBe(originBefore);
     expect(git(elsewhere, "for-each-ref")).toBe("");
     expect(ghCalls().some((c) => c[1] === "create")).toBe(false);
+  });
+});
+
+describe("startup sweep of run scratch (fix round 1)", () => {
+  test("leftover run dirs are removed; the r dir stays", () => {
+    const dir = scratch();
+    mkdirSync(join(dir, "r", "a", "tmp"), { recursive: true });
+    writeFileSync(join(dir, "r", "a", "tmp", "f"), "x");
+    mkdirSync(join(dir, "r", "b"));
+    writeFileSync(join(dir, "r", "stray-file"), "x");
+    writeFileSync(join(dir, "keep.txt"), "x");
+    sweepRunScratch(dir);
+    expect(readdirSync(join(dir, "r"))).toEqual([]);
+    expect(existsSync(join(dir, "keep.txt"))).toBe(true);
+  });
+
+  test("a symlinked r dir is not followed (final review)", () => {
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    const dir = scratch();
+    const target = scratch();
+    writeFileSync(join(target, "victim"), "x");
+    symlinkSync(target, join(dir, "r"));
+    try {
+      sweepRunScratch(dir);
+      expect(existsSync(join(target, "victim"))).toBe(true);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  test("a missing r dir is a no-op", () => {
+    const dir = scratch();
+    expect(() => sweepRunScratch(dir)).not.toThrow();
+    expect(existsSync(join(dir, "r"))).toBe(false);
+  });
+
+  test("best effort: one undeletable entry logs a fixed line and the rest go", () => {
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    const dir = scratch();
+    const locked = join(dir, "r", "a", "locked");
+    mkdirSync(join(locked, "inner"), { recursive: true });
+    mkdirSync(join(dir, "r", "b"));
+    chmodSync(locked, 0o000);
+    try {
+      expect(() => sweepRunScratch(dir)).not.toThrow();
+      expect(readdirSync(join(dir, "r"))).toEqual(["a"]);
+      expect(errors.mock.calls).toEqual([["engineering.step: run scratch sweep failed"]]);
+    } finally {
+      errors.mockRestore();
+      chmodSync(locked, 0o755);
+    }
+  });
+});
+
+describe("approval text edits and merge re-request (F2.1, F3.2)", () => {
+  const setGh = (extra: Record<string, unknown>) =>
+    writeFileSync(join(ghDir, "cfg.json"), JSON.stringify({ origin: fx.origin, ...extra }));
+  const api = () =>
+    engineeringRoutes({
+      engineering: service,
+      engineeringSteps: steps,
+      engineeringLock: lock,
+    } as unknown as Container);
+  const put = async (taskId: string, approvalId: string, body: unknown) => {
+    const res = await api().request(`/api/engineering/tasks/${taskId}/approvals/${approvalId}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+  const retry = async (taskId: string) => {
+    const res = await api().request(`/api/engineering/tasks/${taskId}/retry-merge`, {
+      method: "POST",
+    });
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+  const payloadOf = (id: string) => approvalRow(id)?.payload as Record<string, unknown>;
+  const editAudits = () =>
+    db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "engineering.approval_edited"))
+      .all();
+
+  test("commit: the edited message is stored, audited by field name only, and committed verbatim", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    const text = "Fix add\n\nTask: t1 EDIT-MARKER-5e";
+    const r = await put(id, a.id, { commitMessage: text });
+    expect(r.status).toBe(200);
+    expect((r.body.payload as { message: string }).message).toBe(text);
+    expect(payloadOf(a.id).message).toBe(text);
+    const rows = editAudits();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.approvalId).toBe(a.id);
+    expect(rows[0]?.details).toEqual({ taskId: id, fields: ["commitMessage"] });
+    expect(auditDump()).not.toContain("EDIT-MARKER-5e");
+    expect(eventDump()).not.toContain("EDIT-MARKER-5e");
+    expect((await approve("engineering.commit")).outcome.status).toBe("executed");
+    expect(git(repo, "log", "-1", "--format=%B", `${taskRow(id)?.taskBranch}`)).toContain(
+      "EDIT-MARKER-5e",
+    );
+  });
+
+  test("wrong field, empty edit, unknown approval", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    const before = payloadOf(a.id).message;
+    expect((await put(id, a.id, { prTitle: "x" })).body).toEqual({ error: "invalid_input" });
+    expect((await put(id, a.id, {})).status).toBe(400);
+    expect((await put(id, a.id, { commitMessage: "ok", extra: 1 })).status).toBe(400);
+    expect(await put(id, "nope", { commitMessage: "ok" })).toEqual({
+      status: 404,
+      body: { error: "not_found" },
+    });
+    expect(await put("other-task", a.id, { commitMessage: "ok" })).toEqual({
+      status: 404,
+      body: { error: "not_found" },
+    });
+    expect(payloadOf(a.id).message).toBe(before);
+    expect(editAudits()).toHaveLength(0);
+  });
+
+  test("text git or argv cannot take is 400 invalid_text and the payload is unchanged", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    const before = payloadOf(a.id).message;
+    for (const bad of [
+      "   ",
+      "   \nbody",
+      "Fix\u0000",
+      "Fix\r\nx",
+      "a".repeat(201),
+      "a".repeat(5001),
+    ]) {
+      const r = await put(id, a.id, { commitMessage: bad });
+      expect(r).toEqual({ status: 400, body: { error: "invalid_text" } });
+    }
+    expect(payloadOf(a.id).message).toBe(before);
+    expect(editAudits()).toHaveLength(0);
+  });
+
+  test("after Approve the edit is 409 not_pending and the payload is unchanged", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    const before = payloadOf(a.id).message;
+    approvals.approve(a.id);
+    expect(await put(id, a.id, { commitMessage: "Fix add" })).toEqual({
+      status: 409,
+      body: { error: "not_pending" },
+    });
+    expect(payloadOf(a.id).message).toBe(before);
+  });
+
+  test("a card left open after the task moved on is 409 not_pending", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    await approve("engineering.commit");
+    expect((await put(id, a.id, { commitMessage: "late" })).body).toEqual({ error: "not_pending" });
+    // Pending approval, but the task left awaiting_approval.
+    const b = pendingOf("engineering.merge_local") as Approval;
+    db.update(schema.engineeringTasks)
+      .set({ status: "needs_attention" })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+    expect((await put(id, b.id, { commitMessage: "x" })).body).toEqual({ error: "invalid_input" });
+    const row = db.select().from(schema.approvals).where(eq(schema.approvals.id, a.id)).get();
+    expect(row?.status).not.toBe("pending");
+  });
+
+  test("not_pending: task status, current step and step-row approval each reached with a valid field", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    const before = payloadOf(a.id).message;
+    const setTask = (v: Record<string, unknown>) =>
+      db.update(schema.engineeringTasks).set(v).where(eq(schema.engineeringTasks.id, id)).run();
+    const expectRefused = async () => {
+      expect(await put(id, a.id, { commitMessage: "Fix add" })).toEqual({
+        status: 409,
+        body: { error: "not_pending" },
+      });
+      expect(payloadOf(a.id).message).toBe(before);
+    };
+    setTask({ status: "needs_attention" });
+    await expectRefused();
+    setTask({ status: "awaiting_approval", currentStep: "merge_local" });
+    await expectRefused();
+    setTask({ currentStep: "commit" });
+    db.update(schema.engineeringTaskSteps)
+      .set({ approvalId: "other" })
+      .where(
+        and(
+          eq(schema.engineeringTaskSteps.taskId, id),
+          eq(schema.engineeringTaskSteps.step, "commit"),
+        ),
+      )
+      .run();
+    await expectRefused();
+    expect(editAudits()).toHaveLength(0);
+  });
+
+  test("push_pr: title and a 20000-character body reach createPr", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    const a = pendingOf("engineering.push_pr") as Approval;
+    const body = "b".repeat(20000);
+    expect((await put(id, a.id, { commitMessage: "x" })).status).toBe(400);
+    expect((await put(id, a.id, { prTitle: "Fix add", prBody: body })).status).toBe(200);
+    expect((await put(id, a.id, { prTitle: "a\nb" })).body).toEqual({ error: "invalid_text" });
+    expect((await put(id, a.id, { prBody: "b".repeat(20001) })).body).toEqual({
+      error: "invalid_text",
+    });
+    expect((await approve("engineering.push_pr")).outcome.status).toBe("executed");
+    const create = ghCalls().find((c) => c[0] === "pr" && c[1] === "create") as string[];
+    expect(create[create.indexOf("--title") + 1]).toBe("Fix add");
+    expect(create[create.indexOf("--body") + 1]).toBe(body);
+    expect(auditDump()).not.toContain("bbbbbbbbbb");
+  });
+
+  /** A task parked at merge_pr / checks_failing through a failing revalidation. */
+  async function checksFailing(): Promise<{ id: string; pushedSha: string }> {
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    await approve("engineering.push_pr");
+    const pushedSha = (
+      (pendingOf("engineering.merge_pr") as Approval).payload as {
+        pushedSha: string;
+      }
+    ).pushedSha;
+    setGh({ conclusion: "FAILURE" });
+    expect((await approve("engineering.merge_pr")).outcome.status).toBe("skipped");
+    expect(taskRow(id)?.failure).toBe("checks_failing");
+    return { id, pushedSha };
+  }
+
+  test("retry-merge: passing checks request a fresh merge_pr approval", async () => {
+    const { id } = await checksFailing();
+    setGh({});
+    clock.advance(60_000);
+    const r = await retry(id);
+    expect(r.status).toBe(200);
+    expect(r.body.status).toBe("awaiting_approval");
+    expect(taskRow(id)?.currentStep).toBe("merge_pr");
+    expect(taskRow(id)?.failure).toBeNull();
+    const a = pendingOf("engineering.merge_pr") as Approval;
+    expect(a.riskLevel).toBe("high");
+    expect((a.payload as { status: { checks: string } }).status.checks).toBe("passing");
+    expect(stepRow(id, "merge_pr")?.approvalId).toBe(a.id);
+    expect(auditDump()).toContain("engineering.merge_rerequested");
+    // The fresh approval executes (merge goes through).
+    expect((await approve("engineering.merge_pr")).outcome.status).toBe("executed");
+  });
+
+  test("retry-merge: pending but mergeable is allowed; pending and not mergeable is not", async () => {
+    const { id } = await checksFailing();
+    setGh({ checkStatus: "IN_PROGRESS", mergeable: "UNKNOWN" });
+    expect((await retry(id)).body).toEqual({ error: "checks_failing" });
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    setGh({ checkStatus: "IN_PROGRESS" });
+    expect((await retry(id)).status).toBe(200);
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+  });
+
+  test("retry-merge: still failing is 409 checks_failing and nothing changes", async () => {
+    const { id } = await checksFailing();
+    const stepBefore = JSON.stringify(stepRow(id, "merge_pr"));
+    expect(await retry(id)).toEqual({ status: 409, body: { error: "checks_failing" } });
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("checks_failing");
+    expect(JSON.stringify(stepRow(id, "merge_pr"))).toBe(stepBefore);
+    expect(approvals.listPending()).toEqual([]);
+  });
+
+  test("retry-merge: a moved head, a closed or merged PR and a gh failure are fixed 409s", async () => {
+    const { id } = await checksFailing();
+    const cases: [Record<string, unknown>, string][] = [
+      [{ headRefOid: "0".repeat(40) }, "pr_head_moved"],
+      [{ state: "MERGED" }, "state_changed"],
+      [{ state: "CLOSED" }, "state_changed"],
+      [{ fail: "pr view" }, "pr_status_failed"],
+    ];
+    for (const [cfg, code] of cases) {
+      setGh(cfg);
+      expect(await retry(id)).toEqual({ status: 409, body: { error: code } });
+      expect(taskRow(id)?.status).toBe("needs_attention");
+      expect(approvals.listPending()).toEqual([]);
+    }
+  });
+
+  test("retry-merge: any other step or reason is 400 invalid_state; an unknown task is 404", async () => {
+    const id = await developed();
+    expect(await retry(id)).toEqual({ status: 400, body: { error: "invalid_state" } });
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    await approve("engineering.push_pr");
+    expect((await retry(id)).body).toEqual({ error: "invalid_state" });
+    expect((await retry("nope")).status).toBe(404);
+  });
+
+  test("retry-merge: a protected parent is 400 protected_branch", async () => {
+    const { id } = await checksFailing();
+    setGh({});
+    protectMain();
+    expect(await retry(id)).toEqual({ status: 400, body: { error: "protected_branch" } });
+    expect(approvals.listPending()).toEqual([]);
   });
 });

@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { chmodSync, lstatSync, mkdirSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import type {
   AIExecutionRequest,
   AIExecutionResult,
@@ -10,12 +12,14 @@ import type { Clock } from "@synapse/shared";
 import { buildClaudeArgs } from "../../core/orchestrator/cli-args";
 import { clampQuotaRetry } from "../../core/orchestrator/quota-gate";
 import { StreamParser } from "../../core/orchestrator/stream-parser";
+import { SANDBOX_FAILURE_RE, SANDBOX_STARTUP_FAILURE_REASON, withSandboxSettings } from "./sandbox";
 import { buildGuardedOverride, SEND_GUARD_HOOK_PATH } from "./send-guard";
 import { DEFAULT_SETTINGS_OVERRIDE } from "./settings-override";
 
 const TESTED_VERSION = "2.1.318";
 const HEALTH_TIMEOUT_MS = 5000;
 const CLOSE_CAP_MS = 500;
+const STDERR_HEAD_CHARS = 4096;
 const AUTH_RE =
   /oauth token|please run \/login|not logged in|authentication (failed|error|required)|unauthori[sz]ed|invalid api key/i;
 const QUOTA_TEXT_RE = /usage limit|rate limit|quota (exceeded|exhausted|reached)/i;
@@ -58,6 +62,11 @@ export interface ClaudeCliProviderOptions {
 interface SpawnOutcome {
   stdout: string;
   stderrBytes: number;
+  /**
+   * The first STDERR_HEAD_CHARS characters of stderr, kept only to match SANDBOX_FAILURE_RE.
+   * Never returned, logged or stored.
+   */
+  stderrHead: string;
   exitCode: number | null;
   spawnError: boolean;
   spawnErrorCode?: string;
@@ -73,6 +82,8 @@ interface SpawnOptions {
   timeoutMs: number;
   signal?: AbortSignal;
   onStdout?: (chunk: string) => void;
+  /** Per-run additions to the child env (under HERMETIC_ENV, over the provider env). */
+  env?: Record<string, string>;
 }
 
 const emptyUsage = {
@@ -84,6 +95,67 @@ const emptyUsage = {
 };
 
 const normalize = (s: string): string => s.replace(/[^A-Za-z0-9]/g, "_");
+
+/** A run refused before any child process starts (fail closed). */
+function notSpawned(message: string): AIExecutionResult {
+  return {
+    status: "failed",
+    toolResults: [],
+    finalText: "",
+    numTurns: 0,
+    durationMs: 0,
+    usage: emptyUsage,
+    permissionDenials: [],
+    connectors: [],
+    availableTools: [],
+    exitCode: null,
+    error: { kind: "provider_error", message, details: { notSpawned: true } },
+  };
+}
+
+/**
+ * Creates the sandbox `tmpDir` (0700, also tightening an existing one) and checks it is a real
+ * directory, not a symlink that `allowRead` would follow elsewhere. Throws on any failure.
+ */
+function prepareSandboxTmpDir(tmpDir: string): void {
+  mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
+  // Checked before chmod, which would follow a symlink and change its target.
+  if (!lstatSync(tmpDir).isDirectory()) throw new Error("sandbox: tmp dir is not a directory");
+  chmodSync(tmpDir, 0o700);
+}
+
+/**
+ * The start of a byte stream as text: chunks are decoded with a StringDecoder (a character split
+ * across chunks is kept whole), then cut at `max` UTF-16 units without splitting a surrogate pair.
+ * Decoding stops once the limit is reached.
+ */
+export class StderrHead {
+  private readonly decoder = new StringDecoder("utf8");
+
+  private head = "";
+
+  private full = false;
+
+  constructor(private readonly max = STDERR_HEAD_CHARS) {}
+
+  get text(): string {
+    return this.head;
+  }
+
+  push(chunk: Buffer): void {
+    if (this.full) return;
+    const next = this.head + this.decoder.write(chunk);
+    if (next.length < this.max) {
+      this.head = next;
+      return;
+    }
+    this.full = true;
+    let end = this.max;
+    const last = next.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+    this.head = next.slice(0, end);
+  }
+}
 
 export class ClaudeCliProvider implements AIProvider {
   private readonly killGraceMs: number;
@@ -103,6 +175,7 @@ export class ClaudeCliProvider implements AIProvider {
       const out: SpawnOutcome = {
         stdout: "",
         stderrBytes: 0,
+        stderrHead: "",
         exitCode: null,
         spawnError: false,
         timedOut: false,
@@ -120,7 +193,7 @@ export class ClaudeCliProvider implements AIProvider {
           detached: true,
           stdio: ["ignore", "pipe", "pipe"],
           cwd: o.cwd,
-          env: { ...this.opts.env, ...HERMETIC_ENV },
+          env: { ...this.opts.env, ...o.env, ...HERMETIC_ENV },
         });
       } catch (e) {
         out.spawnError = true;
@@ -179,8 +252,12 @@ export class ClaudeCliProvider implements AIProvider {
         out.stdout += o.onStdout ? "" : chunk;
         o.onStdout?.(chunk);
       });
+      const stderrHead = new StderrHead();
       child.stderr?.on("data", (chunk: Buffer) => {
-        if (!done) out.stderrBytes += chunk.length;
+        if (done) return;
+        out.stderrBytes += chunk.length;
+        stderrHead.push(chunk);
+        out.stderrHead = stderrHead.text;
       });
       child.on("error", (e) => {
         out.spawnError = true;
@@ -225,30 +302,32 @@ export class ClaudeCliProvider implements AIProvider {
           SEND_GUARD_HOOK_PATH,
         ]);
       } catch {
-        return {
-          status: "failed",
-          toolResults: [],
-          finalText: "",
-          numTurns: 0,
-          durationMs: 0,
-          usage: emptyUsage,
-          permissionDenials: [],
-          connectors: [],
-          availableTools: [],
-          exitCode: null,
-          error: {
-            kind: "provider_error",
-            message: "send guard could not be built",
-            details: { notSpawned: true },
-          },
-        };
+        return notSpawned("send guard could not be built");
       }
+    }
+    // ADR-040: a sandboxed run gets the sandbox settings merged last (over the plugin/hook
+    // override and any send guard), a private tmpDir and TMPDIR. Either failing refuses the run
+    // before spawning: an unsandboxed run must never start in its place.
+    let env: Record<string, string> | undefined;
+    if (r.sandbox) {
+      try {
+        settingsOverride = withSandboxSettings(settingsOverride, r.sandbox);
+      } catch {
+        return notSpawned("sandbox settings could not be built");
+      }
+      try {
+        prepareSandboxTmpDir(r.sandbox.tmpDir);
+      } catch {
+        return notSpawned("sandbox tmp dir could not be created");
+      }
+      env = { TMPDIR: r.sandbox.tmpDir };
     }
     const out = await this.run({
       args: buildClaudeArgs(r, settingsOverride),
       cwd: r.workingDirectory,
       timeoutMs: r.timeoutMs,
       signal,
+      env,
       onStdout: (c) => {
         if (parserFault) return;
         try {
@@ -290,9 +369,13 @@ export class ClaudeCliProvider implements AIProvider {
     //   → parser fault (provider_error)
     //   → quota: a rejected window in a rate_limit_event
     //   → quota: an error result whose text mentions a usage/rate limit or quota (no event)
-    //   → auth_failed → connector_not_ready → no result event (provider_error)
-    //   → error_max_turns (provider_error, details.maxTurns, R16) → result.isError (provider_error) → non-zero exit (R29) → expectedToolNames unmet
-    //   (incomplete_ai_output) → succeeded.
+    //   → auth_failed → connector_not_ready
+    //   → error_max_turns (provider_error, details.maxTurns, R16)
+    //   → sandboxed runs only: a failed run (no result event, result.isError or a non-zero exit)
+    //     with the CLI's sandbox startup_failure_reason, or whose stderr head or error result text
+    //     matches SANDBOX_FAILURE_RE (provider_error, details.sandboxUnavailable; ADR-040)
+    //   → no result event (provider_error) → result.isError (provider_error) → non-zero exit (R29)
+    //   → expectedToolNames unmet (incomplete_ai_output) → succeeded.
     // quota_exhausted retryAfter is max(resetsAt, now + 15 min), so it can never loop.
     if (out.spawnError) {
       return fail("failed", {
@@ -355,20 +438,34 @@ export class ClaudeCliProvider implements AIProvider {
       });
     }
 
+    // R16: a run stopped by --max-turns is a runtime security signal for untrusted-content runs.
+    // Classified by the result subtype whatever is_error or the exit code say.
+    if (result?.subtype === "error_max_turns") {
+      return fail("failed", {
+        kind: "provider_error",
+        message: "claude reached max turns",
+        details: { maxTurns: true, stderrBytes: out.stderrBytes },
+      });
+    }
+    if (r.sandbox) {
+      const runFailed = !result || result.isError || out.exitCode !== 0;
+      const startupRefused =
+        result?.startupFailureReason === SANDBOX_STARTUP_FAILURE_REASON ||
+        SANDBOX_FAILURE_RE.test(out.stderrHead) ||
+        (result?.isError === true && SANDBOX_FAILURE_RE.test(result.text));
+      if (runFailed && startupRefused) {
+        return fail("failed", {
+          kind: "provider_error",
+          message: "sandbox unavailable",
+          details: { sandboxUnavailable: true, stderrBytes: out.stderrBytes },
+        });
+      }
+    }
     if (!result) {
       return fail("failed", {
         kind: "provider_error",
         message: "claude exited without a result event",
         details: { stderrBytes: out.stderrBytes },
-      });
-    }
-    // R16: a run stopped by --max-turns is a runtime security signal for untrusted-content runs.
-    // Classified by the result subtype whatever is_error or the exit code say.
-    if (result.subtype === "error_max_turns") {
-      return fail("failed", {
-        kind: "provider_error",
-        message: "claude reached max turns",
-        details: { maxTurns: true, stderrBytes: out.stderrBytes },
       });
     }
     if (result.isError) {

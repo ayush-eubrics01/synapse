@@ -38,7 +38,7 @@ Phase 6b (away-mode auto-replies, ADR-033) is built. This file records the proof
 
 ## Deferred or parked
 
-- `code_answer` has no producer until Phases 9-10 (repository registry and Engineering Brain).
+- `code_answer` has no producer until Phases 9-10 (repository registry and Engineering Brain). Since Phase 10b it does; and since follow-ups batch 1 `codeAnswer.away.autoSend` is an immediate kill switch for code answers: `autoSendBlock` also checks it in revalidate, the claim and `beforeSpawn`, a send not yet spawned is cancelled as `cancelled_policy_disabled`, and the code-answer row returns to `held` / `code_answer_review`.
 - Per-person kind toggles (out of scope in the spec).
 - Approving from a phone (OQ-2).
 - Content checks:

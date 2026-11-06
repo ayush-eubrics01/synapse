@@ -28,11 +28,19 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 /**
  * True when parsed user settings widen file or shell scope: a `permissions.allow` entry for one
  * of the fs or write built-ins (bare or with a specifier), a non-empty
- * `permissions.additionalDirectories`, or a `permissions.defaultMode` of `bypassPermissions`,
- * `acceptEdits` or `auto`. Only this boolean is derived; no entry is kept.
+ * `permissions.additionalDirectories`, a `permissions.defaultMode` of `bypassPermissions`,
+ * `acceptEdits` or `auto`, or any top-level `sandbox` key (ADR-040). Only this boolean is derived;
+ * no entry is kept.
+ *
+ * `sandbox`, whatever its content: with `--setting-sources user` the user's sandbox settings
+ * merge into a develop run's sandbox key by key. Arrays (excludedCommands, allowWrite, allowedDomains,
+ * …) would loosen it, and so would keys the run does not set (httpProxyPort/socksProxyPort,
+ * enableWeakerNestedSandbox, allowLocalBinding, any future key). Refusing on its presence is the
+ * simplest rule that covers them all (controller ruling, Task 2 fix round 1).
  */
 export function userPermissionsWidenScope(settings: unknown): boolean {
   if (!isRecord(settings)) return false;
+  if (Object.hasOwn(settings, "sandbox")) return true;
   const p = settings.permissions;
   if (!isRecord(p)) return false;
   if (Array.isArray(p.allow)) {

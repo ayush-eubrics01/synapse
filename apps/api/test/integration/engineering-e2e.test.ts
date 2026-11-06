@@ -8,7 +8,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Approval, EngineeringTaskDetail } from "@synapse/contracts";
 import { schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
@@ -117,6 +117,8 @@ beforeEach(async () => {
         killGraceMs: 200,
       }),
       prs: new GitHubCliProvider({ binary: fakeGh }),
+      // The fixture repository lives under the OS temp dir, which the real sandbox masks.
+      sandboxMaskedRoots: [],
     },
   );
   app = createApp(c);
@@ -143,6 +145,8 @@ beforeEach(async () => {
 });
 afterEach(() => {
   c.sqlite.close();
+  // The in-memory run root (`<scratchDir>-runs`) exists only once a develop run created it.
+  rmSync(c.runRoot, { recursive: true, force: true });
   if (savedHome === undefined) delete process.env.HOME;
   else process.env.HOME = savedHome;
 });
@@ -160,6 +164,7 @@ const seen = (kind: "investigate" | "develop") =>
     args: string[];
     cwd: string;
     autoMemory: string | null;
+    tmpdir: string | null;
   };
 const head = (dir: string, ref: string) => git(dir, "rev-parse", ref);
 const branches = () => git(fx.repo, "branch", "--format=%(refname:short)").split("\n");
@@ -255,6 +260,27 @@ describe("engineering end to end (real provider, fake claude and gh)", () => {
     expect(dev.args).toContain("--no-session-persistence");
     expect(dev.autoMemory).toBe("1");
     expect(seen("investigate").autoMemory).toBe("1");
+    // ADR-040: the develop run is sandboxed with a per-run TMPDIR, removed after the step job.
+    const devSettings = JSON.parse(dev.args[dev.args.indexOf("--settings") + 1] ?? "{}");
+    expect(devSettings.sandbox.enabled).toBe(true);
+    expect(devSettings.sandbox.failIfUnavailable).toBe(true);
+    expect(devSettings.sandbox.filesystem.allowRead).toEqual([dev.tmpdir]);
+    expect(dev.tmpdir).toEndWith("/t");
+    expect(dev.tmpdir).toContain("/r/");
+    // Task 4b: the run scratch is never under a request deny entry (the data dir is one).
+    const requestMasks = (devSettings.sandbox.filesystem.denyRead as string[]).filter(
+      (e) => !["/tmp", "/run", "/var/run"].includes(e),
+    );
+    expect(requestMasks.length).toBeGreaterThan(0);
+    for (const e of requestMasks) {
+      expect(dev.tmpdir === e || (dev.tmpdir as string).startsWith(`${e}/`)).toBe(false);
+    }
+    expect(existsSync(dev.tmpdir as string)).toBe(false);
+    expect(existsSync(dirname(dev.tmpdir as string))).toBe(false);
+    // The investigation is not sandboxed.
+    const invSettings = JSON.parse(inv.args[inv.args.indexOf("--settings") + 1] ?? "{}");
+    expect(invSettings).not.toHaveProperty("sandbox");
+    expect(seen("investigate").tmpdir).toBeNull();
     const devAllowed = (dev.args[dev.args.indexOf("--allowedTools") + 1] ?? "").split(",").sort();
     expect(devAllowed).toEqual(
       [

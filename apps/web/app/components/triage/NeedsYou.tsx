@@ -78,6 +78,7 @@ function Card({ card, p }: { card: NeedsCard; p: NeedsYouProps }) {
           detail={id ? (p.engineering?.details[id] ?? null) : null}
           now={p.now}
           onDecide={h.decide}
+          onSaveText={h.saveEngineeringApprovalText}
         />
       );
     }
@@ -96,6 +97,7 @@ function Card({ card, p }: { card: NeedsCard; p: NeedsYouProps }) {
           task={card.data}
           now={p.now}
           onCancel={h.cancelEngineeringTask}
+          onCheckAgain={h.retryEngineeringMerge}
           onOpen={h.seeAllEngineering}
         />
       );

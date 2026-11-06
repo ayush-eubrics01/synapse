@@ -49,6 +49,16 @@ describe("settings routes", () => {
     expect(body["ops.backup.enabled"]).toBe(true);
     expect(body["retention.auditDays"]).toBe(365);
     expect(body).not.toHaveProperty("ops.backup.dir");
+    expect(body["engineering.sandbox.enabled"]).toBe(true);
+  });
+
+  test("the test sandbox setting can be turned off (ADR-040)", async () => {
+    const r = await put({ "engineering.sandbox.enabled": false });
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as Record<string, unknown>)["engineering.sandbox.enabled"]).toBe(
+      false,
+    );
+    expect(c.settings.get("engineering.sandbox.enabled")).toBe(false);
   });
 
   test("PUT stores the value, audits the keys and returns the new values", async () => {
@@ -72,6 +82,7 @@ describe("settings routes", () => {
     [{ "ops.backup.dir": "/tmp/x" }],
     [{ "ops.backup.lastRunDate": "2026-11-07" }],
     [{ "ops.retention.lastRun": null }],
+    [{ "engineering.sandbox.enabled": "no" }],
     [["codeAnswer.maxTurns"]],
     [null],
   ])("PUT %j is 400 invalid_setting and changes nothing", async (body) => {

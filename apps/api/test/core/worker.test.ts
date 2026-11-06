@@ -97,6 +97,17 @@ test("timeout aborts signal, records timeout and runOnce resolves even if handle
   expect(status(id).lastError?.kind).toBe("timeout");
 });
 
+test("a function timeoutMs is read when the job starts, and the message names that value", async () => {
+  const id = enqueue();
+  let current = 10_000;
+  const handlers = reg(() => new Promise(() => {}), 1_000);
+  handlers.set("t", { handler: () => new Promise(() => {}), timeoutMs: () => current });
+  current = 50;
+  await mk(handlers).runOnce();
+  expect(status(id).lastError?.kind).toBe("timeout");
+  expect(status(id).lastError?.message).toContain("50ms");
+});
+
 test("lost lease aborts signal and old worker does not complete the job", async () => {
   const id = enqueue();
   let signal: AbortSignal | undefined;

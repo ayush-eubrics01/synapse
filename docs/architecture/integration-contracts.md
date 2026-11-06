@@ -37,11 +37,17 @@ interface ClaudeJobRequest {
   timeoutMs?: number;
   workingDirectory?: string;
   sendGuard?: SendGuard;           // J2; toolName word characters, sha 64 lowercase hex
+  sandbox?: SandboxSpec;           // ADR-040; required by rule M for an engineering run that grants Bash, forbidden otherwise
 }
 
 interface SendGuard {              // J2: per-run PreToolUse hook on toolName
   toolName: string;
   expectedInputSha256: string;     // sha256 of the canonical JSON of the normalised tool_input (drops unfurl_app_links:false, trimEnds message)
+}
+
+interface SandboxSpec {            // ADR-040 (strict zod schema in packages/contracts/src/ai.ts)
+  tmpDir: string;                  // private per-run TMPDIR, at most 64 bytes in the develop step, created 0700, re-allowed with allowRead
+  denyRead: string[];              // 1..64 absolute safe paths masked from the run; the provider appends /run, /var/run, /tmp
 }
 
 interface AIExecutionRequest {
@@ -59,6 +65,7 @@ interface AIExecutionRequest {
   workingDirectory: string;      // registered repo path for engineering; scratch dir otherwise
   expectedToolNames?: string[];  // run fails if none of these produced a real tool_result
   sendGuard?: SendGuard;         // passed through from the job request
+  sandbox?: SandboxSpec;         // ADR-040; passed through, merged into --settings by the provider; TMPDIR set from tmpDir
 }
 
 interface PromptPart {
@@ -225,6 +232,8 @@ interface MessageSink {
 
 **Policy sends (`requestAutoSend`, Phase 6b).** `OutgoingService.requestAutoSend(tx, { autoReplyId, conversationExternalId, threadTs, text, followupId })` runs inside the caller's transaction. It requires `text` to end with `Sent using @claude`, an `auto_replies` row with `decision = 'sent'` and no outgoing yet, and a request that matches that row exactly. It throws `AutoSendBlocked` when away is off or another session is open, and `AutoReplyDisabledByPermission` when the user tightened `slack.auto_reply`. Otherwise it records the outgoing row plus a policy approval and links both to the row. The executor then calls `sink.send` with `authorisedBy: "policy"` and a `beforeSpawn` that re-checks away mode, the session and the gate.
 
+**`sandbox`.** `ClaudeJobRequest` and `AIExecutionRequest` accept `sandbox?: SandboxSpec`. Only the develop run sets it (`buildDevelopRequest`, when `engineering.sandbox.enabled`); rule M refuses an engineering Bash grant without it and any other profile with it. See `docs/modules/claude-orchestrator.md` and ADR-040.
+
 **`sendGuard`.** `ClaudeJobRequest` and `AIExecutionRequest` accept `sendGuard?: { toolName, expectedInputSha256 }`. `SlackSender` sets it on every send. See `docs/modules/claude-orchestrator.md`, "Send runs".
 
 **Send run (`SlackSender.send`).** One orchestrator run: profile `collector`, priority class `send`, model haiku, `maxTurns: 3`, `allowedTools: [slack_send_message, ToolSearch]`. The prompt has a system part (call the tool once with exactly the given arguments) and one approved part, `user_approved` (or `policy_approved` when `SendMessageCommand.authorisedBy` is `"policy"`, ADR-033): the JSON of `{channel_id, message, thread_ts?}`. There are no untrusted parts and no `expectedToolNames`; the adapter classifies the raw tool results itself. The request validator rejects a send request with more than one allowed tool or with untrusted content, a `policy_approved` part anywhere else, and a send request without a `sendGuard` for its write tool (rule K). It cannot check the tool arguments the model will use. Since Phase 6b the request carries a `sendGuard`: a per-run `PreToolUse` hook blocks the send call unless its canonical `tool_input` hashes to the approved arguments' sha256 (J2; see `docs/modules/claude-orchestrator.md`). The after-the-fact check below stays as a second layer.
@@ -318,6 +327,8 @@ interface GitWorkflow {
   createTaskBranch(repo, parent, taskBranch): Promise<{ baseSha: string }>;
   gitDirFingerprint(repo): Promise<string>;   // filesystem reads only; includes configFingerprint
   configFingerprint(repo): Promise<string>;   // .git/config, hooks, info/attributes, global config; filesystem reads only
+  sandboxPlaceholders(repo): Promise<string[]>;                // ADR-040: known sandbox placeholder paths that exist now
+  removeSandboxPlaceholders(repo, before): Promise<number>;    // removes new, empty ones only; no symlinks; no git command
   diffSummary(repo, opts?: { gitDirBaseline?: string }): Promise<GitDiffSummary>;
   commitAll(repo, message, expectedHash, opts?: GitCommitOptions): Promise<{ sha: string }>;
   updateParent(repo, parent, opts?: GitConfigGuard): Promise<{ ok: true } | { ok: false; conflict: true }>;

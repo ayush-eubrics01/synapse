@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { join } from "node:path";
 import {
   type ClaudeJobRequest,
   type DevelopOutput,
@@ -5,6 +7,7 @@ import {
   type InvestigationOutput,
   isSafeTestCommand,
   type RawToolResult,
+  SANDBOX_MASKED_ROOTS,
   type TestRun,
 } from "@synapse/contracts";
 import { extractJson } from "../../core/orchestrator/structured";
@@ -51,10 +54,108 @@ export interface DevelopRepo {
   testCommand: string;
 }
 
+/**
+ * F1.3: credential and socket dirs under `$HOME` that the develop run's sandbox masks, in this
+ * order. The Synapse data dir and the backup dir are added after them (`sandboxDenyRead`).
+ */
+export const SANDBOX_HOME_DENY: readonly string[] = [
+  ".ssh",
+  ".gnupg",
+  ".aws",
+  ".azure",
+  ".kube",
+  ".docker",
+  ".config",
+  ".claude",
+  ".netrc",
+  ".git-credentials",
+  ".npmrc",
+  ".pypirc",
+  ".cargo/credentials",
+  ".cargo/credentials.toml",
+];
+
+const stripSlashes = (p: string) => p.replace(/\/+$/, "");
+const atOrUnder = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
+
+/** The realpath of `p` when it exists, else `p` (a symlinked home or data dir must compare and mask by its target). */
+const real = (p: string): string => {
+  try {
+    return stripSlashes(realpathSync(p));
+  } catch {
+    return stripSlashes(p);
+  }
+};
+
+const homeEntries = (home: string) => {
+  const h = real(home);
+  return SANDBOX_HOME_DENY.map((rel) => real(join(h, rel)));
+};
+
+/**
+ * The sandbox `denyRead` list (F1.3): each SANDBOX_HOME_DENY entry under `home`, then
+ * `protectedDirs` (the Synapse data and backup dirs). No entry is ever dropped: a repository at or
+ * inside one is refused (`repoInDenyMask`), since unmasking it would expose credentials,
+ * `synapse.db` or backups to test code. Trailing slashes are stripped and duplicates dropped in
+ * first-seen order. Pure.
+ */
+export function sandboxDenyRead(home: string, protectedDirs: readonly string[]): string[] {
+  return [...new Set([...homeEntries(home), ...protectedDirs.map(real)])];
+}
+
+/**
+ * True when the repository is at or inside a `sandboxDenyRead` entry: a SANDBOX_HOME_DENY entry
+ * under `home` (a dotfile repo under `~/.config`, say) or a protected dir. Develop refuses it
+ * (`repo_in_masked_path`): masking would hide the code under test, and unmasking would expose the
+ * whole directory. Pure.
+ */
+export function repoInDenyMask(
+  home: string,
+  protectedDirs: readonly string[],
+  repoRoot: string,
+): boolean {
+  const repo = stripSlashes(repoRoot);
+  return sandboxDenyRead(home, protectedDirs).some((e) => atOrUnder(repo, e));
+}
+
+/** The fixed develop failure (and `JobError` message) for a repository in a masked path. */
+export const REPO_IN_MASKED_PATH = "repo_in_masked_path";
+
+/**
+ * ADR-040, fix round 2: the fixed develop failure (and `JobError` message) when the run's tmpDir
+ * is longer than RUN_TMP_MAX_BYTES. The sandbox puts its unix bridge sockets under TMPDIR, and a
+ * long TMPDIR overflows the AF_UNIX path limit ("Failed to create bridge sockets").
+ */
+export const SANDBOX_PATH_TOO_LONG = "sandbox_path_too_long";
+export const SANDBOX_PATH_TOO_LONG_HINT =
+  "The develop run's temp path is too long for the sandbox's sockets; set XDG_CACHE_HOME to a shorter path and restart the API";
+
+/**
+ * True when the repository is at or under one of `roots` (default: the paths the sandbox always
+ * masks). Such a repository would be hidden from its own sandboxed run, so develop refuses it
+ * (`repo_in_masked_path`). `repoRoot` is the registered realpath.
+ */
+export function repoInMaskedPath(
+  repoRoot: string,
+  roots: readonly string[] = SANDBOX_MASKED_ROOTS,
+): boolean {
+  const repo = stripSlashes(repoRoot);
+  return roots.some((r) => atOrUnder(repo, stripSlashes(r)));
+}
+
+/** The develop run's sandbox inputs (ADR-040); `tmpDir` is the per-run `<instance>/r/<8hex>/t`. */
+export interface DevelopSandbox {
+  tmpDir: string;
+  home: string;
+  protectedDirs: string[];
+}
+
 export interface DevelopSettings {
   model: string;
   maxTurns: number;
   timeoutMinutes: number;
+  /** Null when `engineering.sandbox.enabled` is off: rule M then refuses the run (ADR-040). */
+  sandbox: DevelopSandbox | null;
 }
 
 /**
@@ -62,6 +163,8 @@ export interface DevelopSettings {
  * and exactly one `Bash(<testCommand>:*)` (validator rule L). Parts: one system instruction, the
  * `user_approved` description and the `user_approved` plan (JSON). No untrusted part, no draft, no
  * title. `expectedToolNames` requires a real Edit/Write/MultiEdit result (ADR-026). One attempt.
+ * With `s.sandbox` the request carries the sandbox (validator rule M requires it for the Bash
+ * grant); without it the key is absent and the orchestrator refuses the run.
  */
 export function buildDevelopRequest(
   task: DevelopTask,
@@ -106,6 +209,14 @@ export function buildDevelopRequest(
     maxTurns,
     timeoutMs: s.timeoutMinutes * 60_000,
     workingDirectory: root,
+    ...(s.sandbox
+      ? {
+          sandbox: {
+            tmpDir: s.sandbox.tmpDir,
+            denyRead: sandboxDenyRead(s.sandbox.home, s.sandbox.protectedDirs),
+          },
+        }
+      : {}),
   };
 }
 

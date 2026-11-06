@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -919,6 +920,170 @@ describe("fingerprints (review fixes)", () => {
     expect(await codeOf(f.wf.commitAll(f.repo, "m", hash, { gitDirBaseline: base }))).toBe(
       "unsafe_change",
     );
+  });
+});
+
+describe("sandbox placeholders (ADR-040, Task 4b)", () => {
+  /** What the Claude Code sandbox (CLI 2.1.319) leaves behind, as observed on the real CLI. */
+  const GIT_DIRS = [
+    "branches",
+    "remotes",
+    "objects/info/commit-graphs",
+    "info/.claude-sandbox-noreplace",
+    "objects/info/.claude-sandbox-noreplace",
+    "objects/info/commit-graphs/.claude-sandbox-noreplace",
+  ];
+  const GIT_FILES = ["config.worktree", "objects/info/alternates"];
+  /** Leaves the exact observed placeholder set (zero-byte files, empty dirs). */
+  function leavePlaceholders(repo: string, skip: string[] = []): void {
+    for (const d of GIT_DIRS) {
+      if (!skip.includes(d)) mkdirSync(join(repo, ".git", d), { recursive: true });
+    }
+    for (const fl of GIT_FILES) {
+      if (!skip.includes(fl)) writeFileSync(join(repo, ".git", fl), "");
+    }
+    mkdirSync(join(repo, ".claude", ".cc-writes"), { recursive: true });
+  }
+  /** A fixture with none of the placeholders present (some git templates ship `branches/`). */
+  function bare(): Fixture {
+    const f = setup();
+    rmSync(join(f.repo, ".git", "branches"), { recursive: true, force: true });
+    return f;
+  }
+
+  test("the exact observed set is removed and the git dir fingerprint matches again", async () => {
+    const f = bare();
+    const base = await f.wf.gitDirFingerprint(f.repo);
+    const before = await f.wf.sandboxPlaceholders(f.repo);
+    expect(before).toEqual([]);
+    leavePlaceholders(f.repo);
+    expect(await f.wf.gitDirFingerprint(f.repo)).not.toBe(base);
+    writeFileSync(join(f.repo, "a.txt"), "edit\n");
+    f.calls.length = 0;
+    // 8 under .git, plus .claude/.cc-writes and the new, now empty .claude.
+    expect(await f.wf.removeSandboxPlaceholders(f.repo, before)).toBe(10);
+    expect(f.calls).toHaveLength(0); // filesystem only, no git command
+    expect(existsSync(join(f.repo, ".claude"))).toBe(false);
+    for (const p of [...GIT_DIRS, ...GIT_FILES]) {
+      expect(existsSync(join(f.repo, ".git", p))).toBe(false);
+    }
+    expect(existsSync(join(f.repo, ".git", "objects", "info"))).toBe(true);
+    expect(await f.wf.gitDirFingerprint(f.repo)).toBe(base);
+    const d = await f.wf.diffSummary(f.repo, { gitDirBaseline: base });
+    expect(d.unsafe).toBe(false);
+    expect(d.files.map((x) => x.path)).toEqual(["a.txt"]);
+  });
+
+  test("pre-existing paths are kept: an empty .git/branches and a .claude dir", async () => {
+    const f = bare();
+    mkdirSync(join(f.repo, ".git", "branches"));
+    mkdirSync(join(f.repo, ".claude"));
+    const base = await f.wf.gitDirFingerprint(f.repo);
+    const before = await f.wf.sandboxPlaceholders(f.repo);
+    expect(before).toEqual([".claude", ".git/branches"]);
+    leavePlaceholders(f.repo);
+    expect(await f.wf.removeSandboxPlaceholders(f.repo, before)).toBe(8);
+    expect(existsSync(join(f.repo, ".git", "branches"))).toBe(true);
+    expect(existsSync(join(f.repo, ".claude"))).toBe(true);
+    expect(existsSync(join(f.repo, ".claude", ".cc-writes"))).toBe(false);
+    expect(await f.wf.gitDirFingerprint(f.repo)).toBe(base);
+  });
+
+  test("a non-empty alternates file is kept, so the fingerprint flags the run unsafe", async () => {
+    const f = bare();
+    const base = await f.wf.gitDirFingerprint(f.repo);
+    const before = await f.wf.sandboxPlaceholders(f.repo);
+    leavePlaceholders(f.repo);
+    writeFileSync(join(f.repo, ".git", "objects", "info", "alternates"), "/elsewhere/objects\n");
+    expect(await f.wf.removeSandboxPlaceholders(f.repo, before)).toBe(9);
+    expect(readFileSync(join(f.repo, ".git", "objects", "info", "alternates"), "utf8")).toBe(
+      "/elsewhere/objects\n",
+    );
+    const d = await f.wf.diffSummary(f.repo, { gitDirBaseline: base });
+    expect(d.unsafeReasons).toEqual(["git_dir_changed"]);
+  });
+
+  test("non-empty placeholder dirs are kept (a file anywhere inside)", async () => {
+    const f = bare();
+    const base = await f.wf.gitDirFingerprint(f.repo);
+    const before = await f.wf.sandboxPlaceholders(f.repo);
+    leavePlaceholders(f.repo);
+    writeFileSync(join(f.repo, ".git", "remotes", "origin"), "URL: x\n");
+    writeFileSync(join(f.repo, ".git", "objects", "info", "commit-graphs", "x.graph"), "");
+    writeFileSync(join(f.repo, ".claude", ".cc-writes", "w"), "x");
+    // Removed: branches, config.worktree, alternates, the three noreplace dirs.
+    expect(await f.wf.removeSandboxPlaceholders(f.repo, before)).toBe(6);
+    expect(readFileSync(join(f.repo, ".git", "remotes", "origin"), "utf8")).toBe("URL: x\n");
+    expect(existsSync(join(f.repo, ".git", "objects", "info", "commit-graphs", "x.graph"))).toBe(
+      true,
+    );
+    expect(existsSync(join(f.repo, ".claude", ".cc-writes", "w"))).toBe(true);
+    expect((await f.wf.diffSummary(f.repo, { gitDirBaseline: base })).unsafeReasons).toEqual([
+      "git_dir_changed",
+    ]);
+  });
+
+  test("a symlinked placeholder is never followed or removed", async () => {
+    const f = bare();
+    const base = await f.wf.gitDirFingerprint(f.repo);
+    const before = await f.wf.sandboxPlaceholders(f.repo);
+    leavePlaceholders(f.repo, ["remotes"]);
+    const outside = join(f.root, "outside");
+    mkdirSync(join(outside, ".claude-sandbox-noreplace"), { recursive: true });
+    mkdirSync(join(outside, "empty"));
+    symlinkSync(join(outside, "empty"), join(f.repo, ".git", "remotes"));
+    // A symlinked .claude: its .cc-writes is outside the repository.
+    rmSync(join(f.repo, ".claude"), { recursive: true });
+    mkdirSync(join(outside, "claude", ".cc-writes"), { recursive: true });
+    symlinkSync(join(outside, "claude"), join(f.repo, ".claude"));
+    // A symlinked dir inside .git whose target holds a noreplace dir: the walk does not enter it.
+    symlinkSync(outside, join(f.repo, ".git", "info", "linked"));
+    // 7 git placeholders (remotes is the symlink), none outside.
+    expect(await f.wf.removeSandboxPlaceholders(f.repo, before)).toBe(7);
+    expect(existsSync(join(outside, "empty"))).toBe(true);
+    expect(existsSync(join(outside, ".claude-sandbox-noreplace"))).toBe(true);
+    expect(existsSync(join(outside, "claude", ".cc-writes"))).toBe(true);
+    expect(lstatSync(join(f.repo, ".git", "remotes")).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(f.repo, ".claude")).isSymbolicLink()).toBe(true);
+    expect((await f.wf.diffSummary(f.repo, { gitDirBaseline: base })).unsafeReasons).toEqual([
+      "git_dir_changed",
+    ]);
+  });
+
+  test("a new empty noreplace dir anywhere under .git goes; a pre-existing one stays", async () => {
+    const f = bare();
+    mkdirSync(join(f.repo, ".git", "logs", ".claude-sandbox-noreplace"), { recursive: true });
+    const before = await f.wf.sandboxPlaceholders(f.repo);
+    expect(before).toEqual([".git/logs/.claude-sandbox-noreplace"]);
+    mkdirSync(join(f.repo, ".git", "refs", "heads", ".claude-sandbox-noreplace"));
+    expect(await f.wf.removeSandboxPlaceholders(f.repo, before)).toBe(1);
+    expect(existsSync(join(f.repo, ".git", "refs", "heads", ".claude-sandbox-noreplace"))).toBe(
+      false,
+    );
+    expect(existsSync(join(f.repo, ".git", "logs", ".claude-sandbox-noreplace"))).toBe(true);
+  });
+
+  test("a zero-byte file named like a placeholder dir, or a dir named like a file, is kept", async () => {
+    const f = bare();
+    const before = await f.wf.sandboxPlaceholders(f.repo);
+    writeFileSync(join(f.repo, ".git", "branches"), "");
+    mkdirSync(join(f.repo, ".git", "config.worktree"));
+    expect(await f.wf.removeSandboxPlaceholders(f.repo, before)).toBe(0);
+    expect(lstatSync(join(f.repo, ".git", "branches")).isFile()).toBe(true);
+    expect(lstatSync(join(f.repo, ".git", "config.worktree")).isDirectory()).toBe(true);
+  });
+
+  test("no .git directory (a worktree pointer file): only .claude is considered, nothing throws", async () => {
+    const root = scratch();
+    const repo = join(root, "wt");
+    mkdirSync(repo);
+    writeFileSync(join(repo, ".git"), "gitdir: /nowhere\n");
+    const wf = new LocalGitWorkflow({ home: root });
+    const before = await wf.sandboxPlaceholders(repo);
+    expect(before).toEqual([]);
+    mkdirSync(join(repo, ".claude", ".cc-writes"), { recursive: true });
+    expect(await wf.removeSandboxPlaceholders(repo, before)).toBe(2);
+    expect(existsSync(join(repo, ".claude"))).toBe(false);
   });
 });
 

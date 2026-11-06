@@ -1,7 +1,7 @@
 /**
  * Fake `claude` for the Phase 10 engineering e2e (never the real claude). One binary serves both
- * runs and tells them apart by their scoped tools. It records its argv, cwd and the hermetic env
- * switches to `$FAKE_ENG_DIR/<kind>.json`.
+ * runs and tells them apart by their scoped tools. It records its argv, cwd, the hermetic env
+ * switches and `TMPDIR` to `$FAKE_ENG_DIR/<kind>.json`.
  *
  * - investigate (no Edit scope): a real Read tool_use/result, then the structured plan JSON.
  * - develop (Edit scope): edits one file and creates another inside its cwd (the fake has fs
@@ -28,6 +28,7 @@ if (args.includes("--version")) {
         args,
         cwd,
         autoMemory: process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY ?? null,
+        tmpdir: process.env.TMPDIR ?? null,
       }),
     );
   }

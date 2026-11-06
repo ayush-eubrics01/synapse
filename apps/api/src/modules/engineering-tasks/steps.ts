@@ -2,18 +2,25 @@ import { realpathSync } from "node:fs";
 import {
   type AIExecutionResult,
   type Approval,
+  type ApprovalTextEdit,
+  type ApprovalTextField,
+  COMMIT_SUBJECT_MAX,
   type EngineeringStep,
   type GitWorkflow,
   GitWorkflowError,
   type InvestigationOutput,
   isSafeTestCommand,
+  isValidApprovalText,
   JobError,
   type Operation,
+  PR_BODY_EDIT_MAX,
+  PR_TITLE_MAX,
   type PrStatus,
   PullRequestError,
   type PullRequestProvider,
   type RiskLevel,
   retryDecision,
+  SANDBOX_TOOL_RESULT_RE,
   type TestRun,
   testResultLabel,
   testRunSchema,
@@ -28,10 +35,18 @@ import type { AuditLogger } from "../../core/audit/audit";
 import type { OutboxDispatcher } from "../../core/events/dispatcher";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
-import { parseDevelopReply, testResultFrom } from "../../intelligence/engineering/develop-prompt";
+import { SANDBOX_REQUIRED_REASON } from "../../core/orchestrator/validator";
+import {
+  parseDevelopReply,
+  REPO_IN_MASKED_PATH,
+  SANDBOX_PATH_TOO_LONG,
+  SANDBOX_PATH_TOO_LONG_HINT,
+  testResultFrom,
+} from "../../intelligence/engineering/develop-prompt";
 import { type EngineeringLock, STEP_JOB } from "./lock";
 import {
   ACTIVE_STATUSES,
+  EngineeringTaskError,
   EngineeringTaskStore,
   priorFailureOf,
   priorTerminalStatus,
@@ -52,6 +67,12 @@ const PAYLOAD_FILES_MAX = 500;
 const PAYLOAD_COMMITS_MAX = 50;
 
 const clip = (s: string, n: number) => [...s].slice(0, n).join("");
+/** Clips to n code points, then further until the UTF-16 length is within n (zod `max` counts units). */
+const clipUnits = (s: string, n: number) => {
+  let r = clip(s, n);
+  while (r.length > n) r = [...r].slice(0, -1).join("");
+  return r;
+};
 const codeOf = (e: unknown): string =>
   e instanceof GitWorkflowError || e instanceof PullRequestError ? e.code : "git_failed";
 
@@ -103,7 +124,7 @@ export const pushPrPayloadSchema = z.object({
   /** The parent tip after merge_local: exactly this commit is pushed. */
   mergeSha: z.string().min(1),
   prTitle: z.string().min(1).max(256),
-  prBody: z.string().max(PR_BODY_MAX + 500),
+  prBody: z.string().max(PR_BODY_EDIT_MAX),
   configFingerprint: z.string().min(1),
   ...deployNotice,
 });
@@ -163,10 +184,20 @@ export interface EngineeringStepDeps {
   events: Pick<EventPublisher, "publish">;
   audit: Pick<AuditLogger, "record">;
   queue: Pick<JobQueue, "enqueue">;
-  approvals: Pick<ApprovalEngine, "request" | "revokeAsSystem" | "expireAsSystem">;
+  approvals: Pick<
+    ApprovalEngine,
+    "request" | "revokeAsSystem" | "expireAsSystem" | "updatePendingPayload"
+  >;
   lock: Pick<EngineeringLock, "holder" | "release">;
   git: GitWorkflow;
   prs: PullRequestProvider;
+}
+
+/** The develop step's pre-run fingerprints plus the placeholder count (ADR-040, Task 4b). */
+interface DevelopFingerprints {
+  gitDirBaseline: string;
+  configFingerprint: string;
+  sandboxPlaceholdersRemoved: number;
 }
 
 interface Ctx {
@@ -177,11 +208,27 @@ interface Ctx {
   repo: typeof repositories.$inferSelect;
 }
 
+/** A develop run's outcome: its result, or what it threw. */
+type RunOutcome = { ok: true; result: AIExecutionResult } | { ok: false; error: unknown };
+
+async function attemptRun(run: () => Promise<AIExecutionResult>): Promise<RunOutcome> {
+  try {
+    return { ok: true, result: await run() };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
 /** `max_turns` or `timeout` when the run stopped on its budget; null for any other failure. */
 function stopKind(err: unknown): "max_turns" | "timeout" | null {
   if (!(err instanceof JobError)) return null;
   if (err.classified.details?.maxTurns === true) return "max_turns";
   return err.classified.kind === "timeout" ? "timeout" : null;
+}
+
+/** The run's sandbox failed at startup (Task 2 sets `details.sandboxUnavailable` on the JobError). */
+function sandboxUnavailable(err: unknown): boolean {
+  return err instanceof JobError && err.classified.details?.sandboxUnavailable === true;
 }
 
 /**
@@ -231,6 +278,158 @@ export class EngineeringStepService {
         }
       });
     }
+  }
+
+  // ---- F2.1: edit the text of a pending commit or push approval --------------------------------
+
+  /**
+   * The user's edit of the commit message or PR title/body. Allowed only on a `pending` approval
+   * of the task's current step; the text is stored in the payload and used verbatim by the
+   * executors (argv only). Revalidation is untouched. The audit row holds field names only.
+   */
+  editApprovalText(taskId: string, approvalId: string, edit: ApprovalTextEdit): Approval {
+    return this.deps.db.transaction(
+      (tx) => {
+        const row = tx.select().from(approvalsTable).where(eq(approvalsTable.id, approvalId)).get();
+        const task = this.store.get(tx, taskId);
+        if (
+          !task ||
+          !row ||
+          row.targetRef !== taskId ||
+          row.targetIntegration !== ENGINEERING_INTEGRATION
+        ) {
+          throw new EngineeringTaskError("not_found");
+        }
+        const step = ACTION_STEP[row.action];
+        const allowed: Partial<Record<ApprovalStep, ApprovalTextField[]>> = {
+          commit: ["commitMessage"],
+          push_pr: ["prTitle", "prBody"],
+        };
+        const fields = (Object.keys(edit) as ApprovalTextField[]).filter(
+          (f) => edit[f] !== undefined,
+        );
+        const stepFields = step ? allowed[step] : undefined;
+        if (
+          !step ||
+          !stepFields ||
+          fields.length === 0 ||
+          fields.some((f) => !stepFields.includes(f))
+        ) {
+          throw new EngineeringTaskError("invalid_input");
+        }
+        if (
+          row.status !== "pending" ||
+          task.status !== "awaiting_approval" ||
+          task.currentStep !== step ||
+          this.stepRow(tx, taskId, step)?.approvalId !== approvalId
+        ) {
+          throw new EngineeringTaskError("not_pending");
+        }
+        const merged: Record<string, unknown> = {
+          ...((row.payload as Record<string, unknown> | null) ?? {}),
+        };
+        for (const f of fields) {
+          const value = edit[f] as string;
+          if (!isValidApprovalText(f, value)) throw new EngineeringTaskError("invalid_text");
+          merged[f === "commitMessage" ? "message" : f] = value;
+        }
+        if (!PAYLOAD_SCHEMAS[step].safeParse(merged).success) {
+          throw new EngineeringTaskError("invalid_text");
+        }
+        const updated = this.deps.approvals.updatePendingPayload(tx, approvalId, merged);
+        if (!updated) throw new EngineeringTaskError("not_pending");
+        this.deps.audit.record(tx, {
+          actor: "user",
+          module: MODULE,
+          action: "engineering.approval_edited",
+          workerProfile: WORKER,
+          targetRef: taskId,
+          approvalId,
+          result: "ok",
+          details: { taskId, fields },
+        });
+        return updated;
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  // ---- F3.2: re-request merge_pr after failing checks ---------------------------------------------
+
+  /**
+   * "Check again": a task parked at `merge_pr` with `checks_failing` re-reads the PR. Passing (or
+   * pending but mergeable) checks on the unmoved head request a fresh `engineering.merge_pr`
+   * approval; anything else is a fixed refusal and the task stays as it was.
+   */
+  async retryMerge(taskId: string): Promise<void> {
+    const ctx = this.context(taskId);
+    if ("skip" in ctx) {
+      throw new EngineeringTaskError(
+        ctx.skip === "not_found" || ctx.skip === "path_unavailable" ? ctx.skip : "invalid_state",
+      );
+    }
+    const { task, repo, parent } = ctx;
+    const eligible = (t: TaskRow | undefined) =>
+      t?.status === "needs_attention" &&
+      t.failure === "checks_failing" &&
+      t.currentStep === "merge_pr";
+    const upstream = this.deps.prs.repoRef(repo.upstreamUrl ?? "");
+    const pushedSha = this.stepOutput(taskId, "push_pr")?.pushedSha;
+    if (
+      !eligible(task) ||
+      this.deps.lock.holder()?.taskId !== taskId ||
+      !upstream ||
+      task.prNumber === null ||
+      typeof pushedSha !== "string"
+    ) {
+      throw new EngineeringTaskError("invalid_state");
+    }
+    if (this.protectedBranches(task.repositoryId).includes(parent)) {
+      throw new EngineeringTaskError("protected_branch");
+    }
+    const prNumber = task.prNumber;
+    let status: PrStatus;
+    try {
+      status = await this.deps.prs.prStatus({ upstream, number: prNumber });
+    } catch {
+      throw new EngineeringTaskError("pr_status_failed");
+    }
+    if (status.state !== "OPEN") throw new EngineeringTaskError("state_changed");
+    if (status.headSha !== pushedSha) throw new EngineeringTaskError("pr_head_moved");
+    if (
+      status.checks === "failing" ||
+      (status.checks === "pending" && status.mergeable !== "MERGEABLE")
+    ) {
+      throw new EngineeringTaskError("checks_failing");
+    }
+    const checkedAt = this.deps.clock.now().toISOString();
+    this.deps.db.transaction(
+      (tx) => {
+        const fresh = this.store.get(tx, taskId);
+        if (!fresh || !eligible(fresh) || fresh.prNumber !== prNumber) {
+          throw new EngineeringTaskError("invalid_state");
+        }
+        this.requestStep(
+          tx,
+          taskId,
+          "merge_pr",
+          "engineering.merge_pr",
+          "high",
+          {
+            taskId,
+            parentBranch: parent,
+            prNumber,
+            prUrl: fresh.prUrl ?? task.prUrl ?? "",
+            status: { ...status, checkedAt },
+            pushedSha,
+            ...this.deployNotice(fresh),
+          },
+          { prNumber },
+        );
+        this.audit(tx, "engineering.merge_rerequested", taskId, "ok", { prNumber });
+      },
+      { behavior: "immediate" },
+    );
   }
 
   // ---- E8: branch -----------------------------------------------------------------------------
@@ -285,8 +484,10 @@ export class EngineeringStepService {
       if (!task.approvedDescription || !task.plan) {
         return this.attention(taskId, "develop", "invalid_state");
       }
+      const approvedDescription: string = task.approvedDescription;
       let gitDirBaseline: string;
       let configFingerprint: string;
+      let placeholdersBefore: string[];
       try {
         if ((await this.deps.git.currentBranch(path)) !== taskBranch) {
           return this.attention(taskId, "develop", "branch_changed");
@@ -297,43 +498,114 @@ export class EngineeringStepService {
         }
         gitDirBaseline = await this.deps.git.gitDirFingerprint(path);
         configFingerprint = await this.deps.git.configFingerprint(path);
+        placeholdersBefore = await this.deps.git.sandboxPlaceholders(path);
       } catch (e) {
         return this.attention(taskId, "develop", codeOf(e));
       }
       const fingerprints = { gitDirBaseline, configFingerprint };
       this.mark(taskId, "develop", "running", { output: fingerprints, claudeRunId: null });
 
-      let result: AIExecutionResult;
-      try {
-        result = await runner.run({
+      const outcome = await attemptRun(() =>
+        runner.run({
           taskId,
           localPath: path,
           testCommand,
-          approvedDescription: task.approvedDescription,
+          approvedDescription,
           plan: task.plan as InvestigationOutput,
-        });
-      } catch (err) {
+        }),
+      );
+      // ADR-040, Task 4b: before any fingerprint, diff or unsafe check, after every outcome.
+      const fp = {
+        ...fingerprints,
+        sandboxPlaceholdersRemoved: await this.removeSandboxPlaceholders(path, placeholdersBefore),
+      };
+      if (!outcome.ok) {
+        const err = outcome.error;
         // Quota or auth pause: the queue runs the job again later; the step waits again.
         if (err instanceof JobError && retryDecision(err.classified.kind) === "defer") {
           this.mark(taskId, "develop", "pending", { claudeRunId: runner.runId() });
           throw err;
         }
-        const kind = stopKind(err) ?? (err instanceof JobError ? err.classified.kind : "unknown");
-        return this.developFailed(ctx, kind, fingerprints, runner.runId());
+        // The sandbox cannot start: always needs the user (F1.4), never a clean-tree failure.
+        if (sandboxUnavailable(err)) {
+          return this.attention(
+            taskId,
+            "develop",
+            "sandbox_unavailable",
+            { ...fp, failure: "sandbox_unavailable" },
+            runner.runId(),
+          );
+        }
+        // Rule M refused the run: the sandbox setting is off (F1.5).
+        const sandboxOff =
+          err instanceof JobError &&
+          err.classified.kind === "invalid_input" &&
+          err.classified.message === SANDBOX_REQUIRED_REASON;
+        // The worker refuses a repository the sandbox would mask before any run (ADR-040).
+        const masked =
+          err instanceof JobError &&
+          err.classified.kind === "invalid_input" &&
+          err.classified.message === REPO_IN_MASKED_PATH;
+        // The run's tmpDir would overflow the sandbox's unix socket paths (ADR-040, fix round 2).
+        const tooLong =
+          err instanceof JobError &&
+          err.classified.kind === "invalid_input" &&
+          err.classified.message === SANDBOX_PATH_TOO_LONG;
+        if (tooLong) {
+          return this.developFailed(ctx, SANDBOX_PATH_TOO_LONG, fp, runner.runId(), {
+            hint: SANDBOX_PATH_TOO_LONG_HINT,
+          });
+        }
+        const kind = masked
+          ? REPO_IN_MASKED_PATH
+          : sandboxOff
+            ? "sandbox_disabled"
+            : (stopKind(err) ?? (err instanceof JobError ? err.classified.kind : "unknown"));
+        return this.developFailed(ctx, kind, fp, runner.runId());
       }
-      return this.developDone(ctx, result, testCommand, fingerprints, runner.runId());
+      return this.developDone(ctx, outcome.result, testCommand, fp, runner.runId());
     });
+  }
+
+  /**
+   * ADR-040, Task 4b: the sandbox leaves empty mount placeholders in .git and the repository top.
+   * Removes the ones the run created (absent from `before`) while they are empty; anything
+   * non-empty stays and the fingerprint flags it as before. Every develop run that started was
+   * sandboxed (rule M), and a refused run created nothing. A failure counts as 0 removed.
+   */
+  private async removeSandboxPlaceholders(path: string, before: string[]): Promise<number> {
+    try {
+      return await this.deps.git.removeSandboxPlaceholders(path, before);
+    } catch {
+      return 0;
+    }
   }
 
   private async developDone(
     ctx: Ctx,
     result: AIExecutionResult,
     testCommand: string,
-    fp: { gitDirBaseline: string; configFingerprint: string },
+    fp: DevelopFingerprints,
     claudeRunId: string | null,
   ): Promise<StepResult> {
     const { task, path } = ctx;
     const taskId = task.id;
+    // ADR-040, fix round 2: the sandbox can fail inside the run, after startup; the CLI then
+    // reports it in the Bash tool_result. That is sandbox_unavailable (needs the user), never a
+    // failed test run.
+    if (
+      result.toolResults.some(
+        (r) => r.toolName === "Bash" && SANDBOX_TOOL_RESULT_RE.test(r.content),
+      )
+    ) {
+      return this.attention(
+        taskId,
+        "develop",
+        "sandbox_unavailable",
+        { ...fp, failure: "sandbox_unavailable" },
+        claudeRunId,
+      );
+    }
     let diff: Awaited<ReturnType<GitWorkflow["diffSummary"]>>;
     try {
       diff = await this.deps.git.diffSummary(path, { gitDirBaseline: fp.gitDirBaseline });
@@ -402,8 +674,9 @@ export class EngineeringStepService {
   private async developFailed(
     ctx: Ctx,
     code: string,
-    fp: { gitDirBaseline: string; configFingerprint: string },
+    fp: DevelopFingerprints,
     claudeRunId: string | null,
+    extra: Record<string, unknown> = {},
   ): Promise<StepResult> {
     let clean = false;
     try {
@@ -412,7 +685,7 @@ export class EngineeringStepService {
     } catch {
       clean = false;
     }
-    const output = { ...fp, failure: code };
+    const output = { ...fp, failure: code, ...extra };
     if (clean) return this.terminalFailure(ctx.task.id, "develop", code, output, claudeRunId);
     return this.attention(ctx.task.id, "develop", code, output, claudeRunId);
   }
@@ -530,7 +803,7 @@ export class EngineeringStepService {
       commits: commits.slice(0, PAYLOAD_COMMITS_MAX),
       commitsTotal: commits.length,
       mergeSha: sha,
-      prTitle: clip(task.title, 256),
+      prTitle: clipUnits(task.title, PR_TITLE_MAX),
       prBody: prBody(task, developTestResult(this.stepOutput(task.id, "develop"))),
       configFingerprint: configNow,
       ...deploy,
@@ -1394,9 +1667,10 @@ export class EngineeringStepService {
 /** E10: `<title>`, the approved description (summarised), `Task: <id>`. */
 export function commitMessage(task: Pick<TaskRow, "id" | "title" | "approvedDescription">): string {
   const desc = clip((task.approvedDescription ?? "").trim(), COMMIT_DESCRIPTION_MAX);
+  const subject = clipUnits(task.title, COMMIT_SUBJECT_MAX);
   return desc === ""
-    ? `${task.title}\n\nTask: ${task.id}`
-    : `${task.title}\n\n${desc}\n\nTask: ${task.id}`;
+    ? `${subject}\n\nTask: ${task.id}`
+    : `${subject}\n\n${desc}\n\nTask: ${task.id}`;
 }
 
 /** M1: the develop step's test result; output from before the final review has no `testRun`. */

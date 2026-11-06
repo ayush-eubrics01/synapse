@@ -10,6 +10,7 @@ import {
 import { createShutdown } from "./core/system/shutdown";
 import { NotifySendNotifier } from "./infrastructure/notifier";
 import { PRIVATE_FILES_LOG_LINE, securePrivateFiles } from "./infrastructure/private-files";
+import { sweepRunScratch } from "./workers/engineering/steps";
 
 const config = loadConfig(process.env);
 // R1: new files are private; existing data files are tightened before anything opens them.
@@ -49,6 +50,9 @@ recoverOnStartup({
   sweeps: c.recoverySweeps,
 });
 recoverOrphanRuns(c.db, c.clock);
+// ADR-040: leftover develop-run dirs of a killed process. Here, never in createContainer, for the
+// same reason: it deletes runs a live process on the same data dir may be using.
+sweepRunScratch(c.runRoot);
 // R4: the result feeds the `database` health check; a failure is reported there, not fatal here.
 c.integrity.check();
 // E6: the engineering lease is never released by core recovery. Settled here, before the worker

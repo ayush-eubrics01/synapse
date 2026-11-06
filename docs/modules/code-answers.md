@@ -8,7 +8,7 @@ Code: `apps/api/src/modules/code-answers` (`service.ts`, `away-trigger.ts`), `in
 
 `code_answer.generate` builds its request with `buildCodeAnswerRequest` and runs it through `orchestrator.run` in the `reader` profile (`docs/modules/claude-orchestrator.md`). The working directory is the repository realpath. Parts: the system prompt and output contract, the repository name and root, up to 20 approved Engineering Brain facts (`user_approved`), and one `untrusted` part with the question (at most 4,000 characters) and up to 5 earlier thread messages (at most 1,000 characters each). A question that contains the prompt boundary makes the row `failed` / `invalid_input`. Model `codeAnswer.model` (`sonnet`), `codeAnswer.maxTurns` (16, capped at 30), `codeAnswer.timeoutMinutes` (5), one attempt. Priority class `urgent` for the user trigger, `collection` for the away trigger.
 
-The handler timeout is `codeAnswer.timeoutMinutes + 5` minutes, read when the handler is registered.
+The handler timeout is `codeAnswer.timeoutMinutes + 5` minutes, read when each job starts (the handler registers a `timeoutMs` function, so a changed setting applies to the next job without a restart).
 
 ## Output and verification (ADR-026)
 
@@ -38,7 +38,7 @@ A consumer of `message.received` queues one `away` row when all hold: away mode 
 
 ## Away decision (C7)
 
-When an away row ends `ready`, `not_answerable` or `unverified`, `AutoReplyService` decides it as kind `code_answer` (order and reasons in `docs/modules/auto-reply.md`). Without `codeAnswer.away.autoSend` (the default), a passing answer becomes a held row `code_answer_review` plus a normal pending send approval for the user (exact text, the asker's conversation and thread, no tag), so it waits in Needs you. With `autoSend` on and every check passing, it is auto-sent with the tag `Sent using @claude` through `recordPolicyApproval`.
+When an away row ends `ready`, `not_answerable` or `unverified`, `AutoReplyService` decides it as kind `code_answer` (order and reasons in `docs/modules/auto-reply.md`). Without `codeAnswer.away.autoSend` (the default), a passing answer becomes a held row `code_answer_review` plus a normal pending send approval for the user (exact text, the asker's conversation and thread, no tag), so it waits in Needs you. With `autoSend` on and every check passing, it is auto-sent with the tag `Sent using @claude` through `recordPolicyApproval`. `codeAnswer.away.autoSend` is an immediate kill switch: turning it off cancels any auto-send not yet spawned as `cancelled_policy_disabled` (in revalidate, the claim and `beforeSpawn`), the auto-reply is held as `code_answer_review` and the code-answer row returns to `held`, so the user can still approve the answer manually. A send that already spawned finishes.
 
 ## Events
 

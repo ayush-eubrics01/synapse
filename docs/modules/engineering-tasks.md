@@ -4,7 +4,7 @@ Code: `apps/api/src/modules/engineering-tasks/` (`store.ts`, `service.ts`, `lock
 
 ## Principle
 
-The model edits files and runs the confirmed test command. **Nothing else.** Every Git operation (branch creation, commit, parent update, local merge, push, PR creation, PR merge, cleanup) is Synapse code: argv, no shell, through the hardened `GitWorkflow` runner or the `gh` adapter. Each write step waits for the user's approval of exactly what will happen, and the approval is revalidated before it runs. The model never sees Slack or Jira text (E2), is never *given* `git` (no git tool or Bash grant), and never receives a credential. **It can still run arbitrary code through the test command:** the test suite is repository code the develop run may have just edited, so it runs as the user with network access and can write outside the repository (`docs/architecture/security-model.md` §3.1). Path-scoped edits and the Bash prefix limit what the model is granted, not what the tests do.
+The model edits files and runs the confirmed test command. **Nothing else.** Every Git operation (branch creation, commit, parent update, local merge, push, PR creation, PR merge, cleanup) is Synapse code: argv, no shell, through the hardened `GitWorkflow` runner or the `gh` adapter. Each write step waits for the user's approval of exactly what will happen, and the approval is revalidated before it runs. The model never sees Slack or Jira text (E2), is never *given* `git` (no git tool or Bash grant), and never receives a credential. **It can still run repository code through the test command:** the test suite is code the develop run may have just edited. Since ADR-040 that command runs inside the Claude Code sandbox (no network, writes only in the repository and a private tmp directory), with residual risks listed in `docs/architecture/security-model.md` §3.1. Path-scoped edits and the Bash prefix limit what the model is granted; the sandbox limits what the tests do.
 
 ## Task lifecycle and states
 
@@ -89,7 +89,17 @@ Then, in one transaction, the task becomes `queued` with `parent_branch`, `task_
 
 Preconditions: the task branch is checked out, the tree is clean (`dirty_tree`), the test command is still safe. Synapse then takes **`gitDirFingerprint` and `configFingerprint` immediately before the run** and stores both on the step output.
 
-Run: engineering profile, model `engineering.model`, `engineering.develop.maxTurns` (default and cap 50), `engineering.develop.timeoutMinutes` (default 30), one attempt, `workingDirectory` the repo realpath, `--permission-mode default`. Tools: `Read`, `Grep`, `Glob`, `Edit`, `Write`, `MultiEdit`, each `Tool(//<repo>/**)`, and `Bash(<testCommand>:*)`. Everything else is denied (see the orchestrator doc). Parts: one system part (implement exactly the plan, minimal changes, run exactly the test command, never touch `.git`, `.gitattributes`, `.gitmodules` or `.lfsconfig`, never run git), the `user_approved` description and the `user_approved` plan. `expectedToolNames` requires a real `Edit`, `Write` or `MultiEdit` result (ADR-026).
+Run: engineering profile, model `engineering.model`, `engineering.develop.maxTurns` (default and cap 50), `engineering.develop.timeoutMinutes` (default 30), one attempt, `workingDirectory` the repo realpath, `--permission-mode default`. Tools: `Read`, `Grep`, `Glob`, `Edit`, `Write`, `MultiEdit`, each `Tool(//<repo>/**)`, and `Bash(<testCommand>:*)`. Everything else is denied (see the orchestrator doc).
+
+**Sandbox (ADR-040).** The request carries a `sandbox` spec (`tmpDir`, `denyRead`) built by `buildDevelopRequest` when `engineering.sandbox.enabled` is true, and the provider turns it into the CLI sandbox settings (no network, masks, private `TMPDIR`; see the orchestrator doc and security-model §3.1). Rule M refuses a Bash grant without it. Consequences for the step:
+
+- **Setting off:** `engineering.sandbox.enabled = false` means no develop runs. The step fails closed with `sandbox_disabled` and ends `failed` (with cleanup), never an unsandboxed run. `repo_in_masked_path` and `sandbox_path_too_long` also end `failed` (with cleanup); only `sandbox_unavailable` ends `needs_attention`.
+- **`repo_in_masked_path`:** before the run, a repository whose realpath is at or under `/tmp`, `/run` or `/var/run`, or at or inside a mask entry (`~/.config`, `~/.claude`, other home entries, the Synapse data directory, the backup directory) is refused. The fixed masks would hide it from its own run, and unmasking a home entry, the database or the backups would expose them to test code.
+- **`sandbox_unavailable`:** a run that fails because the sandbox could not start (the CLI's startup failure reason or stderr, an error result, or the Bash tool_result message "Sandbox is required but failed to initialize") fails the step with this reason, not as failed tests; the task goes to `needs_attention` with the hint "Install bubblewrap and socat (sudo apt install bubblewrap socat), then cancel this task and propose it again.". There is no retry action yet: cancel and propose again (follow-ups). A sandbox network violation in a tool result does not change `testsPassed`, which still comes from the exit status (ADR-026).
+- **`sandbox_path_too_long`:** the run's `tmpDir` (`<cache>/synapse/<8hex>/r/<8hex>/t`, `<cache>` being `$XDG_CACHE_HOME` when absolute, else `~/.cache`) is capped at 64 bytes, because the sandbox's unix bridge sockets live under it. A longer path refuses the run before anything is created; set `XDG_CACHE_HOME` to a shorter path and restart the API.
+- **Placeholders:** the sandbox leaves empty mount targets in `.git` (`branches/`, `remotes/`, `config.worktree`, `objects/info/alternates`, `objects/info/commit-graphs/`, `.claude-sandbox-noreplace/` markers) and `.claude/.cc-writes/` at the repository top. After the run and before the fingerprint, diff and unsafe checks the step removes those that did not exist before and are empty (never anything non-empty, pre-existing or reached through a symlink); the count is `sandboxPlaceholdersRemoved`. An unknown or non-empty leftover is still flagged `git_dir_changed`.
+- **Network:** a repository whose tests need the network cannot use develop runs (follow-ups).
+- **Run scratch:** the private `TMPDIR` lives under the per-instance cache root and is removed after the run (also on a throw, timeout or abort); leftovers from a killed process are swept at API start, from this instance's own `r/` only. Parts: one system part (implement exactly the plan, minimal changes, run exactly the test command, never touch `.git`, `.gitattributes`, `.gitmodules` or `.lfsconfig`, never run git), the `user_approved` description and the `user_approved` plan. `expectedToolNames` requires a real `Edit`, `Write` or `MultiEdit` result (ADR-026).
 
 After the run Synapse computes the diff against the baseline fingerprint (the fingerprint is compared **before** any git command runs, because git can run filters and hooks):
 
@@ -98,7 +108,7 @@ After the run Synapse computes the diff against the baseline fingerprint (the fi
 - **Run failure** (`max_turns`, `timeout`, or an error kind): `failed` and cleanup when the tree is still clean, else `needs_attention`. A quota or auth deferral puts the step back to `pending`.
 - Otherwise the `engineering.commit` approval is requested (risk medium).
 
-The develop step output holds the fingerprints, `diffHash`, the files with `+/-` counts, `unsafeReasons`, `diffText` (at most 200 KB, plain text), `testsPassed`, `testRun`, `testOutputTail`, the model's summary and notes (display only) and the names of any permission denials. The `GitWorkflow.configFingerprint` covers `.git/config`, `config.worktree`, `.git/info/attributes`, `.git/hooks/**`, `~/.gitconfig`, `$XDG_CONFIG_HOME/git/{config,attributes}` and `/etc/gitconfig`; `gitDirFingerprint` adds the rest of the git dir (HEAD, refs, packed-refs, the index by content; not object stores or reflogs). Both use filesystem reads only. **Not covered:** `include.path` targets inside config files.
+The develop step output holds the fingerprints, `sandboxPlaceholdersRemoved` (ADR-040: empty sandbox mount placeholders the run left in `.git` and `.claude`, removed before any fingerprint, diff or unsafe check), `diffHash`, the files with `+/-` counts, `unsafeReasons`, `diffText` (at most 200 KB, plain text), `testsPassed`, `testRun`, `testOutputTail`, the model's summary and notes (display only) and the names of any permission denials. The `GitWorkflow.configFingerprint` covers `.git/config`, `config.worktree`, `.git/info/attributes`, `.git/hooks/**`, `~/.gitconfig`, `$XDG_CONFIG_HOME/git/{config,attributes}` and `/etc/gitconfig`; `gitDirFingerprint` adds the rest of the git dir (HEAD, refs, packed-refs, the index by content; not object stores or reflogs). Both use filesystem reads only. **Not covered:** `include.path` targets inside config files.
 
 ## Steps, approvals and revalidation (E8 to E14, E18)
 
@@ -121,6 +131,11 @@ Every executor first **claims** the step (`awaiting_approval -> in_progress`, on
 Reject, revoke or expire of the current step approval cancels the task (step `skipped`, the other open approvals expired, cleanup enqueued).
 
 Every `GitWorkflow` call runs through the hardened runner (E17): argv only, `-c core.fsmonitor=false -c core.hooksPath=/dev/null -c credential.interactive=never`, `-C <registered realpath>`, a clean environment (`PATH`, `HOME`, `GIT_TERMINAL_PROMPT=0`, `GIT_OPTIONAL_LOCKS=0`, `LC_ALL=C`, plus `SSH_AUTH_SOCK`, `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` when set), a 60 s timeout (120 s for push, fetch, pull and ls-remote). Every merge also carries `-c branch.<parent>.mergeOptions= -c rerere.enabled=false -c rerere.autoUpdate=false -c submodule.recurse=false`, so configured auto-resolution cannot hide a conflict. Refs are validated before git runs (`invalid_ref`). Tokens are never read: ssh-agent, the credential helper and `gh auth` are used as configured.
+
+### Editing the commit and PR text, and re-requesting the merge (F2, F3.2)
+
+- **Text edits.** `PUT /api/engineering/tasks/:id/approvals/:approvalId` with `{commitMessage?}` (for `engineering.commit`) or `{prTitle?, prBody?}` (for `engineering.push_pr`). Allowed only while the approval is `pending` and belongs to the task's current step. Limits: `commitMessage` 1 to 5000 characters with a non-blank first line of at most 200; `prTitle` 1 to 200 characters, no newline; `prBody` at most 20000. Control characters other than tab and newline (`\r` included) and unpaired surrogates are refused. It updates the payload in one transaction and audits `engineering.approval_edited` (ids and changed field names only, never the text). Errors: 409 `not_pending`, 400 `invalid_text`. The executors read the payload, so they use the edited text; the diff hash and SHA pins do not involve the text, so revalidation is unchanged. The web shows textareas on the commit and push cards; Save stores an edit, and Approve sends any unsaved edit first.
+- **Re-request `merge_pr`.** `POST /api/engineering/tasks/:id/retry-merge` is allowed only for the lock holder at `needs_attention` / `checks_failing` / step `merge_pr` (else 409 `invalid_state`). It re-reads the PR (`pr_status_failed` if that fails), requires it `OPEN` (`state_changed`) with the pushed head (`pr_head_moved`) and a non-protected parent (`protected_branch`). Failing checks, or pending ones while the PR is not mergeable, answer 409 `checks_failing`; otherwise it creates a fresh `engineering.merge_pr` approval and the task returns to `awaiting_approval`. The Needs-you card has "Check again".
 
 ## Cancel, discard and cleanup (E15, E16)
 
@@ -151,9 +166,11 @@ Consequences to know:
 | `POST …/:id/approve-description {description}` | Enqueues the investigation |
 | `POST …/:id/approve-plan {parentBranch, testCommand, environmentId?, rememberAsTracked?}` | E4 |
 | `POST …/:id/cancel` | E16 |
+| `PUT …/:id/approvals/:approvalId {commitMessage?\|prTitle?, prBody?}` | Edit the pending commit or push text (F2.1); 409 `not_pending`, 400 `invalid_text` |
+| `POST …/:id/retry-merge` | Re-request `merge_pr` after `checks_failing` (F3.2); 409 `checks_failing` while checks still fail |
 | `GET /api/engineering/lock` | `{held, taskId?, since?}` |
 
-Step approvals are decided through the existing `/api/approvals/:id/approve|reject|revoke`. Errors are fixed codes only (`{error}`): `not_found` 404, `path_unavailable` 409, `ambiguous_repository`, `invalid_input`, `invalid_state`, `no_content`, `unknown_branch`, `unknown_environment`, `protected_branch`, `unsafe_test_command` and `registry_error:<code>` 400. `DELETE /api/repos/:id` (the registry) answers 409 `repo_has_active_task` while an engineering task of the repository is not finished (M4). Overview: `counts.engineeringAwaiting` and `engineeringLock {held, taskId?, taskTitle?, since?}`.
+Step approvals are decided through the existing `/api/approvals/:id/approve|reject|revoke`. Errors are fixed codes only (`{error}`): `not_found` 404, `path_unavailable` 409, `ambiguous_repository`, `invalid_input`, `invalid_state`, `no_content`, `unknown_branch`, `unknown_environment`, `protected_branch`, `unsafe_test_command` and `registry_error:<code>` 400; `not_pending` 409, `invalid_text` 400, `pr_status_failed`, `state_changed`, `pr_head_moved`, `checks_failing` 409 (from the approval edit and `retry-merge` routes). `DELETE /api/repos/:id` (the registry) answers 409 `repo_has_active_task` while an engineering task of the repository is not finished (M4). Overview: `counts.engineeringAwaiting` and `engineeringLock {held, taskId?, taskTitle?, since?}`.
 
 ## Settings
 
@@ -164,20 +181,22 @@ Step approvals are decided through the existing `/api/approvals/:id/approve|reje
 | `engineering.develop.maxTurns` | 50 | 1 to 50 |
 | `engineering.develop.timeoutMinutes` | 30 | 1 to 120 |
 | `engineering.lock.ttlMinutes` | 10 | 1 to 120 |
+| `engineering.sandbox.enabled` | `true` | Boolean, editable in Settings. Off means no develop runs (`sandbox_disabled`), never an unsandboxed one (ADR-040) |
 
 The investigation timeout is fixed at 20 minutes. `repositories.test_command` stores the last confirmed test command per repository.
 
 ## Events and audit
 
 - Events: `engineering.task_created {taskId}`, `engineering.task_status_changed {taskId, status}`, `engineering.step_changed {taskId, step, status}`, `engineering.lock_changed {held}`. Approval events are the core ones.
-- Audit actions (ids, enums and counts only; never text, paths, branch names or diffs): `engineering.task_created`, `description_approved`, `investigated`, `investigate_failed`, `plan_approved`, `picked_up`, `pickup_deferred`, `preflight_failed`, `branch_created`, `developed`, `committed`, `parent_updated`, `merged_local`, `pushed`, `pushed_not_pr`, `completed`, `step_failed`, `revalidate_failed`, `step_rejected`, `cancelled`, `cleaned`, `cleanup_failed`, `cleanup_skipped`, `cleanup_requeued`, `lock_acquired`, `lock_released`, `lock_recovered`.
+- Audit actions (ids, enums and counts only; never text, paths, branch names or diffs): `engineering.task_created`, `description_approved`, `investigated`, `investigate_failed`, `plan_approved`, `picked_up`, `pickup_deferred`, `preflight_failed`, `branch_created`, `developed`, `committed`, `parent_updated`, `merged_local`, `pushed`, `pushed_not_pr`, `completed`, `step_failed`, `revalidate_failed`, `step_rejected`, `cancelled`, `cleaned`, `cleanup_failed`, `cleanup_skipped`, `cleanup_requeued`, `lock_acquired`, `lock_released`, `lock_recovered`, `approval_edited`.
 
 ## Reason codes
 
 Shown to the user as fixed sentences (`apps/web/lib/engineering.ts` `reasonLabel`); unknown codes are never echoed.
 
 - Route and task: `not_found`, `invalid_input`, `invalid_state`, `ambiguous_repository`, `repository_required`, `no_content`, `unknown_branch`, `unknown_environment`, `protected_branch`, `unsafe_test_command`, `path_unavailable`, `registry_error:<code>`.
-- Step outcomes: `unsafe_change`, `no_changes`, `config_changed`, `parent_conflict`, `merge_conflict`, `pr_head_moved`, `branch_kept`, `pushed_not_pr`, `resume_unsafe`, `branch_changed`, `revalidate_failed`, `invalid_payload`, `unsupported_remote`, `state_changed`, `lock_held`, `max_turns`, `timeout`, `lock_lost`, `lock_held_by_other`, `step_running`, `not_terminal`, `checks_failing`, `merged_after_cancel`, `cleanup_incomplete`, and `repo_has_active_task` (registry refusal).
+- Step outcomes: `unsafe_change`, `no_changes`, `config_changed`, `parent_conflict`, `merge_conflict`, `pr_head_moved`, `branch_kept`, `pushed_not_pr`, `resume_unsafe`, `branch_changed`, `revalidate_failed`, `invalid_payload`, `unsupported_remote`, `state_changed`, `lock_held`, `max_turns`, `timeout`, `lock_lost`, `lock_held_by_other`, `step_running`, `not_terminal`, `checks_failing`, `merged_after_cancel`, `cleanup_incomplete`, `not_pending`, `invalid_text`, `pr_status_failed`, `state_changed`, and `repo_has_active_task` (registry refusal).
+- Sandbox (ADR-040): `sandbox_unavailable`, `sandbox_disabled`, `sandbox_path_too_long`, `repo_in_masked_path`.
 - Preflight: `not_a_repository`, `merge_in_progress`, `dirty_tree`, `missing_remote`, `upstream_push_enabled`, `parent_missing_origin`, `parent_missing_upstream`.
 - `GitWorkflowError`: `git_failed`, `git_timeout`, `fetch_failed`, `push_failed`, `invalid_ref`, `branch_exists`, `branch_missing`, `diff_changed`, `nothing_to_commit`, `push_target_is_upstream`, `no_upstream_reference`, `branch_moved`, `origin_changed` (plus `missing_remote`, `dirty_tree`, `unsafe_change`, `protected_branch`, `config_changed` above).
 - `PullRequestError`: `gh_not_found`, `gh_auth`, `pr_create_failed`, `pr_status_failed`, `pr_merge_failed`, `unsupported_remote`.
@@ -192,13 +211,14 @@ Shown to the user as fixed sentences (`apps/web/lib/engineering.ts` `reasonLabel
 - **E6:** recovery looks at any lease at boot, not only an expired one, and resumes more cases (see the table).
 - **E15:** `branch -D` only when the branch holds no commit; otherwise the containment rule and `branch_kept`. Uncommitted changes of a rejected or cancelled task are discarded (new `discardChanges`). The return branch falls back to the parent, then to staying put (I2).
 - **E7 at pickup:** a network failure is retried (task stays `queued`), not `needs_attention` (I1).
-- **E14:** failing PR checks refuse the merge (`checks_failing`); a PR merged during a cancel completes the task (M5).
-- **E10 and E13 say the user may edit the commit message, PR title and PR body. That is not built:** there is no route that updates an approval payload. The executors use the payload as requested.
+- **E14:** failing PR checks refuse the merge (`checks_failing`); a PR merged during a cancel completes the task (M5). Since batch 1 the user can re-request the merge with `retry-merge` once checks pass.
+- **E9 (ADR-040):** the test command runs sandboxed; the develop step removes the sandbox's empty placeholders before the fingerprint check.
+- **E10 and E13 (editing the commit message, PR title and PR body) are built since follow-ups batch 1:** `PUT …/approvals/:approvalId` (see "Editing the commit and PR text").
 - `approved` is unused; a failed investigation returns to `proposed`, not `failed`.
 - `engineering.develop.maxTurns` default is 50, not 60 (the request schema caps a run at 50 turns).
 - The auto-deploy notice at plan approval is rendered by the web from the registry; the server states it in the push and merge approval payloads.
-- E19 `from-jira` and `from-slack` take an optional `repositoryId`.
+- E19 `from-jira` and `from-slack` take an optional `repositoryId`. When the API answers `ambiguous_repository` the web shows a select of registered repositories (names only) and retries with the chosen id (F3.1).
 
 ## Deferred
 
-See `docs/superpowers/plans/2026-11-06-phase-10-followups.md`: `code_answer` and ADR-036 session observation (Phase 10b), a sandbox for the develop run, non-GitHub hosts, overriding protected branches, multi-repo tasks, a repository picker for create-from-Jira/Slack, `include.path` fingerprinting, a history view with cleanup outcomes, and editing the commit message and PR text.
+See `docs/superpowers/plans/2026-11-06-phase-10-followups.md`. Done in follow-ups batch 1: the develop-run sandbox (ADR-040), the repository picker, re-requesting `merge_pr`, and editing the commit message and PR text. Still open: non-GitHub hosts, overriding protected branches, multi-repo tasks, `include.path` fingerprinting, a history view with cleanup outcomes, network-enabled sandboxes, a retry action after `sandbox_unavailable`, and the sandbox items recorded there.

@@ -826,4 +826,33 @@ describe("fix round 1: re-requesting a send from the thread view", () => {
       expect(() => c.codeAnswers.requestSend(a.id, ANSWER, false)).toThrow("invalid_state");
     }
   });
+
+  test("kill switch: autoSend off before the send is claimed returns the answer to held; the user can still approve it", async () => {
+    c.settings.set("codeAnswer.away.autoSend", true);
+    const a = seedAway();
+    evaluate(a.id);
+    const outId = row(a.id)?.outgoingId as string;
+    expect(row(a.id)?.status).toBe("sent");
+    c.settings.set("codeAnswer.away.autoSend", false);
+    c.dispatcher.dispatchOnce();
+    while (await c.worker.runOnce()) {}
+    expect(sink.sends).toHaveLength(0);
+    expect(outgoing().find((o) => o.id === outId)).toMatchObject({
+      status: "failed",
+      failure: "cancelled_policy_disabled",
+    });
+    expect(allAr()[0]).toMatchObject({
+      decision: "held",
+      reason: "code_answer_review",
+      text: null,
+    });
+    expect(row(a.id)?.status).toBe("held");
+    expect(view(a.id)?.sendable).toBe(true);
+    const r = c.codeAnswers.requestSend(a.id, ANSWER, false);
+    expect(approvals().find((x) => x.id === r.approvalId)).toMatchObject({
+      action: "slack.send",
+      status: "pending",
+      decidedBy: null,
+    });
+  });
 });

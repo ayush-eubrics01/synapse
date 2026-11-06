@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DashboardOverview, Job } from "@synapse/contracts";
 import { renderToString } from "react-dom/server";
+import { ClaudeSettings, SANDBOX_HINT } from "../app/components/system/ClaudeSettings";
 import { QuotaBars } from "../app/components/system/QuotaBars";
 import { Running } from "../app/components/system/Running";
 import { SystemDetails } from "../app/components/system/SystemDetails";
@@ -221,4 +222,40 @@ test("Running with no pipeline yet says it is waiting for the API instead of an 
   const html = renderToString(<Running pipeline={[]} status={null} runs={[]} now={NOW} />);
   expect(html).not.toContain('class="syn-stages"');
   expect(html).toContain("Waiting for the API.");
+});
+
+test("the sandbox setting renders as a switch with its hint", () => {
+  const values = {
+    "engineering.sandbox.enabled": true,
+    "claudeActivity.enabled": true,
+    "claudeActivity.yieldWhenActive": true,
+    "claudeActivity.yieldEngineering": false,
+    "codeAnswer.away.enabled": false,
+    "codeAnswer.away.autoSend": false,
+    "codeAnswer.model": "sonnet",
+  } as never;
+  const html = renderToString(<ClaudeSettings values={values} onChange={() => {}} />);
+  expect(html).toContain("Run tests in a sandbox");
+  expect(html).toContain(SANDBOX_HINT.replace(/'/g, "&#x27;"));
+});
+
+test("flipping the sandbox switch reports the setting key and the new value", () => {
+  const calls: unknown[][] = [];
+  const values = { "engineering.sandbox.enabled": true } as never;
+  const tree = ClaudeSettings({ values, onChange: (...a) => calls.push(a) }) as never;
+  // Walk the element tree for the Switch whose label is the sandbox toggle.
+  const find = (node: unknown): { onChange: (n: boolean) => void } | null => {
+    if (!node || typeof node !== "object") return null;
+    const el = node as { props?: Record<string, unknown> };
+    const props = el.props ?? {};
+    if (props.label === "Run tests in a sandbox") return props as never;
+    const kids = props.children;
+    for (const k of Array.isArray(kids) ? kids.flat(Infinity) : [kids]) {
+      const hit = find(k);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  find(tree)?.onChange(false);
+  expect(calls).toEqual([["engineering.sandbox.enabled", false]]);
 });

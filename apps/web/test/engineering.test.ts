@@ -14,10 +14,15 @@ import {
   createEngineeringTask,
   createTaskFromJira,
   createTaskFromSlack,
+  editEngineeringApproval,
   getEngineeringTask,
   getEngineeringTasks,
 } from "../lib/api";
 import {
+  approvalTextProblem,
+  approvalTextValues,
+  canCheckAgain,
+  changedText,
   defaultPlanForm,
   deployEnvironment,
   engineeringApproval,
@@ -26,6 +31,9 @@ import {
   parentBranchError,
   parseDiff,
   reasonLabel,
+  repositoryChoices,
+  SANDBOX_OFF_TEXT,
+  SANDBOX_ON_TEXT,
   stepLabel,
   testCommandError,
 } from "../lib/engineering";
@@ -110,7 +118,8 @@ test("every fixed reason code in the contracts has a plain-English label", () =>
   for (const code of all) {
     const label = reasonLabel(code);
     expect(label).not.toBe(fallback);
-    expect(label).not.toContain("_");
+    // An environment variable name (XDG_CACHE_HOME) is the one place an underscore is the point.
+    expect(label.replace(/\b[A-Z]+(?:_[A-Z]+)+\b/g, "")).not.toContain("_");
   }
 });
 
@@ -292,4 +301,84 @@ test("groupTasks puts each status in one group", () => {
   expect(ids(g.queue)).toEqual(["3", "4"]);
   expect(ids(g.active)).toEqual(["5", "6", "9"]);
   expect(ids(g.history)).toEqual(["7", "8"]);
+});
+
+test("changedText keeps only the changed fields", () => {
+  expect(changedText({ commitMessage: "a" }, { commitMessage: "b" })).toEqual({
+    commitMessage: "b",
+  });
+  expect(changedText({ commitMessage: "a" }, { commitMessage: "a" })).toEqual({});
+  expect(changedText({ prTitle: "t", prBody: "b" }, { prTitle: "t", prBody: "c" })).toEqual({
+    prBody: "c",
+  });
+});
+
+test("approvalTextProblem gives the first failing field's sentence", () => {
+  expect(approvalTextProblem({ prTitle: "a\nb" })).toBe(
+    "A PR title needs 1 to 200 characters on one line.",
+  );
+  expect(approvalTextProblem({ commitMessage: "  \nbody" })).toBe(
+    "A commit message needs 1 to 5000 characters and a first line of at most 200.",
+  );
+  expect(approvalTextProblem({ prBody: "x".repeat(20001) })).toBe(
+    "A PR body can have at most 20000 characters.",
+  );
+  expect(approvalTextProblem({ commitMessage: "Fix add", prTitle: "T", prBody: "" })).toBeNull();
+});
+
+test("canCheckAgain is true only for checks_failing at merge_pr while needing attention", () => {
+  const t = (status: string, failure: string | null, currentStep: string | null) =>
+    canCheckAgain({ status, failure, currentStep } as Parameters<typeof canCheckAgain>[0]);
+  expect(t("needs_attention", "checks_failing", "merge_pr")).toBe(true);
+  expect(t("needs_attention", "dirty_tree", "merge_pr")).toBe(false);
+  expect(t("needs_attention", "checks_failing", "push_pr")).toBe(false);
+  expect(t("in_progress", "checks_failing", "merge_pr")).toBe(false);
+});
+
+test("repositoryChoices sorts by name and keeps only id and name", () => {
+  const r = (id: string, name: string) => ({ id, name, localPath: "/home/u/x" }) as never;
+  expect(repositoryChoices([r("2", "demo"), r("1", "api")])).toEqual([
+    { id: "1", name: "api" },
+    { id: "2", name: "demo" },
+  ]);
+});
+
+test("approvalTextValues reads the editable text of commit and push cards only", () => {
+  expect(approvalTextValues({ kind: "commit", message: "Fix add" } as never)).toEqual({
+    commitMessage: "Fix add",
+  });
+  expect(approvalTextValues({ kind: "push_pr", title: "T", body: "B" } as never)).toEqual({
+    prTitle: "T",
+    prBody: "B",
+  });
+  expect(approvalTextValues({ kind: "merge_local" } as never)).toBeNull();
+});
+
+test("the sandbox copy and the new reasons read as plain sentences", () => {
+  expect(SANDBOX_ON_TEXT).toBe(
+    "Tests run in a sandbox: no network, writes only inside the repository",
+  );
+  expect(SANDBOX_OFF_TEXT).toBe("Develop runs are disabled: the test sandbox is turned off");
+  expect(reasonLabel("sandbox_unavailable")).toContain("sudo apt install bubblewrap socat");
+  expect(reasonLabel("not_pending")).toBe("This approval was already decided or replaced.");
+  expect(reasonLabel("checks_failing")).toContain("use Check again");
+});
+
+test("editEngineeringApproval PUTs the edit and surfaces the code", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const ok = (async (url: string, init?: RequestInit) => {
+    calls.push({ url, init });
+    return new Response(JSON.stringify({ id: "a1" }), { status: 200 });
+  }) as unknown as typeof fetch;
+  await editEngineeringApproval("t1", "a1", { prTitle: "T" }, ok);
+  expect(calls[0]?.url).toContain("/api/engineering/tasks/t1/approvals/a1");
+  expect(calls[0]?.init?.method).toBe("PUT");
+  expect(calls[0]?.init?.body).toBe(JSON.stringify({ prTitle: "T" }));
+  const bad = (async () =>
+    new Response(JSON.stringify({ error: "not_pending" }), {
+      status: 409,
+    })) as unknown as typeof fetch;
+  await expect(editEngineeringApproval("t1", "a1", {}, bad)).rejects.toMatchObject({
+    code: "not_pending",
+  });
 });

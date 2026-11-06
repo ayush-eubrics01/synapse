@@ -719,6 +719,20 @@ export class CodeAnswerService {
     if (d.status !== undefined) this.publishStatus(tx, row, d.status);
   }
 
+  /**
+   * F4.1: a `code_answer` auto-send was cancelled by the `autoSend` kill switch. The `sent` row
+   * goes back to `held`; the user approves it through `requestSend`. Any other row is untouched.
+   */
+  returnToHeld(tx: DbOrTx, autoReplyId: string): void {
+    const rows = tx
+      .update(codeAnswers)
+      .set({ status: "held", updatedAt: this.now() })
+      .where(and(eq(codeAnswers.autoReplyId, autoReplyId), eq(codeAnswers.status, "sent")))
+      .returning({ id: codeAnswers.id, messageId: codeAnswers.messageId })
+      .all();
+    for (const r of rows) this.publishStatus(tx, r, "held");
+  }
+
   /** With `tx`, read in the caller's transaction (the away decision does). */
   get(id: string, tx?: DbOrTx): CodeAnswerView | null {
     return this.views(eq(codeAnswers.id, id), tx)[0] ?? null;

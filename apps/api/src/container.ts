@@ -13,7 +13,14 @@ import { type Clock, newId, systemClock } from "@synapse/shared";
 import { ApprovalEngine } from "./core/approvals/approvals";
 import { registerApprovalExecution } from "./core/approvals/execution";
 import { AuditLogger } from "./core/audit/audit";
-import { type AppConfig, checkBackupDir, REPO_ROOT, resolveHome } from "./core/config/config";
+import {
+  type AppConfig,
+  checkBackupDir,
+  defaultRunScratchRoot,
+  instanceRunRoot,
+  REPO_ROOT,
+  resolveHome,
+} from "./core/config/config";
 import { SettingsService } from "./core/config/settings";
 import { OutboxDispatcher } from "./core/events/dispatcher";
 import { LiveBus } from "./core/events/live-bus";
@@ -24,6 +31,7 @@ import {
   bunVersionCheck,
   claudeActivityCheck,
   claudeCheck,
+  claudeSettingsCheck,
   databaseCheck,
   desktopNotifierCheck,
   diskCheck,
@@ -32,6 +40,7 @@ import {
   heartbeatCheck,
   jobsCheck,
   lingerCheck,
+  sandboxCheck,
   screeningRulesCheck,
   securityRulesCheck,
 } from "./core/health/checks";
@@ -120,6 +129,8 @@ import { registerUrgencyJobs, responseGuidelinesLookup } from "./workers/urgency
 
 export interface Container {
   config: AppConfig;
+  /** This instance's develop-run root (ADR-040): `<cache>/synapse/<hash of data dir>`. */
+  runRoot: string;
   clock: Clock;
   db: Db;
   sqlite: Database;
@@ -199,6 +210,8 @@ export interface ContainerDeps {
   /** Replaces the real ClaudeCliProvider (tests inject a fake). */
   provider?: AIProvider;
   run?: (cmd: string[]) => Promise<string>;
+  /** Resolves a binary on the service PATH (tests inject one; defaults to Bun.which). */
+  which?: (bin: string) => string | null;
   /** Registers the `test.noop` job handler (set from SYNAPSE_TEST_HANDLERS by main.ts). */
   testHandlers?: boolean;
   /** Replaces the real SlackSender behind `outgoing` (tests and smoke scripts inject a fake). */
@@ -215,6 +228,17 @@ export interface ContainerDeps {
   backupDir?: string;
   /** Free bytes at a path, or null when unknown. Defaults to statfs. */
   diskFree?: (path: string) => number | null;
+  /**
+   * Replaces the paths a develop run's repository may not be under (default
+   * SANDBOX_MASKED_ROOTS). Tests only: their repositories live under the OS temp dir.
+   */
+  sandboxMaskedRoots?: readonly string[];
+  /**
+   * Replaces the develop-run cache base (default `defaultRunScratchRoot(process.env)`, i.e.
+   * `~/.cache/synapse`). The instance's run root is `instanceRunRoot(base, dataDir)`, and runs get
+   * `<it>/r/<8hex>/t` (ADR-040). Unused for `:memory:`.
+   */
+  runCacheBase?: string;
 }
 
 const CORE_MODULES = [
@@ -287,11 +311,13 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   const home = resolveHome(process.env);
   // Plugin names and the user-permission widening flag, read once at startup (R34, Phase 9).
   const userSettings = loadUserSettings(home);
+  const servicePath = `${home}/.bun/bin:${home}/.local/bin:/usr/bin:/bin`;
+  const which = deps.which ?? ((b: string) => Bun.which(b, { PATH: servicePath }));
   const provider =
     deps.provider ??
     new ClaudeCliProvider({
       binary: config.claudeBinary,
-      env: { PATH: `${home}/.bun/bin:${home}/.local/bin:/usr/bin:/bin`, HOME: home },
+      env: { PATH: servicePath, HOME: home },
       clock,
       settingsOverride: userSettings.override,
       userPermissionsWidenScope: userSettings.userPermissionsWidenScope,
@@ -402,6 +428,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     approvals,
     securityFlags,
     sink: messageSink,
+    codeAnswerHeld: (tx, id) => codeAnswers.returnToHeld(tx, id),
   });
   outgoing.register(approvals, dispatcher);
   const urgentReplies = new UrgentReplies({ db, clock, audit, outgoing });
@@ -663,7 +690,6 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
       }
     },
   });
-  registerStepJob({ db, settings, orchestrator, steps: engineeringSteps, handlers });
   registerPickupJobs({ service: engineering, lock: engineeringLock, scheduler, handlers });
 
   const dataDir = config.dbPath === ":memory:" ? scratchDir : dirname(config.dbPath);
@@ -676,6 +702,31 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   if (explicitBackupDir !== null && checkBackupDir(explicitBackupDir) !== "ok") {
     throw new Error("ops.backup.dir must be an absolute path outside the repository");
   }
+  // ADR-040: develop runs get a per-run scratch under the run root; the data and backup dirs are
+  // masked in the sandbox along with the home credential dirs. Task 4b: the run root is never
+  // inside the data dir (a TMPDIR under a mask breaks every Bash call), and it is per instance
+  // (`~/.cache/synapse/<hash of data dir>`), so this instance's sweep never touches another's
+  // runs. An in-memory container (whose data dir is the temp scratchDir) uses the sibling
+  // `<scratchDir>-runs`. Nothing is created here: the step worker creates it (0700) for a run.
+  const runRoot =
+    config.dbPath === ":memory:"
+      ? `${scratchDir}-runs`
+      : instanceRunRoot(deps.runCacheBase ?? defaultRunScratchRoot(process.env), dataDir);
+  registerStepJob({
+    db,
+    settings,
+    orchestrator,
+    steps: engineeringSteps,
+    handlers,
+    sandbox: {
+      runRoot,
+      home,
+      protectedDirs: [dataDir, backupDir],
+      ...(deps.sandboxMaskedRoots ? { maskedRoots: deps.sandboxMaskedRoots } : {}),
+    },
+  });
+  // The leftover-run sweep is not here: main.ts runs it after the port bind (a second process that
+  // fails to bind must not delete the live process's runs).
   const diskFree = deps.diskFree ?? defaultDiskFree;
   const startedAt = clock.now();
   const backup = new BackupService({
@@ -716,6 +767,11 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     bun: bunVersionCheck(),
     auth: authCheck(auth, clock),
     claude: claudeCheck(provider, clock),
+    sandbox: sandboxCheck({ settings, which }),
+    claude_settings: claudeSettingsCheck({
+      provider,
+      knownServers: () => settings.get("orchestrator.knownServers"),
+    }),
     "security-rules": securityRulesCheck(securityFlags),
     "screening-rules": screeningRulesCheck(screening),
     "desktop-notifier": desktopNotifierCheck(notifier),
@@ -747,6 +803,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
 
   return {
     config,
+    runRoot,
     clock,
     db,
     sqlite,

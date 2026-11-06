@@ -14,12 +14,17 @@ import {
   DEFAULT_KNOWN_SERVERS,
   KNOWN_WRITE_TOOLS,
 } from "../../src/core/orchestrator/tool-catalog";
-import { validateRequest } from "../../src/core/orchestrator/validator";
+import { SANDBOX_REQUIRED_REASON, validateRequest } from "../../src/core/orchestrator/validator";
 
 const SEARCH = "mcp__claude_ai_Slack__slack_search_public";
 const SEND = "mcp__claude_ai_Slack__slack_send_message";
 const untrusted: PromptPart = { provenance: "untrusted", source: "slack", content: "hi" };
 const GUARD = { toolName: SEND, expectedInputSha256: "d".repeat(64) };
+/** A valid rule-M sandbox (ADR-040): every engineering Bash case carries one. */
+const SANDBOX = {
+  tmpDir: "/home/u/.cache/synapse/runs/j1/tmp",
+  denyRead: ["/home/u/.ssh", "/home/u/.local/share/synapse"],
+};
 
 function make(over: Partial<AIExecutionRequest> & { allowed?: string[] } = {}): AIExecutionRequest {
   const allowedTools = over.allowed ?? [SEARCH, "ToolSearch"];
@@ -58,6 +63,7 @@ describe("validateRequest", () => {
         { provenance: "system", content: "x" },
         { provenance: "user_approved", content: "y" },
       ],
+      sandbox: SANDBOX,
     });
     expect(v(r)).toEqual({ ok: true });
   });
@@ -157,6 +163,7 @@ describe("validateRequest", () => {
         allowed,
         workingDirectory: "/tmp/demo-repo",
         promptParts: [],
+        sandbox: SANDBOX,
       });
     const SCOPE = "(//tmp/demo-repo/**)";
     test.each(["Edit", "Write", "MultiEdit"])(
@@ -477,7 +484,13 @@ describe("tool catalog", () => {
 describe("rule L (engineering fs reads scoped to the working directory)", () => {
   const WD = "/tmp/demo-repo";
   const eng = (allowed: string[], workingDirectory = WD) =>
-    make({ workerProfile: "engineering", allowed, promptParts: [], workingDirectory });
+    make({
+      workerProfile: "engineering",
+      allowed,
+      promptParts: [],
+      workingDirectory,
+      sandbox: SANDBOX,
+    });
   const MSG = "fs read tools must be scoped to the working directory";
   test("exactly scoped Read/Grep/Glob pass", () => {
     const r = eng([`Read(/${WD}/**)`, `Grep(/${WD}/**)`, `Glob(/${WD}/**)`]);
@@ -549,6 +562,121 @@ describe("rule L (engineering fs reads scoped to the working directory)", () => 
     expect(reason(v(eng([`Read(/${WD}/**/**)`])))).toBe(MSG);
     expect(reason(v(eng([`read(/${WD}/**)`])))).toBe("unknown built-in tool read");
     expect(reason(v(eng([`Read(/${WD}/**) `])))).toBe(`malformed tool name Read(/${WD}/**) `);
+  });
+});
+
+describe("rule M: engineering Bash requires the sandbox (ADR-040)", () => {
+  const WD = "/home/u/projects/demo";
+  const FILES = ["Read", "Grep", "Glob", "Edit", "Write", "MultiEdit"].map(
+    (t) => `${t}(/${WD}/**)`,
+  );
+  const eng = (over: Partial<AIExecutionRequest> & { allowed?: string[] } = {}) =>
+    make({
+      workerProfile: "engineering",
+      allowed: [...FILES, "Bash(bun test:*)"],
+      promptParts: [{ provenance: "user_approved", content: "y" }],
+      workingDirectory: WD,
+      ...over,
+    });
+
+  test("engineering Bash without a sandbox fails", () => {
+    expect(v(eng())).toEqual({ ok: false, reason: SANDBOX_REQUIRED_REASON });
+    expect(SANDBOX_REQUIRED_REASON).toBe("engineering Bash requires the sandbox");
+  });
+  test("engineering Bash with a valid sandbox passes", () => {
+    expect(v(eng({ sandbox: SANDBOX }))).toEqual({ ok: true });
+  });
+  test("an engineering run without Bash needs no sandbox (an investigation)", () => {
+    expect(v(eng({ allowed: FILES.slice(0, 3) }))).toEqual({ ok: true });
+  });
+  test("a non-engineering profile may not carry a sandbox", () => {
+    expect(reason(v(make({ sandbox: SANDBOX })))).toBe("sandbox is for engineering runs only");
+    expect(
+      reason(
+        v(
+          make({
+            workerProfile: "reader",
+            allowed: [`Read(/${WD}/**)`],
+            promptParts: [],
+            workingDirectory: WD,
+            sandbox: SANDBOX,
+          }),
+        ),
+      ),
+    ).toBe("sandbox is for engineering runs only");
+  });
+  test("unsafe sandbox paths fail", () => {
+    const SAFE = "sandbox paths must be absolute paths of safe characters";
+    expect(reason(v(eng({ sandbox: { ...SANDBOX, tmpDir: "/tmp" } })))).toBe(SAFE);
+    expect(reason(v(eng({ sandbox: { ...SANDBOX, denyRead: ["/home/u/../x"] } })))).toBe(SAFE);
+    expect(reason(v(eng({ sandbox: { ...SANDBOX, tmpDir: "rel/tmp" } })))).toBe(SAFE);
+    expect(reason(v(eng({ sandbox: { ...SANDBOX, denyRead: ["/home/u/my dir"] } })))).toBe(SAFE);
+  });
+  test("a tmpDir equal to, or containing, a masked path fails", () => {
+    const MASKED = "sandbox tmpDir must not contain a masked path";
+    expect(reason(v(eng({ sandbox: { tmpDir: "/home/u", denyRead: ["/home/u/.ssh"] } })))).toBe(
+      MASKED,
+    );
+    expect(
+      reason(v(eng({ sandbox: { tmpDir: "/home/u/.ssh/", denyRead: ["/home/u/.ssh"] } }))),
+    ).toBe(MASKED);
+    // The fixed masks count too: `/var/run` passes isSafeAbsolutePath.
+    expect(reason(v(eng({ sandbox: { ...SANDBOX, tmpDir: "/var/run" } })))).toBe(MASKED);
+    expect(reason(v(eng({ sandbox: { ...SANDBOX, tmpDir: "/var" } })))).toBe(
+      "sandbox paths must be absolute paths of safe characters",
+    );
+    expect(v(eng({ sandbox: SANDBOX }))).toEqual({ ok: true });
+    // A sibling with a shared prefix is not an ancestor.
+    expect(
+      v(eng({ sandbox: { tmpDir: "/home/u/.s/tmp", denyRead: ["/home/u/.s/tmp2"] } })),
+    ).toEqual({ ok: true });
+  });
+  test("a tmpDir inside a denyRead entry fails (Task 4b: bwrap cannot write under a mask)", () => {
+    const INSIDE = "sandbox tmpDir must not be inside a masked path";
+    expect(
+      reason(
+        v(
+          eng({
+            sandbox: {
+              tmpDir: "/home/u/.local/share/synapse/scratch/runs/j1/tmp",
+              denyRead: ["/home/u/.ssh", "/home/u/.local/share/synapse"],
+            },
+          }),
+        ),
+      ),
+    ).toBe(INSIDE);
+    expect(
+      reason(
+        v(eng({ sandbox: { tmpDir: "/home/u/.config/x/tmp/", denyRead: ["/home/u/.config/"] } })),
+      ),
+    ).toBe(INSIDE);
+    // Equal is still the "contains" reason, checked first.
+    expect(
+      reason(v(eng({ sandbox: { tmpDir: "/home/u/.config", denyRead: ["/home/u/.config"] } }))),
+    ).toBe("sandbox tmpDir must not contain a masked path");
+    // The fixed /tmp mask is not a request entry: a per-run dir under it stays allowed.
+    expect(v(eng({ sandbox: { ...SANDBOX, tmpDir: "/tmp/synapse-runs-x/runs/j1/tmp" } }))).toEqual({
+      ok: true,
+    });
+  });
+  test("a tmpDir equal to or under /run or /var/run fails (fix round 1)", () => {
+    const UNDER = "sandbox tmpDir must not be under /run or /var/run";
+    for (const tmpDir of ["/run/user/1000", "/run/user/1000/", "/var/run/x/tmp", "/run/x"]) {
+      expect(reason(v(eng({ sandbox: { ...SANDBOX, tmpDir } })))).toBe(UNDER);
+    }
+    // Siblings with a shared prefix are fine.
+    expect(v(eng({ sandbox: { ...SANDBOX, tmpDir: "/runner/x/tmp" } }))).toEqual({ ok: true });
+    expect(v(eng({ sandbox: { ...SANDBOX, tmpDir: "/var/running/tmp" } }))).toEqual({ ok: true });
+  });
+  test("an empty denyRead fails (fix round 1)", () => {
+    expect(reason(v(eng({ sandbox: { ...SANDBOX, denyRead: [] } })))).toBe(
+      "sandbox denyRead must not be empty",
+    );
+  });
+  test("rule M runs last: an earlier rule's reason wins", () => {
+    expect(reason(v(eng({ allowed: [...FILES, "Bash(curl x:*)"] })))).toBe(
+      "write tools must be scoped to the working directory",
+    );
   });
 });
 

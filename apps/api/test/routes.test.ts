@@ -66,6 +66,7 @@ test("health ready is 200 with a report", async () => {
     "bun",
     "claude",
     "claude_activity",
+    "claude_settings",
     "database",
     "desktop-notifier",
     "disk",
@@ -74,6 +75,7 @@ test("health ready is 200 with a report", async () => {
     "heartbeat",
     "jobs",
     "linger",
+    "sandbox",
     "screening-rules",
     "security-rules",
   ]);

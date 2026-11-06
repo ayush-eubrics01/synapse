@@ -307,6 +307,20 @@ export class ApprovalEngine {
     );
   }
 
+  /**
+   * F2.1: replaces the payload of a still-`pending` approval (one UPDATE; null when nothing
+   * matched). Publishes nothing: the caller validates the payload and audits.
+   */
+  updatePendingPayload(tx: DbOrTx, id: string, payload: unknown): Approval | null {
+    const row = tx
+      .update(schema.approvals)
+      .set({ payload })
+      .where(and(eq(schema.approvals.id, id), eq(schema.approvals.status, "pending")))
+      .returning()
+      .get();
+    return row ? toApproval(row) : null;
+  }
+
   listPending(): Approval[] {
     return this.db
       .select()
