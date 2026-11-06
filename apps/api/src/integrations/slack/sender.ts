@@ -119,7 +119,17 @@ export function decodeSlackText(s: string): string {
     .replace(/&amp;/g, "&");
 }
 
-export const normaliseSentText = (s: string) => decodeSlackText(s).replace(/\s+/g, " ").trim();
+/**
+ * J3: Slack autolinks a typed URL as `<https://host/path|host/path>`: the label drops the scheme, so
+ * after decoding, `https://host/path` (typed) and `host/path` (stored) differ. A typed bare
+ * `host/path` comes back the same way, so the markup can't say which was typed. Both sides are
+ * therefore compared with `http://` and `https://` prefixes removed.
+ */
+export const normaliseSentText = (s: string) =>
+  decodeSlackText(s)
+    .replace(/\bhttps?:\/\//gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
 /**
  * The only code path that posts to Slack. Success is never read from the tool's result text (its

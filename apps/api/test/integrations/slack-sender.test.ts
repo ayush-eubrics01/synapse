@@ -418,6 +418,31 @@ describe("SlackSender.findSent", () => {
     expect(await other.sender.findSent(cmd({ text }), SINCE)).toBe(false);
   });
 
+  test("J3: Slack's real autolink form (label without the scheme, entity-encoded) matches the typed URL", async () => {
+    // Format observed on a real send (2026-11-06): a typed `https://…` URL comes back as
+    // `<https://…|host/path>`, the label dropping the scheme and encoding `&`.
+    const text = "Synapse test (approved path) — https://example.com/?a=1&b=2 & done";
+    const { sender } = setup({
+      collect: async () =>
+        pages([
+          msg({
+            text: "Synapse test (approved path) — <https://example.com/?a=1&b=2|example.com/?a=1&amp;b=2> &amp; done",
+          }),
+        ]),
+    });
+    expect(await sender.findSent(cmd({ text }), SINCE)).toBe(true);
+    const typedBare = setup({
+      collect: async () => pages([msg({ text: "see <http://example.org|example.org>" })]),
+    });
+    expect(await typedBare.sender.findSent(cmd({ text: "see example.org" }), SINCE)).toBe(true);
+    const otherHost = setup({
+      collect: async () => pages([msg({ text: "see <https://example.net|example.net>" })]),
+    });
+    expect(await otherHost.sender.findSent(cmd({ text: "see https://example.com" }), SINCE)).toBe(
+      false,
+    );
+  });
+
   test("R19: a different link label is a different text", async () => {
     const { sender } = setup({
       collect: async () => pages([msg({ text: "see <https://example.com|other>" })]),

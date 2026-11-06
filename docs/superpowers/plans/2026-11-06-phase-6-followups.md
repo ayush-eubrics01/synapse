@@ -18,7 +18,14 @@ The real run found two bugs that fixture tests had missed, both fixed before the
 
 Content-free drop-reason counts were added to the job result and the smoke output. The remaining drops are by design: low confidence, and commitments between other people.
 
-**Real test send: not done.** The permission classifier blocked the controller from posting, even to the user's own DM. The user can run it with `bun scripts/dev/send-smoke.ts --self <their Slack id>`. This is still the open J3 item, and 6b must not rely on delivery verification until it passes.
+**Real test send (J3): done on 2026-11-06, run by the user.**
+
+- The approved send was delivered and ended as `sent_unverified`.
+- `findSent` failed to verify it at first. Slack autolinks a typed URL as `<https://host/path|host/path>`, so the label lacks the scheme and the decoded text differed from the approved text.
+- Fixed by removing the `http(s)://` prefixes from both sides before comparing. There is a regression test with the real format.
+- Re-running the real `findSent` on the delivered message then returned `true`.
+
+J3 is closed.
 
 ## Product decisions made during the phase (the user may revisit)
 
