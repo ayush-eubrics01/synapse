@@ -36,3 +36,8 @@ Run by the controller on 2026-11-06 against the real CLI. Temp dirs only; counts
 - **`scope-smoke` (superseded, see above).** `inside: ok`, `outside: blocked`, `permissionDenials: 1`, `scope-smoke: blocked`. This run used the single-slash form with the cwd equal to the scoped directory, so the inside read was allowed by the cwd default, not by the rule.
 - **`inspect-smoke`, first run.** It failed with `FOREIGN KEY constraint failed`. The script passed a made-up `jobId`, and `claude_runs.job_id` references `jobs`. The smoke now drops `jobId`. This was a script bug only; the worker always runs with a real job id.
 - **`inspect-smoke`, after the fix.** Model haiku, a throwaway 3-file repo: `turns: 8`, `permissionDenials: 0`, `proposed: 9`, `inserted: 8`, `dropped: sensitive_path=1`. The run stayed inside the repo, evidence verification held, and the sensitive-path filter fired.
+
+### Rerun after the final-review fixes (controller, 2026-11-06)
+
+- **`scope-smoke`** (provider level, cwd in a third directory): `double: inside=ok outside=blocked`, `single(control): inside=denied`, `scope-smoke: blocked`. The `//` rule itself grants the read; the cwd default doesn't.
+- **`inspect-smoke`** (with `--permission-mode default`, auto memory off, and CLAUDE.md loading off): `turns: 8`, `permissionDenials: 0`, `proposed: 9`, `inserted: 8`, `dropped: sensitive_path=1`. `not_read` dropped nothing it shouldn't.
