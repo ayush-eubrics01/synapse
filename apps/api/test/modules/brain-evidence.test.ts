@@ -7,6 +7,7 @@ import {
   normaliseFactContent,
   observedPaths,
   type RawFact,
+  verifyCitations,
   verifyFacts,
 } from "../../src/modules/engineering-brain/evidence";
 import { initRepo, tempDir } from "../fixtures/git-repo";
@@ -300,5 +301,45 @@ describe("normaliseFactContent", () => {
   test("lowercases, strips punctuation and collapses whitespace", () => {
     expect(normaliseFactContent("  Uses   Next.js, React!\n")).toBe("uses nextjs react");
     expect(normaliseFactContent("uses nextjs react")).toBe("uses nextjs react");
+  });
+});
+
+describe("verifyCitations", () => {
+  const observed = { has: (rel: string) => rel === "src/index.ts" || rel === "README.md" };
+
+  test("keeps an observed regular file with its line, repository-relative", () => {
+    const r = verifyCitations(
+      repo,
+      [{ path: "./src//index.ts", line: 4 }, { path: "README.md" }],
+      observed,
+    );
+    expect(r).toEqual({
+      kept: [{ path: "src/index.ts", line: 4 }, { path: "README.md" }],
+      dropped: 0,
+    });
+  });
+
+  test("drops an existing file the run never observed", () => {
+    const r = verifyCitations(repo, [{ path: "package.json" }], observed);
+    expect(r).toEqual({ kept: [], dropped: 1 });
+  });
+
+  test("drops traversal, absolute, sensitive, symlink-outside, missing and directory paths", () => {
+    const everything = { has: () => true };
+    const r = verifyCitations(
+      repo,
+      [
+        { path: "../../etc/passwd" },
+        { path: "/etc/passwd" },
+        { path: ".env" },
+        { path: "src/leak.ts" },
+        { path: "src/settings.ts" },
+        { path: "src/ghost.ts" },
+        { path: "src" },
+        { path: "src/index.ts" },
+      ],
+      everything,
+    );
+    expect(r).toEqual({ kept: [{ path: "src/index.ts" }], dropped: 7 });
   });
 });

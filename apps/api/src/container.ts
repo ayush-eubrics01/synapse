@@ -56,6 +56,7 @@ import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
 import { AutoReplyService } from "./modules/auto-reply/service";
 import { WipReminders } from "./modules/claude-activity/reminders";
 import { ClaudeActivityService } from "./modules/claude-activity/service";
+import { CodeAnswerService } from "./modules/code-answers/service";
 import { ExtractionQueue } from "./modules/commitments/extraction-queue";
 import { FollowupService } from "./modules/commitments/followups";
 import { CommitmentLifecycle } from "./modules/commitments/lifecycle";
@@ -90,6 +91,7 @@ import { registerAutoReplyJobs } from "./workers/auto-reply/evaluate";
 import { registerDriftCheck } from "./workers/brain/drift";
 import { registerInspectionJobs } from "./workers/brain/inspect";
 import { registerClaudeActivityJobs } from "./workers/claude-activity";
+import { registerCodeAnswerJob } from "./workers/code-answer/generate";
 import { registerCommitmentJobs } from "./workers/commitments";
 import { registerInvestigateJob } from "./workers/engineering/investigate";
 import { registerPickupJobs } from "./workers/engineering/pickup";
@@ -135,6 +137,8 @@ export interface Container {
   profiles: ProfileRecommendations;
   profileStore: ProfileService;
   peopleViews: PeopleViews;
+  /** Code answers (Phase 10b, C2-C4). */
+  codeAnswers: CodeAnswerService;
   securityFlags: SecurityFlagsService;
   /** Approved Slack sends: requests, the `slack.send` executor, verification and resolution. */
   outgoing: OutgoingService;
@@ -420,6 +424,16 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   dispatcher.subscribe("followup.sent", "commitments.followup_sent", (event, tx) =>
     followupService.onFollowupSent(event, tx),
   );
+  const codeAnswers = new CodeAnswerService({
+    db,
+    clock,
+    events,
+    audit,
+    queue,
+    settings,
+    securityFlags,
+    outgoing,
+  });
   const slack = registerSlackJobs({
     db,
     clock,
@@ -436,6 +450,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
       autoReplyText: (days) => autoReply.expireText(days),
       outgoingText: (days) => outgoing.expireText(days),
       followupDrafts: (days) => followupService.expireDrafts(days),
+      codeAnswerText: (days) => codeAnswers.expireAnswers(days),
     },
   });
   const postSend = new PostSendSuggestions({
@@ -580,6 +595,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   });
   engineeringSteps.register(approvals, dispatcher);
   registerInvestigateJob({ db, settings, orchestrator, service: engineering, handlers });
+  registerCodeAnswerJob({ db, settings, orchestrator, service: codeAnswers, handlers });
   registerStepJob({ db, settings, orchestrator, steps: engineeringSteps, handlers });
   registerPickupJobs({ service: engineering, lock: engineeringLock, scheduler, handlers });
 
@@ -648,6 +664,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     profileStore,
     peopleViews,
     securityFlags,
+    codeAnswers,
     outgoing,
     urgentReplies,
     autoReply,
