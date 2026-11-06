@@ -66,9 +66,9 @@ export interface NeedsYouInput {
   people: PersonDto[];
   candidates: CandidatesResponse | null;
   slackStatus: SlackStatusDto | null;
-  /** Keys of items pending a deferred commit (spec D8): never shown, whatever the data says. */
   /** The return digest of the last away session, until dismissed (spec A17). */
   awayDigest?: AwayDigest | null;
+  /** Keys of items pending a deferred commit (spec D8): never shown, whatever the data says. */
   hidden: Set<string>;
 }
 

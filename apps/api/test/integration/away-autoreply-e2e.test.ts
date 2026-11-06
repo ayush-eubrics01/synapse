@@ -158,7 +158,7 @@ describe("away auto-reply through the real provider", () => {
     noText(container);
   });
 
-  test("a different send text: failed/argument_mismatch, needs attention, never re-sent", async () => {
+  test("a different send text: needs_attention/argument_mismatch, needs attention, never re-sent", async () => {
     const { c: container, files } = build("altered");
     await drain(container);
 

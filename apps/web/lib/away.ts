@@ -22,6 +22,11 @@ const HOLD_REASON: Record<HoldReason, string> = {
   recipient_mismatch: "Recipient didn't match the conversation",
 };
 
+/** Digest card title: singular/plural of auto-replies sent, then the held count. */
+export function digestTitle(sent: number, held: number): string {
+  return `${sent} ${sent === 1 ? "auto-reply" : "auto-replies"} sent, ${held} held`;
+}
+
 export function holdReasonLabel(reason: HoldReason | null): string {
   return reason === null ? "Held" : HOLD_REASON[reason];
 }

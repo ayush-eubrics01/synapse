@@ -4,6 +4,7 @@ import { renderToString } from "react-dom/server";
 import { AwayBanner } from "../app/components/header/AwayBanner";
 import { Header } from "../app/components/header/Header";
 import { AwayDigestCard } from "../app/components/triage/AwayDigestCard";
+import { digestTitle } from "../lib/away";
 import { buildNeedsYou, needsYouCount } from "../lib/needs-you";
 
 const text = (html: string) => html.replace(/<!-- -->/g, "");
@@ -119,8 +120,8 @@ test("a sent row whose send did not go out reads Not sent", () => {
 });
 
 test("Dismiss calls the handler with the session id", () => {
-  const el = AwayDigestCard({ digest: digest(), now: NOW, onDismiss: (id) => calls.push(id) });
   const calls: string[] = [];
+  const el = AwayDigestCard({ digest: digest(), now: NOW, onDismiss: (id) => calls.push(id) });
   const find = (n: unknown): { onClick?: () => void } | null => {
     if (!n || typeof n !== "object") return null;
     const node = n as { type?: unknown; props?: { children?: unknown; onClick?: () => void } };
@@ -134,8 +135,7 @@ test("Dismiss calls the handler with the session id", () => {
     return null;
   };
   // CardFrame and Actions are components, so walk the element tree through their props.
-  const walk = (n: unknown): { onClick?: () => void } | null => find(n);
-  const btn = walk(el);
+  const btn = find(el);
   expect(btn).not.toBeNull();
   btn?.onClick?.();
   expect(calls).toEqual(["S1"]);
@@ -174,4 +174,10 @@ test("the away digest ranks first in Needs you and counts", () => {
   expect(cards[0]?.key).toBe("away-digest:S1");
   expect(needsYouCount(cards)).toBe(2);
   expect(buildNeedsYou({ ...emptyInput, awayDigest: null })).toEqual([]);
+});
+
+test("digestTitle pluralises the sent count", () => {
+  expect(digestTitle(1, 0)).toBe("1 auto-reply sent, 0 held");
+  expect(digestTitle(2, 1)).toBe("2 auto-replies sent, 1 held");
+  expect(digestTitle(0, 0)).toBe("0 auto-replies sent, 0 held");
 });

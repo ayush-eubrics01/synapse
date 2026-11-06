@@ -1,7 +1,7 @@
 "use client";
 
 import type { AutoReplyView, AwayDigest } from "@synapse/contracts";
-import { deliveryLabel, holdReasonLabel, kindLabel } from "../../../lib/away";
+import { deliveryLabel, digestTitle, holdReasonLabel, kindLabel } from "../../../lib/away";
 import { relMinutes } from "../../../lib/format";
 import { Avatar } from "../ui/Avatar";
 import { Button } from "../ui/Button";
@@ -47,7 +47,7 @@ export function AwayDigestCard({
       tone="blue"
       meta={metaLine(digest.session.endedAt, now, "away ended")}
       metaTitle={absoluteTime(digest.session.endedAt)}
-      title={`${digest.sent.length} auto-replies sent, ${digest.held.length} held`}
+      title={digestTitle(digest.sent.length, digest.held.length)}
     >
       {rows.length > 0 && (
         <ul className="syn-away-rows">
