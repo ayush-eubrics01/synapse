@@ -32,7 +32,7 @@ import type { HandlerRegistration } from "../../src/core/jobs/worker";
 import { LeaseService } from "../../src/core/leases/leases";
 import { assemblePrompt } from "../../src/core/orchestrator/prompt";
 import { buildDenylist, DEFAULT_KNOWN_SERVERS } from "../../src/core/orchestrator/tool-catalog";
-import { validateRequest } from "../../src/core/orchestrator/validator";
+import { SANDBOX_REQUIRED_REASON, validateRequest } from "../../src/core/orchestrator/validator";
 import { PermissionManager } from "../../src/core/permissions/permissions";
 import { GitHubCliProvider } from "../../src/integrations/github/gh-cli";
 import { LocalGitWorkflow } from "../../src/integrations/repository/git-workflow";
@@ -591,6 +591,43 @@ describe("develop sandbox (ADR-040)", () => {
     expect(taskRow(id)?.failure).toBe("timeout");
     expect(seen).toHaveLength(1);
     expect(existsSync(runDir(seen[0] as string))).toBe(false);
+  });
+
+  test("a sandbox that cannot start needs attention, keeps the lock, makes no approval (F1.4)", async () => {
+    reply = () => {
+      throw new JobError({
+        kind: "provider_error",
+        message: "sandbox unavailable",
+        details: { sandboxUnavailable: true },
+      });
+    };
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("sandbox_unavailable");
+    expect((stepRow(id, "develop")?.output as Record<string, unknown> | null)?.failure).toBe(
+      "sandbox_unavailable",
+    );
+    expect(leaseRow()).toBeDefined();
+    expect(pendingOf("engineering.commit")).toBeUndefined();
+  });
+
+  test("rule M's refusal surfaces as sandbox_disabled and releases the lock (F1.5)", async () => {
+    reply = () => {
+      throw new JobError({ kind: "invalid_input", message: SANDBOX_REQUIRED_REASON });
+    };
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("sandbox_disabled");
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("sandbox denial text in a passing run does not flip testsPassed (F1.4)", () => {
+    expect(
+      testResultFrom(
+        [tool("Bash", { command: "bun test" }, "1 pass\nsandbox: network request denied")],
+        "bun test",
+      ).testsPassed,
+    ).toBe(true);
   });
 
   test("a cleanup failure never replaces the run's result (fix round 1)", async () => {

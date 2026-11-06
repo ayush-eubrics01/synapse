@@ -8,11 +8,13 @@ import { FakeClock } from "@synapse/shared";
 import { SettingsService } from "../../src/core/config/settings";
 import {
   bunVersionCheck,
+  claudeSettingsCheck,
   databaseCheck,
   eventsCheck,
   heartbeatCheck,
   jobsCheck,
   lingerCheck,
+  sandboxCheck,
 } from "../../src/core/health/checks";
 import { HealthService } from "../../src/core/health/health";
 import { JobQueue } from "../../src/core/jobs/queue";
@@ -203,4 +205,35 @@ test("a failed quick_check is down even when the database is not in WAL mode", a
     status: "down",
     detail: "quick_check failed",
   });
+});
+
+test("sandbox check reports the missing binaries in order (F1.4)", async () => {
+  const mk = (found: string[]) =>
+    sandboxCheck({ settings, which: (b) => (found.includes(b) ? `/usr/bin/${b}` : null) });
+  expect(await mk(["bwrap"])()).toEqual({ status: "degraded", detail: "missing: socat" });
+  expect(await mk([])()).toEqual({ status: "degraded", detail: "missing: bwrap, socat" });
+  expect(await mk(["bwrap", "socat"])()).toEqual({ status: "ok" });
+  settings.set("engineering.sandbox.enabled", false);
+  expect(await mk([])()).toEqual({ status: "ok", detail: "disabled" });
+});
+
+test("claude_settings check mirrors the orchestrator's refusal condition (F3.3)", async () => {
+  const mk = (p: { widen?: boolean; servers?: string[] }) =>
+    claudeSettingsCheck({
+      provider: {
+        userPermissionsWidenScope: p.widen ?? false,
+        userAllowedConnectorServers: p.servers ?? [],
+      },
+      knownServers: () => ["mcp__claude_ai_Slack"],
+    });
+  expect(await mk({ widen: true })()).toEqual({
+    status: "degraded",
+    detail: "unsafe_user_settings",
+  });
+  expect(await mk({ servers: ["mcp__other"] })()).toEqual({
+    status: "degraded",
+    detail: "unsafe_user_settings",
+  });
+  expect(await mk({ servers: ["mcp__claude_ai_Slack"] })()).toEqual({ status: "ok" });
+  expect(await mk({})()).toEqual({ status: "ok" });
 });

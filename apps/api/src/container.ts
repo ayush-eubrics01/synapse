@@ -24,6 +24,7 @@ import {
   bunVersionCheck,
   claudeActivityCheck,
   claudeCheck,
+  claudeSettingsCheck,
   databaseCheck,
   desktopNotifierCheck,
   diskCheck,
@@ -32,6 +33,7 @@ import {
   heartbeatCheck,
   jobsCheck,
   lingerCheck,
+  sandboxCheck,
   screeningRulesCheck,
   securityRulesCheck,
 } from "./core/health/checks";
@@ -199,6 +201,8 @@ export interface ContainerDeps {
   /** Replaces the real ClaudeCliProvider (tests inject a fake). */
   provider?: AIProvider;
   run?: (cmd: string[]) => Promise<string>;
+  /** Resolves a binary on the service PATH (tests inject one; defaults to Bun.which). */
+  which?: (bin: string) => string | null;
   /** Registers the `test.noop` job handler (set from SYNAPSE_TEST_HANDLERS by main.ts). */
   testHandlers?: boolean;
   /** Replaces the real SlackSender behind `outgoing` (tests and smoke scripts inject a fake). */
@@ -292,11 +296,13 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   const home = resolveHome(process.env);
   // Plugin names and the user-permission widening flag, read once at startup (R34, Phase 9).
   const userSettings = loadUserSettings(home);
+  const servicePath = `${home}/.bun/bin:${home}/.local/bin:/usr/bin:/bin`;
+  const which = deps.which ?? ((b: string) => Bun.which(b, { PATH: servicePath }));
   const provider =
     deps.provider ??
     new ClaudeCliProvider({
       binary: config.claudeBinary,
-      env: { PATH: `${home}/.bun/bin:${home}/.local/bin:/usr/bin:/bin`, HOME: home },
+      env: { PATH: servicePath, HOME: home },
       clock,
       settingsOverride: userSettings.override,
       userPermissionsWidenScope: userSettings.userPermissionsWidenScope,
@@ -737,6 +743,11 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     bun: bunVersionCheck(),
     auth: authCheck(auth, clock),
     claude: claudeCheck(provider, clock),
+    sandbox: sandboxCheck({ settings, which }),
+    claude_settings: claudeSettingsCheck({
+      provider,
+      knownServers: () => settings.get("orchestrator.knownServers"),
+    }),
     "security-rules": securityRulesCheck(securityFlags),
     "screening-rules": screeningRulesCheck(screening),
     "desktop-notifier": desktopNotifierCheck(notifier),

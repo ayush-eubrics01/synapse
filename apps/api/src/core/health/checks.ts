@@ -277,3 +277,36 @@ export function diskCheck(deps: {
     return { status: "ok" };
   });
 }
+
+/** ADR-040: develop runs need bubblewrap and socat. Setting off reads `ok` (the feature is off). */
+export function sandboxCheck(deps: {
+  settings: Pick<SettingsService, "get">;
+  which: (bin: string) => string | null;
+}): HealthCheck {
+  return guarded(async () => {
+    if (!deps.settings.get("engineering.sandbox.enabled")) {
+      return { status: "ok", detail: "disabled" };
+    }
+    const missing = ["bwrap", "socat"].filter((b) => deps.which(b) === null);
+    return missing.length === 0
+      ? { status: "ok" }
+      : { status: "degraded", detail: `missing: ${missing.join(", ")}` };
+  });
+}
+
+/**
+ * The orchestrator's refusal condition for user settings, from the startup flags: a widening
+ * `permissions`/`sandbox` entry, or a user-allowed connector server outside the known list.
+ */
+export function claudeSettingsCheck(deps: {
+  provider: Pick<AIProvider, "userPermissionsWidenScope" | "userAllowedConnectorServers">;
+  knownServers: () => readonly string[];
+}): HealthCheck {
+  return guarded(async () => {
+    const known = new Set(deps.knownServers());
+    const unknown = (deps.provider.userAllowedConnectorServers ?? []).some((s) => !known.has(s));
+    return deps.provider.userPermissionsWidenScope === true || unknown
+      ? { status: "degraded", detail: "unsafe_user_settings" }
+      : { status: "ok" };
+  });
+}

@@ -15,6 +15,8 @@ export const HEALTH_LABELS: Record<string, string> = {
   file_permissions: "Data file permissions",
   backup: "Backups",
   disk: "Disk space",
+  sandbox: "Test sandbox",
+  claude_settings: "Claude Code settings",
 };
 
 /** What to do about a failing check. A check with no entry has no hint. */
@@ -37,5 +39,8 @@ export const HEALTH_HINTS: Record<string, string> = {
   backup:
     "The daily backup is missing or failed. Check free space in the backup directory, then use Back up now in System.",
   disk: "Free space is low where Synapse keeps its data. Delete old files or move backups with SYNAPSE_BACKUP_DIR.",
+  sandbox: "Install bubblewrap and socat (sudo apt install bubblewrap socat), then retry",
+  claude_settings:
+    "Your ~/.claude/settings.json allows tools or sets sandbox options Synapse must control; engineering and code-answer runs are refused until those allow entries and sandbox settings are removed and the API is restarted",
   bun: "Upgrade Bun to 1.4.4 or newer.",
 };

@@ -28,6 +28,7 @@ import type { AuditLogger } from "../../core/audit/audit";
 import type { OutboxDispatcher } from "../../core/events/dispatcher";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
+import { SANDBOX_REQUIRED_REASON } from "../../core/orchestrator/validator";
 import {
   parseDevelopReply,
   REPO_IN_MASKED_PATH,
@@ -188,6 +189,11 @@ function stopKind(err: unknown): "max_turns" | "timeout" | null {
   return err.classified.kind === "timeout" ? "timeout" : null;
 }
 
+/** The run's sandbox failed at startup (Task 2 sets `details.sandboxUnavailable` on the JobError). */
+function sandboxUnavailable(err: unknown): boolean {
+  return err instanceof JobError && err.classified.details?.sandboxUnavailable === true;
+}
+
 /**
  * The engineering step runner (E8–E18, ADR-030, ADR-013). Every Git operation is Synapse code
  * through the `GitWorkflow` port; the model only edits files and runs the tests (the develop run,
@@ -322,6 +328,21 @@ export class EngineeringStepService {
           this.mark(taskId, "develop", "pending", { claudeRunId: runner.runId() });
           throw err;
         }
+        // The sandbox cannot start: always needs the user (F1.4), never a clean-tree failure.
+        if (sandboxUnavailable(err)) {
+          return this.attention(
+            taskId,
+            "develop",
+            "sandbox_unavailable",
+            { ...fingerprints, failure: "sandbox_unavailable" },
+            runner.runId(),
+          );
+        }
+        // Rule M refused the run: the sandbox setting is off (F1.5).
+        const sandboxOff =
+          err instanceof JobError &&
+          err.classified.kind === "invalid_input" &&
+          err.classified.message === SANDBOX_REQUIRED_REASON;
         // The worker refuses a repository the sandbox would mask before any run (ADR-040).
         const masked =
           err instanceof JobError &&
@@ -329,7 +350,9 @@ export class EngineeringStepService {
           err.classified.message === REPO_IN_MASKED_PATH;
         const kind = masked
           ? REPO_IN_MASKED_PATH
-          : (stopKind(err) ?? (err instanceof JobError ? err.classified.kind : "unknown"));
+          : sandboxOff
+            ? "sandbox_disabled"
+            : (stopKind(err) ?? (err instanceof JobError ? err.classified.kind : "unknown"));
         return this.developFailed(ctx, kind, fingerprints, runner.runId());
       }
       return this.developDone(ctx, result, testCommand, fingerprints, runner.runId());
