@@ -1,14 +1,12 @@
 "use client";
 
 import type { CandidatesResponse } from "@synapse/contracts";
-import { useEffect, useState } from "react";
 import type { PersonDto, PersonPriorityDto } from "../../../lib/api";
 import { TOASTS } from "../../../lib/needs-you-actions";
 import {
   type EvalOutcome,
   evaluateInOrder,
   evaluationsToast,
-  pruneQueued,
   topUnqueued,
 } from "../../../lib/people-ui";
 import { useToast } from "../ui/Toasts";
@@ -26,23 +24,14 @@ export interface PeopleProps {
   onNotice: (notice: string | null) => void;
   onPriority: (person: PersonDto, priority: PersonPriorityDto, extraAttention: boolean) => void;
   onOpen: (slackUserId: string) => void;
+  /** Evaluations requested this session (`useQueuedEvaluations`), shared with Needs you. */
+  queued: ReadonlySet<string>;
+  onQueued: (ids: readonly string[]) => void;
 }
 
 export function People(p: PeopleProps) {
   const toast = useToast();
-  // The candidates API has no "queued" flag, so ids requested this session are kept here and
-  // dropped once the candidate disappears from the list (after the run, or a refresh).
-  const [queued, setQueued] = useState<ReadonlySet<string>>(() => new Set());
-  const candidateList = p.candidates?.candidates;
-  useEffect(() => {
-    if (!candidateList) return;
-    setQueued((q) => {
-      const next = pruneQueued(q, candidateList);
-      return next.size === q.size ? q : next;
-    });
-  }, [candidateList]);
-
-  const markQueued = (ids: string[]) => setQueued((q) => new Set([...q, ...ids]));
+  const { queued, onQueued: markQueued } = p;
   const evaluateOne = async (id: string) => {
     p.onNotice(null);
     const r = await p.onEvaluate(id);

@@ -136,5 +136,8 @@ Any other check gets `hint: null`. Check labels come from a sibling map, for exa
 - **Badges.** The Inbox badge is the number of conversations where they wrote last (`theyWroteLast`). The Needs-you badge is the number of actionable cards in the feed. A running backfill card has nothing to act on, so it isn't counted.
 - **Self DM.** `isSelfDm` needs the stored conversation name to equal the self user's stored name (see `docs/modules/slack.md`, Inbox views). The collector stores no names for DMs, so in practice no conversation is labelled "Notes to self" yet. A partner-less DM is titled by its name, or "Direct message".
 - **Assess pipeline.** Jobs in RETRY count as waiting, alongside due PENDING jobs and RUNNING jobs.
+- **Undo timing (D8).** The deferral stays 5 s, but the Undo toast shows for 4.5 s, so Undo is never offered after the commit could have started. A late Undo shows "Too late to undo".
+- **Overview counts.** The overview's counts follow the Needs-you feed's rules, not the raw list lengths (see `docs/modules/dashboard.md`).
+- **Overview failures.** Only a network failure reads "Unreachable". An HTTP error reads "Overview unavailable" and names the status.
 
 Deferred items and the smoke result are in `docs/superpowers/plans/2026-11-06-phase-7-followups.md`.

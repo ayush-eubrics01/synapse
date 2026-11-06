@@ -29,6 +29,8 @@ export interface NeedsYouProps {
   sevenDay: number | null;
   onCopy: (text: string) => void | Promise<void>;
   backfillConfirmSignal?: number;
+  /** Evaluations requested this session, shared with the People section. */
+  queuedEvaluations?: ReadonlySet<string>;
 }
 
 function Card({ card, p }: { card: NeedsCard; p: NeedsYouProps }) {
@@ -102,6 +104,7 @@ function Card({ card, p }: { card: NeedsCard; p: NeedsYouProps }) {
       return (
         <PeopleSetupCard
           candidates={card.data.candidates}
+          queued={p.queuedEvaluations}
           onEvaluate={h.evaluatePerson}
           onSeeAll={h.seeAllPeople}
         />
@@ -130,7 +133,7 @@ export function NeedsYou(props: NeedsYouProps) {
         </h2>
         <p className="syn-needs-sub">Decisions only you can make. Ordered by impact.</p>
       </div>
-      {n > 0 && (
+      {props.cards.length > 0 && (
         <div className="syn-needs-list">
           {props.cards.map((card) => (
             <Card key={card.key} card={card} p={props} />

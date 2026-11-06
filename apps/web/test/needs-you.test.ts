@@ -345,7 +345,7 @@ test("commitment cards only for queue items the server lets you accept", () => {
   expect(cards.map((c) => c.key)).toEqual(["commitment:c1"]);
 });
 
-test("the identity setup card shows only with no self id and a suggestion or people", () => {
+test("the identity setup card shows whenever there is no self id (agrees with the briefing)", () => {
   const unset = { selfUserId: null, suggestion: null, suggestionName: null };
   const has = (o: Partial<NeedsYouInput>) =>
     buildNeedsYou(empty(o)).some((c) => c.kind === "setup-identity");
@@ -353,7 +353,8 @@ test("the identity setup card shows only with no self id and a suggestion or peo
     true,
   );
   expect(has({ identity: unset, people: [person("U0ADA0001", "Ada")] })).toBe(true);
-  expect(has({ identity: unset })).toBe(false);
+  // No suggestion and no people: still shown (the card's "No suggestion yet" branch).
+  expect(has({ identity: unset })).toBe(true);
   expect(has({ identity: identified, people: [person("U0ADA0001", "Ada")] })).toBe(false);
   expect(has({ identity: null })).toBe(false);
 });

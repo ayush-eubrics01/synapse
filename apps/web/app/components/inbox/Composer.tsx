@@ -59,7 +59,7 @@ function ReplyComposer({
       />
       <div className="syn-composer-actions">
         <Button variant="ghost" onClick={() => setText(draft ?? "")}>
-          Discard
+          Reset to draft
         </Button>
         <Button
           variant="primary"

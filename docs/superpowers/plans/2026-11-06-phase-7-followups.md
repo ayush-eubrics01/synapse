@@ -26,7 +26,12 @@ Results:
 - **A Claude reply draft for any conversation (D10).** The composer acts only on an open urgent item. Drafting for an arbitrary conversation needs a new AI job and an orchestrator worker profile.
 - **Away mode wiring (Phase 6b).** The toggle is rendered disabled with its explanation.
 - **Custom layout (Phase 11).** Per-user section order and visibility.
-- **Several toasts at once and stacked undo.** One toast shows at a time. A new deferred action replaces the toast, but the earlier action still commits after its delay. Its Undo is only reachable while its own toast is shown.
+- **Several toasts at once and stacked undo.** One toast shows at a time. A new deferred action replaces the toast, but the earlier action still commits after its delay. Its Undo is only reachable while its own toast is shown. The same holds when an immediate action's confirmation toast replaces an Undo toast: the deferred action still commits.
+- **Briefing count of unverified sends.** The feed shows a card for a `sent_unverified` send with resolve choices, but the overview's `outgoingAttention` counts only `needs_attention` rows and exposes nothing for these, so the briefing's "send(s) need attention" leaves them out. A backend count would fix it.
+- **Duplicate reads.** The overview and the page's own list fetches read the same tables on every refresh. The conversation summary query also sorts in a way the current index doesn't cover.
+- **Reviewing the latest flag hides the whole person card for 5 s.** The deferred key is the latest open flag, which keys the whole grouped card.
+- **Sidebar footer addresses.** The footer hard-codes 127.0.0.1:7400 and :7401 instead of reading the configured ports.
+- **Priority control after a failed save.** The radiogroup keeps the chosen value locally so repeated arrow presses step on. If the save fails and the server's value doesn't change, the control keeps showing the chosen value (the error banner shows) until the next change of the value from the API.
 - **Autoscroll in threads on SSE updates.** A live refresh updates the open thread in place, without scrolling to the newest message.
 - **A reliable self-DM signal.** The collector stores no name for DMs, so `isSelfDm` (which needs the stored name to equal the self user's stored name) is false in practice. The self DM shows as "Direct message". A future signal could be the connector's channel metadata, or the DM channel the user's own sends resolve to.
 - **Focus-return tests in a DOM.** The profile drawer's opener is captured at click time and handed to the drawer. That's covered by a static wiring assertion only, because the web tests have no DOM.
@@ -40,3 +45,14 @@ Results:
 - A failed thread refetch surfaces in the load error like every other fetch.
 - People: the drawer's opener is captured at click time, Critical gets a red selected tone, Evaluate top 3 shows every refusal once after the batch, and stalled appears once on a commitment card.
 - Needs you: a deferred commit's failure has its own error channel, which immediate actions don't clear. The outgoing card labels channels `#name`.
+
+## Final review fixes
+
+- Overview counts follow the Needs-you feed: `commitmentsToReview` counts pending_review rows only, `approvals` leaves out approvals decided on a pending profile suggestion (the surface stage uses the same count), and `peopleToEvaluate` counts candidates with the `evaluate` action (0 while identity is required).
+- Conversation thread permalinks go through `safePermalink`.
+- The identity setup card shows whenever no identity is confirmed. The Needs-you list renders a running-backfill-only card.
+- Undo: the toast shows for 4.5 s while the deferral stays 5 s; a late Undo says "Too late to undo".
+- The priority radiogroup steps on from its local value, so two arrow presses go Normal → High → Critical.
+- Evaluations queued from Needs you, People or the drawer share one session set; the setup card shows them as "Queued".
+- An HTTP error from the overview reads "Overview unavailable", not "Unreachable".
+- Small: "Reset to draft" in the reply composer, the quota thresholds comment (0–1 fractions), `aria-haspopup="dialog"` on the health pill, and the Commitments filters are `aria-pressed` toggle buttons like the Inbox.

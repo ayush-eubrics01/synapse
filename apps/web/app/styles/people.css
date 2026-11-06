@@ -231,7 +231,7 @@
   color: var(--ink);
 }
 
-.syn-ftab[aria-selected="true"] {
+.syn-ftab[aria-pressed="true"] {
   background: var(--surface);
   color: var(--ink);
   box-shadow: 0 0 0 1px var(--line);

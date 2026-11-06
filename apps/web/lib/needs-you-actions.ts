@@ -55,7 +55,14 @@ export type NeedsYouApi = Pick<
 
 export const realNeedsYouApi: NeedsYouApi = apiModule;
 
+/**
+ * How long a reversible decision waits before its API call (spec D8). The Undo toast
+ * (`TOAST_MS`, 4.5 s) closes before this, so Undo is never offered once the commit may have begun.
+ */
+export const UNDO_DELAY_MS = 5000;
+
 export const TOASTS = {
+  tooLateToUndo: "Too late to undo",
   approvalRequested: "Approval request created · nothing is sent until you approve",
   evaluationQueued: "Evaluation queued · draft profile will appear in Needs you for approval",
   backfillQueued: "Backfill queued · runs in the background",
@@ -87,6 +94,8 @@ export interface NeedsYouActionsDeps {
   committing: { add(key: string): void; delete(key: string): void };
   toggleHistory: (slackUserId: string) => void;
   seeAllPeople: () => void;
+  /** A person whose evaluation was queued: added to the session's queued set People shares. */
+  onEvaluationQueued?: (slackUserId: string) => void;
 }
 
 function message(e: unknown): string {
@@ -117,7 +126,10 @@ export function createNeedsYouActions(d: NeedsYouActionsDeps): NeedsYouHandlers 
         committing.delete(key);
       }
     });
-    toast.show(label, () => deferred.undo(key));
+    // A commit that already started can't be taken back: say so instead of failing silently.
+    toast.show(label, () => {
+      if (!deferred.undo(key)) toast.show(TOASTS.tooLateToUndo);
+    });
   };
 
   const now = async (fn: () => Promise<unknown>, success?: string) => {
@@ -132,10 +144,14 @@ export function createNeedsYouActions(d: NeedsYouActionsDeps): NeedsYouHandlers 
   };
 
   // A refusal (no identity, already queued) is a normal result; show it as a notice.
-  const evaluate = (fn: () => Promise<{ queued: boolean; reason?: string }>) =>
+  const evaluate = (
+    fn: () => Promise<{ queued: boolean; reason?: string }>,
+    onQueued?: () => void,
+  ) =>
     now(async () => {
       const r = await fn();
       if (!r.queued) throw new Error(`Not queued: ${r.reason ?? "unknown reason"}`);
+      onQueued?.();
     }, TOASTS.evaluationQueued);
 
   // The decision's error is kept apart from the refresh's, so a good refresh can't hide a 409.
@@ -169,7 +185,11 @@ export function createNeedsYouActions(d: NeedsYouActionsDeps): NeedsYouHandlers 
     recRetry: (id) => void now(() => api.retryApply(id), "New approval created for the profile"),
     recEvaluate: (id) => void evaluate(() => api.acceptSuggestion(id)),
     confirmIdentity: (u) => void now(() => api.confirmSlackIdentity(u), "Identity confirmed"),
-    evaluatePerson: (u) => void evaluate(() => api.evaluatePerson(u)),
+    evaluatePerson: (u) =>
+      void evaluate(
+        () => api.evaluatePerson(u),
+        () => d.onEvaluationQueued?.(u),
+      ),
     seeAllPeople: d.seeAllPeople,
     startBackfill: () => void now(() => api.startBackfill(), TOASTS.backfillQueued),
   };

@@ -22,6 +22,25 @@ import type {
   UrgentItem,
 } from "@synapse/contracts";
 
+/** A non-2xx answer from the API. The message keeps the "<METHOD> <url> failed with <status>" form. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+/** Why the overview failed: the API could not be reached, or it answered with an HTTP error. */
+export type OverviewFailure = { kind: "network" } | { kind: "http"; status: number };
+
+/** An ApiError is an HTTP error; anything else (fetch throws a TypeError) means unreachable. */
+export function classifyOverviewFailure(reason: unknown): OverviewFailure {
+  return reason instanceof ApiError ? { kind: "http", status: reason.status } : { kind: "network" };
+}
+
 async function request<T>(
   url: string,
   init: RequestInit | undefined,
@@ -37,7 +56,10 @@ async function request<T>(
     } catch {
       // body was not JSON; the status alone is reported
     }
-    throw new Error(`${init?.method ?? "GET"} ${url} failed with ${res.status}${detail}`);
+    throw new ApiError(
+      `${init?.method ?? "GET"} ${url} failed with ${res.status}${detail}`,
+      res.status,
+    );
   }
   return (await res.json()) as T;
 }
@@ -99,7 +121,7 @@ export interface ClaudeQuotaWindow {
   resetsAt?: string;
 }
 
-/** Utilization percentages at which the orchestrator gates jobs (ADR-029). */
+/** Utilization fractions (0–1, like `utilization`) at which the orchestrator gates jobs (ADR-029). */
 export interface ClaudeQuotaThresholds {
   fiveHour: { soft: number; hard: number; stop: number };
   sevenDay: { soft: number; hard: number };

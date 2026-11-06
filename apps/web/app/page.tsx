@@ -18,6 +18,7 @@ import {
   type ClaudeStatus,
   type CommitmentStatusDto,
   type CommitmentViewDto,
+  classifyOverviewFailure,
   decideProposal,
   draftFollowup,
   evaluatePerson,
@@ -41,6 +42,7 @@ import {
   getSlackStatus,
   getThread,
   getUrgent,
+  type OverviewFailure,
   type PersonDto,
   type PersonPriorityDto,
   type SecurityFlagDto,
@@ -72,6 +74,7 @@ import { Header } from "./components/header/Header";
 import { Inbox } from "./components/inbox/Inbox";
 import { People } from "./components/people/People";
 import { ProfileDrawer } from "./components/people/ProfileDrawer";
+import { useQueuedEvaluations } from "./components/people/useQueuedEvaluations";
 import { Sidebar } from "./components/shell/Sidebar";
 import { Running } from "./components/system/Running";
 import { SystemDetails } from "./components/system/SystemDetails";
@@ -158,7 +161,7 @@ function toggleTheme() {
 
 export default function Dashboard() {
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
-  const [overviewFailed, setOverviewFailed] = useState(false);
+  const [overviewFailure, setOverviewFailure] = useState<OverviewFailure | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const now = useClock();
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -177,6 +180,8 @@ export default function Dashboard() {
   const [flags, setFlags] = useState<GroupedFlagsDto[]>([]);
   const [people, setPeople] = useState<PersonDto[]>([]);
   const [candidates, setCandidates] = useState<CandidatesResponse | null>(null);
+  // Evaluations requested this session, shared by People and the Needs-you setup card.
+  const evalQueue = useQueuedEvaluations(candidates?.candidates);
   const [recommendations, setRecommendations] = useState<RecommendationView[]>([]);
   const [person, setPerson] = useState<PersonDetail | null>(null);
   const personRef = useRef<string | null>(null);
@@ -251,7 +256,7 @@ export default function Dashboard() {
     if (rq.status === "fulfilled") setReviewQueue(rq.value);
     if (fu.status === "fulfilled") setFollowups(fu.value);
     if (ov.status === "fulfilled") setOverview(ov.value);
-    setOverviewFailed(ov.status === "rejected");
+    setOverviewFailure(ov.status === "rejected" ? classifyOverviewFailure(ov.reason) : null);
     if (cv.status === "fulfilled") setConversations(cv.value);
     // The open thread is refetched with everything else; stale answers for another conversation are dropped.
     if (td.status === "fulfilled" && td.value && threadIdRef.current === threadId)
@@ -396,6 +401,7 @@ export default function Dashboard() {
     setDeferredError,
     toggleHistory,
     seeAllPeople: () => goTo("people"),
+    onEvaluationQueued: (id) => evalQueue.markQueued([id]),
   });
   // Pending-undo keys are passed in, so a live refresh can't bring a hidden item back (D8).
   const needsInput: NeedsYouInput = {
@@ -509,7 +515,7 @@ export default function Dashboard() {
           <section id="overview" className="syn-section">
             <Header
               overview={overview}
-              unreachable={overviewFailed}
+              failure={overviewFailure}
               now={now}
               onOpenPalette={() => setPaletteOpen(true)}
               backfillStarted={backfillStarted(slackStatus)}
@@ -543,6 +549,7 @@ export default function Dashboard() {
                 sevenDay={claudeStatus?.quota?.sevenDay?.utilization ?? null}
                 onCopy={copy}
                 backfillConfirmSignal={backfillSignal}
+                queuedEvaluations={evalQueue.queued}
               />
             </section>
             <section id="running" className="syn-section">
@@ -603,6 +610,8 @@ export default function Dashboard() {
               onNotice={setActionError}
               onPriority={setPriority}
               onOpen={openPerson}
+              queued={evalQueue.queued}
+              onQueued={evalQueue.markQueued}
             />
             <ProfileDrawer
               person={person}
@@ -611,8 +620,10 @@ export default function Dashboard() {
               onEvaluate={(u) => {
                 setActionError(null);
                 void requestEvaluation(u).then((r) => {
-                  if (r.queued) toast.show(TOASTS.evaluationQueued);
-                  else setActionError(r.notice);
+                  if (r.queued) {
+                    evalQueue.markQueued([u]);
+                    toast.show(TOASTS.evaluationQueued);
+                  } else setActionError(r.notice);
                 });
               }}
               onPriority={setPriority}

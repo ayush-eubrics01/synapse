@@ -5,7 +5,7 @@ import { Avatar } from "../app/components/ui/Avatar";
 import { Button } from "../app/components/ui/Button";
 import { Card } from "../app/components/ui/Card";
 import { Chip } from "../app/components/ui/Chip";
-import { Segmented } from "../app/components/ui/Segmented";
+import { nextSegmentedValue, Segmented } from "../app/components/ui/Segmented";
 import { Switch } from "../app/components/ui/Switch";
 import { ToastProvider, Toasts, useToast } from "../app/components/ui/Toasts";
 import { hueFor } from "../lib/avatar";
@@ -84,6 +84,22 @@ test("Segmented renders a radiogroup with exactly one checked option", () => {
   expect(html).toContain('aria-label="Filter"');
   expect(html.match(/aria-checked="true"/g)?.length).toBe(1);
   expect(html.match(/aria-checked="false"/g)?.length).toBe(2);
+});
+
+test("nextSegmentedValue steps from the local value, so → → from Normal reaches Critical", () => {
+  const opts = [
+    { value: "normal", label: "Normal" },
+    { value: "high", label: "High" },
+    { value: "critical", label: "Critical" },
+  ] as const;
+  const once = nextSegmentedValue(opts, "normal", "ArrowRight");
+  expect(once).toBe("high");
+  expect(nextSegmentedValue(opts, once ?? "normal", "ArrowRight")).toBe("critical");
+  expect(nextSegmentedValue(opts, "normal", "ArrowLeft")).toBe("critical");
+  expect(nextSegmentedValue(opts, "critical", "ArrowDown")).toBe("normal");
+  expect(nextSegmentedValue(opts, "high", "ArrowUp")).toBe("normal");
+  expect(nextSegmentedValue(opts, "high", "Enter")).toBeNull();
+  expect(nextSegmentedValue([], "high", "ArrowRight")).toBeNull();
 });
 
 test("Avatar shows initials on the id's hue, and a # tile for channels", () => {

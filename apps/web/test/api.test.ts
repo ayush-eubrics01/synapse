@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import {
+  ApiError,
   acceptSuggestion,
+  classifyOverviewFailure,
   confirmSlackIdentity,
   decideApproval,
   discardRecommendation,
@@ -62,6 +64,26 @@ test("non-2xx throws with status and error field", async () => {
 test("non-2xx without a JSON body still includes the status", async () => {
   const impl = (async () => new Response("boom", { status: 500 })) as unknown as typeof fetch;
   await expect(getJobs(20, impl)).rejects.toThrow(/500/);
+});
+
+test("an HTTP error is an ApiError carrying the status, with the same message", async () => {
+  const { impl } = fake(500, { error: "db locked" });
+  const err = await getOverview(impl).catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ApiError);
+  expect(err).toBeInstanceOf(Error);
+  expect((err as ApiError).status).toBe(500);
+  expect((err as ApiError).message).toBe("GET /api/dashboard/overview failed with 500: db locked");
+});
+
+test("classifyOverviewFailure: a thrown fetch is a network failure, an ApiError is HTTP", async () => {
+  const down = (async () => {
+    throw new TypeError("Failed to fetch");
+  }) as unknown as typeof fetch;
+  const network = await getOverview(down).catch((e: unknown) => e);
+  expect(classifyOverviewFailure(network)).toEqual({ kind: "network" });
+  const http = await getOverview(fake(500, {}).impl).catch((e: unknown) => e);
+  expect(classifyOverviewFailure(http)).toEqual({ kind: "http", status: 500 });
+  expect(classifyOverviewFailure(new ApiError("x", 503))).toEqual({ kind: "http", status: 503 });
 });
 
 test("getJobs passes the limit; getHealth reads the report", async () => {

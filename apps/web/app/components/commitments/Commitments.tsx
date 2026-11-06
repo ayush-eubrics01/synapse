@@ -149,14 +149,14 @@ export function Commitments({
           </Button>
         </p>
       )}
-      <div role="tablist" aria-label="Filter commitments" className="syn-ftabs">
+      {/* biome-ignore lint/a11y/useSemanticElements: toggle-button group styled as tabs, like the Inbox filters; a fieldset would break the layout */}
+      <div role="group" aria-label="Filter commitments" className="syn-ftabs">
         {FILTER_TABS.map((t) => (
           <button
             key={t.filter}
             type="button"
-            role="tab"
             className="syn-ftab"
-            aria-selected={t.filter === filter}
+            aria-pressed={t.filter === filter}
             onClick={() => onFilter(t.filter)}
           >
             {t.label}

@@ -2,6 +2,7 @@
 
 import type { DashboardOverview } from "@synapse/contracts";
 import { useEffect, useState } from "react";
+import type { OverviewFailure } from "../../../lib/api";
 import { briefing } from "../../../lib/briefing";
 import { dateLine, greeting } from "../../../lib/format";
 import { Switch } from "../ui/Switch";
@@ -11,8 +12,8 @@ export const AWAY_HINT = "Away mode isn't available yet. Until it is, every repl
 
 export interface HeaderProps {
   overview: DashboardOverview | null;
-  /** The latest overview fetch failed; `overview` (if any) is the last good one. */
-  unreachable: boolean;
+  /** Why the latest overview fetch failed, or null; `overview` (if any) is the last good one. */
+  failure: OverviewFailure | null;
   /** The browser clock; null until mounted so server and client markup match. */
   now: Date | null;
   onOpenPalette: () => void;
@@ -25,7 +26,7 @@ export interface HeaderProps {
 
 export function Header({
   overview,
-  unreachable,
+  failure,
   now,
   onOpenPalette,
   backfillStarted,
@@ -46,13 +47,17 @@ export function Header({
         {now ? greeting(now, overview?.self.name ?? null) : "Synapse"}
       </h1>
       <p className="syn-header-briefing">
-        {unreachable
+        {failure?.kind === "network"
           ? overview
             ? "Can't reach the Synapse API. Showing the last data loaded."
             : "Can't reach the Synapse API."
-          : now && overview
-            ? briefing(overview, now, { backfillStarted })
-            : " "}
+          : failure?.kind === "http"
+            ? overview
+              ? "Couldn't refresh the overview. Showing the last data loaded."
+              : "Couldn't load the overview."
+            : now && overview
+              ? briefing(overview, now, { backfillStarted })
+              : " "}
       </p>
       <div className="syn-header-row">
         <button type="button" className="syn-search" onClick={onOpenPalette}>
@@ -64,7 +69,7 @@ export function Header({
         </span>
         <HealthPill
           health={overview?.health ?? null}
-          unreachable={unreachable}
+          failure={failure}
           open={healthOpen}
           onOpenChange={setHealthOpen}
         />

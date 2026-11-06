@@ -176,7 +176,8 @@ test("composer reply mode through the inbox", () => {
   expect(html).toContain("On it, back soon");
   expect(html).toContain("Draft · reply to urgent message");
   expect(html).toContain("Edit freely. Sending needs your approval.");
-  expect(html).toContain("Discard");
+  expect(html).toContain("Reset to draft");
+  expect(html).not.toContain("Discard");
   expect(html).toContain("Request approval to send");
 });
 

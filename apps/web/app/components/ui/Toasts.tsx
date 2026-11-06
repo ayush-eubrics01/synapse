@@ -11,7 +11,8 @@ import {
   useState,
 } from "react";
 
-export const TOAST_MS = 5000;
+/** Shorter than the 5 s Undo deferral (`UNDO_DELAY_MS`), so Undo closes before a commit starts. */
+export const TOAST_MS = 4500;
 
 interface Toast {
   id: number;
@@ -32,7 +33,7 @@ const noop: ToastApi = { show: () => {} };
 const ShowContext = createContext<ToastApi>(noop);
 const StateContext = createContext<ToastState>({ toast: null, dismiss: () => {} });
 
-/** One toast at a time: the newest replaces any earlier one, each shows for 5 s. */
+/** One toast at a time: the newest replaces any earlier one, each shows for 4.5 s. */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toast, setToast] = useState<Toast | null>(null);
   const nextId = useRef(0);

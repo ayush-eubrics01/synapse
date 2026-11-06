@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
+import { TOAST_MS } from "../app/components/ui/Toasts";
 import { createDeferred } from "../lib/deferred";
 import {
   createNeedsYouActions,
   type NeedsYouApi,
   type NeedsYouHandlers,
   TOASTS,
+  UNDO_DELAY_MS,
 } from "../lib/needs-you-actions";
 
 function fakeTimers() {
@@ -34,7 +36,7 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 
 const DELAY = 5000;
 
-function setup(fail: Partial<Record<keyof NeedsYouApi, Error>> = {}) {
+function setup(fail: Partial<Record<keyof NeedsYouApi, Error>> = {}, evalQueued = true) {
   const calls: string[] = [];
   const api = new Proxy({} as NeedsYouApi, {
     get:
@@ -44,7 +46,7 @@ function setup(fail: Partial<Record<keyof NeedsYouApi, Error>> = {}) {
         const err = fail[name as keyof NeedsYouApi];
         if (err) return Promise.reject(err);
         if (name === "evaluatePerson" || name === "acceptSuggestion") {
-          return Promise.resolve({ queued: true });
+          return Promise.resolve(evalQueued ? { queued: true } : { queued: false, reason: "busy" });
         }
         return Promise.resolve({});
       },
@@ -59,6 +61,7 @@ function setup(fail: Partial<Record<keyof NeedsYouApi, Error>> = {}) {
   const errors: Array<string | null> = [];
   const deferredErrors: string[] = [];
   const committing = new Set<string>();
+  const evaluationsQueued: string[] = [];
   let refreshes = 0;
   const handlers: NeedsYouHandlers = createNeedsYouActions({
     api,
@@ -73,6 +76,7 @@ function setup(fail: Partial<Record<keyof NeedsYouApi, Error>> = {}) {
     committing,
     toggleHistory: () => {},
     seeAllPeople: () => {},
+    onEvaluationQueued: (id) => evaluationsQueued.push(id),
   });
   const hidden = () => new Set([...deferred.pending(), ...committing]);
   return {
@@ -84,6 +88,7 @@ function setup(fail: Partial<Record<keyof NeedsYouApi, Error>> = {}) {
     deferredErrors,
     hidden,
     handlers,
+    evaluationsQueued,
     refreshes: () => refreshes,
   };
 }
@@ -154,6 +159,37 @@ for (const d of DEFERRED) {
     expect(s.refreshes()).toBe(0);
   });
 }
+
+test("Undo after the commit started says it is too late; the commit still runs once", async () => {
+  const s = setup();
+  s.handlers.reviewFlag("fl1", "dismissed");
+  s.timers.advance(DELAY);
+  await settle();
+  expect(s.calls).toEqual(['reviewFlag("fl1","dismissed")']);
+  s.toasts[0]?.undo?.();
+  expect(s.toasts.map((t) => t.text)).toEqual(["Red flag dismissed", TOASTS.tooLateToUndo]);
+  expect(TOASTS.tooLateToUndo).toBe("Too late to undo");
+  expect(s.toasts[1]?.undo).toBeUndefined();
+  expect(s.calls).toHaveLength(1);
+});
+
+test("the Undo toast disappears before the deferred commit can start", () => {
+  expect(UNDO_DELAY_MS).toBe(5000);
+  expect(TOAST_MS).toBe(4500);
+  expect(TOAST_MS).toBeLessThan(UNDO_DELAY_MS);
+});
+
+test("a queued evaluation from the feed is reported to the shared queued set; a refusal is not", async () => {
+  const ok = setup();
+  ok.handlers.evaluatePerson("U0ADA0001");
+  await settle();
+  expect(ok.evaluationsQueued).toEqual(["U0ADA0001"]);
+  expect(ok.toasts.map((t) => t.text)).toEqual([TOASTS.evaluationQueued]);
+  const refused = setup({}, false);
+  refused.handlers.evaluatePerson("U0ADA0001");
+  await settle();
+  expect(refused.evaluationsQueued).toEqual([]);
+});
 
 test("the other flag review choices have their own toast copy", () => {
   const s = setup();

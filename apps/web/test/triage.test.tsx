@@ -682,6 +682,33 @@ test("PeopleSetupCard lists the people ready to evaluate", () => {
   expect(html.match(/>Evaluate</g)?.length).toBe(2);
 });
 
+test("PeopleSetupCard shows people queued this session as Queued, without Evaluate", () => {
+  const c = (id: string, name: string) => ({
+    slackUserId: id,
+    name,
+    score: 50,
+    messageCount: 9,
+    hasProfile: false,
+    hasPendingRecommendation: false,
+    isTemporary: false,
+    actions: ["evaluate" as const],
+  });
+  const html = text(
+    renderToString(
+      <PeopleSetupCard
+        candidates={[c("U0GRA0001", "Grace"), c("U0LIN0001", "Linus")]}
+        queued={new Set(["U0GRA0001"])}
+        onEvaluate={() => {}}
+        onSeeAll={() => {}}
+      />,
+    ),
+  );
+  expect(html.match(/>Evaluate</g)?.length).toBe(1);
+  expect(html.match(/>Queued</g)?.length).toBe(1);
+  expect(html.indexOf("Grace")).toBeLessThan(html.indexOf("Queued"));
+  expect(html.indexOf("Queued")).toBeLessThan(html.indexOf("Linus"));
+});
+
 const backfill = (o: Partial<SlackStatusDto["backfill"]> = {}): SlackStatusDto["backfill"] => ({
   stream: "slack.backfill",
   checkpoint: null,
@@ -821,6 +848,20 @@ test("NeedsYou has the section header with a count chip and subtitle, cards in o
   // Approvals, urgent and flags have cards: only Profile suggestions is all clear.
   expect(html).toContain("Profile suggestions");
   expect(html).not.toContain("Urgent inbox");
+});
+
+test("NeedsYou shows a running-backfill card even when it is the only card (count 0)", () => {
+  const html = feed({
+    ...emptyInput(),
+    slackStatus: {
+      incremental: { ...backfill(), stream: "slack.messages" },
+      backfill: backfill({ status: "running", pagesDone: 2 }),
+      searchesToday: 0,
+    },
+  });
+  expect(html).toMatch(/syn-chip[^"]*"[^>]*>0</);
+  expect(html).toContain("SLACK · SETUP");
+  expect(html).toContain("2 pages done");
 });
 
 test("NeedsYou shows no identity card once selfUserId is set", () => {

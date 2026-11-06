@@ -180,7 +180,8 @@ export function buildNeedsYou(input: NeedsYouInput): NeedsCard[] {
   }
 
   const id = input.identity;
-  if (id && id.selfUserId === null && (id.suggestion !== null || input.people.length > 0)) {
+  // Always shown while unset, like the briefing's count; with nothing to pick it says so.
+  if (id && id.selfUserId === null) {
     cards.push({
       key: "setup:identity",
       kind: "setup-identity",

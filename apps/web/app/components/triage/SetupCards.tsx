@@ -69,10 +69,13 @@ const TOP = 3;
 /** People the user talks to most who have no profile yet; evaluating queues a draft profile. */
 export function PeopleSetupCard({
   candidates,
+  queued,
   onEvaluate,
   onSeeAll,
 }: {
   candidates: CandidatesResponse["candidates"];
+  /** Ids whose evaluation was requested this session (shared with the People section). */
+  queued?: ReadonlySet<string>;
   onEvaluate: (slackUserId: string) => void;
   onSeeAll: () => void;
 }) {
@@ -93,9 +96,13 @@ export function PeopleSetupCard({
             <Avatar id={c.slackUserId} name={c.name} size={24} />
             <span className="syn-ncard-person-name">{c.name ?? c.slackUserId}</span>
             <span className="syn-ncard-faint">{c.messageCount} msgs</span>
-            <Button variant="secondary" size="sm" onClick={() => onEvaluate(c.slackUserId)}>
-              Evaluate
-            </Button>
+            {queued?.has(c.slackUserId) ? (
+              <span className="syn-ncard-faint">Queued</span>
+            ) : (
+              <Button variant="secondary" size="sm" onClick={() => onEvaluate(c.slackUserId)}>
+                Evaluate
+              </Button>
+            )}
           </li>
         ))}
       </ul>

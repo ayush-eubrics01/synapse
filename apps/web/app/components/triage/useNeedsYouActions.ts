@@ -6,8 +6,9 @@ import {
   createNeedsYouActions,
   type NeedsYouHandlers,
   realNeedsYouApi,
+  UNDO_DELAY_MS,
 } from "../../../lib/needs-you-actions";
-import { TOAST_MS, useToast } from "../ui/Toasts";
+import { useToast } from "../ui/Toasts";
 
 export interface NeedsYouActionsOptions {
   refresh: () => Promise<string | null>;
@@ -15,6 +16,7 @@ export interface NeedsYouActionsOptions {
   setDeferredError: (error: string) => void;
   toggleHistory: (slackUserId: string) => void;
   seeAllPeople: () => void;
+  onEvaluationQueued?: (slackUserId: string) => void;
 }
 
 /** React wrapper over `createNeedsYouActions`: hidden = pending deferrals plus committing keys. */
@@ -24,7 +26,7 @@ export function useNeedsYouActions(opts: NeedsYouActionsOptions): {
 } {
   const toast = useToast();
   const [committing, setCommitting] = useState<Set<string>>(() => new Set());
-  const deferred = useDeferred(TOAST_MS);
+  const deferred = useDeferred(UNDO_DELAY_MS);
   const handlers = createNeedsYouActions({
     ...opts,
     api: realNeedsYouApi,

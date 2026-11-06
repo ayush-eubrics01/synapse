@@ -57,7 +57,11 @@ test("Commitments header, filter tabs, status buttons from the server's actions,
   for (const l of ["All", "Mine", "Theirs", "Overdue", "Due soon", "Blocked", "Closed"]) {
     expect(html).toContain(l);
   }
-  expect(html).toContain('aria-selected="true"');
+  // Toggle buttons like the Inbox filters, not ARIA tabs (there is no tabpanel).
+  expect(html).toContain('aria-label="Filter commitments"');
+  expect(html.match(/aria-pressed="true"/g)?.length).toBe(1);
+  expect(html).not.toContain('role="tab"');
+  expect(html).not.toContain("aria-selected");
   for (const l of ["Start", "Block", "Complete", "Cancel", "Draft follow-up"]) {
     expect(html).toContain(l);
   }

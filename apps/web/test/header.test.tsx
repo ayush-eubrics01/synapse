@@ -3,6 +3,7 @@ import type { DashboardOverview } from "@synapse/contracts";
 import { renderToString } from "react-dom/server";
 import { CommandPalette } from "../app/components/header/CommandPalette";
 import { Header } from "../app/components/header/Header";
+import type { OverviewFailure } from "../lib/api";
 
 const now = new Date(2026, 10, 6, 9, 0);
 
@@ -39,11 +40,16 @@ const issue = (label: string, detail: string | null, hint: string | null) => ({
   hint,
 });
 
-const render = (o: DashboardOverview | null, initiallyOpen = false, unreachable = false) =>
+const render = (
+  o: DashboardOverview | null,
+  initiallyOpen = false,
+  unreachable = false,
+  failure: OverviewFailure | null = unreachable ? { kind: "network" } : null,
+) =>
   renderToString(
     <Header
       overview={o}
-      unreachable={unreachable}
+      failure={failure}
       now={now}
       onOpenPalette={() => {}}
       backfillStarted
@@ -140,6 +146,32 @@ test("unreachable popover", () => {
   expect(html).toContain("Can&#x27;t reach Synapse");
   expect(html).toContain("The Synapse API is not responding.");
   expect(html).not.toContain("syn-health-row");
+});
+
+test("an HTTP error is not Unreachable: Overview unavailable, with the status in the popover", () => {
+  const http = { kind: "http", status: 500 } as const;
+  const html = render(null, true, false, http);
+  expect(html).not.toContain("Unreachable");
+  expect(html).not.toContain("Can&#x27;t reach");
+  expect(html).toContain("Overview unavailable");
+  expect(html).toContain("syn-health-pill--degraded");
+  expect(html).toContain("The API answered with an error (500). Check the API logs.");
+  expect(html).toContain("Couldn&#x27;t load the overview.");
+});
+
+test("an HTTP error with a last good overview keeps it and says so", () => {
+  const html = render(overview({ status: "ok", issues: [] }), false, false, {
+    kind: "http",
+    status: 502,
+  });
+  expect(html).toContain("Overview unavailable");
+  expect(html).not.toContain("Healthy");
+  expect(html).toContain("Couldn&#x27;t refresh the overview. Showing the last data loaded.");
+  expect(html).toContain("Good morning, Ada.");
+});
+
+test("the health pill announces a dialog popup", () => {
+  expect(render(overview({ status: "ok", issues: [] }))).toContain('aria-haspopup="dialog"');
 });
 
 test("no overview yet and not failed shows Checking", () => {

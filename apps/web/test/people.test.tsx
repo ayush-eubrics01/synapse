@@ -66,6 +66,8 @@ const render = (
         onNotice={() => {}}
         onPriority={() => {}}
         onOpen={() => {}}
+        queued={new Set()}
+        onQueued={() => {}}
       />,
     ),
   );
