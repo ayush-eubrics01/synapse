@@ -42,6 +42,7 @@ import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notif
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadUserSettings } from "./integrations/claude-code/settings-override";
 import { JiraConnectorSource } from "./integrations/jira/connector-source";
+import { LocalGitWorkflow } from "./integrations/repository/git-workflow";
 import { LocalGitProvider } from "./integrations/repository/local-git";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
@@ -55,6 +56,8 @@ import { DashboardService } from "./modules/dashboard/service";
 import type { InspectionService } from "./modules/engineering-brain/inspection";
 import { RepositoryRegistry } from "./modules/engineering-brain/registry";
 import { BrainService } from "./modules/engineering-brain/service";
+import { EngineeringLock } from "./modules/engineering-tasks/lock";
+import { EngineeringTaskService } from "./modules/engineering-tasks/service";
 import { InboxConversations } from "./modules/inbox/conversations";
 import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
@@ -77,6 +80,8 @@ import { registerAutoReplyJobs } from "./workers/auto-reply/evaluate";
 import { registerDriftCheck } from "./workers/brain/drift";
 import { registerInspectionJobs } from "./workers/brain/inspect";
 import { registerCommitmentJobs } from "./workers/commitments";
+import { registerInvestigateJob } from "./workers/engineering/investigate";
+import { registerPickupJobs } from "./workers/engineering/pickup";
 import { createRunHelpers } from "./workers/intelligence-shared";
 import { registerJiraJobs } from "./workers/jira";
 import { registerOutgoingJobs } from "./workers/outgoing";
@@ -140,6 +145,10 @@ export interface Container {
   inspections: InspectionService;
   /** Projects, fact review, milestones and the Jira association (Phase 9, C9 to C12). */
   brain: BrainService;
+  /** Engineering tasks (Phase 10, E1–E7): creation, investigation, plan approval, pickup. */
+  engineering: EngineeringTaskService;
+  /** The global engineering lock (E6, ADR-030); main.ts runs `recover()` once at boot. */
+  engineeringLock: EngineeringLock;
   slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
@@ -491,6 +500,31 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     inspections,
   });
 
+  // Phase 10: engineering tasks, the global lock, the investigation run and the pickup tick.
+  const gitWorkflow = new LocalGitWorkflow({ home });
+  const engineeringLock = new EngineeringLock({
+    db,
+    clock,
+    leases,
+    settings,
+    events,
+    audit,
+    git: gitWorkflow,
+  });
+  const engineering = new EngineeringTaskService({
+    db,
+    clock,
+    events,
+    audit,
+    queue,
+    provider: repositoryProvider,
+    registry: repositories,
+    lock: engineeringLock,
+    git: gitWorkflow,
+  });
+  registerInvestigateJob({ db, settings, orchestrator, service: engineering, handlers });
+  registerPickupJobs({ service: engineering, lock: engineeringLock, scheduler, handlers });
+
   const health = new HealthService({
     database: databaseCheck(sqlite),
     jobs: jobsCheck(db, clock),
@@ -563,6 +597,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     repositories,
     inspections,
     brain,
+    engineering,
+    engineeringLock,
     handlers,
     recoverySweeps: [
       { name: "urgency.assess", run: urgency.recoverySweep },

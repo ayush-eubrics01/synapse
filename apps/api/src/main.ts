@@ -22,6 +22,13 @@ recoverOnStartup({
   sweeps: c.recoverySweeps,
 });
 recoverOrphanRuns(c.db, c.clock);
+// E6: the engineering lease is never released by core recovery. Settled here, before the worker
+// starts, so no step or pickup runs against a tree that a crash left half-changed.
+try {
+  await c.engineeringLock.recover();
+} catch (e) {
+  console.error("engineering lock recovery failed:", e instanceof Error ? e.name : "non-error");
+}
 try {
   c.auth.record();
 } catch (e) {
