@@ -43,6 +43,7 @@ export function Segmented<T extends string>({
             key={o.value}
             type="button"
             role="radio"
+            data-value={o.value}
             aria-checked={on}
             tabIndex={on || (index < 0 && i === 0) ? 0 : -1}
             className="syn-seg-option"

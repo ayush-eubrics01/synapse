@@ -15,7 +15,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type ClaudeRun,
   type ClaudeStatus,
-  type CommitmentEditsDto,
   type CommitmentStatusDto,
   type CommitmentViewDto,
   decideProposal,
@@ -43,7 +42,6 @@ import {
   getUrgent,
   type PersonDto,
   type PersonPriorityDto,
-  reviewCommitment,
   type SecurityFlagDto,
   type SlackIdentityDto,
   type SlackStatusDto,
@@ -63,15 +61,15 @@ import {
   type NeedsYouInput,
   needsYouCount,
 } from "../lib/needs-you";
+import { TOASTS } from "../lib/needs-you-actions";
 import type { PaletteItem } from "../lib/palette";
 import { writeTheme } from "../lib/theme";
-import { CommitmentsPanel } from "./components/CommitmentsPanel";
+import { Commitments } from "./components/commitments/Commitments";
 import { CommandPalette } from "./components/header/CommandPalette";
 import { Header } from "./components/header/Header";
 import { Inbox } from "./components/inbox/Inbox";
-import { PeopleCandidates } from "./components/PeopleCandidates";
-import { PersonProfile } from "./components/PersonProfile";
-import { PriorityPeople } from "./components/PriorityPeople";
+import { People } from "./components/people/People";
+import { ProfileDrawer } from "./components/people/ProfileDrawer";
 import { Sidebar } from "./components/shell/Sidebar";
 import { Running } from "./components/system/Running";
 import { SystemDetails } from "./components/system/SystemDetails";
@@ -326,12 +324,21 @@ export default function Dashboard() {
     void refresh();
   };
 
-  // A refusal (no identity, already queued) is a normal result; show it as a notice.
-  const evaluate = (fn: () => Promise<{ queued: boolean; reason?: string }>) =>
-    act(async () => {
-      const r = await fn();
-      if (!r.queued) throw new Error(`Not queued: ${r.reason ?? "unknown reason"}`);
-    });
+  // A refusal (no identity, already queued) is a normal result; show it as a notice and resolve
+  // false. The caller toasts a success, so one click or a batch gives one confirmation.
+  const evaluateQuiet = async (slackUserId: string): Promise<boolean> => {
+    setActionError(null);
+    let queued = false;
+    try {
+      const r = await evaluatePerson(slackUserId);
+      queued = r.queued;
+      if (!r.queued) setActionError(`Not queued: ${r.reason ?? "unknown reason"}`);
+    } catch (e) {
+      setActionError(String(e));
+    }
+    await refresh();
+    return queued;
+  };
 
   const act = async (fn: () => Promise<unknown>) => {
     setActionError(null);
@@ -342,6 +349,15 @@ export default function Dashboard() {
     }
     await refresh();
   };
+
+  const setPriority = (
+    p: { slackUserId: string; rationale: string | null },
+    priority: PersonPriorityDto,
+    extraAttention: boolean,
+  ) =>
+    void act(() =>
+      setPersonPriority(p.slackUserId, { priority, rationale: p.rationale ?? "", extraAttention }),
+    );
 
   const openConversation = (id: string) => {
     // A conversation outside the current filter needs the full list to be visible.
@@ -528,8 +544,7 @@ export default function Dashboard() {
             />
           </section>
           <section id="commitments" className="syn-section">
-            <h2>Commitments</h2>
-            <CommitmentsPanel
+            <Commitments
               queue={reviewQueue}
               items={commitments}
               filter={commitmentFilter}
@@ -538,9 +553,6 @@ export default function Dashboard() {
                 setCommitmentFilter(f);
                 void refresh();
               }}
-              onReview={(id: string, d: "accept" | "reject", edits?: CommitmentEditsDto) =>
-                void act(() => reviewCommitment(id, d, edits))
-              }
               onStatus={(id: string, s: CommitmentStatusDto) =>
                 void act(() => setCommitmentStatus(id, s))
               }
@@ -554,42 +566,27 @@ export default function Dashboard() {
                     throw new Error("A follow-up draft is already queued for this commitment");
                 })
               }
+              onGoToReview={() => goTo("triage")}
             />
           </section>
           <section id="people" className="syn-section">
-            <h2>People to evaluate</h2>
-            <PeopleCandidates
-              data={candidates}
-              onEvaluate={(u) => void evaluate(() => evaluatePerson(u))}
+            <People
+              candidates={candidates}
+              people={people}
+              self={identity?.selfUserId ?? null}
+              onEvaluate={evaluateQuiet}
+              onPriority={setPriority}
               onOpen={openPerson}
             />
-            <PersonProfile
+            <ProfileDrawer
               person={person}
               onClose={() => openPerson(null)}
-              onEvaluate={(u) => void evaluate(() => evaluatePerson(u))}
-              onPriority={(p, priority, extraAttention) =>
-                void act(() =>
-                  setPersonPriority(p.slackUserId, {
-                    priority,
-                    rationale: p.rationale ?? "",
-                    extraAttention,
-                  }),
-                )
-              }
-            />
-            <h2>Priority people</h2>
-            <PriorityPeople
-              people={people}
-              onOpen={openPerson}
-              onChange={(p: PersonDto, priority: PersonPriorityDto, extraAttention: boolean) =>
-                void act(() =>
-                  setPersonPriority(p.slackUserId, {
-                    priority,
-                    rationale: p.rationale ?? "",
-                    extraAttention,
-                  }),
-                )
-              }
+              onEvaluate={(u) => {
+                void evaluateQuiet(u).then((ok) => {
+                  if (ok) toast.show(TOASTS.evaluationQueued);
+                });
+              }}
+              onPriority={setPriority}
             />
           </section>
           <section id="system" className="syn-section">

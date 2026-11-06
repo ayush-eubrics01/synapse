@@ -1,0 +1,291 @@
+/* People, profile drawer and Commitments (spec D1, D13, D14). */
+.syn-sec-head h2 {
+  margin: 0 0 4px;
+}
+
+.syn-sec-sub {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.syn-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.syn-card-head--top {
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.syn-card-head--top h3 {
+  margin: 0 0 2px;
+}
+
+.syn-prow-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.syn-name-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.syn-name-btn:hover {
+  text-decoration: underline;
+}
+
+.syn-cand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line2);
+}
+
+.syn-cand:first-child {
+  border-top: 0;
+}
+
+.syn-cand-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.syn-cand-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.syn-cand-score {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.syn-bar {
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--subtle2);
+  overflow: hidden;
+}
+
+.syn-bar-fill {
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--faint2);
+}
+
+.syn-bar-fill[data-strong] {
+  background: var(--ink);
+}
+
+.syn-cand-note {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.syn-filter {
+  width: 200px;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--btnLine);
+  border-radius: var(--r-control);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.syn-self-note {
+  margin: 0 0 8px;
+}
+
+.syn-prow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line2);
+}
+
+.syn-prow:first-child {
+  border-top: 0;
+}
+
+.syn-prow .syn-name-btn {
+  flex: 1;
+  min-width: 0;
+}
+
+.syn-prio {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.syn-prio .syn-seg {
+  background: var(--subtle);
+}
+
+.syn-prio .syn-seg-option[aria-checked="true"][data-value="high"],
+.syn-prio .syn-seg-option[aria-checked="true"][data-value="critical"] {
+  background: var(--high);
+  color: var(--onHigh);
+  box-shadow: none;
+}
+
+/* Profile drawer */
+.syn-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: color-mix(in oklch, black 45%, transparent);
+}
+
+.syn-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 41;
+  width: min(440px, 100vw);
+  padding: 20px 22px;
+  overflow-y: auto;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  outline: none;
+}
+
+.syn-drawer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.syn-drawer-head h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.syn-drawer-h {
+  margin: 20px 0 6px;
+}
+
+.syn-drawer-sec {
+  margin-top: 10px;
+}
+
+.syn-drawer-sec ul,
+.syn-drawer ul {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+/* Commitments */
+.syn-ftabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  margin-bottom: 14px;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: var(--r-control);
+  background: var(--subtle);
+}
+
+.syn-ftab {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.syn-ftab:hover {
+  color: var(--ink);
+}
+
+.syn-ftab[aria-selected="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.syn-review-line {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.syn-ccard-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.syn-ccard-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.syn-ccard-desc {
+  margin: 0 0 8px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.syn-ccard-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.syn-ccard-sources {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+}
+
+.syn-ccard-proposal {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.syn-ccard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
