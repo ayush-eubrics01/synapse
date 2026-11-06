@@ -37,7 +37,7 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 | `auth_snapshots` | Credential expiry history (ADR-037): `observed_at`, `access_expires_at`, `refresh_expires_at`, `claude_run_id` FK. Never tokens |
 | `domain_events` | Outbox | `id`, `type`, `version`, `aggregate_type`, `aggregate_id`, `correlation_id`, `causation_id`, `payload` JSON, `occurred_at`, `dispatched_at`, `ephemeral` |
 | `event_consumptions` | Consumer idempotency | unique(`consumer`,`event_id`), `status`, `attempts`, `last_error`, `next_attempt_at` (nullable; retry backoff, base 5 s, cap 5 min) |
-| `audit_events` | Append-only audit | `actor` (user/system/module), `module`, `worker_profile`, `action`, `target_integration`, `target_ref`, `approval_id`, `result`, `details` JSON (nullable), `occurred_at`. Never deleted by retention |
+| `audit_events` | Append-only audit | `actor` (user/system/module), `module`, `worker_profile`, `action`, `target_integration`, `target_ref`, `approval_id`, `result`, `details` JSON (nullable), `occurred_at`. Not touched by Slack-content retention; operational retention deletes rows older than `retention.auditDays` (365) |
 | `notifications` | In-app notifications | `kind`, `severity`, `title`, `body`, `ref`, `read_at` |
 | `approvals` | Approval requests | `action`, `target_integration`, `target_ref`, `payload` JSON (exact intended change), `risk_level`, `status` (pending/approved/rejected/expired/executed/failed/revoked), `expires_at`, `decided_at`, `execution_result` JSON, `execution_started_at` (nullable; set atomically when `execute` claims the approval, so a second concurrent execute cannot run the executor), `requested_by_module`, `requested_by_worker` (nullable), `idempotency_key` unique |
 | `permissions` | Policy overrides | `operation`, `policy` (allowed/approval/explicit_approval/denied), `scope` JSON |
@@ -153,10 +153,38 @@ Away mode itself is the `autoReply.awayMode` key in `app_settings`, with changes
 
 ## Dashboard tables (owned by `dashboard`)
 
-`dashboard_layouts`, `dashboard_widgets`, `dashboard_widget_settings`.
+`dashboard_layouts` (migration 0021, Phase 11): `id`, `name`, `is_active` (default false), `layout` JSON text, `created_at`, `updated_at`. Unique index on `lower(name)` (`dashboard_layouts_name_uq`); partial unique index `dashboard_layouts_active_uq` on a constant expression where `is_active = 1`, so at most one row is active. The layout is validated and normalised by the backend (`docs/modules/dashboard.md`). The `dashboard_widgets` and `dashboard_widget_settings` tables planned earlier are **not built**: the page's sections are the widgets (ADR-023 amendment).
 
 ## Retention
 
 Slack message content is kept for 180 days (configurable). The cleanup job sets `slack_messages.text = NULL`, deletes local attachments, and sets `content_expired_at`, keeping IDs, `ts` and permalinks. People profiles, commitments, follow-ups, Engineering Brain records, approvals and audit events are never deleted by message retention. The same job also clears text derived from Slack content (Phase 6b): `auto_replies.text`, the text of `sent`/`failed` outgoing messages (blanked to `''`) and the draft of `sent`/`discarded`/`failed` follow-ups, for rows created before the cutoff. Rows in any other status keep their text. Evidence rows keep `source_external_ref`, so the UI can show "original message no longer available locally."
 
 Phase 10b: `code_answers.answer`, `not_answerable_reason` and the `suspected_injection` quote are nulled with Slack content after `retention.slackContentDays`; the rows are kept.
+
+### Operational retention (Phase 11, R4)
+
+The daily job `ops.retention` (enqueued by the backup tick, once a day, key `ops.retention:<date>`) prunes operational tables. Deletes run in batches of 500 ids, one immediate transaction per batch, yielding to the event loop between batches, so the API stays responsive. After pruning it runs `PRAGMA wal_checkpoint(TRUNCATE)`, `PRAGMA optimize` and `PRAGMA quick_check`. The counts are audited as `ops.retention_ran` and stored in `ops.retention.lastRun`.
+
+| Data | Rule | Setting (default) |
+|---|---|---|
+| `jobs` in `COMPLETED`, `CANCELLED` or `FAILED` | Deleted when `coalesce(finished_at, created_at)` is older than the cutoff, together with their `job_attempts` and `job_checkpoints`; `claude_runs.job_id` is set to null | `retention.jobsDays` (30) |
+| `notifications` | Read ones older than the cutoff are deleted. Unread ones stay | `retention.notificationsDays` (30) |
+| `domain_events` | Dispatched more than 7 days ago, with no unfinished `event_consumptions`, are deleted with their consumptions | fixed 7 days |
+| `audit_events` | Deleted when older than the cutoff | `retention.auditDays` (365) |
+| `claude_runs` | **Compacted, never deleted**, when started before the cutoff (below) | `retention.claudeRunsDays` (90) |
+
+**Compaction.** `claude_runs.permission_denials` is set to null and `claude_runs.error` is reduced to `{"kind": ...}` (the message and details go). Id, status, timing, usage, cost, model and profile stay, so every foreign key into `claude_runs` stays valid. Raw tool results were never stored there.
+
+**Never touched by operational retention:** `approvals`, `outgoing_messages`, `auto_replies`, `security_flags`, `engineering_tasks` (and their steps), `commitments` and `followups`, people and Engineering Brain records. Their text is handled by the Slack-content retention above.
+
+**Consequences to know.**
+
+- A job's idempotency key (`jobs.idempotency_key`) is freed when the job is deleted, so a dedupe key protects only for `retention.jobsDays`. A job type that relies on its key forever could be enqueued again after that; the domain state guards the known cases.
+- Read commitment reminders are pruned with their notifications, so an overdue commitment can be reminded about again after about 30 days.
+- A repository inspection that failed may run again after about 30 days, once its failed job is gone.
+- Migration 0022 (`retention_fk_indexes`, added to the Phase 11 plan after review) indexes `claude_runs.job_id`, `event_consumptions.event_id`, `job_attempts.job_id` and `job_checkpoints.job_id`. Without them each batch scanned the child tables (the slowest batch went from about 2.5 s to 11 ms).
+- `quota_snapshots` and `auth_snapshots` are not pruned (see the Phase 11 follow-ups).
+
+### Backups
+
+Backups are not a table; the files in the backup directory are the record. A backup is `VACUUM INTO` a temporary file, then `PRAGMA integrity_check` on it (exactly `ok`), then a no-clobber publish as `synapse-YYYYMMDD-HHMMSS.db` (local time). See `runtime-design.md`.

@@ -78,6 +78,7 @@ Events that are purely for live UI updates (SSE) may skip the outbox and are mar
 | `claude_session.activity_changed` | claude-activity | dashboard (live card) | Payload `{ active, lastActiveAt }`. User became active or idle (ADR-036). The orchestrator reads the signal through the `UserActivitySignal` port, not this event |
 | `code_answer.status_changed` | code-answers | dashboard, inbox (live thread view) | Payload `{ codeAnswerId, messageId, status }`. Any status change of a code answer (Phase 10b) |
 | `claude_session.pr_detected` | claude-activity | engineering-brain, jira-tracking, dashboard | **Not emitted** as of Phase 10b: session PRs are stored in `claude_session_prs` and read on demand. Kept in the catalog for a later phase |
+| `dashboard.layout_changed` | dashboard | (none yet; the web refreshes on its own) | Payload `{ layoutId }`. Any change to a dashboard layout (Phase 11). Aggregate `dashboard_layout` |
 | `approval.requested` | approvals | notifications, dashboard | |
 | `approval.approved` | approvals | requesting module | Execution happens after revalidation |
 | `approval.rejected` | approvals | requesting module | |
