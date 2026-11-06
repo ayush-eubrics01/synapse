@@ -22,6 +22,7 @@ function overview(
       profileRecommendations: 0,
       peopleToEvaluate: 0,
       conversations: 0,
+      jiraAttention: 0,
       ...counts,
     },
     away: { on: false, highPriorityCount: 0 },

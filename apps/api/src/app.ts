@@ -10,6 +10,7 @@ import { commitmentRoutes } from "./routes/commitments";
 import { dashboardRoutes } from "./routes/dashboard";
 import { healthRoutes } from "./routes/health";
 import { inboxRoutes } from "./routes/inbox";
+import { jiraRoutes } from "./routes/jira";
 import { jobRoutes } from "./routes/jobs";
 import { notificationRoutes } from "./routes/notifications";
 import { outgoingRoutes } from "./routes/outgoing";
@@ -29,6 +30,7 @@ export function createApp(c: Container): Hono {
   app.route("/", notificationRoutes(c));
   app.route("/", inboxRoutes(c));
   app.route("/", slackRoutes(c));
+  app.route("/", jiraRoutes(c));
   app.route("/", urgentRoutes(c));
   app.route("/", outgoingRoutes(c));
   app.route("/", securityRoutes(c));

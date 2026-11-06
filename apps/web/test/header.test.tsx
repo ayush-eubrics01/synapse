@@ -24,6 +24,7 @@ function overview(
       profileRecommendations: 0,
       peopleToEvaluate: 0,
       conversations: 0,
+      jiraAttention: 0,
     },
     away: { on: false, highPriorityCount: 0 },
     lastSlackSyncAt: null,

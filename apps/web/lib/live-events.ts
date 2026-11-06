@@ -39,6 +39,8 @@ const DOMAIN_EVENTS = [
   "autoreply.sent",
   "autoreply.held",
   "away.changed",
+  "jira.issue_updated",
+  "jira.issue_attention",
 ] as const satisfies readonly EventType[];
 
 // LiveBus-only messages: job settles (worker) and notifications (NotificationService).

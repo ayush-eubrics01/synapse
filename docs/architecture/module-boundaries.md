@@ -52,7 +52,7 @@ Rules:
 | `people` | `people`, `temporary_contacts`, `people_profiles*`, `people_priority_settings` | `message.received`, approvals | `person.*` |
 | `commitments` | `commitments`, `commitment_sources`, `commitment_updates`, `followups`, `followup_history` | messages, Jira updates, approvals | `commitment.*`, `followup.*` |
 | `auto-reply` | `away_sessions`, `auto_replies`; writes `auto_replies.{decision,reason,text,outgoing_id,approval_id}` (the last two through `OutgoingService.requestAutoSend`) | `message.urgent_detected`, `followup.draft_created`, people priority, security flags, settings; requests sends only via `OutgoingService` | `away.changed`, `autoreply.*` |
-| `jira-tracking` | `jira_*` tables | `IssueSource` port | `jira.*` |
+| `jira-tracking` | `jira_issues`; sync state streams `jira.issues` / `jira.reconcile` (through `SyncStateService`); settings `jira.*`. Computes attention and Slack mentions (reads `slack_messages` / `slack_conversations` read-only, never writes them) | `JiraIssueSource` port (read-only), settings | `jira.issue_updated`, `jira.issue_attention`, `collection.*` (streams `jira.*`) |
 | `engineering-brain` | `repositories`, `repository_environments`, `projects`, `project_*` tables | `RepositoryProvider` port, messages, Jira | `project.*` |
 | `engineering-tasks` | `engineering_tasks`, `engineering_task_steps` | approvals, orchestrator, `RepositoryProvider` | `engineering.*` |
 | `security-flags` | `security_flags`, `security_flag_rules` | `message.received`, intelligence results, `claude.job_*` | `security.*` |
@@ -75,7 +75,7 @@ Intelligence code is pure: it builds `ClaudeJob` requests and validates results.
 | Adapter | Implements | Mechanism |
 |---|---|---|
 | `slack/claude-connector` | `MessageSource`, `MessageSink` | Collector runs via orchestrator → `slack_search_public_and_private`, `slack_read_thread`; sends via `slack_send_message` (approval required) |
-| `jira/claude-connector` | `IssueSource`, `IssueSink` | Collector runs via orchestrator → `searchJiraIssuesUsingJql` etc. |
+| `jira/claude-connector` | `JiraIssueSource` (read-only; `IssueSink` deferred) | One collector run per call via orchestrator → `getAccessibleAtlassianResources`, `searchJiraIssuesUsingJql`; arguments checked against the raw tool_use |
 | `repository/local-git` | `RepositoryProvider` | Local `git` on registered paths only |
 | `claude-code/cli` | `AIProvider` | `claude -p` subprocess, `stream-json` parsing |
 

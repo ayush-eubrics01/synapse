@@ -2,12 +2,14 @@ import type {
   ApprovalView,
   AwayDigest,
   CandidatesResponse,
+  JiraIssueView,
   RecommendationView,
 } from "@synapse/contracts";
 import type {
   CommitmentViewDto,
   FollowupViewDto,
   GroupedFlagsDto,
+  JiraStatusDto,
   PersonDto,
   ResolveDecisionDto,
   SlackIdentityDto,
@@ -46,10 +48,12 @@ export type NeedsCard = CardBase &
     | { kind: "flag"; data: GroupedFlagsDto }
     | { kind: "followup"; data: FollowupViewDto }
     | { kind: "commitment"; data: CommitmentViewDto }
+    | { kind: "jira-attention"; data: { issues: JiraIssueView[] } }
     | { kind: "recommendation"; data: RecommendationView }
     | { kind: "setup-identity"; data: { identity: SlackIdentityDto; people: PersonDto[] } }
     | { kind: "setup-people"; data: { candidates: Candidate[] } }
     | { kind: "setup-backfill"; data: { backfill: SlackStatusDto["backfill"] } }
+    | { kind: "setup-jira"; data: { scopeJql: string; excludedProjects: string[] } }
   );
 
 export type NeedsKind = NeedsCard["kind"];
@@ -68,6 +72,10 @@ export interface NeedsYouInput {
   slackStatus: SlackStatusDto | null;
   /** The return digest of the last away session, until dismissed (spec A17). */
   awayDigest?: AwayDigest | null;
+  /** Jira tracking status (null until loaded); absent in older callers. */
+  jiraStatus?: JiraStatusDto | null;
+  /** `GET /api/jira/issues?view=attention`: already filtered and in the backend's severity order. */
+  jiraAttention?: JiraIssueView[];
   /** Keys of items pending a deferred commit (spec D8): never shown, whatever the data says. */
   hidden: Set<string>;
 }
@@ -91,10 +99,12 @@ const RANK = {
   approval: 20,
   followup: 40,
   commitment: 50,
+  jira: 55,
   recommendation: 60,
   identity: 70,
   people: 71,
   backfill: 72,
+  jiraSetup: 73,
 } as const;
 
 /** The key a flag card (and a deferred flag review) uses. */
@@ -189,6 +199,18 @@ export function buildNeedsYou(input: NeedsYouInput): NeedsCard[] {
     cards.push({ key: `commitment:${c.id}`, kind: "commitment", rank: RANK.commitment, data: c });
   }
 
+  // One card for all issues that need attention, as the backend lists them (it owns the rules
+  // and the order); the card shows the first few.
+  const jiraAttention = input.jiraStatus?.enabled ? (input.jiraAttention ?? []) : [];
+  if (jiraAttention.length > 0) {
+    cards.push({
+      key: "jira-attention",
+      kind: "jira-attention",
+      rank: RANK.jira,
+      data: { issues: jiraAttention },
+    });
+  }
+
   for (const r of input.recommendations) {
     cards.push({
       key: `recommendation:${r.id}`,
@@ -228,6 +250,16 @@ export function buildNeedsYou(input: NeedsYouInput): NeedsCard[] {
       kind: "setup-backfill",
       rank: RANK.backfill,
       data: { backfill: s.backfill },
+    });
+  }
+
+  const js = input.jiraStatus;
+  if (js && !js.enabled) {
+    cards.push({
+      key: "setup:jira",
+      kind: "setup-jira",
+      rank: RANK.jiraSetup,
+      data: { scopeJql: js.scopeJql, excludedProjects: js.excludedProjects },
     });
   }
 

@@ -1,6 +1,13 @@
 import type { DashboardOverview } from "@synapse/contracts";
 
-export type SectionId = "overview" | "triage" | "inbox" | "commitments" | "people" | "system";
+export type SectionId =
+  | "overview"
+  | "triage"
+  | "inbox"
+  | "commitments"
+  | "jira"
+  | "people"
+  | "system";
 
 export interface NavItem {
   id: SectionId;
@@ -14,6 +21,7 @@ export const SECTION_IDS: SectionId[] = [
   "triage",
   "inbox",
   "commitments",
+  "jira",
   "people",
   "system",
 ];
@@ -33,6 +41,7 @@ export function sidebarItems(
     { id: "triage", label: "Needs you", count: needsYou, hot: needsYou > 0 },
     { id: "inbox", label: "Inbox", count: waitingConversations },
     { id: "commitments", label: "Commitments", count: counts?.commitmentsToReview ?? 0 },
+    { id: "jira", label: "Jira", count: counts?.jiraAttention ?? 0 },
     { id: "people", label: "People", count: counts?.peopleToEvaluate ?? 0 },
     { id: "system", label: "System" },
   ];

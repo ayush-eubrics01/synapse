@@ -16,6 +16,7 @@ export interface NeedsYouActionsOptions {
   setDeferredError: (error: string) => void;
   toggleHistory: (slackUserId: string) => void;
   seeAllPeople: () => void;
+  seeAllJira: () => void;
   onEvaluationQueued?: (slackUserId: string) => void;
 }
 

@@ -1,0 +1,125 @@
+"use client";
+
+import type { JiraIssueView } from "@synapse/contracts";
+import type { JiraStatusDto } from "../../../lib/api";
+import { relMinutes } from "../../../lib/format";
+import {
+  attentionLabel,
+  dueLabel,
+  groupIssues,
+  jiraErrorLabel,
+  jiraRowId,
+} from "../../../lib/jira";
+import { Button } from "../ui/Button";
+import { Card } from "../ui/Card";
+import { Chip, type ChipTone } from "../ui/Chip";
+
+const STATUS_TONE: Record<JiraIssueView["statusCategory"], ChipTone> = {
+  new: "neutral",
+  indeterminate: "blue",
+  done: "green",
+};
+
+function Row({ i, now }: { i: JiraIssueView; now: Date | null }) {
+  const attention = attentionLabel(i, now);
+  const due = dueLabel(i, now);
+  const n = i.slackMentions.count;
+  return (
+    <li className="syn-jira-row" id={jiraRowId(i.key)}>
+      <div className="syn-jira-main">
+        <span className="syn-jira-key">{i.key}</span>
+        <span className="syn-jira-summary" title={i.summary}>
+          {i.summary}
+        </span>
+      </div>
+      <div className="syn-jira-meta">
+        {attention && (
+          <Chip tone={i.attention === "overdue" || i.attention === "blocked" ? "red" : "amber"}>
+            {attention}
+          </Chip>
+        )}
+        <Chip tone={STATUS_TONE[i.statusCategory]}>{i.statusName}</Chip>
+        {i.priority && <span className="syn-jira-faint">{i.priority}</span>}
+        {due && (
+          <span className={due.overdue ? "syn-jira-due is-overdue" : "syn-jira-faint"}>
+            {due.text}
+          </span>
+        )}
+        {now && <span className="syn-jira-faint">{relMinutes(i.updatedAt, now)}</span>}
+        {n > 0 && (
+          <span className="syn-jira-mono">
+            {n} Slack {n === 1 ? "mention" : "mentions"}
+          </span>
+        )}
+        {i.webUrl?.startsWith("https://") && (
+          <a className="syn-ncard-link" href={i.webUrl} target="_blank" rel="noreferrer noopener">
+            Open in Jira ↗
+          </a>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function syncLine(s: JiraStatusDto, now: Date | null): string {
+  if (s.lastSyncAt === null) return "not synced yet";
+  return now ? `synced ${relMinutes(s.lastSyncAt, now)}` : "synced";
+}
+
+/** The Jira section (spec B12): grouped issues, last-sync line and a manual sync. */
+export function JiraSection({
+  status,
+  issues,
+  now,
+  onSync,
+  onGoToSetup,
+}: {
+  status: JiraStatusDto | null;
+  issues: JiraIssueView[];
+  now: Date | null;
+  onSync: () => void;
+  onGoToSetup: () => void;
+}) {
+  const enabled = status?.enabled === true;
+  const groups = groupIssues(issues).filter((g) => g.issues.length > 0);
+  return (
+    <Card>
+      <div className="syn-card-head">
+        <h2>Jira</h2>
+        {status && enabled && (
+          <span className="syn-jira-sync">
+            <span className="syn-jira-mono">{syncLine(status, now)}</span>
+            <Button variant="secondary" size="sm" onClick={onSync}>
+              Sync now
+            </Button>
+          </span>
+        )}
+      </div>
+      {status?.lastError && enabled && (
+        <p className="syn-jira-error">Last sync problem: {jiraErrorLabel(status.lastError)}</p>
+      )}
+      {status && !enabled && (
+        <p className="syn-jira-faint">
+          Jira tracking is off.{" "}
+          <Button variant="link" onClick={onGoToSetup}>
+            Set up in Needs you →
+          </Button>
+        </p>
+      )}
+      {enabled && groups.length === 0 && <p className="syn-jira-faint">No Jira issues in scope.</p>}
+      {enabled &&
+        groups.map((g) => (
+          <section key={g.id} className="syn-jira-group" aria-label={g.label}>
+            <h3 className="syn-jira-group-head">
+              {g.label} <span>{g.issues.length}</span>
+            </h3>
+            <ul className="syn-jira-list">
+              {g.issues.map((i) => (
+                <Row key={i.key} i={i} now={now} />
+              ))}
+            </ul>
+          </section>
+        ))}
+    </Card>
+  );
+}

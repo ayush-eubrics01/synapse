@@ -11,6 +11,7 @@ import {
   type ThreadFetchRequest,
 } from "@synapse/contracts";
 import type { Clock } from "@synapse/shared";
+import { throwIfRateLimited } from "../rate-limit";
 import { parseSearchResult, SlackParseError } from "./search-parser";
 import { parseThreadResult } from "./thread-parser";
 
@@ -19,8 +20,6 @@ export const THREAD = "mcp__claude_ai_Slack__slack_read_thread";
 
 const THREAD_LIMIT = 100;
 const SKEW_SECONDS = 300;
-const RATE_RE = /ratelimit|rate.limit|\b429\b/i;
-const MAX_RETRY_SECONDS = 24 * 60 * 60;
 const DAY_SECONDS = 86400;
 /** R19: one search query term: no whitespace or quotes (they would change the query's meaning). */
 const QUERY_TERM_RE = /^[^\s"]+$/;
@@ -298,20 +297,6 @@ export class SlackConnectorSource implements MessageSource {
   }
 
   private throwIfRateLimited(results: RawToolResult[]): void {
-    const hit = results.find((r) => r.isError && RATE_RE.test(r.content));
-    if (!hit) return;
-    const now = this.deps.clock.now();
-    let at: Date;
-    if (/daily/i.test(hit.content)) {
-      at = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
-    } else {
-      const secs = /retry-after\D{0,5}(\d+)/i.exec(hit.content)?.[1];
-      at = new Date(now.getTime() + (secs ? Math.min(Number(secs), MAX_RETRY_SECONDS) : 60) * 1000);
-    }
-    throw new JobError({
-      kind: "rate_limited",
-      message: "slack rate limited",
-      retryAfter: at.toISOString(),
-    });
+    throwIfRateLimited(results, this.deps.clock.now(), "slack rate limited");
   }
 }

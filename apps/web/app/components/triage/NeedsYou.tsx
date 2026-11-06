@@ -10,6 +10,8 @@ import { AwayDigestCard } from "./AwayDigestCard";
 import { CommitmentReviewCard } from "./CommitmentReviewCard";
 import { FlagCard } from "./FlagCard";
 import { FollowupCard } from "./FollowupCard";
+import { JiraAttentionCard } from "./JiraAttentionCard";
+import { JiraSetupCard } from "./JiraSetupCard";
 import { OutgoingAttentionCard } from "./OutgoingAttentionCard";
 import { RecommendationCard } from "./RecommendationCard";
 import { BackfillSetupCard, IdentitySetupCard, PeopleSetupCard } from "./SetupCards";
@@ -81,6 +83,16 @@ function Card({ card, p }: { card: NeedsCard; p: NeedsYouProps }) {
           now={p.now}
           onTrack={h.trackCommitment}
           onReject={h.rejectCommitment}
+        />
+      );
+    case "jira-attention":
+      return <JiraAttentionCard issues={card.data.issues} now={p.now} onSeeAll={h.seeAllJira} />;
+    case "setup-jira":
+      return (
+        <JiraSetupCard
+          scopeJql={card.data.scopeJql}
+          excludedProjects={card.data.excludedProjects}
+          onEnable={h.enableJira}
         />
       );
     case "recommendation":

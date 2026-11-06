@@ -16,6 +16,11 @@ export type ErrorKind =
   | "timeout"
   /** A run option's `beforeSpawn` refused just before the provider ran: nothing was spawned. */
   | "cancelled_before_spawn"
+  /**
+   * The CLI replaced a tool result too large for it with a notice ("exceeds maximum allowed
+   * tokens" / `<persisted-output>`). Retrying the same request cannot help: a person must shrink it.
+   */
+  | "output_too_large"
   | "unknown";
 
 export const errorKindSchema = z.enum([
@@ -33,6 +38,7 @@ export const errorKindSchema = z.enum([
   "provider_error",
   "timeout",
   "cancelled_before_spawn",
+  "output_too_large",
   "unknown",
 ] as const satisfies readonly ErrorKind[]);
 
@@ -67,6 +73,7 @@ const DECISIONS: Record<ErrorKind, RetryDecision> = {
   permission_denied: "needs_attention",
   parse_failed: "needs_attention",
   needs_attention: "needs_attention",
+  output_too_large: "needs_attention",
   invalid_input: "fail",
   cancelled_before_spawn: "fail",
   quota_exhausted: "defer",

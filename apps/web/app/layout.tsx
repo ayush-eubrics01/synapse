@@ -10,6 +10,7 @@ import "./styles/cards.css";
 import "./styles/system.css";
 import "./styles/inbox.css";
 import "./styles/people.css";
+import "./styles/jira.css";
 
 // Self-hosted at build time: the browser never requests Google (spec D4).
 const sans = IBM_Plex_Sans({

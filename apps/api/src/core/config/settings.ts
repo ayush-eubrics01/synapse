@@ -1,4 +1,9 @@
-import { flagSeveritySchema, type NewDomainEvent, urgencyLevelSchema } from "@synapse/contracts";
+import {
+  flagSeveritySchema,
+  jiraScopeJqlSchema,
+  type NewDomainEvent,
+  urgencyLevelSchema,
+} from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { eq } from "drizzle-orm";
@@ -13,6 +18,8 @@ const keywordRuleSchema = z.object({
   level: urgencyLevelSchema,
   signal: z.boolean(),
 });
+
+const jiraProjectKeySchema = z.string().regex(/^[A-Z][A-Z0-9_]+$/);
 
 const settingSchemas = {
   "slack.selfUserId": z
@@ -56,6 +63,28 @@ const settingSchemas = {
   "autoReply.minConfidence": z.number().min(0).max(1).default(0.75),
   // M8: an auto-send not started this long after its decision is cancelled as `stale`.
   "autoReply.maxSendDelayMinutes": z.number().int().positive().default(15),
+  "jira.enabled": z.boolean().default(false),
+  "jira.cloudId": z
+    .string()
+    .regex(/^[0-9a-fA-F-]{8,64}$/)
+    .nullable()
+    .default(null),
+  // No newline, no ORDER BY, balanced parentheses and quotes (the code wraps it as `(<scope>)`).
+  "jira.scope.jql": jiraScopeJqlSchema.default("assignee = currentUser() AND updated >= -60d"),
+  "jira.excludedProjects": z.array(jiraProjectKeySchema).default([]),
+  "jira.sync.intervalMinutes": z.number().int().positive().default(30),
+  "jira.reconcile.hours": z.number().int().positive().default(24),
+  "jira.windowDays": z.number().int().positive().default(60),
+  "jira.stale.days": z.number().int().positive().default(5),
+  "jira.dueSoon.days": z.number().int().nonnegative().default(2),
+  "jira.blockedStatuses": z.array(z.string().min(1)).default([]),
+  // Claude Code replaces an MCP result over ~25k tokens / ~100 KB with a "saved to file" notice, so
+  // a page must stay small: 20 issues with the fixed field list is ~49 KB (measured 2026-11-06).
+  "jira.pageSize": z.number().int().min(1).max(30).default(20),
+  "jira.maxPagesPerRun": z.number().int().positive().default(6),
+  // A page chain (one sync or reconcile across continuations) longer than this fails as
+  // parse_failed: a connector that never ends its pages must not run Claude without bound.
+  "jira.maxPagesPerChain": z.number().int().min(1).max(500).default(50),
   "system.lastHeartbeatAt": z.string().nullable().default(null),
   "orchestrator.quota.fiveHour.soft": z.number().min(0).max(1).default(0.6),
   "orchestrator.quota.fiveHour.hard": z.number().min(0).max(1).default(0.85),

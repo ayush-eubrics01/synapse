@@ -800,6 +800,9 @@ const handlers: NeedsYouHandlers = {
   confirmIdentity: noop,
   evaluatePerson: noop,
   seeAllPeople: noop,
+  syncJira: noop,
+  enableJira: noop,
+  seeAllJira: noop,
   startBackfill: noop,
   dismissAwayDigest: noop,
   setAway: noop,
@@ -882,4 +885,23 @@ test("AllClear renders a ✓ row for each empty category", () => {
   }
   expect(html).toContain("nothing urgent");
   expect(renderToString(<AllClear rows={[]} />)).toBe("");
+});
+
+test("NeedsYou renders the Jira setup card prefilled with the stored scope", () => {
+  const html = feed({
+    ...emptyInput(),
+    jiraStatus: {
+      enabled: false,
+      cloudIdSet: false,
+      lastSyncAt: null,
+      lastReconcileAt: null,
+      issueCount: 0,
+      lastError: null,
+      scopeJql: "project = DEMO",
+      excludedProjects: ["SKIP"],
+    },
+  });
+  expect(html).toContain("JIRA · SETUP");
+  expect(html).toContain("project = DEMO");
+  expect(html).toContain('value="SKIP"');
 });

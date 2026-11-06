@@ -108,7 +108,7 @@ Phase 6b migrations:
 | Table | Notes |
 |---|---|
 | `jira_projects` | `key` unique |
-| `jira_issues` | `key` unique, `external_id` unique, status, priority, assignee, reporter, `due_date`, `updated_at_source`, `last_synced_at`, `attention_state` |
+| `jira_issues` | Migration 0015. `key` primary key, `jira_id` (matched on a project move, which renames the row's key), `project_key`, `summary` (untrusted), `status_name`, `status_category` (new/indeterminate/done), `priority`, `issue_type`, `labels` JSON, `due_date`, `jira_created_at`, `jira_updated_at`, `web_url` (NOT NULL; `''` when the link isn't `https://`), `in_scope`, `first_seen_at`, `last_seen_at`, `attention` (overdue/blocked/due_soon/stale, nullable), `attention_since`. Indexes (`in_scope`, `status_category`), (`jira_updated_at`). See `docs/modules/jira.md` |
 | `jira_issue_comments` | `external_id` unique, `issue_id` FK |
 | `jira_issue_links` | Issue-to-issue and issue-to-entity links |
 | `jira_sync_history` | Per sync run: counts, checkpoint, errors |

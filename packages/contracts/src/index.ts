@@ -6,6 +6,7 @@ export * from "./dashboard";
 export * from "./errors";
 export * from "./events";
 export * from "./health";
+export * from "./jira";
 export * from "./jobs";
 export * from "./messages";
 export * from "./notifier";

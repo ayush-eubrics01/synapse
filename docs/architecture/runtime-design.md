@@ -22,7 +22,7 @@ Both are **systemd user services**. The API runs independently of the web servic
 
 - Durable queue in the `jobs` table. A worker claims a job by setting `lease_owner` / `lease_expires_at` in one atomic `UPDATE … WHERE status='PENDING' AND run_after<=now`, so two workers can't claim the same job.
 - Lifecycle: `PENDING → RUNNING → COMPLETED`, or `RUNNING → FAILED → RETRY → RUNNING`, or `→ NEEDS_ATTENTION` / `CANCELLED`.
-- Max 3 automatic retries with exponential backoff and jitter. The retry decision uses the `ErrorKind` (`integration-contracts.md`): `auth_failed`, `permission_denied`, `invalid_input` and `parse_failed` are never retried blindly.
+- Max 3 automatic retries with exponential backoff and jitter. The retry decision uses the `ErrorKind` (`integration-contracts.md`): `auth_failed`, `permission_denied`, `invalid_input`, `parse_failed` and `output_too_large` (a tool result the CLI replaced as too large; retrying the same request cannot help) are never retried blindly.
 - `quota_exhausted` defers the job to `resetsAt` and doesn't count as an attempt.
 - Long jobs write checkpoints (`job_checkpoints`). The backfill checkpoints after every page.
 - **Concurrency groups:** jobs in the `engineering` group also need the `engineering` lease (ADR-030). The orchestrator separately limits concurrent Claude runs (`orchestrator.maxConcurrent`, default 2; see `docs/modules/claude-orchestrator.md`).

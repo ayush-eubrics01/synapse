@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { holdReasonSchema } from "./auto-reply";
 import { errorKindSchema } from "./errors";
+import { jiraAttentionSchema } from "./jira";
 import { flagSeveritySchema, urgencyStatusSchema } from "./urgency";
 
 const approvalPayload = z.object({ approvalId: z.string() });
@@ -77,6 +78,8 @@ export const eventCatalog = {
   "autoreply.sent": z.object({ autoReplyId: z.string() }),
   "autoreply.held": z.object({ autoReplyId: z.string(), reason: holdReasonSchema }),
   "away.changed": z.object({ on: z.boolean() }),
+  "jira.issue_updated": z.object({ key: z.string() }),
+  "jira.issue_attention": z.object({ key: z.string(), attention: jiraAttentionSchema }),
 };
 
 export type EventType = keyof typeof eventCatalog;
