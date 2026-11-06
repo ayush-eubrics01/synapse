@@ -8,9 +8,12 @@ import {
   type RawToolResult,
   type SourceIssue,
 } from "@synapse/contracts";
+import type { Clock } from "@synapse/shared";
+import { throwIfRateLimited } from "../rate-limit";
 import { JiraParseError, parseResources, parseSearchResult } from "./parse";
 
 interface Deps {
+  clock: Clock;
   orchestrator: { run(req: ClaudeJobRequest, signal: AbortSignal): Promise<AIExecutionResult> };
 }
 
@@ -21,12 +24,13 @@ export interface SearchPageArgs {
   nextPageToken?: string;
 }
 
-/** The only extra keys the connector adds to a tool call, each with exactly this value (spec B3). */
-const TOLERATED: Record<string, string> = {
+/** Extra keys the connector adds to a tool call, each with exactly this value (spec B3). */
+type Tolerated = Readonly<Record<string, string>>;
+const RESOLVE_TOLERATED: Tolerated = {
   responseContentFormat: "markdown",
   actionSource: "model_tool_call",
-  searchResultMode: "issues",
 };
+const SEARCH_TOLERATED: Tolerated = { ...RESOLVE_TOLERATED, searchResultMode: "issues" };
 
 const incomplete = (message: string): JobError =>
   new JobError({ kind: "incomplete_ai_output", message });
@@ -39,12 +43,16 @@ function sameSet(a: unknown, b: readonly string[]): boolean {
 }
 
 /** Exact match on the requested args; only the tolerated extras may be added (R35, spec B3). */
-function inputMatches(actual: unknown, expected: Record<string, unknown>): boolean {
+function inputMatches(
+  actual: unknown,
+  expected: Record<string, unknown>,
+  tolerated: Tolerated,
+): boolean {
   if (typeof actual !== "object" || actual === null || Array.isArray(actual)) return false;
   const a = actual as Record<string, unknown>;
   for (const k of Object.keys(a)) {
     if (Object.hasOwn(expected, k)) continue;
-    if (!Object.hasOwn(TOLERATED, k) || a[k] !== TOLERATED[k]) return false;
+    if (!Object.hasOwn(tolerated, k) || a[k] !== tolerated[k]) return false;
   }
   for (const [k, v] of Object.entries(expected)) {
     if (!Object.hasOwn(a, k)) return false;
@@ -62,6 +70,7 @@ export class JiraConnectorSource {
     const raw = await this.runOne(
       JIRA_TOOL_RESOURCES,
       {},
+      RESOLVE_TOLERATED,
       [
         `Call the tool ${JIRA_TOOL_RESOURCES} exactly once, with no arguments.`,
         "Make no other tool call, except ToolSearch to load it if needed. Reply DONE.",
@@ -90,6 +99,7 @@ export class JiraConnectorSource {
     const raw = await this.runOne(
       JIRA_TOOL_SEARCH,
       wanted,
+      SEARCH_TOLERATED,
       [
         `Call the tool ${JIRA_TOOL_SEARCH} exactly once, with exactly these arguments:`,
         JSON.stringify(wanted),
@@ -109,6 +119,7 @@ export class JiraConnectorSource {
   private async runOne(
     tool: string,
     expected: Record<string, unknown>,
+    tolerated: Tolerated,
     lines: string[],
     signal: AbortSignal,
   ): Promise<RawToolResult> {
@@ -124,11 +135,12 @@ export class JiraConnectorSource {
       signal,
     );
     const results = result.toolResults.filter((r) => r.toolName === tool);
-    if (results.length === 0) throw incomplete("no jira tool result");
+    throwIfRateLimited(results, this.deps.clock.now(), "jira rate limited");
     const [only] = results;
-    if (results.length !== 1 || !only) throw incomplete("unexpected number of jira tool results");
+    if (!only) throw incomplete("no jira tool result");
+    if (results.length > 1) throw incomplete("unexpected number of jira tool results");
     if (only.isError) throw incomplete("jira tool returned an error");
-    if (!inputMatches(only.input, expected)) {
+    if (!inputMatches(only.input, expected, tolerated)) {
       throw incomplete("jira tool call did not match the requested arguments");
     }
     return only;

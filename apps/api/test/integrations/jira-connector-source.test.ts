@@ -8,9 +8,11 @@ import {
   JobError,
   type RawToolResult,
 } from "@synapse/contracts";
+import { FakeClock } from "@synapse/shared";
 import { JiraConnectorSource } from "../../src/integrations/jira/connector-source";
 
 const signal = new AbortController().signal;
+const NOW = Date.parse("2026-11-06T10:00:00Z");
 const CLOUD = "00000000-0000-4000-8000-000000000000";
 
 let n = 0;
@@ -44,6 +46,7 @@ const result = (toolResults: RawToolResult[]): AIExecutionResult => ({
 function setup(toolResults: RawToolResult[]) {
   const seen: ClaudeJobRequest[] = [];
   const source = new JiraConnectorSource({
+    clock: new FakeClock(new Date(NOW)),
     orchestrator: {
       run: async (req) => {
         seen.push(req);
@@ -211,7 +214,12 @@ describe("JiraConnectorSource.resolveCloudId", () => {
     expect(await source.resolveCloudId(signal)).toHaveLength(1);
   });
 
-  for (const input of [{ cloudId: CLOUD }, { actionSource: "x" }, null]) {
+  for (const input of [
+    { cloudId: CLOUD },
+    { actionSource: "x" },
+    { searchResultMode: "issues" },
+    null,
+  ]) {
     test(`mismatch ${JSON.stringify(input)}`, async () => {
       const { source } = setup([tr(JIRA_TOOL_RESOURCES, input, res)]);
       const e = await failure(source.resolveCloudId(signal));
@@ -236,5 +244,37 @@ describe("JiraConnectorSource.resolveCloudId", () => {
     const { source } = setup([tr(JIRA_TOOL_RESOURCES, {}, "not json")]);
     const e = await failure(source.resolveCloudId(signal));
     expect(e.classified.kind).toBe("parse_failed");
+  });
+});
+
+describe("rate limits", () => {
+  const cases: [string, string, string][] = [
+    ["429 no retry-after", "HTTP 429 Too Many Requests", "2026-11-06T10:01:00.000Z"],
+    [
+      "rate limit with retry-after",
+      "Rate limit exceeded. Retry-After: 120",
+      "2026-11-06T10:02:00.000Z",
+    ],
+    ["retry-after capped at a day", "rate limited retry-after: 999999", "2026-11-07T10:00:00.000Z"],
+    ["daily limit", "daily rate limit reached", "2026-11-07T00:00:00.000Z"],
+  ];
+  for (const [name, content, retryAfter] of cases) {
+    test(`search: ${name}`, async () => {
+      const { source } = setup([tr(JIRA_TOOL_SEARCH, sent(), content, true)]);
+      const e = await failure(source.searchPage(args, signal));
+      expect(e.classified.kind).toBe("rate_limited");
+      expect(e.classified.retryAfter).toBe(retryAfter);
+      expect(e.message).toBe("jira rate limited");
+    });
+  }
+  test("resolve: rate limited", async () => {
+    const { source } = setup([tr(JIRA_TOOL_RESOURCES, {}, "429", true)]);
+    const e = await failure(source.resolveCloudId(signal));
+    expect(e.classified.kind).toBe("rate_limited");
+  });
+  test("a non-rate error stays incomplete_ai_output", async () => {
+    const { source } = setup([tr(JIRA_TOOL_SEARCH, sent(), "boom", true)]);
+    const e = await failure(source.searchPage(args, signal));
+    expect(e.classified.kind).toBe("incomplete_ai_output");
   });
 });
