@@ -63,6 +63,7 @@ import { FollowupService } from "./modules/commitments/followups";
 import { CommitmentLifecycle } from "./modules/commitments/lifecycle";
 import { StallService } from "./modules/commitments/stall";
 import { CommitmentStore } from "./modules/commitments/store";
+import { DashboardLayoutService } from "./modules/dashboard/layouts";
 import { DashboardService } from "./modules/dashboard/service";
 import type { InspectionService } from "./modules/engineering-brain/inspection";
 import { RepositoryRegistry } from "./modules/engineering-brain/registry";
@@ -156,6 +157,7 @@ export interface Container {
   /** Job handler registry; the urgency smoke script runs one handler directly. */
   handlers: ReadonlyMap<string, HandlerRegistration>;
   dashboard: DashboardService;
+  dashboardLayouts: DashboardLayoutService;
   /** Read-only Jira tracking (Phase 8): status, issue views, manual sync and scope settings. */
   jira: JiraService;
   /** Repository registry (Phase 9, ADR-035): propose, register, edit and unregister. */
@@ -644,6 +646,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     claude_activity: claudeActivityCheck(claudeActivity),
   });
 
+  const dashboardLayouts = new DashboardLayoutService({ db, clock, audit, events });
   const dashboard = new DashboardService({
     db,
     clock,
@@ -702,6 +705,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     commitmentLifecycle,
     followups: followupService,
     dashboard,
+    dashboardLayouts,
     jira,
     repositories,
     inspections,
