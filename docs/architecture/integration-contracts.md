@@ -41,7 +41,7 @@ interface ClaudeJobRequest {
 
 interface SendGuard {              // J2: per-run PreToolUse hook on toolName
   toolName: string;
-  expectedInputSha256: string;     // sha256 of the canonical JSON of the exact tool_input
+  expectedInputSha256: string;     // sha256 of the canonical JSON of the normalised tool_input (drops unfurl_app_links:false, trimEnds message)
 }
 
 interface AIExecutionRequest {

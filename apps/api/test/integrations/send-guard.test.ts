@@ -34,8 +34,8 @@ async function runArgv(argv: string[], stdin: string) {
   const [code, stderr] = await Promise.all([p.exited, new Response(p.stderr).text()]);
   return { code, stderr };
 }
-const runHook = (sha: string, stdin: string, hook = HOOK) =>
-  runArgv([process.execPath, hook, sha], stdin);
+const runHook = (sha: string, stdin: string, hook = HOOK, tool = SEND) =>
+  runArgv([process.execPath, hook, sha, tool], stdin);
 
 /** The hook command from a guarded override, run the way Claude Code runs it: through a shell. */
 function commandOf(override: string): string {
@@ -116,8 +116,18 @@ describe("buildGuardedOverride", () => {
     expect(o.hooks.PreToolUse).toHaveLength(1);
     expect(o.hooks.PreToolUse[0].matcher).toBe(SEND);
     expect(o.hooks.PreToolUse[0].hooks).toEqual([
-      { type: "command", command: `'/b' '/h.ts' '${sha}' || exit 2`, timeout: 10 },
+      { type: "command", command: `'/b' '/h.ts' '${sha}' '${SEND}' || exit 2`, timeout: 10 },
     ]);
+  });
+
+  test("disableAllHooks is forced to false so a user-level true cannot switch the guard off", () => {
+    const g = { toolName: SEND, expectedInputSha256: sha };
+    const withTrue = JSON.parse(
+      buildGuardedOverride('{"disableAllHooks":true,"hooks":{}}', g, ["/b"]),
+    );
+    expect(withTrue.disableAllHooks).toBe(false);
+    const plain = JSON.parse(buildGuardedOverride(base, g, ["/b"]));
+    expect(plain.disableAllHooks).toBe(false);
   });
 
   test("the default override gains only the hook", () => {
@@ -209,6 +219,21 @@ describe("send-guard-hook.ts", () => {
   test("a missing or malformed expected sha exits 2", async () => {
     expect((await runArgv([process.execPath, HOOK], hookJson(args))).code).toBe(2);
     expect((await runHook("abc", hookJson(args))).code).toBe(2);
+  });
+
+  test("a missing or malformed tool name argument exits 2", async () => {
+    expect((await runArgv([process.execPath, HOOK, sha], hookJson(args))).code).toBe(2);
+    expect((await runHook(sha, hookJson(args), HOOK, "Bash|.*")).code).toBe(2);
+  });
+
+  test("a tool_name that differs from the guarded tool exits 2 with the fixed reason", async () => {
+    const other = JSON.stringify({ tool_name: "mcp__x__other", tool_input: args });
+    const r = await runHook(sha, other);
+    expect(r.code).toBe(2);
+    expect(r.stderr.trim()).toBe(REASON);
+    const none = await runHook(sha, JSON.stringify({ tool_input: args }));
+    expect(none.code).toBe(2);
+    expect(none.stderr.trim()).toBe(REASON);
   });
 
   test("the built command runs through a shell from a path with spaces and quotes", async () => {

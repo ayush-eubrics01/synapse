@@ -18,7 +18,8 @@ export function shellQuote(s: string): string {
 /**
  * The per-run `--settings` override for a guarded send (J2, A14): `base` (plugins disabled, R34)
  * with `hooks` replaced by one PreToolUse hook on `guard.toolName` running
- * `<hookCommand...> <sha256>`. Claude Code runs the command through a shell, so every element is
+ * `<hookCommand...> <sha256> <toolName>`, and `disableAllHooks` forced to false so a user-level
+ * `true` cannot silently switch the guard off. Claude Code runs the command through a shell, so every element is
  * single-quoted. A hook exit other than 0 or 2 would be a non-blocking error that lets the call
  * through; `|| exit 2` turns any failure (missing binary, crash) into a block.
  */
@@ -34,9 +35,10 @@ export function buildGuardedOverride(
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error("send guard: settings override is not an object");
   }
-  const command = `${[...hookCommand, guard.expectedInputSha256].map(shellQuote).join(" ")} || exit 2`;
+  const command = `${[...hookCommand, guard.expectedInputSha256, guard.toolName].map(shellQuote).join(" ")} || exit 2`;
   return JSON.stringify({
     ...parsed,
+    disableAllHooks: false,
     hooks: {
       PreToolUse: [
         {

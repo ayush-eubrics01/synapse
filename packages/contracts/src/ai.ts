@@ -18,8 +18,9 @@ export interface PromptPart {
 
 /**
  * J2: the provider adds a per-run PreToolUse hook on `toolName` that blocks the call unless the
- * sha256 of its canonical `tool_input` (keys sorted recursively, undefined dropped) equals
- * `expectedInputSha256` (64 lowercase hex).
+ * sha256 of the canonical JSON of its normalised `tool_input` equals `expectedInputSha256` (64
+ * lowercase hex). Canonical: keys sorted recursively, undefined dropped. Normalised: an
+ * `unfurl_app_links: false` key is dropped and `message` is trimEnd-ed.
  */
 export interface SendGuard {
   toolName: string;

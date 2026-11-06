@@ -1,4 +1,4 @@
-// J2 send guard: a Claude Code PreToolUse hook, run as `bun send-guard-hook.ts <sha256>`.
+// J2 send guard: a Claude Code PreToolUse hook, run as `bun send-guard-hook.ts <sha256> <toolName>`.
 // Standalone: Claude Code spawns it directly, so it imports nothing from the workspace.
 // stdin: the hook JSON ({ tool_name, tool_input, ... }). Exit 0 allows the call; exit 2 blocks it
 // and Claude Code feeds stderr back as the reason. stderr never carries any tool input.
@@ -22,16 +22,24 @@ async function readStdin(): Promise<string> {
 async function main(): Promise<{ code: 0 | 2; reason?: string }> {
   const expected = process.argv[2] ?? "";
   if (!/^[0-9a-f]{64}$/.test(expected)) return { code: 2, reason: "send guard misconfigured" };
+  const guardedTool = process.argv[3] ?? "";
+  if (!/^[A-Za-z0-9_]+$/.test(guardedTool)) return { code: 2, reason: "send guard misconfigured" };
   let input: unknown;
+  let toolName: unknown;
   try {
-    const parsed: unknown = JSON.parse(await readStdin());
-    input = (parsed as { tool_input?: unknown } | null)?.tool_input;
+    const parsed = JSON.parse(await readStdin()) as {
+      tool_input?: unknown;
+      tool_name?: unknown;
+    } | null;
+    input = parsed?.tool_input;
+    toolName = parsed?.tool_name;
   } catch {
     return { code: 2, reason: "send guard could not read the tool call" };
   }
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     return { code: 2, reason: "send guard could not read the tool call" };
   }
+  if (toolName !== guardedTool) return { code: 2, reason: MISMATCH };
   return sendInputSha256(input) === expected ? { code: 0 } : { code: 2, reason: MISMATCH };
 }
 
