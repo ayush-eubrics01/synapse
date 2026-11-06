@@ -2,7 +2,14 @@
 
 Phase 10 delivered engineering automation (`docs/modules/engineering-tasks.md`, spec `docs/superpowers/specs/2026-11-06-phase-10-engineering-automation.md`). This file records what was deliberately deferred, the known gaps, and the real-CLI smoke result.
 
-## Real-CLI smoke: TBD
+## Real-CLI smoke: Run by the controller on 2026-11-06 with the real CLI (haiku), on a throwaway repo with local bare remotes. No gh, no push.
+
+- Results: `investigate: ok`, `develop: files=1 testsPassed=true unsafe=false`, `commit: ok`, `merge_local: ok`, `cancelled_before_push: true`, `lock_released: true`.
+- The investigate run produced a plan.
+- The develop run fixed the planted bug in one file. The test result came from the real `bun test` tool_result.
+- The git-dir fingerprint didn't false-flag the run, which confirms skipping the index.
+- The commit and the local merge each went through their approval executors.
+- Cancelling before the push released the lock.
 
 `bun scripts/dev/develop-smoke.ts` has not been run against the real CLI yet. The controller runs it deliberately (two haiku runs; no gh, no push) and records here:
 
@@ -32,3 +39,5 @@ Until then the develop path is proven only by the fake-claude end-to-end test (`
   - The plan screen's parent branch is a text input with a datalist, not a select, because `RepositoryView` carries no branch list.
   - Investigation has no `suspectedInjection` field (same exception as the Phase 9 inspection, see the module doc).
   - The investigation timeout (20 minutes) is fixed; there is no setting.
+
+- The spec says the commit message and PR title/body can be edited before approval. No route supports editing yet: the user sees exactly what will be used and can reject it.
