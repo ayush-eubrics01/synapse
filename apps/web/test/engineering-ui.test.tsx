@@ -23,6 +23,7 @@ import {
   EngineeringAttentionCard,
   EngineeringPlanCard,
   RejectControl,
+  saveDraft,
 } from "../app/components/triage/EngineeringCards";
 import { createDeferred } from "../lib/deferred";
 import { lockText, SANDBOX_OFF_TEXT, SANDBOX_ON_TEXT } from "../lib/engineering";
@@ -817,4 +818,30 @@ test("approving with unsaved edits saves first and stops on an error sentence", 
   );
   expect(ok).toBeNull();
   expect(decided).toEqual(["x"]);
+});
+
+test("a dirty Approve saves first and a failed save does not approve; busy always resets", async () => {
+  const log: string[] = [];
+  const ui = {
+    setBusy: (b: boolean) => log.push(`busy:${b}`),
+    setError: (e: string | null) => log.push(`error:${e}`),
+    clearDraft: () => log.push("clear"),
+  };
+  const decide = () => log.push("decide");
+  await approveWithEdits(() => saveDraft(async () => null, ui), decide);
+  expect(log).toEqual(["busy:true", "busy:false", "error:null", "clear", "decide"]);
+  log.length = 0;
+  await approveWithEdits(() => saveDraft(async () => "Not saved.", ui), decide);
+  expect(log).toEqual(["busy:true", "busy:false", "error:Not saved."]);
+  log.length = 0;
+  const err = await approveWithEdits(
+    () =>
+      saveDraft(async () => {
+        throw new Error("boom");
+      }, ui),
+    decide,
+  );
+  expect(err).toBe("Could not reach the API.");
+  expect(log).toContain("busy:false");
+  expect(log).not.toContain("decide");
 });

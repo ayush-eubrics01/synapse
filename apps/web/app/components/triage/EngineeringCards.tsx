@@ -237,6 +237,29 @@ export async function approveWithEdits(
   return null;
 }
 
+/** Runs a save; `busy` always resets, and an unexpected rejection becomes an error sentence. */
+export async function saveDraft(
+  save: () => Promise<string | null>,
+  ui: {
+    setBusy: (b: boolean) => void;
+    setError: (e: string | null) => void;
+    clearDraft: () => void;
+  },
+): Promise<string | null> {
+  ui.setBusy(true);
+  let err: string | null;
+  try {
+    err = await save();
+  } catch {
+    err = "Could not reach the API.";
+  } finally {
+    ui.setBusy(false);
+  }
+  ui.setError(err);
+  if (err === null) ui.clearDraft();
+  return err;
+}
+
 /** One card per engineering approval kind (E20). Approve and reject are immediate API calls. */
 export function EngineeringApprovalCard({
   approval: a,
@@ -260,7 +283,11 @@ export function EngineeringApprovalCard({
 }) {
   const p = engineeringApproval(a);
   const original = p ? approvalTextValues(p) : null;
-  const [draft, setDraft] = useState<ApprovalTextValues | null>(null);
+  // The draft belongs to one approval and one stored text: when either changes after a refresh,
+  // it no longer applies, so a stale draft can never be sent over newer text.
+  const [draftState, setDraft] = useState<{ key: string; values: ApprovalTextValues } | null>(null);
+  const draftKey = `${a.id}:${JSON.stringify(original)}`;
+  const draft = draftState?.key === draftKey ? draftState.values : null;
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   if (!p) return null;
@@ -270,12 +297,11 @@ export function EngineeringApprovalCard({
   const problem = original ? approvalTextProblem(text) : null;
   const save = async (): Promise<string | null> => {
     if (!dirty) return null;
-    setBusy(true);
-    const err = await onSaveText(p.taskId, a.id, edit);
-    setBusy(false);
-    setError(err);
-    if (err === null) setDraft(null);
-    return err;
+    return saveDraft(() => onSaveText(p.taskId, a.id, edit), {
+      setBusy,
+      setError,
+      clearDraft: () => setDraft(null),
+    });
   };
   return (
     <CardFrame
@@ -284,7 +310,12 @@ export function EngineeringApprovalCard({
       meta={metaLine(a.createdAt, now, "engineering")}
       title={taskTitle ?? "Engineering task"}
     >
-      <Body p={p} detail={detail} text={text} onText={setDraft} />
+      <Body
+        p={p}
+        detail={detail}
+        text={text}
+        onText={(values) => setDraft({ key: draftKey, values })}
+      />
       {original && problem !== null && <p className="syn-eng-reason">{problem}</p>}
       {error !== null && (
         <p className="syn-eng-reason" role="alert">

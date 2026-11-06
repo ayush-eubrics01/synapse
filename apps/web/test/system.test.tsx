@@ -238,3 +238,24 @@ test("the sandbox setting renders as a switch with its hint", () => {
   expect(html).toContain("Run tests in a sandbox");
   expect(html).toContain(SANDBOX_HINT.replace(/'/g, "&#x27;"));
 });
+
+test("flipping the sandbox switch reports the setting key and the new value", () => {
+  const calls: unknown[][] = [];
+  const values = { "engineering.sandbox.enabled": true } as never;
+  const tree = ClaudeSettings({ values, onChange: (...a) => calls.push(a) }) as never;
+  // Walk the element tree for the Switch whose label is the sandbox toggle.
+  const find = (node: unknown): { onChange: (n: boolean) => void } | null => {
+    if (!node || typeof node !== "object") return null;
+    const el = node as { props?: Record<string, unknown> };
+    const props = el.props ?? {};
+    if (props.label === "Run tests in a sandbox") return props as never;
+    const kids = props.children;
+    for (const k of Array.isArray(kids) ? kids.flat(Infinity) : [kids]) {
+      const hit = find(k);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  find(tree)?.onChange(false);
+  expect(calls).toEqual([["engineering.sandbox.enabled", false]]);
+});
