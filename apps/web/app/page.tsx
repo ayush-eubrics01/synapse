@@ -55,7 +55,13 @@ import {
 import { trailingDebounce } from "../lib/debounce";
 import { LIVE_EVENT_TYPES } from "../lib/live-events";
 import { SECTION_IDS, type SectionId, sidebarItems } from "../lib/nav";
-import { allClearRows, buildNeedsYou, type NeedsYouInput } from "../lib/needs-you";
+import {
+  allClearRows,
+  buildNeedsYou,
+  isActionable,
+  type NeedsYouInput,
+  needsYouCount,
+} from "../lib/needs-you";
 import type { PaletteItem } from "../lib/palette";
 import { writeTheme } from "../lib/theme";
 import { ClaudePanel } from "./components/ClaudePanel";
@@ -339,7 +345,8 @@ export default function Dashboard() {
     hidden: feed.hidden,
   };
   const cards = buildNeedsYou(needsInput);
-  const hasBackfillCard = cards.some((c) => c.kind === "setup-backfill");
+  // A running backfill has nothing to start, so the palette offers no action for it.
+  const canStartBackfill = cards.some((c) => c.kind === "setup-backfill" && isActionable(c));
 
   // Brings the backfill setup card into view with its confirm step open.
   const openBackfill = () => {
@@ -379,8 +386,8 @@ export default function Dashboard() {
         run: () => openPerson(p.slackUserId),
       }),
     ),
-    // Opens the backfill setup card in its confirm step; omitted once the backfill is done.
-    ...(hasBackfillCard
+    // Opens the backfill setup card in its confirm step; omitted when there is nothing to start.
+    ...(canStartBackfill
       ? [
           {
             id: "act-backfill",
@@ -416,7 +423,7 @@ export default function Dashboard() {
   return (
     <div className="syn-app">
       <Sidebar
-        items={sidebarItems(overview?.counts ?? null, cards.length)}
+        items={sidebarItems(overview?.counts ?? null, needsYouCount(cards))}
         active={active}
         onGo={(id) => {
           const section = SECTION_IDS.find((s) => s === id);

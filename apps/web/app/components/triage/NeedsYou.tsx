@@ -1,14 +1,8 @@
 "use client";
 
-import type {
-  CommitmentEditsDto,
-  FlagReviewStatus,
-  ResolveDecisionDto,
-  SecurityFlagDto,
-  UrgencyStatusDto,
-} from "../../../lib/api";
-import type { NeedsCard } from "../../../lib/needs-you";
-import type { Decision } from "../../../lib/people-decision";
+import type { SecurityFlagDto } from "../../../lib/api";
+import { type NeedsCard, needsYouCount } from "../../../lib/needs-you";
+import type { NeedsYouHandlers } from "../../../lib/needs-you-actions";
 import { Chip } from "../ui/Chip";
 import { AllClear } from "./AllClear";
 import { ApprovalCard } from "./ApprovalCard";
@@ -20,28 +14,7 @@ import { RecommendationCard } from "./RecommendationCard";
 import { BackfillSetupCard, IdentitySetupCard, PeopleSetupCard } from "./SetupCards";
 import { UrgentCard } from "./UrgentCard";
 
-/** What the cards can do. The page decides which run at once and which are deferred (spec D8). */
-export interface NeedsYouHandlers {
-  urgentStatus: (messageId: string, status: UrgencyStatusDto) => void;
-  urgentReply: (messageId: string, text: string) => void;
-  resolve: (outgoingId: string, decision: ResolveDecisionDto) => void;
-  decide: (approvalId: string, decision: "approve" | "reject") => void;
-  reviewFlag: (flagId: string, status: FlagReviewStatus) => void;
-  toggleHistory: (slackUserId: string) => void;
-  sendFollowup: (id: string, text: string) => void;
-  discardFollowup: (id: string) => void;
-  trackCommitment: (id: string, edits?: CommitmentEditsDto) => void;
-  rejectCommitment: (id: string) => void;
-  recDecide: (d: Decision) => void;
-  recDismiss: (id: string) => void;
-  recDiscard: (id: string) => void;
-  recRetry: (id: string) => void;
-  recEvaluate: (id: string) => void;
-  confirmIdentity: (slackUserId: string) => void;
-  evaluatePerson: (slackUserId: string) => void;
-  seeAllPeople: () => void;
-  startBackfill: () => void;
-}
+export type { NeedsYouHandlers };
 
 export interface NeedsYouProps {
   cards: NeedsCard[];
@@ -147,7 +120,8 @@ function Card({ card, p }: { card: NeedsCard; p: NeedsYouProps }) {
 
 /** The decision feed (spec D7): cards in impact order, then the all-clear checklist. */
 export function NeedsYou(props: NeedsYouProps) {
-  const n = props.cards.length;
+  // Status-only cards (a running backfill) are shown but not counted, matching the badge.
+  const n = needsYouCount(props.cards);
   return (
     <div className="syn-needs">
       <div className="syn-needs-head">

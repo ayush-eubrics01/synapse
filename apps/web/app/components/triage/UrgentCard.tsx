@@ -5,6 +5,7 @@ import type { UrgencyStatusDto, UrgentItemDto } from "../../../lib/api";
 import { Button } from "../ui/Button";
 import {
   Actions,
+  absoluteTime,
   CardFrame,
   conversationLabel,
   Explainer,
@@ -13,6 +14,7 @@ import {
   Quote,
   SEND_STATUS,
   SlackLink,
+  statusLabel,
 } from "./CardFrame";
 
 const SNIPPET = 200;
@@ -47,6 +49,7 @@ export function UrgentCard({ item: i, now, onStatus, onReply, onCopy }: UrgentCa
   // A reply can be written when no send is live, unless the draft text has expired.
   const editable = canRequest && (i.draft !== null || reply !== null) && i.draft?.text !== null;
   const tags = [
+    statusLabel(i.status),
     ...(i.assessed ? [] : ["not yet assessed"]),
     ...(i.fallback ? ["rule-based"] : []),
     ...(i.coalesced ? ["follow-up in thread"] : []),
@@ -59,6 +62,7 @@ export function UrgentCard({ item: i, now, onStatus, onReply, onCopy }: UrgentCa
       tone="red"
       tags={tags}
       meta={metaLine(i.sentAt, now, where)}
+      metaTitle={absoluteTime(i.sentAt)}
       title={`${sender}: ${i.reason}`}
     >
       <Quote>{snippet(i.text)}</Quote>

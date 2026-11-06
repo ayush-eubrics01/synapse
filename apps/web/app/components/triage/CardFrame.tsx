@@ -10,13 +10,24 @@ export interface CardFrameProps {
   tags?: string[];
   /** Right-aligned mono meta: "time · source". */
   meta?: string;
+  /** Tooltip on the meta, e.g. the absolute time. */
+  metaTitle?: string;
   title: ReactNode;
   children?: ReactNode;
   id?: string;
 }
 
 /** The shared Needs-you card: kind tag + meta row, title, then the card's body. */
-export function CardFrame({ tag, tone, tags = [], meta, title, children, id }: CardFrameProps) {
+export function CardFrame({
+  tag,
+  tone,
+  tags = [],
+  meta,
+  metaTitle,
+  title,
+  children,
+  id,
+}: CardFrameProps) {
   return (
     <article className="syn-ncard" id={id}>
       <div className="syn-ncard-top">
@@ -28,7 +39,11 @@ export function CardFrame({ tag, tone, tags = [], meta, title, children, id }: C
             <Chip key={t}>{t}</Chip>
           ))}
         </span>
-        {meta && <span className="syn-ncard-meta">{meta}</span>}
+        {meta && (
+          <span className="syn-ncard-meta" title={metaTitle}>
+            {meta}
+          </span>
+        )}
       </div>
       <h3 className="syn-ncard-title">{title}</h3>
       {children}
@@ -74,6 +89,17 @@ export function SlackLink({ href }: { href: string | null }) {
 export function conversationLabel(c: { name: string | null; id: string; type: string }): string {
   if (c.name === null) return c.id;
   return c.type === "channel" ? `#${c.name}` : c.name;
+}
+
+/** "in_progress" → "in progress", for the small neutral status chip. */
+export function statusLabel(status: string): string {
+  return status.replace(/_/g, " ");
+}
+
+/** The absolute local time, for a meta tooltip. */
+export function absoluteTime(iso: string): string {
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? iso : new Date(t).toLocaleString();
 }
 
 export const SEND_STATUS: Record<string, string> = {

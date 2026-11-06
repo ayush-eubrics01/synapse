@@ -3,7 +3,17 @@
 import { useState } from "react";
 import type { FollowupViewDto } from "../../../lib/api";
 import { Button } from "../ui/Button";
-import { Actions, CardFrame, Explainer, MAX_TEXT, metaLine, Quote, SEND_STATUS } from "./CardFrame";
+import {
+  Actions,
+  absoluteTime,
+  CardFrame,
+  Explainer,
+  MAX_TEXT,
+  metaLine,
+  Quote,
+  SEND_STATUS,
+  statusLabel,
+} from "./CardFrame";
 
 const ORIGIN: Record<FollowupViewDto["origin"], string> = {
   stalled: "stalled commitment",
@@ -33,7 +43,9 @@ export function FollowupCard({
     <CardFrame
       tag="FOLLOW-UP DRAFT"
       tone="blue"
+      tags={[statusLabel(f.status)]}
       meta={metaLine(f.createdAt, now, ORIGIN[f.origin])}
+      metaTitle={absoluteTime(f.createdAt)}
       title={`To ${who} in ${f.conversationLabel ?? "an unknown conversation"}`}
     >
       {f.noThread && <Explainer>Posts as a new message (original expired)</Explainer>}

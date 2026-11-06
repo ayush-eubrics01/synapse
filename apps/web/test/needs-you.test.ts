@@ -9,7 +9,13 @@ import type {
   SlackStatusDto,
   UrgentItemDto,
 } from "../lib/api";
-import { allClearRows, buildNeedsYou, type NeedsYouInput } from "../lib/needs-you";
+import {
+  allClearRows,
+  buildNeedsYou,
+  isActionable,
+  type NeedsYouInput,
+  needsYouCount,
+} from "../lib/needs-you";
 
 const T = "2026-01-01T00:00:00.000Z";
 
@@ -417,4 +423,30 @@ test("allClearRows lists exactly the empty categories", () => {
   expect(
     allClearRows(empty({ flags: [flag()], hidden: new Set(["flag:fl1"]) })).map((r) => r.label),
   ).toContain("Red flags");
+});
+
+test("a running backfill with nothing to start is shown as status but not counted", () => {
+  const count = (b: Partial<SlackStatusDto["backfill"]>) => {
+    const cards = buildNeedsYou(empty({ urgent: [urgentItem()], slackStatus: slack(b) }));
+    const card = cards.find((c) => c.kind === "setup-backfill");
+    return {
+      shown: card !== undefined,
+      actionable: card ? isActionable(card) : null,
+      n: needsYouCount(cards),
+    };
+  };
+  expect(count({ status: "running", pagesDone: 3 })).toEqual({
+    shown: true,
+    actionable: false,
+    n: 1,
+  });
+  expect(count({ status: "paused" })).toEqual({ shown: true, actionable: false, n: 1 });
+  // Something to start or resume: a decision, so it counts.
+  expect(count({ status: "idle" })).toEqual({ shown: true, actionable: true, n: 2 });
+  expect(count({ status: "running", resumable: true })).toEqual({
+    shown: true,
+    actionable: true,
+    n: 2,
+  });
+  expect(count({ status: "error" })).toEqual({ shown: true, actionable: true, n: 2 });
 });

@@ -64,6 +64,13 @@ test("UrgentCard has the URGENT kind tag with the level and the time and convers
   expect(html).toContain("Ada");
 });
 
+test("UrgentCard shows its status as a chip and the absolute sent time as the meta tooltip", () => {
+  const html = render(item());
+  expect(html).toMatch(/syn-chip syn-chip--neutral[^"]*"[^>]*>in progress</);
+  expect(html).toContain(`title="${new Date(T).toLocaleString()}"`);
+  expect(render(item({ status: "new" }))).toMatch(/syn-chip--neutral[^"]*"[^>]*>new</);
+});
+
 test("UrgentCard tags unassessed and rule-based items", () => {
   expect(render(item({ assessed: false }))).toContain("not yet assessed");
   expect(render(item({ fallback: true }))).toContain("rule-based");
@@ -335,6 +342,13 @@ test("FollowupCard shows an editable draft with recipient, conversation and the 
   expect(html).not.toContain("Posts as a new message");
   expect(renderDraft(followup({ noThread: true }))).toContain(
     "Posts as a new message (original expired)",
+  );
+});
+
+test("FollowupCard shows its status as a chip", () => {
+  expect(renderDraft(followup())).toMatch(/syn-chip--neutral[^"]*"[^>]*>draft</);
+  expect(renderDraft(followup({ status: "awaiting_approval", actions: [] }))).toMatch(
+    /syn-chip--neutral[^"]*"[^>]*>awaiting approval</,
   );
 });
 
@@ -788,6 +802,18 @@ test("NeedsYou has the section header with a count chip and subtitle, cards in o
   expect(html).toContain("<h2");
   expect(html).toContain("Needs you");
   expect(html).toMatch(/syn-chip[^"]*"[^>]*>3</);
+  // A running backfill renders as status but isn't counted.
+  const running = feed({
+    ...emptyInput(),
+    urgent: [item()],
+    slackStatus: {
+      incremental: { ...backfill(), stream: "slack.messages" },
+      backfill: backfill({ status: "running", pagesDone: 2 }),
+      searchesToday: 0,
+    },
+  });
+  expect(running).toContain("SLACK · SETUP");
+  expect(running).toMatch(/syn-chip[^"]*"[^>]*>1</);
   expect(html).toContain("Decisions only you can make. Ordered by impact.");
   const at = (s: string) => html.indexOf(s);
   expect(at("URGENT · CRITICAL")).toBeLessThan(at("APPROVAL · SLACK SEND"));

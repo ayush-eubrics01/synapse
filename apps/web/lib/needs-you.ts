@@ -9,6 +9,7 @@ import type {
   SlackStatusDto,
   UrgentItemDto,
 } from "./api";
+import { backfillAction } from "./backfill-action";
 
 /** A send whose delivery Synapse could not confirm: the user decides (mark sent, resend, discard). */
 export interface OutgoingAttention {
@@ -211,6 +212,20 @@ export function buildNeedsYou(input: NeedsYouInput): NeedsCard[] {
 
   // Array.prototype.sort is stable: equal ranks keep the API's order.
   return cards.filter((card) => !input.hidden.has(card.key)).sort((a, b) => a.rank - b.rank);
+}
+
+/**
+ * False for a status-only card: a backfill that is running (or paused) with nothing to start or
+ * resume. It is still shown, but it isn't a decision, so it isn't counted or offered in the palette.
+ */
+export function isActionable(card: NeedsCard): boolean {
+  if (card.kind === "setup-backfill") return backfillAction(card.data.backfill).enabled;
+  return true;
+}
+
+/** The Needs-you badge and header count: cards that need a decision. */
+export function needsYouCount(cards: NeedsCard[]): number {
+  return cards.filter(isActionable).length;
 }
 
 const CLEAR: Array<{ kind: NeedsKind; label: string; value: string }> = [
