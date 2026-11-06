@@ -35,6 +35,8 @@ export const DEFAULT_SYSTEM_PROMPTS: Record<WorkerProfile, string> = {
     "You are an analysis worker. Use only the tools you are given, which are read-only. Reply with exactly the JSON the instructions ask for.",
   engineering:
     "You are an engineering worker operating only inside the given repository and only within the approved task.",
+  reader:
+    "You answer one question about one local repository by reading its files. You cannot change anything.",
 };
 
 export interface OrchestratorDeps {
@@ -311,7 +313,12 @@ export class ClaudeOrchestrator {
     }
     // Phase 9: user-level permissions merge into the run (`--setting-sources user`) and the
     // override cannot remove them, so a widening user setting would defeat rule L's path scoping.
-    if (profile === "engineering" && provider.userPermissionsWidenScope === true) {
+    // Both path-scoped profiles are refused: engineering, and reader (C1), which reads files next
+    // to untrusted text.
+    if (
+      (profile === "engineering" || profile === "reader") &&
+      provider.userPermissionsWidenScope === true
+    ) {
       db.transaction((tx) => {
         audit.record(tx, {
           actor: "system",

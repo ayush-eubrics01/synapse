@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { ClassifiedError } from "./errors";
 import type { HealthStatus } from "./health";
 
-export type WorkerProfile = "collector" | "intelligence" | "engineering";
+export type WorkerProfile = "collector" | "intelligence" | "engineering" | "reader";
 
 export type PriorityClass = "urgent" | "send" | "collection" | "engineering" | "batch" | "backfill";
 
@@ -129,12 +129,13 @@ export interface AIProvider {
   getHealth(): Promise<{ status: HealthStatus; detail?: string; version?: string }>;
   /**
    * True when the user's Claude Code settings (read once at startup) widen file or shell scope
-   * beyond what a run allows. The orchestrator refuses engineering runs while it is true.
+   * beyond what a run allows. The orchestrator refuses engineering and reader runs (the profiles
+   * with path-scoped filesystem tools) while it is true.
    */
   readonly userPermissionsWidenScope?: boolean;
 }
 
-export const workerProfileSchema = z.enum(["collector", "intelligence", "engineering"]);
+export const workerProfileSchema = z.enum(["collector", "intelligence", "engineering", "reader"]);
 
 export const priorityClassSchema = z.enum([
   "urgent",

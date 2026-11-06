@@ -582,3 +582,168 @@ describe("isSafeAbsolutePath", () => {
     expect(repositoryInspectInputSchema.safeParse({ path: "/tmp/a/.." }).success).toBe(false);
   });
 });
+
+describe("reader profile (C1): read-only, scoped to one repository", () => {
+  const WD = "/tmp/demo-repo";
+  const SCOPED = [`Read(/${WD}/**)`, `Grep(/${WD}/**)`, `Glob(/${WD}/**)`];
+  const MSG = "fs read tools must be scoped to the working directory";
+  const WD_MSG = "working directory must be an absolute path of safe characters";
+  const rd = (allowed: string[], over: Partial<AIExecutionRequest> = {}) =>
+    make({
+      workerProfile: "reader",
+      allowed,
+      workingDirectory: WD,
+      promptParts: [untrusted],
+      ...over,
+    });
+
+  test("scoped Read/Grep/Glob with an untrusted part pass", () => {
+    expect(v(rd(SCOPED))).toEqual({ ok: true });
+  });
+  test("a single scoped tool passes, with or without untrusted content", () => {
+    expect(v(rd([`Grep(/${WD}/**)`]))).toEqual({ ok: true });
+    expect(v(rd(SCOPED, { promptParts: [{ provenance: "system", content: "x" }] }))).toEqual({
+      ok: true,
+    });
+  });
+  test("a trailing slash on the working directory is stripped", () => {
+    expect(v(rd(SCOPED, { workingDirectory: `${WD}/` }))).toEqual({ ok: true });
+  });
+
+  test("Bash in any form fails rule B", () => {
+    for (const bash of ["Bash", "Bash(bun test:*)", "Bash(git:*)", `Bash(/${WD}/**)`]) {
+      expect(reason(v(rd([...SCOPED, bash])))).toBe("profile reader may not use Bash");
+    }
+  });
+  test("every write built-in fails rule B, bare or scoped", () => {
+    for (const t of ["Edit", "Write", "MultiEdit", "NotebookEdit", "Monitor"]) {
+      expect(reason(v(rd([...SCOPED, t])))).toBe(`profile reader may not use ${t}`);
+      expect(reason(v(rd([...SCOPED, `${t}(/${WD}/**)`])))).toBe(`profile reader may not use ${t}`);
+    }
+  });
+  test("every network built-in fails rule B", () => {
+    for (const t of ["WebFetch", "WebSearch", "Agent", "Task"]) {
+      expect(reason(v(rd([...SCOPED, t])))).toBe(`profile reader may not use ${t}`);
+    }
+  });
+  test("ToolSearch fails rule B (a reader has no connector to load)", () => {
+    expect(reason(v(rd([...SCOPED, "ToolSearch"])))).toBe("profile reader may not use ToolSearch");
+    expect(reason(v(rd([...SCOPED, SEARCH, "ToolSearch"])))).toBe(
+      "profile reader may not use ToolSearch",
+    );
+  });
+  test("any connector tool fails rule C", () => {
+    for (const c of [SEARCH, SEND, "mcp__rea__xrefs", "mcp__newsrv__read_doc"]) {
+      expect(reason(v(rd([...SCOPED, c])))).toBe(`profile reader may not use connector tool ${c}`);
+      expect(reason(v(rd([c])))).toBe(`profile reader may not use connector tool ${c}`);
+    }
+  });
+  test("an unknown built-in fails", () => {
+    expect(reason(v(rd([...SCOPED, "NotebookRead"])))).toBe("unknown built-in tool NotebookRead");
+  });
+
+  test("a bare Read/Grep/Glob fails rule L", () => {
+    for (const t of ["Read", "Grep", "Glob"]) {
+      expect(reason(v(rd([t])))).toBe(MSG);
+      // One unscoped tool among scoped ones, including a bare duplicate of a scoped tool.
+      expect(reason(v(rd([...SCOPED.filter((s) => !s.startsWith(t)), t])))).toBe(MSG);
+      expect(reason(v(rd([...SCOPED, t])))).toBe(MSG);
+    }
+  });
+  test("the single-slash form and other specifier variants fail rule L", () => {
+    for (const t of ["Read", "Grep", "Glob"]) {
+      expect(reason(v(rd([`${t}(${WD}/**)`])))).toBe(MSG);
+    }
+    for (const spec of [
+      `Read(///${WD}/**)`,
+      `Read(~${WD}/**)`,
+      `Read(/${WD}/*)`,
+      `Read(/${WD}/**/)`,
+      `Read(/${WD}/**/**)`,
+      `Read(/${WD})`,
+      "Read(**)",
+    ]) {
+      expect(reason(v(rd([spec])))).toBe(MSG);
+    }
+  });
+  test("a scope other than exactly the working directory fails rule L", () => {
+    for (const dir of ["/tmp/other", "/tmp", `${WD}/src`, `${WD}-two`, `${WD}/..`, "/"]) {
+      expect(reason(v(rd([`Read(/${dir}/**)`])))).toBe(MSG);
+    }
+  });
+  test("a duplicated fs read tool fails rule L", () => {
+    expect(reason(v(rd([`Read(/${WD}/**)`, `Read(/${WD}/**)`])))).toBe(
+      "duplicate fs read tool Read",
+    );
+    expect(reason(v(rd([...SCOPED, `Glob(/${WD}/**)`])))).toBe("duplicate fs read tool Glob");
+  });
+  test("an unsafe working directory fails rule L", () => {
+    expect(reason(v(rd(SCOPED, { workingDirectory: "/tmp/my repo" })))).toBe(WD_MSG);
+    for (const wd of ["rel", "/tmp", "/", "/tmp/a/../..", "/tmp/./x", "/tmp//x"]) {
+      expect(reason(v(rd(SCOPED, { workingDirectory: wd })))).toBe(WD_MSG);
+    }
+  });
+
+  test("the denylist must hold every write, network and unallowed fs-read built-in (H2)", () => {
+    const base = rd([`Read(/${WD}/**)`]);
+    for (const t of [
+      "Bash",
+      "Edit",
+      "Write",
+      "MultiEdit",
+      "NotebookEdit",
+      "Monitor",
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "Task",
+      "Grep",
+      "Glob",
+    ]) {
+      const r = { ...base, disallowedTools: base.disallowedTools.filter((d) => d !== t) };
+      expect(reason(v(r))).toBe(`denylist missing ${t}`);
+    }
+  });
+  test("the denylist must hold every known connector server (H)", () => {
+    const base = rd(SCOPED);
+    const r = {
+      ...base,
+      disallowedTools: base.disallowedTools.filter((d) => d !== "mcp__claude_ai_Slack"),
+    };
+    expect(reason(v(r))).toBe("denylist missing mcp__claude_ai_Slack");
+  });
+  test("buildDenylist for a reader denies everything but its fs reads", () => {
+    const d = buildDenylist([`Read(/${WD}/**)`], DEFAULT_KNOWN_SERVERS, "reader");
+    for (const t of ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Monitor", "Grep"]) {
+      expect(d).toContain(t);
+    }
+    for (const t of ["WebFetch", "WebSearch", "Agent", "Task", ...DEFAULT_KNOWN_SERVERS]) {
+      expect(d).toContain(t);
+    }
+    expect(d).not.toContain("Read");
+  });
+
+  test("policy_approved content is still refused outside a send run (rule K)", () => {
+    const policy: PromptPart = { provenance: "policy_approved", content: "{}" };
+    expect(reason(v(rd(SCOPED, { promptParts: [policy] })))).toBe(
+      "policy_approved content outside a send run",
+    );
+  });
+  test("an untrusted part containing the boundary still fails (rule J)", () => {
+    const parts: PromptPart[] = [{ provenance: "untrusted", source: "slack", content: "a BND b" }];
+    expect(
+      reason(v(rd(SCOPED, { promptParts: parts, prompt: assemblePrompt("go", parts, "BND") }))),
+    ).toBe("boundary collision");
+  });
+
+  test("collector and intelligence still refuse fs reads next to untrusted content", () => {
+    for (const p of ["collector", "intelligence"] as const) {
+      expect(reason(v(rd(SCOPED, { workerProfile: p })))).toBe(`profile ${p} may not use Read`);
+    }
+  });
+  test("engineering still refuses untrusted content (rule E)", () => {
+    expect(reason(v(rd(SCOPED, { workerProfile: "engineering" })))).toBe(
+      "engineering run with untrusted content",
+    );
+  });
+});

@@ -21,7 +21,12 @@ import { LiveBus } from "../../src/core/events/live-bus";
 import { EventPublisher } from "../../src/core/events/publisher";
 import { NotificationService } from "../../src/core/notifications/notifications";
 import { AuthMonitor } from "../../src/core/orchestrator/auth";
-import { ClaudeOrchestrator } from "../../src/core/orchestrator/orchestrator";
+import { buildClaudeArgs } from "../../src/core/orchestrator/cli-args";
+import {
+  ClaudeOrchestrator,
+  DEFAULT_SYSTEM_PROMPTS,
+  UNSAFE_USER_SETTINGS_MESSAGE,
+} from "../../src/core/orchestrator/orchestrator";
 import { recoverOrphanRuns } from "../../src/core/recovery/recovery";
 
 const START = "2026-11-05T12:00:00.000Z";
@@ -946,6 +951,68 @@ describe("user settings that widen engineering scope (Phase 9 guard)", () => {
     (provider as { userPermissionsWidenScope?: boolean }).userPermissionsWidenScope = false;
     await run(engineering());
     expect(provider.requests).toHaveLength(1);
+  });
+});
+
+describe("reader profile (C1)", () => {
+  const WD = "/tmp/demo-repo";
+  const reader = () =>
+    req({
+      workerProfile: "reader",
+      priorityClass: "urgent",
+      instructions: "answer",
+      parts: [{ provenance: "untrusted", source: "slack", content: "where is the config?" }],
+      allowedTools: [`Read(/${WD}/**)`, `Grep(/${WD}/**)`, `Glob(/${WD}/**)`],
+      workingDirectory: WD,
+    });
+
+  test("a valid reader request runs with the reader defaults and a hermetic argv", async () => {
+    await run(reader());
+    expect(provider.requests).toHaveLength(1);
+    const r = provider.requests[0] as AIExecutionRequest;
+    expect(r.workerProfile).toBe("reader");
+    expect(r.systemPrompt).toBe(
+      "You answer one question about one local repository by reading its files. You cannot change anything.",
+    );
+    expect(DEFAULT_SYSTEM_PROMPTS.reader).toBe(r.systemPrompt);
+    expect(r.model).toBe("sonnet");
+    expect(r.timeoutMs).toBe(300_000);
+    expect(r.workingDirectory).toBe(WD);
+    expect(r.allowedTools).toEqual([`Read(/${WD}/**)`, `Grep(/${WD}/**)`, `Glob(/${WD}/**)`]);
+    for (const t of ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "Agent"]) {
+      expect(r.disallowedTools).toContain(t);
+    }
+    expect(r.disallowedTools).toContain("mcp__claude_ai_Slack");
+    const argv = buildClaudeArgs(r, "{}");
+    expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("default");
+    expect(argv).toContain("--no-session-persistence");
+  });
+
+  test("a reader request with a forbidden tool is rejected before spawn", async () => {
+    const e = await fails(run({ ...reader(), allowedTools: [`Read(/${WD}/**)`, "Bash"] }));
+    expect(e.classified.kind).toBe("invalid_input");
+    expect(e.message).toBe("profile reader may not use Bash");
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  test("a reader request with a connector is rejected; ToolSearch is not added for it", async () => {
+    const e = await fails(run({ ...reader(), allowedTools: [`Read(/${WD}/**)`, SEARCH] }));
+    expect(e.message).toBe("profile reader may not use ToolSearch");
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  test("user settings that widen scope refuse a reader run before spawn", async () => {
+    (provider as { userPermissionsWidenScope?: boolean }).userPermissionsWidenScope = true;
+    const e = await fails(run(reader()));
+    expect(e.classified.kind).toBe("needs_attention");
+    expect(e.message).toBe(UNSAFE_USER_SETTINGS_MESSAGE);
+    expect(e.classified.details).toEqual({ notSpawned: true });
+    expect(provider.requests).toHaveLength(0);
+    expect(runs()).toHaveLength(0);
+    const audit = db.select().from(schema.auditEvents).all();
+    expect(audit.map((a) => [a.action, a.workerProfile, a.details])).toEqual([
+      ["claude.request_rejected", "reader", { reason: "unsafe_user_settings" }],
+    ]);
   });
 });
 

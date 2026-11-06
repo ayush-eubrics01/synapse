@@ -121,9 +121,11 @@ const settingSchemas = {
   "orchestrator.timeouts.collector": z.number().int().positive().default(180),
   "orchestrator.timeouts.intelligence": z.number().int().positive().default(300),
   "orchestrator.timeouts.engineering": z.number().int().positive().default(1800),
+  "orchestrator.timeouts.reader": z.number().int().positive().default(300),
   "orchestrator.models.collector": z.string().min(1).default("haiku"),
   "orchestrator.models.intelligence": z.string().min(1).default("haiku"),
   "orchestrator.models.engineering": z.string().min(1).default("sonnet"),
+  "orchestrator.models.reader": z.string().min(1).default("sonnet"),
   "orchestrator.knownServers": z
     .array(z.string().regex(SERVER_NAME_RE))
     .default(() => [...DEFAULT_KNOWN_SERVERS]),

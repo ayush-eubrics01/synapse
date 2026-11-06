@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { claudeJobRequestSchema, parseEventPayload } from "../src/index.ts";
+import { claudeJobRequestSchema, parseEventPayload, workerProfileSchema } from "../src/index.ts";
 
 const valid = {
   workerProfile: "collector",
@@ -36,4 +36,12 @@ test("new claude/quota/auth events parse and reject empty payloads", () => {
     expect(() => parseEventPayload(type, {})).toThrow();
   }
   expect(() => parseEventPayload("claude.job_failed", { runId: "r", kind: "bogus" })).toThrow();
+});
+
+test("workerProfileSchema accepts the reader profile (C1)", () => {
+  expect(workerProfileSchema.parse("reader")).toBe("reader");
+  expect(claudeJobRequestSchema.safeParse({ ...valid, workerProfile: "reader" }).success).toBe(
+    true,
+  );
+  expect(workerProfileSchema.safeParse("writer").success).toBe(false);
 });
