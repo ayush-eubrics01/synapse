@@ -26,8 +26,8 @@ function homeForms(home: string): string[] {
 
 /**
  * C2 path rules for registering a repository. The checks run in this order, and the first
- * failure wins: absolute, exists, is a directory, not a forbidden location (`/`, `$HOME`, or
- * inside `~/.claude`, `~/.ssh` or `~/.config`, judged by realpath so symlinks cannot sneak in),
+ * failure wins: absolute, exists, is a directory, not a forbidden location (`/`, `$HOME` or any
+ * ancestor of it, or inside `~/.claude`, `~/.ssh` or `~/.config`, judged by realpath so symlinks cannot sneak in),
  * safe characters and segments (input and realpath), the top level of a git work tree
  * (`git rev-parse --show-toplevel` equals the realpath), not already registered, and not nested
  * inside or around a registered path. On success the realpath is what gets stored.
@@ -58,7 +58,8 @@ export async function checkRegistrablePath(
 
   if (real === "/") return { ok: false, reason: "forbidden_location" };
   for (const h of homeForms(home)) {
-    if (real === h) return { ok: false, reason: "forbidden_location" };
+    // $HOME itself or any ancestor of it (a scope there would cover the whole home).
+    if (within(h, real)) return { ok: false, reason: "forbidden_location" };
     if (FORBIDDEN_UNDER_HOME.some((d) => within(real, `${h}/${d}`))) {
       return { ok: false, reason: "forbidden_location" };
     }

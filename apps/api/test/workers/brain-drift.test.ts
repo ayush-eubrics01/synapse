@@ -216,4 +216,33 @@ describe("brain.drift_check", () => {
     expect(row()?.drift).toEqual({ offTrackedBranch: "stage", detectedAt: NOW });
     expect(notes()).toHaveLength(1);
   });
+
+  test("git that cannot be spawned is a failure, not pathMissing", async () => {
+    setup(new LocalGitProvider({ home: scratch(), binary: "/nonexistent/synapse-git" }));
+    expect(await run()).toEqual({ checked: 1, drifted: 0, notified: 0, failed: 1 });
+    expect(row()?.drift).toBeNull();
+    expect(notes()).toHaveLength(0);
+  });
+
+  test("one repository throwing does not stop the others", async () => {
+    const real = new LocalGitProvider({ home: scratch() });
+    const second = makeDemoRepo(scratch(), "second");
+    await registry.register({
+      path: second,
+      name: "second",
+      trackedBranch: "main",
+      environments: [],
+      jiraProjectKeys: [],
+    });
+    git(second, "checkout", "-q", "stage");
+    setup({
+      checkPath: (p, r) => real.checkPath(p, r),
+      inspect: async (p) => {
+        if (p === repo) throw new Error("boom");
+        return real.inspect(p);
+      },
+    });
+    expect(await run()).toEqual({ checked: 2, drifted: 1, notified: 1, failed: 1 });
+    expect(notes().map((n) => n.title)).toEqual(["Repository drift: second"]);
+  });
 });

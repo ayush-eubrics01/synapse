@@ -87,54 +87,70 @@ export class DriftCheck {
   constructor(private readonly deps: DriftCheckDeps) {}
 
   async run(): Promise<DriftCheckSummary> {
-    const { db, clock, events, notifications, provider } = this.deps;
+    const { db } = this.deps;
     const summary: DriftCheckSummary = { checked: 0, drifted: 0, notified: 0, failed: 0 };
     const repos = db.select().from(repositories).all();
     for (const repo of repos) {
       summary.checked++;
-      const environmentBranches = db
-        .select({ branch: repositoryEnvironments.branch })
-        .from(repositoryEnvironments)
-        .where(eq(repositoryEnvironments.repositoryId, repo.id))
-        .all()
-        .map((e) => e.branch);
-      const findings = computeDrift(
-        { ...repo, environmentBranches },
-        await provider.inspect(repo.localPath),
-      );
-      if (findings === undefined) {
+      // One repository's failure (git, a bad row, a DB error) never stops the others.
+      try {
+        const outcome = await this.checkOne(repo);
+        if (outcome === "failed") summary.failed++;
+        else {
+          if (outcome.drifted) summary.drifted++;
+          if (outcome.notified) summary.notified++;
+        }
+      } catch {
         summary.failed++;
-        continue;
       }
-      db.transaction(
-        (tx) => {
-          const current = tx.select().from(repositories).where(eq(repositories.id, repo.id)).get();
-          if (!current) return; // unregistered while git ran
-          if (findings) summary.drifted++;
-          if (driftIdentity(findings) === driftIdentity(current.drift)) return;
-          const drift: RepositoryDrift | null = findings
-            ? { ...findings, detectedAt: isoNow(clock) }
-            : null;
-          tx.update(repositories).set({ drift }).where(eq(repositories.id, repo.id)).run();
-          if (!drift) return;
-          notifications.notify(tx, {
-            kind: DRIFT_NOTIFICATION_KIND,
-            severity: "warning",
-            title: `Repository drift: ${current.name}`,
-            ref: `repo:${repo.id}`,
-          });
-          events.publish(tx, {
-            type: "repo.drift_detected",
-            aggregateType: "repository",
-            aggregateId: repo.id,
-            correlationId: newId(),
-            payload: { repositoryId: repo.id },
-          });
-          summary.notified++;
-        },
-        { behavior: "immediate" },
-      );
     }
     return summary;
+  }
+
+  private async checkOne(
+    repo: typeof repositories.$inferSelect,
+  ): Promise<"failed" | { drifted: boolean; notified: boolean }> {
+    const { db, clock, events, notifications, provider } = this.deps;
+    const environmentBranches = db
+      .select({ branch: repositoryEnvironments.branch })
+      .from(repositoryEnvironments)
+      .where(eq(repositoryEnvironments.repositoryId, repo.id))
+      .all()
+      .map((e) => e.branch);
+    const findings = computeDrift(
+      { ...repo, environmentBranches },
+      await provider.inspect(repo.localPath),
+    );
+    if (findings === undefined) return "failed";
+    return db.transaction(
+      (tx) => {
+        const current = tx.select().from(repositories).where(eq(repositories.id, repo.id)).get();
+        if (!current) return { drifted: false, notified: false }; // unregistered while git ran
+        const drifted = findings !== null;
+        if (driftIdentity(findings) === driftIdentity(current.drift)) {
+          return { drifted, notified: false };
+        }
+        const drift: RepositoryDrift | null = findings
+          ? { ...findings, detectedAt: isoNow(clock) }
+          : null;
+        tx.update(repositories).set({ drift }).where(eq(repositories.id, repo.id)).run();
+        if (!drift) return { drifted, notified: false };
+        notifications.notify(tx, {
+          kind: DRIFT_NOTIFICATION_KIND,
+          severity: "warning",
+          title: `Repository drift: ${current.name}`,
+          ref: `repo:${repo.id}`,
+        });
+        events.publish(tx, {
+          type: "repo.drift_detected",
+          aggregateType: "repository",
+          aggregateId: repo.id,
+          correlationId: newId(),
+          payload: { repositoryId: repo.id },
+        });
+        return { drifted, notified: true };
+      },
+      { behavior: "immediate" },
+    );
   }
 }

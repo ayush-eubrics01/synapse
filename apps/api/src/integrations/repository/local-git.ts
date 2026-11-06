@@ -10,16 +10,20 @@ import { checkRegistrablePath } from "./path-rules";
 
 export { environmentCandidates } from "@synapse/contracts";
 
-/** Schemes whose userinfo is a credential (a token often travels as the user name). */
-const CREDENTIAL_SCHEMES = new Set(["http", "https", "ftp", "ftps", "git"]);
+/** SSH schemes, where the userinfo's login selects the account and is kept. */
+const SSH_SCHEMES = new Set(["ssh", "git+ssh", "ssh+git"]);
 
 /**
  * Removes credentials from a remote URL before it is stored or returned (C3):
- * `https://user:token@host/x` becomes `https://host/x`. For other URL schemes (such as
- * `ssh://`) only a password is removed and the login is kept, since it selects the account.
- * scp-style (`git@host:org/repo.git`) and local paths carry no credentials and are unchanged.
+ * `https://user:token@host/x` becomes `https://host/x`. Every scheme loses its whole userinfo
+ * (a token often travels as the user name), except the SSH schemes, which keep the login and
+ * lose only a password. Remote-helper syntax (`<helper>::<address>`) is stripped inside the
+ * address. scp-style (`git@host:org/repo.git`) and local paths carry no credentials and are
+ * unchanged.
  */
 export function stripCredentials(url: string): string {
+  const helper = /^([A-Za-z][A-Za-z0-9+.-]*)::(.*)$/s.exec(url);
+  if (helper) return `${helper[1]}::${stripCredentials(helper[2] ?? "")}`;
   const m = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]*)(.*)$/s.exec(url);
   if (!m) return url;
   const [, scheme = "", authority = "", rest = ""] = m;
@@ -27,7 +31,7 @@ export function stripCredentials(url: string): string {
   if (at < 0) return url;
   const userinfo = authority.slice(0, at);
   const host = authority.slice(at + 1);
-  if (CREDENTIAL_SCHEMES.has(scheme.toLowerCase())) return `${scheme}://${host}${rest}`;
+  if (!SSH_SCHEMES.has(scheme.toLowerCase())) return `${scheme}://${host}${rest}`;
   const login = userinfo.split(":")[0] ?? "";
   return `${scheme}://${login ? `${login}@` : ""}${host}${rest}`;
 }
@@ -43,6 +47,8 @@ export interface LocalGitOptions {
   /** $HOME for git and for the C2 forbidden locations (injected; tests use a temp dir). */
   home: string;
   timeoutMs?: number;
+  /** The git executable; defaults to `git` on PATH. */
+  binary?: string;
 }
 
 /** C3: read-only inspection of local repositories through the git CLI. */
@@ -52,6 +58,7 @@ export class LocalGitProvider implements RepositoryProvider {
   checkPath(path: string, registeredPaths: readonly string[]): Promise<PathCheckResult> {
     return checkRegistrablePath(path, this.opts.home, registeredPaths, {
       timeoutMs: this.opts.timeoutMs,
+      binary: this.opts.binary,
     });
   }
 
@@ -64,7 +71,8 @@ export class LocalGitProvider implements RepositoryProvider {
       return { ok: false, reason: "path_missing" };
     }
     const top = await this.git(real, ["rev-parse", "--show-toplevel"]);
-    if (top.timedOut) return { ok: false, reason: "git_failed" };
+    // -1: timed out or could not be spawned. Not evidence that the repository is gone.
+    if (top.code === -1) return { ok: false, reason: "git_failed" };
     if (top.code !== 0 || top.stdout.trim() !== real)
       return { ok: false, reason: "not_a_repository" };
 
@@ -77,7 +85,7 @@ export class LocalGitProvider implements RepositoryProvider {
         this.must(real, ["remote"]),
       ]);
       // Exit 1 means "detached" / "no commit yet"; anything else is a failure.
-      for (const r of [branch, head]) if (r.timedOut || r.code > 1) throw new GitFailed();
+      for (const r of [branch, head]) if (r.code < 0 || r.code > 1) throw new GitFailed();
       const names = new Set(lines(remoteNames));
       const origin = names.has("origin") ? await this.remote(real, "origin") : undefined;
       const upstream = names.has("upstream") ? await this.remote(real, "upstream") : undefined;
@@ -108,7 +116,11 @@ export class LocalGitProvider implements RepositoryProvider {
   }
 
   private git(dir: string, args: string[]): Promise<GitResult> {
-    return runGit(dir, args, { home: this.opts.home, timeoutMs: this.opts.timeoutMs });
+    return runGit(dir, args, {
+      home: this.opts.home,
+      timeoutMs: this.opts.timeoutMs,
+      binary: this.opts.binary,
+    });
   }
 
   /** stdout of a command that must succeed; otherwise GitFailed (no stderr, no path). */

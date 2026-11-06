@@ -279,6 +279,79 @@ describe("register", () => {
   });
 });
 
+describe("project reuse", () => {
+  test("a same-name project still linked to a repository is refused, not merged", async () => {
+    const first = await registry.register(input({ name: "app-a" }));
+    // Task 4's project rename, simulated: the project of app-a is renamed to "app-b".
+    db.update(schema.projects)
+      .set({ name: "app-b" })
+      .where(eq(schema.projects.id, first.projectId ?? ""))
+      .run();
+    const before = counts();
+    const other = makeDemoRepo(scratch(), "b");
+    await expectCode(registry.register(input({ path: other, name: "app-b" })), "duplicate_name");
+    expect(counts()).toEqual(before);
+  });
+
+  test("an orphaned same-name project is reused", async () => {
+    const first = await registry.register(input({ name: "app-a" }));
+    registry.unregister(first.id);
+    const other = makeDemoRepo(scratch(), "b");
+    const again = await registry.register(input({ path: other, name: "app-a" }));
+    expect(again.projectId).toBe(first.projectId);
+  });
+});
+
+describe("acceptCurrentRemotes", () => {
+  const setDrift = (id: string, drift: unknown) =>
+    db
+      .update(schema.repositories)
+      .set({ drift: drift as never })
+      .where(eq(schema.repositories.id, id))
+      .run();
+
+  test("stores the current stripped remotes, clears remotesChanged and is audited (ids only)", async () => {
+    const view = await registry.register(input());
+    git(repo, "remote", "set-url", "origin", "https://user:tok@example.com/moved/app.git");
+    git(repo, "remote", "set-url", "--push", "upstream", "https://example.com/upstream/app.git");
+    setDrift(view.id, { remotesChanged: true, detectedAt: NOW });
+    clock.advance(60_000);
+    const next = await registry.acceptCurrentRemotes(view.id);
+    expect(next.originUrl).toBe("https://example.com/moved/app.git");
+    expect(next.upstreamPushDisabled).toBe(false);
+    expect(next.drift).toBeNull();
+    expect(next.trackedBranch).toBe("main");
+    expect(JSON.stringify(db.select().from(schema.repositories).get())).not.toContain("tok");
+    const audit = db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "repo.remotes_accepted"))
+      .all();
+    expect(audit.map((a) => a.details)).toEqual([{ repositoryId: view.id }]);
+    expect(JSON.stringify(audit)).not.toContain("example.com");
+    expect(db.select().from(schema.notifications).all()).toHaveLength(0);
+  });
+
+  test("keeps remaining drift with its detectedAt and never adds new findings", async () => {
+    const view = await registry.register(input());
+    git(repo, "checkout", "-q", "stage");
+    git(repo, "remote", "set-url", "origin", "https://example.com/moved/app.git");
+    setDrift(view.id, { offTrackedBranch: "stage", remotesChanged: true, detectedAt: NOW });
+    git(repo, "branch", "-D", "prod"); // new since the stored drift
+    clock.advance(60_000);
+    const next = await registry.acceptCurrentRemotes(view.id);
+    expect(next.drift).toEqual({ offTrackedBranch: "stage", detectedAt: NOW });
+  });
+
+  test("an unknown id is not_found; an unreadable repo is path_unavailable and changes nothing", async () => {
+    await expectCode(registry.acceptCurrentRemotes("missing"), "not_found");
+    const view = await registry.register(input());
+    rmSync(repo, { recursive: true, force: true });
+    await expectCode(registry.acceptCurrentRemotes(view.id), "path_unavailable");
+    expect(registry.get(view.id)).toEqual(view);
+  });
+});
+
 describe("update and unregister", () => {
   test("update changes the tracked branch, notes, keys and environments, and is audited", async () => {
     const view = await registry.register(input());

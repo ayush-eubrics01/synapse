@@ -36,6 +36,31 @@ describe("stripCredentials", () => {
     );
     expect(stripCredentials("ssh://git@example.com/a.git")).toBe("ssh://git@example.com/a.git");
   });
+  test("strips userinfo for every non-ssh scheme", () => {
+    expect(stripCredentials("git://tok@example.com/a.git")).toBe("git://example.com/a.git");
+    expect(stripCredentials("ftp://u:p@example.com/a.git")).toBe("ftp://example.com/a.git");
+    expect(stripCredentials("file://u@localhost/srv/a.git")).toBe("file://localhost/srv/a.git");
+    expect(stripCredentials("custom+x://u:p@example.com/a")).toBe("custom+x://example.com/a");
+    expect(stripCredentials("HTTPS://u:p@example.com/a")).toBe("HTTPS://example.com/a");
+  });
+  test("ssh, git+ssh and ssh+git keep the login and lose the password", () => {
+    expect(stripCredentials("git+ssh://git:pw@example.com/a.git")).toBe(
+      "git+ssh://git@example.com/a.git",
+    );
+    expect(stripCredentials("ssh+git://git:pw@example.com/a.git")).toBe(
+      "ssh+git://git@example.com/a.git",
+    );
+    expect(stripCredentials("ssh://:pw@example.com/a.git")).toBe("ssh://example.com/a.git");
+  });
+  test("strips inside remote-helper syntax", () => {
+    expect(stripCredentials("helper::https://user:tok@host/x")).toBe("helper::https://host/x");
+    expect(stripCredentials("a::b::https://u:p@host/x")).toBe("a::b::https://host/x");
+    expect(stripCredentials("helper::git@host:org/repo")).toBe("helper::git@host:org/repo");
+  });
+  test("an IPv6 host is not mistaken for helper syntax", () => {
+    expect(stripCredentials("https://u:p@[::1]/a.git")).toBe("https://[::1]/a.git");
+    expect(stripCredentials("https://[::1]/a.git")).toBe("https://[::1]/a.git");
+  });
   test("leaves scp-style and plain URLs alone", () => {
     expect(stripCredentials("git@example.com:demo/app.git")).toBe("git@example.com:demo/app.git");
     expect(stripCredentials("https://example.com/demo/app.git")).toBe(
@@ -141,6 +166,11 @@ describe("LocalGitProvider.inspect", () => {
     git(d, "checkout", "-q", "--detach");
     const r = await provider.inspect(d);
     expect(r.ok && r.inspection.currentBranch).toBeNull();
+  });
+
+  test("git that cannot be spawned is git_failed, never path_missing or not_a_repository", async () => {
+    const broken = new LocalGitProvider({ home, binary: "/nonexistent/synapse-git" });
+    expect(await broken.inspect(repo)).toEqual({ ok: false, reason: "git_failed" });
   });
 
   test("a missing path and a non-repository fail with fixed reasons", async () => {
@@ -280,6 +310,35 @@ describe("checkRegistrablePath", () => {
     // A sibling whose name merely shares a prefix is not nested.
     const sibling = initRepo(join(base, "app2"));
     expect(await checkRegistrablePath(sibling, home, [repo])).toEqual({
+      ok: true,
+      realpath: sibling,
+    });
+  });
+
+  test("refuses any ancestor of $HOME, even when it is a git root", async () => {
+    const top = scratch();
+    const nestedHome = join(top, "a", "b", "home");
+    mkdirSync(nestedHome, { recursive: true });
+    const parent = initRepo(join(top, "a"));
+    expect(await checkRegistrablePath(parent, nestedHome, [])).toEqual({
+      ok: false,
+      reason: "forbidden_location",
+    });
+    const grand = initRepo(join(top, "a", "b"));
+    expect(await checkRegistrablePath(grand, nestedHome, [])).toEqual({
+      ok: false,
+      reason: "forbidden_location",
+    });
+    // Through a symlinked home too: judged by the home's realpath.
+    const link = join(scratch(), "home-link");
+    symlinkSync(nestedHome, link);
+    expect(await checkRegistrablePath(parent, link, [])).toEqual({
+      ok: false,
+      reason: "forbidden_location",
+    });
+    // A sibling of the home's ancestors is fine.
+    const sibling = initRepo(join(top, "c"));
+    expect(await checkRegistrablePath(sibling, nestedHome, [])).toEqual({
       ok: true,
       realpath: sibling,
     });

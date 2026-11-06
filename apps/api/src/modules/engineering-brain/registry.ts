@@ -4,6 +4,7 @@ import {
   type EnvironmentView,
   environmentCandidates,
   type PathRefusalReason,
+  type RepositoryDrift,
   type RepositoryInspectFailure,
   type RepositoryInspection,
   type RepositoryProposal,
@@ -20,6 +21,7 @@ import { type Clock, isoNow, newId } from "@synapse/shared";
 import { asc, eq } from "drizzle-orm";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { EventPublisher } from "../../core/events/publisher";
+import { computeDrift, type DriftFindings } from "./drift";
 
 const { repositories, repositoryEnvironments, projects, projectRepositories } = schema;
 const MODULE = "engineering-brain";
@@ -154,8 +156,20 @@ export class RepositoryRegistry {
           })
           .run();
         for (const env of input.environments) this.insertEnvironment(tx, id, env);
-        // A project survives unregistering, so re-registering under the same name relinks it.
+        // A project survives unregistering, so re-registering under the same name relinks it,
+        // but only an orphan: a same-name project still linked to a repository (say, one the
+        // user renamed) is someone else's, and is refused instead of silently merged.
         const existing = tx.select().from(projects).where(eq(projects.name, input.name)).get();
+        if (
+          existing &&
+          tx
+            .select()
+            .from(projectRepositories)
+            .where(eq(projectRepositories.projectId, existing.id))
+            .get()
+        ) {
+          throw new RegistryError("duplicate_name");
+        }
         const pid = existing?.id ?? newId();
         if (!existing) {
           tx.insert(projects)
@@ -233,6 +247,59 @@ export class RepositoryRegistry {
           targetRef: id,
           result: "ok",
           details: { repositoryId: id, fields },
+        });
+      },
+      { behavior: "immediate" },
+    );
+    const view = this.get(id);
+    if (!view) throw new RegistryError("not_found");
+    return view;
+  }
+
+  /**
+   * Resolves a `remotesChanged` drift by accepting what git now reports: stores the
+   * credential-stripped origin and upstream fetch URLs and `upstreamPushDisabled`, then
+   * re-evaluates the stored drift without notifying. `remotesChanged` clears, parts of the
+   * drift that git no longer shows clear too, and parts that remain keep their `detectedAt`.
+   * Findings that are new since the stored drift are not added here: the next drift check
+   * records them and notifies, so accepting remotes can never swallow a notification.
+   * Audited as `repo.remotes_accepted` (ids only).
+   */
+  async acceptCurrentRemotes(id: string): Promise<RepositoryView> {
+    const row = this.row(id);
+    if (!row) throw new RegistryError("not_found");
+    const i = await this.inspectOrThrow(row.localPath);
+    const remotes = {
+      originUrl: i.remotes.origin?.fetch ?? null,
+      upstreamUrl: i.remotes.upstream?.fetch ?? null,
+      upstreamPushDisabled: i.upstreamPushDisabled,
+    };
+    const { db, clock, audit } = this.deps;
+    db.transaction(
+      (tx) => {
+        const current = tx.select().from(repositories).where(eq(repositories.id, id)).get();
+        if (!current) throw new RegistryError("not_found");
+        const environmentBranches = tx
+          .select({ branch: repositoryEnvironments.branch })
+          .from(repositoryEnvironments)
+          .where(eq(repositoryEnvironments.repositoryId, id))
+          .all()
+          .map((e) => e.branch);
+        const now = computeDrift(
+          { ...current, ...remotes, environmentBranches },
+          { ok: true, inspection: i },
+        );
+        tx.update(repositories)
+          .set({ ...remotes, drift: narrowDrift(current.drift, now), updatedAt: isoNow(clock) })
+          .where(eq(repositories.id, id))
+          .run();
+        audit.record(tx, {
+          actor: "user",
+          module: MODULE,
+          action: "repo.remotes_accepted",
+          targetRef: id,
+          result: "ok",
+          details: { repositoryId: id },
         });
       },
       { behavior: "immediate" },
@@ -385,6 +452,26 @@ export class RepositoryRegistry {
       updatedAt: r.updatedAt,
     };
   }
+}
+
+/**
+ * The stored drift restricted to what a fresh evaluation still shows, minus `remotesChanged`
+ * (just accepted). Never adds findings, keeps `detectedAt`, and is null when nothing is left.
+ */
+export function narrowDrift(
+  stored: RepositoryDrift | null,
+  fresh: DriftFindings | null | undefined,
+): RepositoryDrift | null {
+  if (!stored || !fresh) return null;
+  const next: DriftFindings = {};
+  if (stored.offTrackedBranch !== undefined && stored.offTrackedBranch === fresh.offTrackedBranch) {
+    next.offTrackedBranch = stored.offTrackedBranch;
+  }
+  const still = new Set(fresh.missingEnvironmentBranches ?? []);
+  const missing = (stored.missingEnvironmentBranches ?? []).filter((b) => still.has(b));
+  if (missing.length > 0) next.missingEnvironmentBranches = missing;
+  if (stored.pathMissing && fresh.pathMissing) next.pathMissing = true;
+  return Object.keys(next).length > 0 ? { ...next, detectedAt: stored.detectedAt } : null;
 }
 
 function envView(e: EnvRow): EnvironmentView {

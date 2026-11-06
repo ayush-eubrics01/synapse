@@ -18,10 +18,12 @@ export interface GitResult {
 export interface GitOptions {
   home: string;
   timeoutMs?: number;
+  /** The git executable (tests point it at a missing binary to simulate a spawn failure). */
+  binary?: string;
 }
 
 export async function runGit(dir: string, args: string[], opts: GitOptions): Promise<GitResult> {
-  const argv = ["git", "-c", "core.fsmonitor=false", "-C", dir, ...args];
+  const argv = [opts.binary ?? "git", "-c", "core.fsmonitor=false", "-C", dir, ...args];
   let proc: ReturnType<typeof Bun.spawn>;
   try {
     proc = Bun.spawn(argv, {
