@@ -106,26 +106,24 @@ Owned jointly: `engineering-tasks` holds the task state machine; the orchestrato
 
 ### Global engineering lock (ADR-030)
 
-- Lease `engineering` in `leases`, acquired at task pickup and held until the PR is merged, or the task is cancelled/rejected/failed and the local branch is cleaned up.
-- Waiting for approval does **not** release the lock. Other engineering tasks stay `PENDING` in priority order.
+- Lease `engineering` in `leases`, holder `task:<id>`, acquired at task pickup and held until the PR is merged, or the task is cancelled/rejected/failed and its cleanup has run.
+- Waiting for approval does **not** release the lock. Other engineering tasks stay `queued` in priority order.
 - Intelligence and collector jobs aren't blocked.
-- On restart with an expired lease: if the repo has uncommitted changes or a merge in progress (`RepositoryProvider.getStatus`), the task becomes `NEEDS_ATTENTION` and the lock isn't auto-released.
+- An existing lease row always means held, even once expired. At boot (after the port is bound) recovery inspects any lease with `GitWorkflow.preflight`, fingerprints and the diff hash: a dirty tree or merge in progress sets `needs_attention` and keeps the lock; safe cases resume or re-drive a step. Details and the full table: [engineering-tasks.md](engineering-tasks.md).
 - The user said simultaneous work by the user and Claude in the same checkout is not a concern. No separate clone/worktree is required.
 
-### Git workflow (concept §10.6), one `engineering_task_steps` row per step
+### Git workflow: performed by Synapse, never by the model
 
-| # | Step | Approval |
-|---|---|---|
-| 0a | **Branch confirmation** (ADR-035): show repo, suggested environment, parent branch (from environment, else `tracked_branch`), task branch name, PR `origin/<parent>` → `upstream/<parent>`. The user confirms or changes it, optionally "remember as tracked branch" | part of the plan approval |
-| 0b | Preflight: clean tree, `origin` + `upstream` exist, confirmed parent branch exists on both | — (fail → `NEEDS_ATTENTION`) |
-| 1 | Create a local task branch from the parent branch | code modification approval (approved plan) |
-| 2 | Develop and test on the task branch | covered by the plan approval; commit needs approval |
-| 3 | `git pull origin <parent> && git pull upstream <parent>` | — (conflict → `NEEDS_ATTENTION`) |
-| 4 | Merge the task branch locally into the parent branch | approval (conflict → `NEEDS_ATTENTION`) |
-| 5 | Push the local parent branch to `origin`, then open a PR from `origin/<parent>` into `upstream/<parent>` | approval (push + PR) |
-| 6 | Merge the PR | approval |
+**Principle (Phase 10).** An engineering run edits files and runs the user-confirmed test command. It never runs `git`, never commits, never pushes, never creates a branch and never calls `gh`. Every Git operation is Synapse code (the `GitWorkflow` and `PullRequestProvider` ports, argv, no shell, hardened runner), and each write step waits for its own approval, revalidated before it runs. The only Claude runs in a task are the read-only investigation and the one develop run; they go through this orchestrator like every other run.
 
-Conflicts are never auto-resolved without approval. The task records branch names, commits, PR link and final status.
+The full as-built workflow (steps, approvals, SHA pinning, cleanup, recovery, reason codes) is in [engineering-tasks.md](engineering-tasks.md). Summary:
+
+1. Plan approval confirms the parent branch (ADR-035) and the test command; a protected environment's branch is refused.
+2. Preflight, then `branch` (task branch from the parent), `develop` (the one scoped run): both approved by the plan approval.
+3. `commit` (approval), `update_parent` (no approval, no remote written), `merge_local` (approval), `push_pr` (approval: push of the parent to `origin`, then PR `origin/<parent>` into `upstream/<parent>`), `merge_pr` (approval, high risk).
+4. Cleanup after `completed`, `cancelled` or `failed`; the lock is released at the end.
+
+Conflicts are never auto-resolved: they are aborted and the task is `needs_attention`. Synapse never pushes to `upstream`.
 
 ### Requirement 5d: small fixes ready when the user returns
 
@@ -134,9 +132,9 @@ bug/task reported (Slack/Jira) → engineering.task_proposed
  → automatic read-only investigation (allowed): analysis, proposed fix, plan, size estimate
  → if spec unclear: commitments drafts follow-up questions; task stays proposed
  → user approves plan + confirms branch/environment (approval scoped to task + repo + parent branch)
- → lock acquired → steps 0b–2 on the task branch → tests
+ → lock acquired → preflight, branch, develop on the task branch → tests
  → engineering.task_awaiting_approval: "N small issues from <people> are ready — ship?"
- → user approves steps 4–6 one by one (or rejects → cleanup, lock released)
+ → user approves commit, merge_local, push_pr and merge_pr one by one (or rejects → cancel, cleanup, lock released)
 ```
 
 Approval to investigate isn't permission to modify code. Approval to modify code isn't permission to deploy.
@@ -245,11 +243,20 @@ Threshold and timeout defaults are proposals to tune with real usage.
 
 ### Path-scoped engineering reads and the user-permission guard (Phase 9)
 
-- **Rule L (path scoping).** Every `engineering` run's `workingDirectory` must pass `isSafeAbsolutePath` (absolute, characters from `[A-Za-z0-9._/-]`, no empty, `.` or `..` segment, at least two segments), whether or not it allows a filesystem read. Every allowed `Read`, `Grep` or `Glob` must carry a specifier and equal `Tool(/<workingDirectory>/**)` exactly, that is the CLI's double-slash absolute form, for example `Read(//home/u/app/**)`. A bare `Read`, a different directory, the single-slash form `Read(/home/u/app/**)`, a dot segment or a shallow path such as `/tmp` fails the request with a fixed reason (`fs read tools must be scoped to the working directory`, or `working directory must be an absolute path of safe characters`). This retires I4 for engineering: the repository inspection (`brain.inspect_repository`) is the first user. Phase 10 extends the rule to the write tools. The collector and intelligence profiles still may not allow these tools at all.
+- **Rule L (path scoping).** Every `engineering` run's `workingDirectory` must pass `isSafeAbsolutePath` (absolute, characters from `[A-Za-z0-9._/-]`, no empty, `.` or `..` segment, at least two segments), whether or not it allows a filesystem read. Every allowed `Read`, `Grep` or `Glob` must carry a specifier and equal `Tool(/<workingDirectory>/**)` exactly, that is the CLI's double-slash absolute form, for example `Read(//home/u/app/**)`. A bare `Read`, a different directory, the single-slash form `Read(/home/u/app/**)`, a dot segment or a shallow path such as `/tmp` fails the request with a fixed reason (`fs read tools must be scoped to the working directory`, or `working directory must be an absolute path of safe characters`). This retires I4 for engineering: the repository inspection (`brain.inspect_repository`) is the first user. Phase 10 extends the rule to the write tools (below). The collector and intelligence profiles still may not allow these tools at all.
   - **Amendment (final review).** The rule first required the single-slash form `Tool(<workingDirectory>/**)`. In Claude Code permission rules a single leading `/` is not an absolute path (for `--allowedTools` it resolved against the cwd); only `//` names an absolute path. The controller verified this on the real CLI with the cwd in a third temp dir: `Read(/abs/inside/**)` denied the inside read (it granted nothing), and `Read(//abs/inside/**)` allowed the inside read and denied the outside one. The earlier pre-check and smoke had passed only because the cwd was the scoped directory, and the CLI allows reads under the cwd by default.
 - **Engineering denylist.** `buildDenylist` denies every write built-in (`Bash`, `Edit`, `Write`, `NotebookEdit`, `MultiEdit`, `Monitor`) and every filesystem read built-in (`Read`, `Grep`, `Glob`) that a run does not allow, for every profile (the allowed ones are filtered out). Before Phase 9 an engineering run denied none of them, which meant a user-level `permissions.allow` entry could widen a read-only run. Validator rule H2 requires the same of engineering requests: each write and filesystem-read built-in it does not allow must be in the denylist (final review).
 - **User-permission guard.** The CLI merges the user's `permissions.allow` and `additionalDirectories` into every run (`--setting-sources user`), and the `--settings` override cannot remove them, so a user-level `Read`, `Bash` or `Edit` allow would defeat rule L's scope. At startup `readUserSettings` derives one boolean, `userPermissionsWidenScope`: true when `permissions.allow` has an entry for `Read`, `Grep`, `Glob`, `Bash`, `Edit`, `Write`, `NotebookEdit` or `MultiEdit` (bare or with a specifier), when `additionalDirectories` is non-empty, or when `defaultMode` is `bypassPermissions`, `acceptEdits` or `auto`. No entry is kept, returned or logged, and an unreadable or malformed file means false. When the flag is true the orchestrator refuses every `engineering` run after validation and **before spawning**: it audits `claude.request_rejected` with reason `unsafe_user_settings` and throws a `needs_attention` `JobError` with the fixed message "Claude Code user settings widen file or shell permissions; engineering runs are refused until they are removed and the API is restarted" and `details.notSpawned`. As with the plugin override, the settings are read once at startup, so the user edits `~/.claude/settings.json` and restarts the API. Other profiles are unaffected.
 - **Proof on the real CLI.** `scripts/dev/scope-smoke.ts` runs at provider level (`ClaudeCliProvider.execute`, the one script the provider-boundary test excepts, by its exact path) with the cwd in a third temp dir, so the CLI's default "reads under the cwd are allowed" can't help. Case `double` allows `Read(//<tmp>/inside/**)` and reads a file inside, then one outside: it passes with `inside=ok outside=blocked`. Case `single(control)` allows the single-slash `Read(/<tmp>/inside/**)` and reads the same inside file: it passes with `inside=denied`, which proves the rule, not the cwd, granted the first read. Output is `double: inside=… outside=…`, `single(control): inside=…` and `scope-smoke: blocked|LEAKED|inconclusive`; content returned by either case it must not see is `LEAKED` (exit 1). Results are recorded in the Phase 9 follow-ups.
+
+### Rule L for writes and the single Bash grant, and the engineering denylist (Phase 10)
+
+- **Write tools.** In an `engineering` run each allowed `Edit`, `Write` or `MultiEdit` must equal `Tool(/<workingDirectory>/**)` exactly, the same double-slash absolute form as the reads (`Edit(//home/u/app/**)`). A bare tool, another directory or another specifier fails with `write tools must be scoped to the working directory`. `NotebookEdit` and `Monitor` are never allowed in an engineering run.
+- **Bash.** Only as exactly `Bash(<cmd>:*)` where `<cmd>` passes `isSafeTestCommand` (E5: safe characters, first word in the runner allowlist, at least two words except `pytest` and `make`). At most one Bash grant per run (`only one Bash grant is allowed`). Request-validator rule 0 admits spaces in a specifier only inside this one form (`BASH_PREFIX_RE`); chained commands (`;`, `&`, `|`, `$(`) cannot even be written into the grant. A bare `Bash`, or a specifier without the `:*` prefix form such as `Bash(git status)`, fails. The CLI's prefix match was verified on the real CLI (2026-11-06): with `Bash(bun test:*)`, `bun test` ran and `ls`, `bun test && …`, `bun test; …` and `bun test $(…)` were denied.
+- **Denylist.** Every run's `--disallowedTools` is built by `buildDenylist`: the network built-ins (`WebFetch`, `WebSearch`, `Agent`, `Task`) always; every write built-in (`Bash`, `Edit`, `Write`, `NotebookEdit`, `MultiEdit`, `Monitor`) and every filesystem-read built-in (`Read`, `Grep`, `Glob`) the run does not allow; every known connector server not used. Validator rule H2 requires it, so the develop run, which allows `Edit`, `Write`, `MultiEdit`, `Read`, `Grep`, `Glob` and one `Bash`, still denies `NotebookEdit`, `Monitor` and everything networked, and an investigation run denies every write tool.
+- **Provenance.** The develop run carries only `system` and `user_approved` parts (rule E rejects any untrusted part in an engineering run).
+- **Git by Synapse.** There is no `git` or `gh` grant anywhere in a run: `Bash(git status:*)` and the like fail rule L because `git` is not in the test-runner allowlist, and a bare `Bash` fails too.
+- Request builders: `buildInvestigateRequest` (`intelligence/engineering/investigate-prompt.ts`) and `buildDevelopRequest` (`develop-prompt.ts`). Both pass `workingDirectory` = the registered realpath and `expectedToolNames` (ADR-026). The step worker (`workers/engineering/steps.ts`) is the only caller for develop; it makes one attempt.
 
 ### Send runs (Phase 6)
 

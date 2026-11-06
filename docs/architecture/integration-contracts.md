@@ -299,27 +299,64 @@ Rules:
 
 ```typescript
 interface RepositoryProvider {
-  listRegistered(): Promise<Repository[]>;
-  inspect(repositoryId: string, request: RepositoryInspectionRequest): Promise<RepositoryInspectionResult>;
-  getHistory(repositoryId: string, query: GitHistoryQuery): Promise<GitCommit[]>;
-  getStatus(repositoryId: string): Promise<RepositoryStatus>;  // clean tree, current branch, remotes, merge in progress
+  checkPath(path: string, registeredPaths: readonly string[]): Promise<PathCheckResult>; // C2 path rules
+  inspect(path: string): Promise<RepositoryInspectResult>;  // C3, read-only: top level, branch, remotes, branches
 }
 ```
+
+Read-only. Only registered paths are inspected; remote URLs are credential-stripped. (This replaces an earlier sketch with `listRegistered`, `getHistory` and `getStatus`, which was never built; the registry is `RepositoryRegistry`, and clean-tree and merge-in-progress checks are `GitWorkflow.preflight`.) The registry stores `Repository` rows (`originUrl`, `upstreamUrl`, `upstreamPushDisabled`, `trackedBranch`, environments with `protected` and `autoDeploysOnMerge`, `test_command`). Module doc: `docs/modules/engineering-brain.md`.
+
+## 4.1 Git workflow (`GitWorkflow`, Phase 10)
+
+Port in `packages/contracts/src/repository.ts`; adapter `LocalGitWorkflow` in `apps/api/src/integrations/repository/git-workflow.ts`. **All write operations of an engineering task are on this port**, never in a Claude run. Every call goes through the hardened runner: argv only, `-C <registered realpath>`, `-c core.fsmonitor=false -c core.hooksPath=/dev/null -c credential.interactive=never`, an environment allowlist, `GIT_TERMINAL_PROMPT=0`, 60 s timeout (120 s for push, fetch, pull and ls-remote). Errors are `GitWorkflowError(code)` with `message === code`; a message never carries a path, URL, branch name or stderr.
 
 ```typescript
-interface Repository {
-  id: string;
-  name: string;
-  localPath: string;
-  originUrl?: string;
-  upstreamUrl?: string;
-  upstreamPushDisabled: boolean;
-  trackedBranch: string;               // user-confirmed default parent branch (ADR-035)
-  environments: { name: string; branch: string; notes?: string }[];  // e.g. stage→stage, prod→prod
+interface GitWorkflow {
+  preflight(repo, parent, opts?: { allowUpstreamPush?: boolean }): Promise<GitPreflightResult>;
+  currentBranch(repo): Promise<string | null>;
+  createTaskBranch(repo, parent, taskBranch): Promise<{ baseSha: string }>;
+  gitDirFingerprint(repo): Promise<string>;   // filesystem reads only; includes configFingerprint
+  configFingerprint(repo): Promise<string>;   // .git/config, hooks, info/attributes, global config; filesystem reads only
+  diffSummary(repo, opts?: { gitDirBaseline?: string }): Promise<GitDiffSummary>;
+  commitAll(repo, message, expectedHash, opts?: GitCommitOptions): Promise<{ sha: string }>;
+  updateParent(repo, parent, opts?: GitConfigGuard): Promise<{ ok: true } | { ok: false; conflict: true }>;
+  mergeLocal(repo, parent, taskBranch, opts?: GitMergeOptions): Promise<{ ok: true; sha: string } | { ok: false; conflict: true }>;
+  pushParent(repo, parent, opts: GitPushOptions): Promise<{ ok: true }>;
+  discardChanges(repo, expectedHash, opts?: GitConfigGuard): Promise<{ ok: true }>;
+  branchExists(repo, name): Promise<boolean>;
+  branchTip(repo, name): Promise<string | null>;
+  commitsAhead(repo, parent): Promise<GitCommitSummary[]>;  // newest first
+  cleanup(repo, taskBranch, returnTo, opts: { force: boolean }): Promise<{ ok: true; deleted: boolean } | { ok: false; dirty: true }>;
 }
 ```
 
-Only registered paths are accessible. Write operations (branch, commit, merge, push, PR) aren't on this port. They run inside an approved engineering job through the orchestrator (see `docs/modules/claude-orchestrator.md`).
+- **Options.** `GitConfigGuard.expectedConfigFingerprint`: when given and different, the call fails `config_changed` before any git command. `GitDiffOptions.gitDirBaseline` is compared before any git command (`unsafe`, reason `git_dir_changed`). `GitMergeOptions.commit` pins the task-branch tip (`branch_moved`; exactly that commit is merged). `GitPushOptions.expectedSha` pins the parent tip (`branch_moved`; `<sha>:refs/heads/<parent>` is pushed), plus `protectedBranches` and the registered `upstreamUrl`.
+- **`GitDiffSummary`**: `files` (path, added, removed), `hash` (sha256 over HEAD and the kind, mode and on-disk content of every changed path; staging does not change it), `unsafe` and sorted `unsafeReasons` (`GIT_UNSAFE_REASONS`), `diffText` (at most `GIT_DIFF_TEXT_MAX_BYTES` = 200 KiB, cut on a UTF-8 boundary) and `truncated`.
+- **`commitAll`**: checks the hash, `git add -A`, checks again (resetting and `diff_changed` on a mismatch), then commits. `nothing_to_commit` and `unsafe_change` are refusals.
+- **`updateParent`** fetches `origin` and `upstream` with explicit refspecs and merges (`--ff-only`, else a merge commit); it is not `git pull`. **`createTaskBranch`** fast-forwards the local parent to `origin/<parent>` only, then `switch -c` with no tracking. A conflict is aborted (`merge --abort`) and reported as `{ ok: false, conflict: true }`; every merge carries `-c branch.<parent>.mergeOptions= -c rerere.enabled=false -c rerere.autoUpdate=false -c submodule.recurse=false`.
+- **`pushParent`** pushes only to `origin`, never forces, and refuses a protected parent (`protected_branch`), an origin push URL equal to the upstream repository (`push_target_is_upstream`; same normalised URL or same `owner/repo`) and a missing comparison reference (`no_upstream_reference`).
+- **`discardChanges`** (`reset --hard HEAD` plus `clean` of exactly the diff's untracked paths) runs only when the tree still hashes to `expectedHash` and the diff is safe; otherwise `diff_changed`, `unsafe_change`, `dirty_tree` or `config_changed`.
+- **`cleanup`** deletes the task branch only when another local branch contains it, unless `force`; a dirty tree or merge in progress is untouched (`{ ok: false, dirty: true }`).
+- **Preflight reasons** (`GIT_PREFLIGHT_REASONS`): `not_a_repository`, `merge_in_progress`, `dirty_tree`, `missing_remote`, `upstream_push_enabled`, `parent_missing_origin`, `parent_missing_upstream`. **Error codes** (`GIT_WORKFLOW_ERROR_CODES`): `git_failed`, `git_timeout`, `fetch_failed`, `push_failed`, `invalid_ref`, `branch_exists`, `branch_missing`, `missing_remote`, `dirty_tree`, `diff_changed`, `unsafe_change`, `nothing_to_commit`, `protected_branch`, `push_target_is_upstream`, `no_upstream_reference`, `config_changed`, `branch_moved`.
+
+## 4.2 Pull request provider (`PullRequestProvider`, Phase 10)
+
+Port in `packages/contracts/src/pull-requests.ts`; adapter `GitHubCliProvider` (`integrations/github/gh-cli.ts`) runs `gh` with argv, a restricted environment (`PATH`, `HOME`) and never reads or logs a token. github.com only.
+
+```typescript
+interface PullRequestProvider {
+  /** Owner and repo of a stored, credential-stripped remote URL on a supported host, else null. */
+  repoRef(url: string): PrRef | null;
+  createPr(input: { upstream: PrRef; headOwner: string; branch: string; title: string; body: string }): Promise<{ url: string; number: number }>;
+  prStatus(input: { upstream: PrRef; number: number }): Promise<PrStatus>;   // state, mergeable, checks, headSha
+  /** Merges only while the PR head is still `headSha` (the commit the user approved pushing). */
+  mergePr(input: { upstream: PrRef; number: number; headSha: string }): Promise<{ merged: boolean; sha?: string }>;
+}
+```
+
+- **`repoRef(url)`** is the one place a remote URL becomes `{owner, repo}`. It is on the port so modules (which may not import an adapter) can resolve the fork and the upstream before pushing: an unsupported host is `unsupported_remote` before anything is pushed.
+- `createPr` runs `gh pr create --repo <upstream> --head <fork owner>:<branch> --base <branch> --title … --body …`; `prStatus` runs `gh pr view --json …` and returns `headSha` from `headRefOid` (null unless a full hex sha); `mergePr` runs `gh pr merge <n> --repo <upstream> --merge --match-head-commit <headSha>` and refuses a `headSha` that is not a full hex sha (`pr_merge_failed`, without running gh).
+- Errors are `PullRequestError(code)`: `gh_not_found`, `gh_auth` (classified from stderr, never kept), `pr_create_failed`, `pr_status_failed`, `pr_merge_failed`, `unsupported_remote`. The title, body and gh output are never in an error.
 
 ## 5. Error model
 

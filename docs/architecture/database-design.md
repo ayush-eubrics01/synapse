@@ -119,10 +119,12 @@ Phase 6b migrations:
 
 ## Engineering task tables (owned by `engineering-tasks`)
 
+**Migration 0017** (`0017_engineering_tasks.sql`, Phase 10) creates both tables and adds `repositories.test_command` (text, nullable; the test command last confirmed at plan approval, E5). Module doc: `docs/modules/engineering-tasks.md`.
+
 | Table | Notes |
 |---|---|
-| `engineering_tasks` | `source_ref` (message/Jira/commitment), `repository_id` FK, `environment_id` FK nullable, `parent_branch` (user-confirmed, ADR-035), `task_branch`, `approved_description` (the only text given to the engineering worker, ADR-032), `status` (proposed/approved/in_progress/awaiting_approval/completed/failed/cancelled/needs_attention), `plan` JSON, `pr_url`, timestamps |
-| `engineering_task_steps` | Ordered steps of the Git workflow (§10.6): `step` (branch/develop/test/update_parent/merge_local/raise_pr/merge_pr), `status`, `approval_id`, `claude_run_id`, `output` JSON |
+| `engineering_tasks` | `id`, `repository_id` FK (cascade), `environment_id` FK nullable (set null on delete), `source` (`manual`/`jira`/`slack`), `source_ref` nullable (Jira key or Slack message id), `title` (at most 120), `draft_description` (may hold untrusted text; never sent to a run that can act), `approved_description` (the only text given to the engineering worker, ADR-032), `plan` JSON (the validated investigation output), `parent_branch` (user-confirmed, ADR-035), `task_branch` (`synapse/<first 8 of id>-<slug>`), `status` (`proposed`, `investigating`, `planned`, `approved` (unused), `queued`, `in_progress`, `awaiting_approval`, `completed`, `failed`, `cancelled`, `needs_attention`), `priority` integer default 0 (pickup order: highest first, then oldest), `current_step` nullable, `pr_url`, `pr_number`, `base_sha` (tip of the parent when the task branch was created; cleanup force-deletes only a branch still at this sha), `merge_sha` (the local merge commit), `failure` (a fixed reason code, never text), `created_at`, `updated_at`. Indexes: (`status`), (`repository_id`) |
+| `engineering_task_steps` | `id`, `task_id` FK (cascade), `step` (`investigate`, `branch`, `develop`, `commit`, `update_parent`, `merge_local`, `push_pr`, `merge_pr`, `cleanup`), `status` (`pending`, `awaiting_approval`, `running`, `done`, `failed`, `skipped`), `approval_id` nullable, `claude_run_id` nullable, `output` JSON (ids, shas, fingerprints, counts, file list; the develop step also holds the diff text and test-output tail, served only by `GET /api/engineering/tasks/:id` and never logged), `created_at`, `updated_at`. **Unique (`task_id`, `step`)**: one row per step, updated in place (a re-investigation resets the `investigate` row) |
 
 ## Auto-reply tables (owned by `auto-reply`)
 
