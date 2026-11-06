@@ -242,6 +242,15 @@ const events = () =>
     .all();
 const flags = () => db.select().from(schema.securityFlags).all();
 
+describe("timeout", () => {
+  test("timeoutMs is read from the setting when the job starts", () => {
+    const reg = handlers.get(CODE_ANSWER_JOB) as HandlerRegistration;
+    settings.set("codeAnswer.timeoutMinutes", 12);
+    const job = { id: "j", type: CODE_ANSWER_JOB, input: {} } as Job;
+    expect((reg.timeoutMs as (j: Job) => number)(job)).toBe(17 * 60_000);
+  });
+});
+
 describe("create", () => {
   test("queues one row and one job with the row id in the key; a live duplicate is refused", () => {
     const id = create();

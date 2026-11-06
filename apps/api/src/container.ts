@@ -428,6 +428,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     approvals,
     securityFlags,
     sink: messageSink,
+    codeAnswerHeld: (tx, id) => codeAnswers.returnToHeld(tx, id),
   });
   outgoing.register(approvals, dispatcher);
   const urgentReplies = new UrgentReplies({ db, clock, audit, outgoing });

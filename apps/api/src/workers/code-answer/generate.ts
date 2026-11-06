@@ -152,6 +152,6 @@ export function registerCodeAnswerJob(deps: CodeAnswerJobDeps): void {
 
   deps.handlers.set(CODE_ANSWER_JOB, {
     handler: generate,
-    timeoutMs: (settings.get("codeAnswer.timeoutMinutes") + 5) * 60_000,
+    timeoutMs: () => (settings.get("codeAnswer.timeoutMinutes") + 5) * 60_000,
   });
 }

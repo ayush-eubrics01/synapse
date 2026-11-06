@@ -12,7 +12,8 @@ export type JobHandler = (job: Job, ctx: JobContext) => Promise<unknown>;
 
 export interface HandlerRegistration {
   handler: JobHandler;
-  timeoutMs: number;
+  /** A function is resolved once, when the job starts. */
+  timeoutMs: number | ((job: Job) => number);
   /**
    * The handler writes to an external system. A timeout, forced stop or a failure carrying
    * `details.uncertain === true` leaves the outcome uncertain, so the job goes to NEEDS_ATTENTION
@@ -217,14 +218,15 @@ export class JobWorker {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<Outcome>((resolve) => {
       if (!reg) return;
+      const timeoutMs = typeof reg.timeoutMs === "function" ? reg.timeoutMs(job) : reg.timeoutMs;
       timeout = setTimeout(() => {
         const error: ClassifiedError = {
           kind: "timeout",
-          message: `job ${job.type} timed out after ${reg.timeoutMs}ms`,
+          message: `job ${job.type} timed out after ${timeoutMs}ms`,
         };
         controller.abort(new Error(error.message));
         resolve({ kind: "error", error });
-      }, reg.timeoutMs);
+      }, timeoutMs);
     });
 
     const ctx: JobContext = {

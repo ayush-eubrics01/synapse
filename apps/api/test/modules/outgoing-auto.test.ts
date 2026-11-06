@@ -73,6 +73,7 @@ class FakeSink implements MessageSink {
 }
 
 function setup() {
+  const codeAnswerHeld: string[] = [];
   const { db } = openDatabase(":memory:");
   runMigrations(db);
   const clock = new FakeClock(NOW);
@@ -107,6 +108,9 @@ function setup() {
     approvals: engine,
     securityFlags,
     sink,
+    codeAnswerHeld: (_tx, id) => {
+      codeAnswerHeld.push(id);
+    },
   });
   const handlers = new Map<string, HandlerRegistration>();
   outgoing.register(engine, dispatcher);
@@ -149,14 +153,19 @@ function setup() {
 
   const autoReply = (
     id = "ar1",
-    over: { followupId?: string | null; session?: string; threadTs?: string | null } = {},
+    over: {
+      followupId?: string | null;
+      session?: string;
+      threadTs?: string | null;
+      kind?: typeof schema.autoReplies.$inferInsert.kind;
+    } = {},
   ) =>
     db
       .insert(schema.autoReplies)
       .values({
         id,
         sessionId: over.session ?? "s1",
-        kind: over.followupId ? "stalled_reminder" : "acknowledgement",
+        kind: over.kind ?? (over.followupId ? "stalled_reminder" : "acknowledgement"),
         recipientSlackUserId: "UTHEM00001",
         conversationExternalId: CHANNEL,
         threadTs: over.threadTs === undefined ? THREAD : over.threadTs,
@@ -239,6 +248,7 @@ function setup() {
     worker,
     sink,
     outgoing,
+    codeAnswerHeld,
     autoReply,
     requestAuto,
     requestUser,
@@ -829,5 +839,66 @@ describe("M8: an auto-send that waited too long is cancelled as stale", () => {
     await s.run();
     expect(s.sink.calls).toHaveLength(1);
     expectStale(s, outgoingId, approvalId, "failed");
+  });
+});
+
+describe("F4.1: codeAnswer.away.autoSend is an immediate kill switch for code_answer auto-sends", () => {
+  const expectHeld = (s: ReturnType<typeof setup>, outgoingId: string) => {
+    expect(s.sink.sends).toHaveLength(0);
+    expect(s.out(outgoingId)?.status).toBe("failed");
+    expect(s.out(outgoingId)?.failure).toBe("cancelled_policy_disabled");
+    expect(s.ar()?.decision).toBe("held");
+    expect(s.ar()?.reason).toBe("code_answer_review");
+    expect(s.ar()?.text).toBeNull();
+    expect(s.codeAnswerHeld).toEqual(["ar1"]);
+    s.expectNoContent();
+  };
+
+  test("claim: autoSend turned off after the decision cancels the send and returns it to review", async () => {
+    const s = setup();
+    s.settings.set("codeAnswer.away.autoSend", true, { emit: false });
+    s.autoReply("ar1", { kind: "code_answer" });
+    const { outgoingId } = s.requestAuto();
+    s.settings.set("codeAnswer.away.autoSend", false, { emit: false });
+    await s.run();
+    expect(s.sink.calls).toHaveLength(0);
+    expectHeld(s, outgoingId);
+  });
+
+  test("beforeSpawn: autoSend turned off while waiting for a slot cancels before spawn", async () => {
+    const s = setup();
+    s.settings.set("codeAnswer.away.autoSend", true, { emit: false });
+    s.autoReply("ar1", { kind: "code_answer" });
+    const { outgoingId } = s.requestAuto();
+    s.sink.whileWaiting = () => s.settings.set("codeAnswer.away.autoSend", false, { emit: false });
+    await s.run();
+    expect(s.sink.calls).toHaveLength(1);
+    expectHeld(s, outgoingId);
+  });
+
+  test("a send that already spawned finishes", async () => {
+    const s = setup();
+    s.settings.set("codeAnswer.away.autoSend", true, { emit: false });
+    s.autoReply("ar1", { kind: "code_answer" });
+    s.requestAuto();
+    s.sink.sendImpl = async () => {
+      s.settings.set("codeAnswer.away.autoSend", false, { emit: false });
+      return { status: "sent_unverified" };
+    };
+    await s.run();
+    expect(s.sink.sends).toHaveLength(1);
+    expect(s.ar()?.decision).toBe("sent");
+    expect(s.codeAnswerHeld).toEqual([]);
+  });
+
+  test("other kinds are unaffected by the switch", async () => {
+    const s = setup();
+    s.settings.set("codeAnswer.away.autoSend", false, { emit: false });
+    s.autoReply("ar1", { kind: "followup_question" });
+    s.requestAuto();
+    await s.run();
+    expect(s.sink.sends).toHaveLength(1);
+    expect(s.ar()?.decision).toBe("sent");
+    expect(s.codeAnswerHeld).toEqual([]);
   });
 });

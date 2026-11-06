@@ -1,6 +1,7 @@
 import {
   type Approval,
   AUTO_REPLY_TAG,
+  type HoldReason,
   JobError,
   type MessageSink,
   type SendMessageCommand,
@@ -58,7 +59,15 @@ type Row = typeof schema.outgoingMessages.$inferSelect;
 type AutoReplyRow = typeof schema.autoReplies.$inferSelect;
 type AuthorisedBy = NonNullable<SendMessageCommand["authorisedBy"]>;
 /** A13, the permission gate and M8 staleness: why a policy auto-send may no longer go out. */
-type AutoSendBlock = "away_off" | "policy_disabled" | "stale";
+type AutoSendBlock = "away_off" | "policy_disabled" | "code_answer_autosend_off" | "stale";
+
+/** The send failure a blocked auto-send ends with. The code-answer switch reuses the policy one. */
+const failureOf = (block: AutoSendBlock): SendFailure =>
+  block === "code_answer_autosend_off" ? "cancelled_policy_disabled" : `cancelled_${block}`;
+
+/** The hold reason a blocked auto-send leaves on its auto-reply. */
+const holdReasonOf = (block: AutoSendBlock): HoldReason =>
+  block === "code_answer_autosend_off" ? "code_answer_review" : block;
 export type OutgoingStatus = Row["status"];
 type FollowupStatus = (typeof schema.followups.$inferSelect)["status"];
 export type ResolveDecision = "mark_sent" | "resend" | "discard";
@@ -215,6 +224,8 @@ export interface OutgoingServiceDeps {
   >;
   securityFlags: Pick<SecurityFlagsService, "recordRuntimeFlag">;
   sink: MessageSink;
+  /** Returns the code answer behind a cancelled `code_answer` auto-send to `held`. */
+  codeAnswerHeld?: (tx: DbOrTx, autoReplyId: string) => void;
 }
 
 const errorName = (e: unknown) => (e instanceof Error ? e.name : "unknown");
@@ -510,7 +521,7 @@ export class OutgoingService {
             `outgoing outcome not recorded outgoing=${outgoingId} error=${errorName(w)}`,
           );
         }
-        throw new OutgoingSendError(`cancelled_${blocked}`);
+        throw new OutgoingSendError(failureOf(blocked));
       }
       // The sink rethrows only failures before spawn: nothing was sent. The engine fails the
       // approval for any thrown error, so this send can never run under it again: not_started,
@@ -813,7 +824,7 @@ export class OutgoingService {
       const block = this.autoSendBlock(tx, autoReply);
       if (block !== null) {
         this.holdAutoSend(tx, row, autoReply, block);
-        return { cancel: `cancelled_${block}` };
+        return { cancel: failureOf(block) };
       }
     }
     const now = isoNow(this.deps.clock);
@@ -1021,6 +1032,9 @@ export class OutgoingService {
       .get();
     if (open?.id !== ar.sessionId) return "away_off";
     if (!approvals.policyGateOpen("slack.auto_reply")) return "policy_disabled";
+    if (ar.kind === "code_answer" && !settings.get("codeAnswer.away.autoSend")) {
+      return "code_answer_autosend_off";
+    }
     const waited = clock.now().getTime() - Date.parse(ar.createdAt);
     const max = settings.get("autoReply.maxSendDelayMinutes") * 60_000;
     if (!(waited <= max)) return "stale";
@@ -1044,7 +1058,7 @@ export class OutgoingService {
     opts: { allowSending: boolean } = { allowSending: false },
   ): void {
     const now = isoNow(this.deps.clock);
-    const failure: SendFailure = `cancelled_${block}`;
+    const failure = failureOf(block);
     const cancellable: OutgoingStatus[] = opts.allowSending ? ["pending", "sending"] : ["pending"];
     const cancelled = tx
       .update(outgoingMessages)
@@ -1071,17 +1085,18 @@ export class OutgoingService {
     }
     const held = tx
       .update(autoReplies)
-      .set({ decision: "held", reason: block, text: null })
+      .set({ decision: "held", reason: holdReasonOf(block), text: null })
       .where(and(eq(autoReplies.id, ar.id), eq(autoReplies.decision, "sent")))
       .returning({ id: autoReplies.id })
       .all();
     if (held.length === 0) return;
+    if (block === "code_answer_autosend_off") this.deps.codeAnswerHeld?.(tx, ar.id);
     this.deps.events.publish(tx, {
       type: "autoreply.held",
       aggregateType: "auto_reply",
       aggregateId: ar.id,
       correlationId: newId(),
-      payload: { autoReplyId: ar.id, reason: block },
+      payload: { autoReplyId: ar.id, reason: holdReasonOf(block) },
     });
   }
 
