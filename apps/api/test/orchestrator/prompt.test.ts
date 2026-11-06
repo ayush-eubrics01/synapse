@@ -19,3 +19,15 @@ test("no warning without untrusted parts", () => {
   expect(p).not.toContain("UNTRUSTED");
   expect(p).toContain("ok");
 });
+
+test("policy_approved parts render verbatim, like user_approved, with no warning", () => {
+  const p = assemblePrompt(
+    "send",
+    [
+      { provenance: "system", content: "sys" },
+      { provenance: "policy_approved", content: '{"channel_id":"D1","message":"hi"}' },
+    ],
+    "B1",
+  );
+  expect(p).toBe('send\n\nsys\n\n{"channel_id":"D1","message":"hi"}');
+});

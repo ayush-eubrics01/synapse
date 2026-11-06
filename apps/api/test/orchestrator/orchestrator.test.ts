@@ -395,6 +395,40 @@ describe("run", () => {
     const e = await fails(run(req({ maxTurns: 0 })));
     expect(e.classified.kind).toBe("invalid_input");
   });
+
+  test("J2: sendGuard passes through to the provider; absent stays absent", async () => {
+    const guard = {
+      toolName: "mcp__claude_ai_Slack__slack_send_message",
+      expectedInputSha256: "b".repeat(64),
+    };
+    await run(
+      req({
+        priorityClass: "send",
+        allowedTools: ["mcp__claude_ai_Slack__slack_send_message"],
+        parts: [{ provenance: "policy_approved", content: "{}" }],
+        sendGuard: guard,
+      }),
+    );
+    expect(provider.requests[0]?.sendGuard).toEqual(guard);
+    expect(provider.requests[0]?.promptParts[0]?.provenance).toBe("policy_approved");
+    await run(req());
+    expect("sendGuard" in (provider.requests[1] ?? {})).toBe(false);
+  });
+
+  test("J2: a malformed sendGuard is invalid_input and never reaches the provider", async () => {
+    const e = await fails(
+      run(
+        req({
+          sendGuard: {
+            toolName: "mcp__claude_ai_Slack__slack_send_message",
+            expectedInputSha256: "x; rm -rf ~",
+          },
+        }),
+      ),
+    );
+    expect(e.classified.kind).toBe("invalid_input");
+    expect(provider.requests).toHaveLength(0);
+  });
 });
 
 const SEND = "mcp__claude_ai_Slack__slack_send_message";

@@ -6,10 +6,24 @@ export type WorkerProfile = "collector" | "intelligence" | "engineering";
 
 export type PriorityClass = "urgent" | "send" | "collection" | "engineering" | "batch" | "backfill";
 
+/**
+ * `policy_approved`: authorised by a deterministic policy (ADR-033 away-mode auto-replies), not by
+ * the user; validator rule K allows it only in a send run.
+ */
 export interface PromptPart {
-  provenance: "untrusted" | "user_approved" | "system";
+  provenance: "untrusted" | "user_approved" | "policy_approved" | "system";
   source?: string;
   content: string;
+}
+
+/**
+ * J2: the provider adds a per-run PreToolUse hook on `toolName` that blocks the call unless the
+ * sha256 of its canonical `tool_input` (keys sorted recursively, undefined dropped) equals
+ * `expectedInputSha256` (64 lowercase hex).
+ */
+export interface SendGuard {
+  toolName: string;
+  expectedInputSha256: string;
 }
 
 /** What modules submit; the orchestrator fills the rest. */
@@ -26,6 +40,7 @@ export interface ClaudeJobRequest {
   model?: string;
   timeoutMs?: number;
   workingDirectory?: string;
+  sendGuard?: SendGuard;
 }
 
 export interface AIExecutionRequest {
@@ -42,6 +57,7 @@ export interface AIExecutionRequest {
   timeoutMs: number;
   workingDirectory: string;
   expectedToolNames?: string[];
+  sendGuard?: SendGuard;
 }
 
 export interface RawToolResult {
@@ -112,9 +128,14 @@ export const priorityClassSchema = z.enum([
 ]);
 
 export const promptPartSchema = z.object({
-  provenance: z.enum(["untrusted", "user_approved", "system"]),
+  provenance: z.enum(["untrusted", "user_approved", "policy_approved", "system"]),
   source: z.string().optional(),
   content: z.string(),
+});
+
+export const sendGuardSchema = z.object({
+  toolName: z.string().regex(/^[A-Za-z0-9_]+$/),
+  expectedInputSha256: z.string().regex(/^[0-9a-f]{64}$/),
 });
 
 export const claudeJobRequestSchema = z.object({
@@ -130,4 +151,5 @@ export const claudeJobRequestSchema = z.object({
   model: z.string().optional(),
   timeoutMs: z.number().int().positive().optional(),
   workingDirectory: z.string().optional(),
+  sendGuard: sendGuardSchema.optional(),
 });

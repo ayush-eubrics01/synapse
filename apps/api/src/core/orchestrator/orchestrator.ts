@@ -254,6 +254,7 @@ export class ClaudeOrchestrator {
       timeoutMs: request.timeoutMs ?? settings.get(`orchestrator.timeouts.${profile}`) * 1000,
       workingDirectory: request.workingDirectory ?? this.deps.scratchDir,
       ...(request.expectedToolNames ? { expectedToolNames: request.expectedToolNames } : {}),
+      ...(request.sendGuard ? { sendGuard: request.sendGuard } : {}),
     };
 
     const verdict = validateRequest(execReq, knownServers, {

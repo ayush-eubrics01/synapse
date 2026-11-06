@@ -6,6 +6,11 @@ export interface SendMessageCommand {
   text: string;
   /** The queue job driving the send; recorded as claude_runs.job_id and used to find the run id. */
   jobId?: string;
+  /**
+   * Who authorised the text: the user (default) or a deterministic policy (ADR-033 auto-replies).
+   * Sets the send run's provenance to `user_approved` or `policy_approved` (J1).
+   */
+  authorisedBy?: "user" | "policy";
 }
 
 export interface SendResult {

@@ -11,6 +11,7 @@ import {
 } from "@synapse/contracts";
 import { createContainer } from "../../src/container";
 import { loadConfig } from "../../src/core/config/config";
+import { sendInputSha256 } from "../../src/integrations/claude-code/send-guard";
 import { buildSendRequest, SEND, SlackSender } from "../../src/integrations/slack/sender";
 
 const signal = new AbortController().signal;
@@ -132,6 +133,28 @@ describe("buildSendRequest", () => {
       JSON.stringify({ channel_id: "C0SYNTHCHN1", message: TEXT }),
     );
     expect("jobId" in req).toBe(false);
+  });
+
+  test("J2: carries a send guard whose sha256 is that of the exact JSON args", () => {
+    const req = buildSendRequest(cmd());
+    expect(req.sendGuard).toEqual({ toolName: SEND, expectedInputSha256: sendInputSha256(args) });
+    const sent = JSON.parse(req.parts?.[1]?.content ?? "null");
+    expect(req.sendGuard?.expectedInputSha256).toBe(sendInputSha256(sent));
+    const noThread = buildSendRequest(cmd({ threadTs: undefined, text: `${TEXT} \n` }));
+    expect(noThread.sendGuard?.expectedInputSha256).toBe(
+      sendInputSha256({ channel_id: "C0SYNTHCHN1", message: TEXT }),
+    );
+  });
+
+  test("J1: authorisedBy policy gives a policy_approved part; default and user give user_approved", () => {
+    const provenances = (c: SendMessageCommand) =>
+      (buildSendRequest(c).parts ?? []).map((p) => p.provenance);
+    expect(provenances(cmd({ authorisedBy: "policy" }))).toEqual(["system", "policy_approved"]);
+    expect(provenances(cmd({ authorisedBy: "user" }))).toEqual(["system", "user_approved"]);
+    expect(provenances(cmd())).toEqual(["system", "user_approved"]);
+    const policy = buildSendRequest(cmd({ authorisedBy: "policy" }));
+    expect(policy.parts?.[1]?.content).toBe(JSON.stringify(args));
+    expect(policy.sendGuard).toEqual(buildSendRequest(cmd()).sendGuard);
   });
 });
 

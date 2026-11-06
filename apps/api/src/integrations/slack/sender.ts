@@ -8,6 +8,7 @@ import {
   type SendMessageCommand,
   type SendResult,
 } from "@synapse/contracts";
+import { sendInputSha256 } from "../claude-code/send-guard";
 
 export const SEND = "mcp__claude_ai_Slack__slack_send_message";
 
@@ -63,12 +64,16 @@ function sendArgs(cmd: SendMessageCommand): Record<string, string> {
 }
 
 /**
- * The narrow send run (ADR-032, validator rules F and I): the send tool plus ToolSearch, a system
- * part and the approved arguments as the only `user_approved` part, no untrusted parts. No
- * expectedToolNames: the provider would turn a refused or failed send into an opaque failure, and
- * this adapter classifies the raw tool results itself. The model is the collector default.
+ * The narrow send run (ADR-032, validator rules F, I and K): the send tool plus ToolSearch, a
+ * system part and the approved arguments as the only approved part, no untrusted parts. That part
+ * is `user_approved`, or `policy_approved` when a policy authorised the text (J1, ADR-033). Every
+ * send carries a send guard (J2): a PreToolUse hook blocks the call unless its input equals these
+ * arguments; `classify` below stays as the after-the-fact check. No expectedToolNames: the
+ * provider would turn a refused or failed send into an opaque failure, and this adapter classifies
+ * the raw tool results itself. The model is the collector default.
  */
 export function buildSendRequest(cmd: SendMessageCommand): ClaudeJobRequest {
+  const args = sendArgs(cmd);
   return {
     ...(cmd.jobId !== undefined ? { jobId: cmd.jobId } : {}),
     workerProfile: "collector",
@@ -77,10 +82,14 @@ export function buildSendRequest(cmd: SendMessageCommand): ClaudeJobRequest {
     instructions: "Perform the single approved Slack send described below.",
     parts: [
       { provenance: "system", content: SEND_INSTRUCTION },
-      { provenance: "user_approved", content: JSON.stringify(sendArgs(cmd)) },
+      {
+        provenance: cmd.authorisedBy === "policy" ? "policy_approved" : "user_approved",
+        content: JSON.stringify(args),
+      },
     ],
     allowedTools: [SEND, "ToolSearch"],
     maxTurns: 3,
+    sendGuard: { toolName: SEND, expectedInputSha256: sendInputSha256(args) },
   };
 }
 

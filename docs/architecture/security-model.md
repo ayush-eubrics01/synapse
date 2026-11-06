@@ -38,6 +38,8 @@ Each Claude run gets an explicit `--allowedTools` list and a `--disallowedTools`
 
 Sends and Jira writes are not done by a free-running worker. They run as a narrow execution (one allowed tool, exact arguments from the approval) after approval.
 
+**Send guard (J2).** Every Slack send run carries a per-run Claude Code `PreToolUse` hook on the send tool. The hook blocks the call (exit 2, reason `send arguments differ from the approved message`) unless the sha256 of the call's canonical `tool_input` equals the hash of the approved arguments. A wrong channel, thread or text is therefore stopped before anything reaches Slack, not just detected afterwards. The hook fails closed: malformed input, a crash, or a hook that cannot start all block. The after-the-fact argument check on the recorded `tool_use` input stays as a second layer. See `docs/modules/claude-orchestrator.md` (Send runs).
+
 ## 4. Untrusted content isolation (ADR-032, Accepted)
 
 Slack messages and Jira text are written by other people and may contain instructions aimed at Claude (prompt injection). Rules:
@@ -78,7 +80,7 @@ Auto-send happens only if away mode is on, the recipient is a priority person, t
 - Content checks: no secrets, tokens, keys or `.env` values; no promises of dates, decisions or commitments on the user's behalf.
 - The reply goes into the same conversation and thread only.
 
-The drafting run has no send tool. The send run's only tool is `slack_send_message`, with arguments fixed by the policy (ADR-032).
+The drafting run has no send tool. The send run's only tool is `slack_send_message`, with arguments fixed by the policy (ADR-032). Its approved part carries the `policy_approved` provenance, which the validator allows only in a send run (rule K), and the send guard (J2) blocks any call whose arguments differ from the policy-approved ones.
 
 ## 7. Audit
 

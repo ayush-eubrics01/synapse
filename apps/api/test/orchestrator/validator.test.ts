@@ -197,6 +197,35 @@ describe("validateRequest", () => {
   });
 });
 
+describe("rule K: policy_approved only in a send run (J1)", () => {
+  const policy: PromptPart = { provenance: "policy_approved", content: '{"channel_id":"D1"}' };
+  const sys: PromptPart = { provenance: "system", content: "send it" };
+  test("policy_approved with system parts in a send run is ok", () => {
+    const r = make({ allowed: [SEND, "ToolSearch"], promptParts: [sys, policy] });
+    expect(v(r)).toEqual({ ok: true });
+  });
+  test("policy_approved in an intelligence run with no write tool fails", () => {
+    const r = make({
+      workerProfile: "intelligence",
+      allowed: [SEARCH, "ToolSearch"],
+      promptParts: [sys, policy],
+    });
+    expect(reason(v(r))).toBe("policy_approved content outside a send run");
+  });
+  test("policy_approved in a collector run with no write tool fails", () => {
+    const r = make({ allowed: [SEARCH, "ToolSearch"], promptParts: [policy] });
+    expect(reason(v(r))).toBe("policy_approved content outside a send run");
+  });
+  test("policy_approved in an engineering run fails", () => {
+    const r = make({ workerProfile: "engineering", allowed: ["Read"], promptParts: [policy] });
+    expect(reason(v(r))).toBe("policy_approved content outside a send run");
+  });
+  test("policy_approved with untrusted content in a send run fails (rule D)", () => {
+    const r = make({ allowed: [SEND, "ToolSearch"], promptParts: [sys, policy, untrusted] });
+    expect(reason(v(r))).toBe(`untrusted content with write-capable tool ${SEND}`);
+  });
+});
+
 describe("final-review fixes", () => {
   test("I4: reviewer probe (collector with Read/Grep/Glob + Slack read + untrusted) is rejected", () => {
     const parts: PromptPart[] = [
