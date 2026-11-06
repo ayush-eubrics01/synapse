@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { AIProvider, ClaudeActivityHealth } from "@synapse/contracts";
+import type { AIProvider, BackupEntry, ClaudeActivityHealth } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { type Clock, isoNow, systemClock } from "@synapse/shared";
 import { and, count, eq, lte, min } from "drizzle-orm";
@@ -224,6 +224,48 @@ export function claudeActivityCheck(service: { healthState(): ClaudeActivityHeal
     const h = service.healthState();
     if (h.state === "disabled") return { status: "ok", detail: "disabled" };
     if (h.state === "degraded") return { status: "degraded", detail: h.message ?? undefined };
+    return { status: "ok" };
+  });
+}
+
+const BACKUP_STALE_MS = 36 * 3_600_000;
+const BACKUP_GRACE_MS = 24 * 3_600_000;
+const GIB = 2 ** 30;
+
+export function backupCheck(deps: {
+  settings: SettingsService;
+  backup: { list(): BackupEntry[]; lastAttempt(): { ok: boolean; at: string } | null };
+  clock: Clock;
+  startedAt: Date;
+}): HealthCheck {
+  return guarded(async () => {
+    if (!deps.settings.get("ops.backup.enabled")) return { status: "ok", detail: "disabled" };
+    if (deps.backup.lastAttempt()?.ok === false) {
+      return { status: "degraded", detail: "last backup failed" };
+    }
+    const now = deps.clock.now().getTime();
+    if (now - deps.startedAt.getTime() >= BACKUP_GRACE_MS) {
+      const newest = deps.backup.list()[0];
+      if (!newest || now - Date.parse(newest.createdAt) > BACKUP_STALE_MS) {
+        return { status: "degraded", detail: "no backup in 36 h" };
+      }
+    }
+    return { status: "ok" };
+  });
+}
+
+export function diskCheck(deps: {
+  settings: SettingsService;
+  diskFree: (path: string) => number | null;
+  dataDir: string;
+}): HealthCheck {
+  return guarded(async () => {
+    const free = deps.diskFree(deps.dataDir);
+    if (free === null) return { status: "degraded", detail: "free space unknown" };
+    const gib = free / GIB;
+    const detail = `${gib.toFixed(1)} GiB free`;
+    if (free < GIB) return { status: "down", detail };
+    if (gib < deps.settings.get("ops.disk.warnFreeGiB")) return { status: "degraded", detail };
     return { status: "ok" };
   });
 }

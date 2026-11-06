@@ -1,0 +1,218 @@
+import { Database } from "bun:sqlite";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
+import type { BackupEntry, BackupFailureCode } from "@synapse/contracts";
+import { type Db, schema } from "@synapse/database";
+import { type Clock, newId } from "@synapse/shared";
+import { desc, inArray, sql } from "drizzle-orm";
+import type { AuditLogger } from "../audit/audit";
+import { checkBackupDir } from "../config/config";
+
+export const BACKUP_NAME_RE = /^synapse-\d{8}-\d{6}\.db$/;
+export const BACKUP_TMP_RE = /^\.synapse-.+\.tmp$/;
+
+const GIB = 2 ** 30;
+const p2 = (n: number) => String(n).padStart(2, "0");
+
+/** `synapse-YYYYMMDD-HHMMSS.db` in local time. */
+export function backupFileName(now: Date): string {
+  const d = `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}`;
+  const t = `${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}`;
+  return `synapse-${d}-${t}.db`;
+}
+
+export interface BackupServiceDeps {
+  db: Db;
+  sqlite: Database;
+  clock: Clock;
+  audit: AuditLogger;
+  dir: string;
+  dbPath: string;
+  diskFree: (path: string) => number | null;
+  vacuumInto?: (target: string) => void;
+  fileName?: (now: Date) => string;
+}
+
+export type BackupResult =
+  | { ok: true; name: string; bytes: number; pruned: number }
+  | { ok: false; failure: BackupFailureCode };
+
+class Failure extends Error {
+  constructor(readonly code: BackupFailureCode) {
+    super(code);
+  }
+}
+
+function rmQuiet(p: string): void {
+  try {
+    unlinkSync(p);
+  } catch {
+    // already gone
+  }
+}
+
+export class BackupService {
+  readonly dir: string;
+
+  constructor(private readonly d: BackupServiceDeps) {
+    this.dir = d.dir;
+  }
+
+  /** Never throws: every outcome is audited with a fixed code. */
+  run(keep: number): BackupResult {
+    let result: BackupResult;
+    try {
+      result = this.attempt(keep);
+    } catch (e) {
+      result = { ok: false, failure: e instanceof Failure ? e.code : "unexpected" };
+    }
+    try {
+      this.d.audit.record(this.d.db, {
+        actor: "system",
+        module: "ops",
+        action: result.ok ? "ops.backup_created" : "ops.backup_failed",
+        result: result.ok ? "ok" : "failed",
+        details: result.ok
+          ? { name: result.name, bytes: result.bytes, pruned: result.pruned }
+          : { code: result.failure },
+      });
+    } catch {
+      // the audit write must not turn a finished backup into a throw
+    }
+    return result;
+  }
+
+  list(): BackupEntry[] {
+    let names: string[];
+    try {
+      names = readdirSync(this.dir).filter((n) => BACKUP_NAME_RE.test(n));
+    } catch {
+      return [];
+    }
+    const out: { entry: BackupEntry; ms: number }[] = [];
+    for (const name of names) {
+      try {
+        const s = statSync(join(this.dir, name));
+        if (!s.isFile()) continue;
+        out.push({
+          entry: { name, bytes: s.size, createdAt: new Date(s.mtimeMs).toISOString() },
+          ms: s.mtimeMs,
+        });
+      } catch {
+        // removed between readdir and stat
+      }
+    }
+    out.sort((a, b) => b.ms - a.ms || (a.entry.name < b.entry.name ? 1 : -1));
+    return out.map((o) => o.entry);
+  }
+
+  lastAttempt(): { ok: boolean; at: string } | null {
+    const row = this.d.db
+      .select({ action: schema.auditEvents.action, at: schema.auditEvents.occurredAt })
+      .from(schema.auditEvents)
+      .where(inArray(schema.auditEvents.action, ["ops.backup_created", "ops.backup_failed"]))
+      .orderBy(desc(schema.auditEvents.occurredAt), sql`rowid desc`)
+      .get();
+    return row ? { ok: row.action === "ops.backup_created", at: row.at } : null;
+  }
+
+  private attempt(keep: number): BackupResult {
+    const { dir } = this;
+    this.prepareDir();
+    for (const n of readdirSync(dir)) if (BACKUP_TMP_RE.test(n)) rmQuiet(join(dir, n));
+
+    const free = this.d.diskFree(dir);
+    if (free !== null && free < 2 * this.dbBytes() + GIB) throw new Failure("insufficient_space");
+
+    const now = this.d.clock.now();
+    const name = (this.d.fileName ?? backupFileName)(now);
+    const stamp = name.replace(/^synapse-/, "").replace(/\.db$/, "");
+    const tmp = join(dir, `.synapse-${stamp}-${newId().slice(-8)}.tmp`);
+    const target = join(dir, name);
+    try {
+      // Created 0600 up front (an empty file is a valid VACUUM INTO target), so the copy is
+      // never readable by others, whatever the umask.
+      writeFileSync(tmp, "", { mode: 0o600, flag: "wx" });
+      try {
+        (this.d.vacuumInto ?? ((t) => void this.d.sqlite.run("VACUUM INTO ?", [t])))(tmp);
+      } catch {
+        throw new Failure("vacuum_failed");
+      }
+      if (!this.integrityOk(tmp)) throw new Failure("integrity_failed");
+      chmodSync(tmp, 0o600);
+      if (existsSync(target)) throw new Failure("target_exists");
+      renameSync(tmp, target);
+    } catch (e) {
+      rmQuiet(tmp);
+      throw e;
+    }
+    return { ok: true, name, bytes: statSync(target).size, pruned: this.prune(keep) };
+  }
+
+  private prepareDir(): void {
+    if (checkBackupDir(this.dir) !== "ok") throw new Failure("dir_unavailable");
+    try {
+      mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+      const s = statSync(this.dir);
+      if (!s.isDirectory()) throw new Failure("dir_unavailable");
+      if (s.uid === process.getuid?.()) chmodSync(this.dir, 0o700);
+      else throw new Failure("dir_unavailable");
+    } catch (e) {
+      throw e instanceof Failure ? e : new Failure("dir_unavailable");
+    }
+  }
+
+  private dbBytes(): number {
+    const n = (p: string) =>
+      (this.d.sqlite.query(`pragma ${p}`).get() as Record<string, number> | null)?.[p] ?? 0;
+    let wal = 0;
+    try {
+      wal = statSync(`${this.d.dbPath}-wal`).size;
+    } catch {
+      // no wal file
+    }
+    return n("page_count") * n("page_size") + wal;
+  }
+
+  private integrityOk(file: string): boolean {
+    let copy: Database | null = null;
+    try {
+      copy = new Database(file, { readonly: true });
+      const rows = copy.query("pragma integrity_check").all();
+      return (
+        rows.length === 1 && (rows[0] as { integrity_check?: string }).integrity_check === "ok"
+      );
+    } catch {
+      return false;
+    } finally {
+      try {
+        copy?.close();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  /** Deletes only `BACKUP_NAME_RE` files beyond the newest `keep`. */
+  private prune(keep: number): number {
+    let pruned = 0;
+    for (const e of this.list().slice(keep)) {
+      try {
+        unlinkSync(join(this.dir, e.name));
+        pruned++;
+      } catch {
+        // best effort; the next run prunes again
+      }
+    }
+    return pruned;
+  }
+}

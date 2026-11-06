@@ -19,6 +19,7 @@ beforeEach(() => {
   c = createContainer(loadConfig({ SYNAPSE_DB_PATH: ":memory:" }), {
     run: async () => "Linger=yes",
     provider: fakeProvider,
+    diskFree: () => 100 * 2 ** 30,
   });
   app = createApp(c);
 });
@@ -61,11 +62,13 @@ test("health ready is 200 with a report", async () => {
   const body = (await res.json()) as { status: string; checks: Record<string, unknown> };
   expect(Object.keys(body.checks).sort()).toEqual([
     "auth",
+    "backup",
     "bun",
     "claude",
     "claude_activity",
     "database",
     "desktop-notifier",
+    "disk",
     "events",
     "file_permissions",
     "heartbeat",

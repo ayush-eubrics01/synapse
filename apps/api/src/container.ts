@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, statfsSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type {
@@ -13,18 +13,20 @@ import { type Clock, newId, systemClock } from "@synapse/shared";
 import { ApprovalEngine } from "./core/approvals/approvals";
 import { registerApprovalExecution } from "./core/approvals/execution";
 import { AuditLogger } from "./core/audit/audit";
-import { type AppConfig, resolveHome } from "./core/config/config";
+import { type AppConfig, checkBackupDir, resolveHome } from "./core/config/config";
 import { SettingsService } from "./core/config/settings";
 import { OutboxDispatcher } from "./core/events/dispatcher";
 import { LiveBus } from "./core/events/live-bus";
 import { EventPublisher } from "./core/events/publisher";
 import {
   authCheck,
+  backupCheck,
   bunVersionCheck,
   claudeActivityCheck,
   claudeCheck,
   databaseCheck,
   desktopNotifierCheck,
+  diskCheck,
   eventsCheck,
   filePermissionsCheck,
   heartbeatCheck,
@@ -39,6 +41,7 @@ import { type HandlerRegistration, JobWorker } from "./core/jobs/worker";
 import { LeaseService } from "./core/leases/leases";
 import { ModuleRegistry } from "./core/module-registry/registry";
 import { NotificationService } from "./core/notifications/notifications";
+import { BackupService } from "./core/ops/backup";
 import { AuthMonitor } from "./core/orchestrator/auth";
 import { ClaudeOrchestrator } from "./core/orchestrator/orchestrator";
 import { PermissionManager } from "./core/permissions/permissions";
@@ -102,6 +105,7 @@ import { registerPickupJobs } from "./workers/engineering/pickup";
 import { registerStepJob } from "./workers/engineering/steps";
 import { createRunHelpers } from "./workers/intelligence-shared";
 import { registerJiraJobs } from "./workers/jira";
+import { registerOpsJobs } from "./workers/ops";
 import { registerOutgoingJobs } from "./workers/outgoing";
 import { registerPeopleJobs } from "./workers/people";
 import { registerSlackJobs } from "./workers/slack";
@@ -129,6 +133,8 @@ export interface Container {
   auth: AuthMonitor;
   orchestrator: ClaudeOrchestrator;
   health: HealthService;
+  backup: BackupService;
+  startedAt: Date;
   /** Claude Code session observation (Phase 10b, ADR-036). */
   claudeActivity: ClaudeActivityService;
   inbox: InboxStore;
@@ -194,6 +200,10 @@ export interface ContainerDeps {
   claudeProjectsDir?: string;
   /** Result of securePrivateFiles from main.ts; defaults to ok. */
   filePermissions?: PrivateFilesResult;
+  /** Overrides the backup directory (tests inject a temp dir). */
+  backupDir?: string;
+  /** Free bytes at a path, or null when unknown. Defaults to statfs. */
+  diskFree?: (path: string) => number | null;
 }
 
 const CORE_MODULES = [
@@ -209,6 +219,15 @@ const CORE_MODULES = [
   "health",
   "system",
 ];
+
+function defaultDiskFree(p: string): number | null {
+  try {
+    const s = statfsSync(p);
+    return Number(s.bavail) * Number(s.bsize);
+  } catch {
+    return null;
+  }
+}
 
 async function runCommand(cmd: string[]): Promise<string> {
   const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "ignore" });
@@ -635,6 +654,30 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   registerStepJob({ db, settings, orchestrator, steps: engineeringSteps, handlers });
   registerPickupJobs({ service: engineering, lock: engineeringLock, scheduler, handlers });
 
+  const dataDir = config.dbPath === ":memory:" ? scratchDir : dirname(config.dbPath);
+  const backupDir =
+    deps.backupDir ??
+    config.backupDir ??
+    settings.get("ops.backup.dir") ??
+    (config.dbPath === ":memory:"
+      ? join(scratchDir, "backups")
+      : join(dirname(config.dbPath), "backups"));
+  if (checkBackupDir(backupDir) !== "ok") {
+    throw new Error("ops.backup.dir must be an absolute path outside the repository");
+  }
+  const diskFree = deps.diskFree ?? defaultDiskFree;
+  const startedAt = clock.now();
+  const backup = new BackupService({
+    db,
+    sqlite,
+    clock,
+    audit,
+    dir: backupDir,
+    dbPath: config.dbPath,
+    diskFree,
+  });
+  registerOpsJobs({ db, handlers, scheduler, queue, settings, clock, backup });
+
   const health = new HealthService({
     database: databaseCheck(sqlite),
     jobs: jobsCheck(db, clock),
@@ -648,6 +691,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     "screening-rules": screeningRulesCheck(screening),
     "desktop-notifier": desktopNotifierCheck(notifier),
     claude_activity: claudeActivityCheck(claudeActivity),
+    backup: backupCheck({ settings, backup, clock, startedAt }),
+    disk: diskCheck({ settings, diskFree, dataDir }),
     file_permissions: filePermissionsCheck(
       deps.filePermissions ?? { ok: true, changed: 0, failed: 0 },
     ),
@@ -693,6 +738,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     auth,
     orchestrator,
     health,
+    backup,
+    startedAt,
     claudeActivity,
     inbox,
     conversations,

@@ -13,6 +13,8 @@ export const HEALTH_LABELS: Record<string, string> = {
   "desktop-notifier": "Desktop notifications",
   claude_activity: "Claude Code activity",
   file_permissions: "Data file permissions",
+  backup: "Backups",
+  disk: "Disk space",
 };
 
 /** What to do about a failing check. A check with no entry has no hint. */
@@ -31,5 +33,8 @@ export const HEALTH_HINTS: Record<string, string> = {
     "Observation of your Claude Code sessions is paused. Other features are unaffected; check the projects directory is readable, or that Claude Code was updated.",
   file_permissions:
     "Synapse's data files are readable by other users; run chmod 700 on the data directory",
+  backup:
+    "The daily backup is missing or failed. Check free space in the backup directory, then use Back up now in System.",
+  disk: "Free space is low where Synapse keeps its data. Delete old files or move backups with SYNAPSE_BACKUP_DIR.",
   bun: "Upgrade Bun to 1.4.4 or newer.",
 };

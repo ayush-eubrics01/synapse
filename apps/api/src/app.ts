@@ -24,6 +24,7 @@ import { securityRoutes } from "./routes/security";
 import { settingsRoutes } from "./routes/settings";
 import { slackRoutes } from "./routes/slack";
 import { streamRoutes } from "./routes/stream";
+import { systemRoutes } from "./routes/system";
 import { urgentRoutes } from "./routes/urgent";
 
 export function createApp(c: Container): Hono {
@@ -50,6 +51,7 @@ export function createApp(c: Container): Hono {
   app.route("/", engineeringRoutes(c));
   app.route("/", dashboardRoutes(c));
   app.route("/", dashboardLayoutRoutes(c));
+  app.route("/", systemRoutes(c));
   app.route("/", streamRoutes(c));
   app.onError((err, ctx) => {
     if (err instanceof InvalidApprovalTransition) {
