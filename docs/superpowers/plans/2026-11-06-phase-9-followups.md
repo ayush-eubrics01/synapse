@@ -41,3 +41,4 @@ Run by the controller on 2026-11-06 against the real CLI. Temp dirs only; counts
 
 - **`scope-smoke`** (provider level, cwd in a third directory): `double: inside=ok outside=blocked`, `single(control): inside=denied`, `scope-smoke: blocked`. The `//` rule itself grants the read; the cwd default doesn't.
 - **`inspect-smoke`** (with `--permission-mode default`, auto memory off, and CLAUDE.md loading off): `turns: 8`, `permissionDenials: 0`, `proposed: 9`, `inserted: 8`, `dropped: sensitive_path=1`. `not_read` dropped nothing it shouldn't.
+- Evidence 'observed' check accepts a path that appears in Grep/Glob output, not only files actually Read. It is weaker than 'read', but the file must still exist inside the repo and not be sensitive, and facts stay needs_review. Consider requiring a Read for evidence later.
