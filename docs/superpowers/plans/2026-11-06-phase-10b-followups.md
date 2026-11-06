@@ -15,10 +15,10 @@ Items parked during Phase 10b (claude activity and code answers). None blocks th
 
 ## Code answers
 
-- **Handler timeout is read at registration.** `codeAnswer.timeoutMinutes` changes the request timeout at once, but the job handler timeout (`timeoutMinutes + 5`) is fixed at startup: a restart is needed after raising it above the old value.
+- ~~**Handler timeout is read at registration.**~~ **Done in follow-ups batch 1:** the handler registers a `timeoutMs` function read when each job starts. Original note: `codeAnswer.timeoutMinutes` changes the request timeout at once, but the job handler timeout (`timeoutMinutes + 5`) is fixed at startup: a restart is needed after raising it above the old value.
 - **Partial unique index and NULL repository.** `code_answers_live_uq` is over (`message_id`, `repository_id`, `trigger`); SQLite treats NULL as distinct, so rows whose repository was unregistered (`repository_id` NULL) are not deduplicated. They only exist as `failed` / `repository_unavailable` rows in practice; revisit if another live status can carry a NULL repository.
 - **Two benign minors from the Task 8 re-review** are recorded in the SDD ledger (`.superpowers/sdd/2026-11-06-phase-10b-activity-code-answer/progress.md`).
-- **`autoSend` toggle is not re-checked when the send is claimed**, like the other kinds' settings. A re-check in `beforeSpawn` would make the toggle an immediate kill switch.
+- ~~**`autoSend` toggle is not re-checked when the send is claimed**~~ **Done in follow-ups batch 1:** `autoSendBlock` checks it for `code_answer` auto-sends in revalidate, the claim and `beforeSpawn` (`cancelled_policy_disabled`, row back to `held` / `code_answer_review`). Original note: it was not re-checked,, like the other kinds' settings. A re-check in `beforeSpawn` would make the toggle an immediate kill switch.
 - **Repository-name matching treats `-` and `_` as name characters**, so a message that writes `demo-app` for a repository named `demo` does not match. A configurable alias list per repository would help.
 - **Away trigger needs a literal repository or project name.** No fuzzy matching, no multi-repository questions (out of scope for 10b).
-- **A `Read` allow entry in the user's settings refuses every reader run** (and engineering run). A UI hint that explains the refusal is not built.
+- ~~**A `Read` allow entry in the user's settings refuses every reader run** (and engineering run). A UI hint that explains the refusal is not built.~~ **Done in follow-ups batch 1:** the `claude_settings` health check turns `degraded` with a hint naming the allow entries and sandbox settings (any user `sandbox` key now counts as widening too).
