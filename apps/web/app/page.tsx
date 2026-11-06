@@ -19,11 +19,25 @@ import type {
   RecommendationView,
   RepositoryView,
 } from "@synapse/contracts";
-import { type ComponentProps, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type DashboardLayout,
+  type DashboardLayoutSummary,
+  type DashboardSectionId,
+  DEFAULT_DASHBOARD_LAYOUT,
+} from "@synapse/contracts";
+import {
+  type ComponentProps,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { type ActionErrors, actionErrorText, NO_ACTION_ERRORS } from "../lib/action-errors";
 import {
   ApiError,
   acceptCurrentRemotes,
+  activateLayout,
   addProjectFact,
   approveTaskDescription,
   approveTaskPlan,
@@ -34,8 +48,10 @@ import {
   type CommitmentViewDto,
   classifyOverviewFailure,
   createEngineeringTask,
+  createLayout,
   createMilestone,
   decideProposal,
+  deleteLayout,
   deleteMilestone,
   draftFollowup,
   evaluatePerson,
@@ -55,6 +71,7 @@ import {
   getJiraIssues,
   getJiraStatus,
   getJobs,
+  getLayouts,
   getOverview,
   getPeople,
   getPersonFlags,
@@ -77,6 +94,7 @@ import {
   type PersonPriorityDto,
   putSettings,
   registerRepository,
+  resetLayout,
   type SecurityFlagDto,
   type SlackIdentityDto,
   type SlackStatusDto,
@@ -85,6 +103,7 @@ import {
   setPersonPriority,
   skipUnreadablePage,
   type UrgentItemDto,
+  updateLayout,
   updateMilestone,
 } from "../lib/api";
 import { brainPaletteItems, projectRowId } from "../lib/brain";
@@ -93,6 +112,18 @@ import { trailingDebounce } from "../lib/debounce";
 import { engineeringErrorText, isTerminal, lockText } from "../lib/engineering";
 import { conversationTitle, filterConversations, type InboxFilter } from "../lib/inbox";
 import { jiraPaletteItems, jiraRowId } from "../lib/jira";
+import {
+  hiddenSections,
+  type LayoutRow,
+  layoutErrorText,
+  layoutRows,
+  moveVisible,
+  SECTION_LABELS,
+  setCollapsed,
+  setVisible,
+  setWidth,
+} from "../lib/layout";
+import { createLayoutSaver } from "../lib/layout-saver";
 import { LIVE_EVENT_TYPES } from "../lib/live-events";
 import { SECTION_IDS, type SectionId, sidebarItems } from "../lib/nav";
 import {
@@ -115,6 +146,9 @@ import { CommandPalette } from "./components/header/CommandPalette";
 import { Header } from "./components/header/Header";
 import { Inbox } from "./components/inbox/Inbox";
 import { JiraSection } from "./components/jira/JiraSection";
+import { DashboardSection } from "./components/layout/DashboardSection";
+import { HiddenTray } from "./components/layout/HiddenTray";
+import { LayoutPicker } from "./components/layout/LayoutPicker";
 import { People } from "./components/people/People";
 import { ProfileDrawer } from "./components/people/ProfileDrawer";
 import { useQueuedEvaluations } from "./components/people/useQueuedEvaluations";
@@ -131,8 +165,13 @@ import { useToast } from "./components/ui/Toasts";
 const FOOTER = { api: "127.0.0.1:7400", web: ":7401" };
 
 /** Highlights the section in view (spec D1): the first one crossing the top 40% of the viewport. */
-function useActiveSection(initial: SectionId): [SectionId, (id: SectionId) => void] {
+function useActiveSection(
+  initial: SectionId,
+  layoutKey: string,
+): [SectionId, (id: SectionId) => void] {
   const [active, setActive] = useState<SectionId>(initial);
+  // Sections mount, unmount and move with the layout, so the observer is rebuilt on a change.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: layoutKey is the trigger
   useEffect(() => {
     if (typeof IntersectionObserver === "undefined") return;
     const visible = new Set<string>();
@@ -152,7 +191,7 @@ function useActiveSection(initial: SectionId): [SectionId, (id: SectionId) => vo
       if (el) observer.observe(el);
     }
     return () => observer.disconnect();
-  }, []);
+  }, [layoutKey]);
   return [active, setActive];
 }
 
@@ -214,7 +253,14 @@ export default function Dashboard() {
   const now = useClock();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [openHealthSignal, setOpenHealthSignal] = useState(0);
-  const [active, setActive] = useActiveSection("overview");
+  const [layout, setLayout] = useState<DashboardLayout>(DEFAULT_DASHBOARD_LAYOUT);
+  const [layoutList, setLayoutList] = useState<DashboardLayoutSummary[]>([]);
+  const [activeLayoutId, setActiveLayoutId] = useState<string | null>(null);
+  const [customising, setCustomising] = useState(false);
+  // Sections the user expanded outside customise mode; never saved.
+  const [localExpanded, setLocalExpanded] = useState<ReadonlySet<string>>(new Set());
+  const rows = layoutRows(layout);
+  const [active, setActive] = useActiveSection("overview", JSON.stringify(rows));
   const [approvals, setApprovals] = useState<ApprovalView[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [claudeStatus, setClaudeStatus] = useState<ClaudeStatus | null>(null);
@@ -281,6 +327,26 @@ export default function Dashboard() {
   const personOpenerRef = useRef<HTMLElement | null>(null);
   const [backfillSignal, setBackfillSignal] = useState(0);
   const toast = useToast();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+  const activeLayoutIdRef = useRef<string | null>(null);
+  const refreshRef = useRef<() => Promise<unknown>>(async () => {});
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  // Debounced layout saves. While one is pending, refresh() leaves the local layout alone.
+  const [saver] = useState(() =>
+    createLayoutSaver({
+      put: (l) => {
+        const id = activeLayoutIdRef.current;
+        return id === null
+          ? Promise.reject(new Error("no active layout"))
+          : updateLayout(id, { layout: l });
+      },
+      onSaved: (v) => setLayout(v.layout),
+      onError: (text) => toastRef.current.show(text),
+      reload: () => void refreshRef.current(),
+    }),
+  );
   // The selected conversation falls back to the first one in the current filter (spec D10).
   const visibleConversations = filterConversations(conversations, inboxFilter);
   const effectiveConversationId = visibleConversations.some((c) => c.id === selectedId)
@@ -319,6 +385,7 @@ export default function Dashboard() {
       et,
       ca,
       st,
+      lo,
     ] = await Promise.allSettled([
       getApprovals(),
       getJobs(20),
@@ -347,6 +414,7 @@ export default function Dashboard() {
       getEngineeringTasks(),
       getClaudeActivity(),
       getSettings(),
+      getLayouts(),
     ]);
     if (a.status === "fulfilled") setApprovals(a.value);
     if (j.status === "fulfilled") setJobs(j.value);
@@ -372,6 +440,13 @@ export default function Dashboard() {
     if (rp.status === "fulfilled") setRepos(rp.value);
     if (ca.status === "fulfilled") setClaudeActivity(ca.value);
     if (st.status === "fulfilled") setClaudeSettings(st.value);
+    // A refresh that lands while an edit is debounced or in flight must not undo that edit.
+    if (lo.status === "fulfilled" && !saver.isBusy()) {
+      setLayout(lo.value.active.layout);
+      setLayoutList(lo.value.layouts);
+      activeLayoutIdRef.current = lo.value.active.id;
+      setActiveLayoutId(lo.value.active.id);
+    }
     // The open thread is refetched with everything else; stale answers for another conversation are dropped.
     if (td.status === "fulfilled" && td.value && threadIdRef.current === threadId)
       setThread(td.value);
@@ -457,7 +532,8 @@ export default function Dashboard() {
           : null;
     setLoadError(message);
     return message;
-  }, []);
+  }, [saver]);
+  refreshRef.current = refresh;
 
   useEffect(() => {
     void refresh();
@@ -476,6 +552,9 @@ export default function Dashboard() {
       source.close();
     };
   }, [refresh]);
+
+  // A pending layout edit is sent when the page unmounts.
+  useEffect(() => () => void saver.flush(), [saver]);
 
   // A code-answer draft belongs to the conversation it was made in.
   // biome-ignore lint/correctness/useExhaustiveDependencies: clears on a conversation change only
@@ -697,8 +776,84 @@ export default function Dashboard() {
       (e: unknown) => setActionError(String(e)),
     );
 
+  const editLayout = (fn: (l: DashboardLayout) => DashboardLayout) => {
+    const next = fn(layoutRef.current);
+    if (next === layoutRef.current) return;
+    layoutRef.current = next;
+    setLayout(next);
+    saver.change(next);
+  };
+
+  // Picker actions: pending edits are sent first, then the change, then a refresh shows the result.
+  const layoutCall = async (fn: () => Promise<unknown>, flushFirst: boolean) => {
+    if (flushFirst) await saver.flush();
+    try {
+      await fn();
+    } catch (e) {
+      toast.show(layoutErrorText(e instanceof ApiError ? e.code : undefined));
+    }
+    await refresh();
+  };
+
+  const toggleCustomise = () => {
+    if (customising) void saver.flush();
+    setCustomising((c) => !c);
+  };
+
+  const hiddenIds: ReadonlySet<string> = new Set(
+    layout.sections.filter((x) => !x.visible).map((x) => x.id),
+  );
+  const navItems = sidebarItems(
+    overview?.counts ?? null,
+    needsYouCount(cards),
+    conversations.filter((c) => c.theyWroteLast).length,
+    hiddenIds,
+  );
+  const visibleOrder = layout.sections.filter((x) => x.visible).map((x) => x.id);
+
+  const renderSection = (id: DashboardSectionId) => {
+    const sec = layout.sections.find((x) => x.id === id);
+    if (!sec) return null;
+    const nav = navItems.find((n) => n.id === id);
+    const collapsed = customising ? sec.collapsed : sec.collapsed && !localExpanded.has(id);
+    return (
+      <DashboardSection
+        key={id}
+        id={id}
+        label={SECTION_LABELS[id]}
+        count={nav?.count}
+        hot={nav?.hot}
+        width={sec.width}
+        collapsed={collapsed}
+        customising={customising}
+        isFirst={visibleOrder[0] === id}
+        isLast={visibleOrder[visibleOrder.length - 1] === id}
+        canHide={id !== "triage"}
+        onMove={(delta) => editLayout((l) => moveVisible(l, id, delta))}
+        onHide={() => editLayout((l) => setVisible(l, id, false))}
+        onCollapse={(want) => {
+          if (customising) editLayout((l) => setCollapsed(l, id, want));
+          else if (!want) setLocalExpanded((set) => new Set(set).add(id));
+        }}
+        onWidth={(w) => editLayout((l) => setWidth(l, id, w))}
+      >
+        {sectionBodies[id]}
+      </DashboardSection>
+    );
+  };
+
+  const renderRow = (row: LayoutRow) =>
+    row.kind === "pair" ? (
+      <div key={row.ids.join("+")} className="syn-pair">
+        {renderSection(row.ids[0])}
+        {renderSection(row.ids[1])}
+      </div>
+    ) : (
+      renderSection(row.id)
+    );
+
   const paletteItems: PaletteItem[] = [
-    ...GO_TO.map(
+    ...GO_TO.filter((g) => !hiddenIds.has(g.id)).map(
       (g): PaletteItem => ({
         id: `go-${g.id}`,
         label: g.label,
@@ -756,8 +911,194 @@ export default function Dashboard() {
         scrollToSection(projectRowId(id));
       },
     }),
+    {
+      id: "act-customise",
+      label: "Customise dashboard",
+      group: "action",
+      run: toggleCustomise,
+    },
     { id: "act-theme", label: "Toggle theme", group: "action", run: toggleTheme },
   ];
+
+  const sectionBodies: Record<DashboardSectionId, ReactNode> = {
+    triage: (
+      <>
+        <NeedsYou
+          cards={cards}
+          allClear={allClearRows(needsInput)}
+          now={now}
+          handlers={feed.handlers}
+          expanded={expanded}
+          history={history}
+          hidden={feed.hidden}
+          sevenDay={claudeStatus?.quota?.sevenDay?.utilization ?? null}
+          onCopy={copy}
+          backfillConfirmSignal={backfillSignal}
+          queuedEvaluations={evalQueue.queued}
+          engineering={{ tasks: engineeringTasks, details: engineeringDetails }}
+        />
+      </>
+    ),
+    running: (
+      <>
+        <Running
+          pipeline={overview?.pipeline ?? []}
+          status={claudeStatus}
+          runs={claudeRuns}
+          now={now}
+          upcoming={overview?.upcoming}
+          engineeringLock={overview?.engineeringLock}
+          claudeActivity={overview?.claudeActivity}
+        />
+        <ClaudeCodeCard activity={claudeActivity} now={now} />
+      </>
+    ),
+    inbox: (
+      <>
+        <Inbox
+          conversations={conversations}
+          filter={inboxFilter}
+          onFilter={setInboxFilter}
+          selectedId={effectiveConversationId}
+          onSelect={setSelectedId}
+          thread={thread}
+          urgentById={new Map(urgent.map((u) => [u.messageId, u]))}
+          now={now}
+          hidden={feed.hidden}
+          handlers={feed.handlers}
+          codeAnswers={{
+            repositories: repos ?? [],
+            tick: codeAnswerTick,
+            draft: codeDraft,
+            onUseAsReply: (v: CodeAnswerView, useAnyway: boolean) =>
+              setCodeDraft({ codeAnswerId: v.id, draft: v.answer ?? "", useAnyway }),
+            onSend: (id, text, useAnyway) => void sendCodeAnswerDraft(id, text, useAnyway),
+            onDiscard: () => setCodeDraft(null),
+            onDismissed: (id) => setCodeDraft((d) => (d?.codeAnswerId === id ? null : d)),
+          }}
+        />
+      </>
+    ),
+    commitments: (
+      <>
+        <Commitments
+          queue={reviewQueue}
+          items={commitments}
+          filter={commitmentFilter}
+          onFilter={(f: CommitmentFilter) => {
+            commitmentFilterRef.current = f;
+            setCommitmentFilter(f);
+            void refresh();
+          }}
+          onStatus={(id: string, s: CommitmentStatusDto) =>
+            void act(() => setCommitmentStatus(id, s))
+          }
+          onProposal={(id: string, accept: boolean) => void act(() => decideProposal(id, accept))}
+          onDraftFollowup={(id: string) =>
+            void act(async () => {
+              const r = await draftFollowup(id);
+              if (!r.queued)
+                throw new Error("A follow-up draft is already queued for this commitment");
+            })
+          }
+          onGoToReview={() => goTo("triage")}
+        />
+      </>
+    ),
+    jira: (
+      <>
+        <JiraSection
+          status={jiraStatus}
+          issues={jiraIssues}
+          now={now}
+          onSync={feed.handlers.syncJira}
+          onGoToSetup={() => goTo("triage")}
+          onCreateTask={feed.handlers.createTaskFromJira}
+        />
+      </>
+    ),
+    projects: (
+      <>
+        <ProjectsSection
+          repos={repos ?? []}
+          projects={projectDetails}
+          loaded={repos !== null}
+          now={now}
+          hidden={feed.hidden}
+          registerSignal={registerSignal}
+          onInspectNow={(id) => void inspectNow(id)}
+          onAcceptRemotes={(id) => void act(() => acceptCurrentRemotes(id))}
+          onProposal={proposeRepository}
+          onRegister={register}
+          onAcceptFact={feed.handlers.acceptBrainFact}
+          onRejectFact={feed.handlers.rejectBrainFact}
+          onAddFact={(projectId, kind, content) =>
+            void act(() => addProjectFact(projectId, { kind, content }))
+          }
+          onSaveMilestone={(projectId, id, d: MilestoneDraft) =>
+            void act(() =>
+              id === null ? createMilestone(projectId, d) : updateMilestone(projectId, id, d),
+            )
+          }
+          onDeleteMilestone={(projectId, id) => void act(() => deleteMilestone(projectId, id))}
+        />
+      </>
+    ),
+    engineering: (
+      <>
+        <EngineeringSection
+          tasks={engineeringTasks}
+          details={engineeringDetails}
+          repos={repos ?? []}
+          lock={overview?.engineeringLock ?? null}
+          now={now}
+          handlers={{
+            create: (input) => engineeringCall(() => createEngineeringTask(input)),
+            approveDescription: (id, d) => engineeringCall(() => approveTaskDescription(id, d)),
+            approvePlan: (id, v) => engineeringCall(() => approveTaskPlan(id, v)),
+            cancel: feed.handlers.cancelEngineeringTask,
+          }}
+        />
+      </>
+    ),
+    people: (
+      <>
+        <People
+          candidates={candidates}
+          people={people}
+          self={identity?.selfUserId ?? null}
+          onEvaluate={requestEvaluation}
+          onNotice={setActionError}
+          onPriority={setPriority}
+          onOpen={openPerson}
+          queued={evalQueue.queued}
+          onQueued={evalQueue.markQueued}
+        />
+      </>
+    ),
+    system: (
+      <>
+        <SystemDetails
+          jobs={jobs}
+          slack={slackStatus}
+          runs={claudeRuns}
+          onSkip={() => void skipPage()}
+          now={now}
+        />
+        <ClaudeSettings
+          values={claudeSettings}
+          onChange={(key, value) => {
+            void putSettings({ [key]: value })
+              .then(setClaudeSettings)
+              .catch(() => {
+                toast.show("Could not save that setting");
+                void refresh();
+              });
+          }}
+        />
+      </>
+    ),
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -773,11 +1114,7 @@ export default function Dashboard() {
   return (
     <div className="syn-app">
       <Sidebar
-        items={sidebarItems(
-          overview?.counts ?? null,
-          needsYouCount(cards),
-          conversations.filter((c) => c.theyWroteLast).length,
-        )}
+        items={navItems}
         active={active}
         onGo={(id) => {
           const section = SECTION_IDS.find((s) => s === id);
@@ -798,6 +1135,8 @@ export default function Dashboard() {
               backfillStarted={backfillStarted(slackStatus)}
               onToggleAway={feed.handlers.setAway}
               openHealthSignal={openHealthSignal}
+              customising={customising}
+              onToggleCustomise={toggleCustomise}
             />
             {overview?.away.on && (
               <AwayBanner
@@ -819,185 +1158,49 @@ export default function Dashboard() {
               </p>
             )}
           </section>
-          {/* Needs you and How Synapse is running sit side by side from 1100 px, stacked below. */}
-          <div className="syn-top">
-            <section id="triage" className="syn-section">
-              <NeedsYou
-                cards={cards}
-                allClear={allClearRows(needsInput)}
-                now={now}
-                handlers={feed.handlers}
-                expanded={expanded}
-                history={history}
-                hidden={feed.hidden}
-                sevenDay={claudeStatus?.quota?.sevenDay?.utilization ?? null}
-                onCopy={copy}
-                backfillConfirmSignal={backfillSignal}
-                queuedEvaluations={evalQueue.queued}
-                engineering={{ tasks: engineeringTasks, details: engineeringDetails }}
+          {customising && (
+            <div className="syn-customise-panel">
+              <LayoutPicker
+                layouts={layoutList}
+                activeId={activeLayoutId ?? ""}
+                onSwitch={(id) => void layoutCall(async () => activateLayout(id), true)}
+                onSaveAs={(name) =>
+                  void layoutCall(async () => {
+                    const made = await createLayout(name, activeLayoutIdRef.current ?? undefined);
+                    await activateLayout(made.id);
+                  }, true)
+                }
+                onRename={(id, name) => void layoutCall(() => updateLayout(id, { name }), false)}
+                onDelete={(id) => void layoutCall(() => deleteLayout(id), false)}
+                onReset={() =>
+                  void layoutCall(async () => {
+                    const id = activeLayoutIdRef.current;
+                    if (id !== null) await resetLayout(id);
+                  }, true)
+                }
               />
-            </section>
-            <section id="running" className="syn-section">
-              <Running
-                pipeline={overview?.pipeline ?? []}
-                status={claudeStatus}
-                runs={claudeRuns}
-                now={now}
-                upcoming={overview?.upcoming}
-                engineeringLock={overview?.engineeringLock}
-                claudeActivity={overview?.claudeActivity}
+              <HiddenTray
+                hidden={hiddenSections(layout)}
+                onShow={(id) => editLayout((l) => setVisible(l, id, true))}
               />
-              <ClaudeCodeCard activity={claudeActivity} now={now} />
-            </section>
-          </div>
-          <section id="inbox" className="syn-section">
-            <Inbox
-              conversations={conversations}
-              filter={inboxFilter}
-              onFilter={setInboxFilter}
-              selectedId={effectiveConversationId}
-              onSelect={setSelectedId}
-              thread={thread}
-              urgentById={new Map(urgent.map((u) => [u.messageId, u]))}
-              now={now}
-              hidden={feed.hidden}
-              handlers={feed.handlers}
-              codeAnswers={{
-                repositories: repos ?? [],
-                tick: codeAnswerTick,
-                draft: codeDraft,
-                onUseAsReply: (v: CodeAnswerView, useAnyway: boolean) =>
-                  setCodeDraft({ codeAnswerId: v.id, draft: v.answer ?? "", useAnyway }),
-                onSend: (id, text, useAnyway) => void sendCodeAnswerDraft(id, text, useAnyway),
-                onDiscard: () => setCodeDraft(null),
-                onDismissed: (id) => setCodeDraft((d) => (d?.codeAnswerId === id ? null : d)),
-              }}
-            />
-          </section>
-          <section id="commitments" className="syn-section">
-            <Commitments
-              queue={reviewQueue}
-              items={commitments}
-              filter={commitmentFilter}
-              onFilter={(f: CommitmentFilter) => {
-                commitmentFilterRef.current = f;
-                setCommitmentFilter(f);
-                void refresh();
-              }}
-              onStatus={(id: string, s: CommitmentStatusDto) =>
-                void act(() => setCommitmentStatus(id, s))
-              }
-              onProposal={(id: string, accept: boolean) =>
-                void act(() => decideProposal(id, accept))
-              }
-              onDraftFollowup={(id: string) =>
-                void act(async () => {
-                  const r = await draftFollowup(id);
-                  if (!r.queued)
-                    throw new Error("A follow-up draft is already queued for this commitment");
-                })
-              }
-              onGoToReview={() => goTo("triage")}
-            />
-          </section>
-          <section id="jira" className="syn-section">
-            <JiraSection
-              status={jiraStatus}
-              issues={jiraIssues}
-              now={now}
-              onSync={feed.handlers.syncJira}
-              onGoToSetup={() => goTo("triage")}
-              onCreateTask={feed.handlers.createTaskFromJira}
-            />
-          </section>
-          <section id="projects" className="syn-section">
-            <ProjectsSection
-              repos={repos ?? []}
-              projects={projectDetails}
-              loaded={repos !== null}
-              now={now}
-              hidden={feed.hidden}
-              registerSignal={registerSignal}
-              onInspectNow={(id) => void inspectNow(id)}
-              onAcceptRemotes={(id) => void act(() => acceptCurrentRemotes(id))}
-              onProposal={proposeRepository}
-              onRegister={register}
-              onAcceptFact={feed.handlers.acceptBrainFact}
-              onRejectFact={feed.handlers.rejectBrainFact}
-              onAddFact={(projectId, kind, content) =>
-                void act(() => addProjectFact(projectId, { kind, content }))
-              }
-              onSaveMilestone={(projectId, id, d: MilestoneDraft) =>
-                void act(() =>
-                  id === null ? createMilestone(projectId, d) : updateMilestone(projectId, id, d),
-                )
-              }
-              onDeleteMilestone={(projectId, id) => void act(() => deleteMilestone(projectId, id))}
-            />
-          </section>
-          <section id="engineering" className="syn-section">
-            <EngineeringSection
-              tasks={engineeringTasks}
-              details={engineeringDetails}
-              repos={repos ?? []}
-              lock={overview?.engineeringLock ?? null}
-              now={now}
-              handlers={{
-                create: (input) => engineeringCall(() => createEngineeringTask(input)),
-                approveDescription: (id, d) => engineeringCall(() => approveTaskDescription(id, d)),
-                approvePlan: (id, v) => engineeringCall(() => approveTaskPlan(id, v)),
-                cancel: feed.handlers.cancelEngineeringTask,
-              }}
-            />
-          </section>
-          <section id="people" className="syn-section">
-            <People
-              candidates={candidates}
-              people={people}
-              self={identity?.selfUserId ?? null}
-              onEvaluate={requestEvaluation}
-              onNotice={setActionError}
-              onPriority={setPriority}
-              onOpen={openPerson}
-              queued={evalQueue.queued}
-              onQueued={evalQueue.markQueued}
-            />
-            <ProfileDrawer
-              person={person}
-              onClose={() => openPerson(null)}
-              opener={personOpenerRef.current}
-              onEvaluate={(u) => {
-                setActionError(null);
-                void requestEvaluation(u).then((r) => {
-                  if (r.queued) {
-                    evalQueue.markQueued([u]);
-                    toast.show(TOASTS.evaluationQueued);
-                  } else setActionError(r.notice);
-                });
-              }}
-              onPriority={setPriority}
-            />
-          </section>
-          <section id="system" className="syn-section">
-            <SystemDetails
-              jobs={jobs}
-              slack={slackStatus}
-              runs={claudeRuns}
-              onSkip={() => void skipPage()}
-              now={now}
-            />
-            <ClaudeSettings
-              values={claudeSettings}
-              onChange={(key, value) => {
-                void putSettings({ [key]: value })
-                  .then(setClaudeSettings)
-                  .catch(() => {
-                    toast.show("Could not save that setting");
-                    void refresh();
-                  });
-              }}
-            />
-          </section>
+            </div>
+          )}
+          {rows.map(renderRow)}
+          <ProfileDrawer
+            person={person}
+            onClose={() => openPerson(null)}
+            opener={personOpenerRef.current}
+            onEvaluate={(u) => {
+              setActionError(null);
+              void requestEvaluation(u).then((r) => {
+                if (r.queued) {
+                  evalQueue.markQueued([u]);
+                  toast.show(TOASTS.evaluationQueued);
+                } else setActionError(r.notice);
+              });
+            }}
+            onPriority={setPriority}
+          />
         </div>
       </main>
       <CommandPalette

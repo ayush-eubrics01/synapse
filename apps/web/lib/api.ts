@@ -10,6 +10,9 @@ import type {
   CommitmentView,
   ConversationSummary,
   ConversationThread,
+  DashboardLayout,
+  DashboardLayoutsResponse,
+  DashboardLayoutView,
   DashboardOverview,
   EngineeringTaskCreateInput,
   EngineeringTaskDetail,
@@ -995,6 +998,57 @@ export function sendCodeAnswer(
     "POST",
     `/api/code-answers/${encodeURIComponent(id)}/send`,
     { text, useAnyway },
+    fetchImpl,
+  );
+}
+
+/** Dashboard layouts (Phase 11, D5). The API normalises; the page renders what it returns. */
+export function getLayouts(fetchImpl: typeof fetch = fetch): Promise<DashboardLayoutsResponse> {
+  return request("/api/dashboard/layouts", undefined, fetchImpl);
+}
+
+export function createLayout(
+  name: string,
+  fromId?: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DashboardLayoutView> {
+  return send("POST", "/api/dashboard/layouts", { name, fromId }, fetchImpl);
+}
+
+export function updateLayout(
+  id: string,
+  patch: { name?: string; layout?: DashboardLayout },
+  fetchImpl: typeof fetch = fetch,
+): Promise<DashboardLayoutView> {
+  return send("PUT", `/api/dashboard/layouts/${encodeURIComponent(id)}`, patch, fetchImpl);
+}
+
+export function activateLayout(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DashboardLayoutView> {
+  return request(
+    `/api/dashboard/layouts/${encodeURIComponent(id)}/activate`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export function resetLayout(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DashboardLayoutView> {
+  return request(
+    `/api/dashboard/layouts/${encodeURIComponent(id)}/reset`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export async function deleteLayout(id: string, fetchImpl: typeof fetch = fetch): Promise<void> {
+  await request<void>(
+    `/api/dashboard/layouts/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
     fetchImpl,
   );
 }

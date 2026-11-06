@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { SECTION_IDS } from "../lib/nav";
+import { DASHBOARD_SECTION_IDS } from "@synapse/contracts";
 
 // A static check of the assembled page: it reads source files as text, nothing is rendered.
 const WEB = join(import.meta.dir, "..");
@@ -34,21 +34,37 @@ function filesUnder(dir: string, ext: RegExp): string[] {
   });
 }
 
-test("page.tsx renders every section id, Running included", () => {
-  for (const id of [...SECTION_IDS, "running"]) expect(PAGE).toContain(`id="${id}"`);
+test("page.tsx renders sections through the layout, with overview the only literal section", () => {
+  expect(PAGE).toContain("layoutRows(");
+  expect(PAGE).toContain("<DashboardSection");
+  expect(PAGE.match(/<section id=/g)?.length).toBe(1);
+  expect(PAGE).toContain('<section id="overview"');
+  expect(PAGE).toContain('className="syn-pair"');
+  expect(PAGE).not.toContain("syn-top");
 });
 
-test("sections come in the designed order, Needs you and Running sharing the two-column row", () => {
-  const at = (id: string) => PAGE.indexOf(`id="${id}"`);
-  const order = ["overview", "triage", "running", "inbox", "commitments", "people", "system"];
-  const positions = order.map(at);
-  expect(positions.every((p) => p >= 0)).toBe(true);
-  expect([...positions].sort((a, b) => a - b)).toEqual(positions);
-  const top = PAGE.indexOf('className="syn-top"');
-  expect(top).toBeGreaterThan(at("overview"));
-  expect(top).toBeLessThan(at("triage"));
-  // Running is always rendered (with a waiting state), so the row never collapses to one column.
-  expect(PAGE).not.toMatch(/\{overview && \(\s*<section id="running"/);
+test("every layout section id has a body", () => {
+  const start = PAGE.indexOf("const sectionBodies: Record<DashboardSectionId, ReactNode>");
+  expect(start).toBeGreaterThan(0);
+  const bodies = PAGE.slice(start, PAGE.indexOf("\n  };\n", start));
+  for (const id of DASHBOARD_SECTION_IDS) expect(bodies).toMatch(new RegExp(`\\b${id}: `));
+});
+
+test("the profile drawer lives at page level, after the layout map and outside the people body", () => {
+  const drawer = PAGE.indexOf("<ProfileDrawer");
+  expect(drawer).toBeGreaterThan(PAGE.indexOf("{rows.map(renderRow)}"));
+  const people = PAGE.slice(PAGE.indexOf("people: ("), PAGE.indexOf("system: ("));
+  expect(people).not.toContain("ProfileDrawer");
+});
+
+test("the palette and header offer Customise dashboard", () => {
+  expect(PAGE).toContain("Customise dashboard");
+  expect(PAGE).toContain("onToggleCustomise=");
+});
+
+test("refresh applies the stored layout only when no save is pending (a live event must not undo an edit)", () => {
+  expect(PAGE).toMatch(/if \(lo\.status === "fulfilled" && !saver\.isBusy\(\)\)/);
+  expect(PAGE).toContain("saver.flush()");
 });
 
 test("page.tsx imports none of the deleted components and no top-level component file is left", () => {

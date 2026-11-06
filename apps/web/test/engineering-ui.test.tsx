@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { DEFAULT_DASHBOARD_LAYOUT } from "@synapse/contracts";
 import { renderToString } from "react-dom/server";
 import { DiffViewer } from "../app/components/engineering/DiffViewer";
 import {
@@ -569,7 +570,8 @@ test("approve and reject of an engineering approval are immediate API calls, can
 
 test("page.tsx puts Engineering after Projects and feeds the footer lock from the overview", () => {
   const page = readFileSync(join(import.meta.dir, "../app/page.tsx"), "utf8");
-  const at = (id: string) => page.indexOf(`id="${id}"`);
+  // Section order now comes from the layout; the default has Engineering between Projects and People.
+  const at = (id: string) => DEFAULT_DASHBOARD_LAYOUT.sections.findIndex((x) => x.id === id);
   expect(at("projects")).toBeLessThan(at("engineering"));
   expect(at("engineering")).toBeLessThan(at("people"));
   expect(page).toContain("lockText(overview?.engineeringLock)");

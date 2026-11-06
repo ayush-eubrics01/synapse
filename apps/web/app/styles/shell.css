@@ -158,18 +158,117 @@
   padding-bottom: 12px;
 }
 
+.syn-section.is-collapsed {
+  padding-bottom: 4px;
+}
+
+.syn-section-collapsed-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line2);
+  border-radius: var(--r-control);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+}
+
+.syn-section-collapsed-head:hover {
+  border-color: var(--lineHover);
+}
+
+.syn-section-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: var(--hover);
+  border: 1px dashed var(--line2);
+  border-radius: var(--r-control);
+}
+
+.syn-section-toolbar-label {
+  margin-right: auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.syn-customise-panel {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.syn-layout-picker,
+.syn-hidden-tray {
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line2);
+  border-radius: var(--r-control);
+}
+
+.syn-hidden-tray-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.syn-layout-picker ul,
+.syn-hidden-tray ul {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+}
+
+.syn-layout-picker li,
+.syn-hidden-tray li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.syn-layout-name {
+  margin-right: auto;
+}
+
+.syn-layout-new {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.syn-layout-input {
+  padding: 5px 10px;
+  background: var(--surface);
+  border: 1px solid var(--btnLine);
+  border-radius: var(--r-control);
+  color: var(--ink);
+  font: inherit;
+}
+
 .syn-alert {
   margin: 0 0 12px;
   color: var(--redFg);
 }
 
-/* Needs you and How Synapse is running side by side from 1100 px (as the design does); stacked below. */
+/* Two consecutive half-width sections share a row from 1100 px; stacked below. */
 @media (min-width: 1100px) {
   .syn-main-inner {
     max-width: 1180px;
   }
 
-  .syn-top {
+  .syn-pair {
     display: grid;
     grid-template-columns: minmax(0, 1.45fr) minmax(320px, 1fr);
     gap: 28px;
@@ -177,16 +276,16 @@
   }
 
   /* The narrow column: the pipeline track wraps to two rows and the facts stack. */
-  .syn-top .syn-stages {
+  .syn-pair .syn-stages {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     row-gap: 16px;
   }
 
-  .syn-top .syn-stage:nth-child(2n) .syn-stage-line {
+  .syn-pair .syn-stage:nth-child(2n) .syn-stage-line {
     display: none;
   }
 
-  .syn-top .syn-run-facts {
+  .syn-pair .syn-run-facts {
     grid-template-columns: 1fr;
     gap: 10px;
   }

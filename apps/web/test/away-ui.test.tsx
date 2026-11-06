@@ -61,6 +61,8 @@ const header = (o: DashboardOverview | null, onToggleAway = () => {}) =>
       onOpenPalette={() => {}}
       backfillStarted
       onToggleAway={onToggleAway}
+      customising={false}
+      onToggleCustomise={() => {}}
     />,
   );
 
