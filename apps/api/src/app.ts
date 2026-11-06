@@ -6,6 +6,7 @@ import { localOnly } from "./middleware/local-only";
 import { approvalRoutes } from "./routes/approvals";
 import { claudeRoutes } from "./routes/claude";
 import { commitmentRoutes } from "./routes/commitments";
+import { dashboardRoutes } from "./routes/dashboard";
 import { healthRoutes } from "./routes/health";
 import { inboxRoutes } from "./routes/inbox";
 import { jobRoutes } from "./routes/jobs";
@@ -32,6 +33,7 @@ export function createApp(c: Container): Hono {
   app.route("/", securityRoutes(c));
   app.route("/", peopleRoutes(c));
   app.route("/", commitmentRoutes(c));
+  app.route("/", dashboardRoutes(c));
   app.route("/", streamRoutes(c));
   app.onError((err, ctx) => {
     if (err instanceof InvalidApprovalTransition) {

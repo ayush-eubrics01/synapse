@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import {
+  ApiError,
   acceptSuggestion,
+  classifyOverviewFailure,
   confirmSlackIdentity,
   decideApproval,
   discardRecommendation,
@@ -8,9 +10,11 @@ import {
   getCandidates,
   getClaudeRuns,
   getClaudeStatus,
+  getConversations,
   getHealth,
   getInboxMessages,
   getJobs,
+  getOverview,
   getPeople,
   getPersonFlags,
   getPersonProfile,
@@ -18,6 +22,7 @@ import {
   getSecurityFlags,
   getSlackIdentity,
   getSlackStatus,
+  getThread,
   getUrgent,
   retryApply,
   reviewFlag,
@@ -59,6 +64,26 @@ test("non-2xx throws with status and error field", async () => {
 test("non-2xx without a JSON body still includes the status", async () => {
   const impl = (async () => new Response("boom", { status: 500 })) as unknown as typeof fetch;
   await expect(getJobs(20, impl)).rejects.toThrow(/500/);
+});
+
+test("an HTTP error is an ApiError carrying the status, with the same message", async () => {
+  const { impl } = fake(500, { error: "db locked" });
+  const err = await getOverview(impl).catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ApiError);
+  expect(err).toBeInstanceOf(Error);
+  expect((err as ApiError).status).toBe(500);
+  expect((err as ApiError).message).toBe("GET /api/dashboard/overview failed with 500: db locked");
+});
+
+test("classifyOverviewFailure: a thrown fetch is a network failure, an ApiError is HTTP", async () => {
+  const down = (async () => {
+    throw new TypeError("Failed to fetch");
+  }) as unknown as typeof fetch;
+  const network = await getOverview(down).catch((e: unknown) => e);
+  expect(classifyOverviewFailure(network)).toEqual({ kind: "network" });
+  const http = await getOverview(fake(500, {}).impl).catch((e: unknown) => e);
+  expect(classifyOverviewFailure(http)).toEqual({ kind: "http", status: 500 });
+  expect(classifyOverviewFailure(new ApiError("x", 503))).toEqual({ kind: "http", status: 503 });
 });
 
 test("getJobs passes the limit; getHealth reads the report", async () => {
@@ -165,4 +190,47 @@ test("evaluatePerson returns a refusal as data and a 409 retry as an error", asy
   });
   const conflict = fake(409, { error: "apply retry not allowed" });
   await expect(retryApply("r1", conflict.impl)).rejects.toThrow("409: apply retry not allowed");
+});
+
+test("getOverview reads the dashboard aggregate", async () => {
+  const { calls, impl } = fake(200, { engineeringLock: null });
+  expect((await getOverview(impl)).engineeringLock).toBeNull();
+  expect(calls[0]?.url).toBe("/api/dashboard/overview");
+  expect(calls[0]?.init?.method).toBeUndefined();
+});
+
+test("getConversations passes the limit, default 50", async () => {
+  const a = fake(200, []);
+  await getConversations(undefined, a.impl);
+  expect(a.calls[0]?.url).toBe("/api/inbox/conversations?limit=50");
+  const b = fake(200, []);
+  await getConversations(20, b.impl);
+  expect(b.calls[0]?.url).toBe("/api/inbox/conversations?limit=20");
+});
+
+test("getThread encodes the id and passes the limit", async () => {
+  const a = fake(200, { conversation: { id: "D0ADA" }, messages: [] });
+  expect((await getThread("D0ADA", undefined, a.impl)).messages).toEqual([]);
+  expect(a.calls[0]?.url).toBe("/api/inbox/conversations/D0ADA/thread?limit=200");
+  const b = fake(200, { conversation: { id: "C 1" }, messages: [] });
+  await getThread("C 1", 30, b.impl);
+  expect(b.calls[0]?.url).toBe("/api/inbox/conversations/C%201/thread?limit=30");
+});
+
+test("getThread throws on 404 with the server error", async () => {
+  const { impl } = fake(404, { error: "conversation not found" });
+  await expect(getThread("D0NONE", undefined, impl)).rejects.toThrow(/404.*conversation not found/);
+});
+
+test("getClaudeStatus exposes the quota thresholds", async () => {
+  const thresholds = {
+    fiveHour: { soft: 70, hard: 85, stop: 95 },
+    sevenDay: { soft: 70, hard: 85 },
+  };
+  const { impl } = fake(200, {
+    quota: null,
+    thresholds,
+    auth: { refreshExpiresAt: null, slides: null },
+  });
+  expect((await getClaudeStatus(impl)).thresholds).toEqual(thresholds);
 });

@@ -1,0 +1,273 @@
+/* Buttons */
+.syn-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  font-weight: 500;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    color 0.12s;
+}
+
+.syn-btn--md {
+  padding: 8px 14px;
+  font-size: 14px;
+}
+
+.syn-btn--sm {
+  padding: 5px 10px;
+  font-size: 13px;
+}
+
+.syn-btn--primary {
+  background: var(--ink);
+  color: var(--onInk);
+}
+
+.syn-btn--primary:hover {
+  background: var(--inkHover);
+}
+
+.syn-btn--secondary {
+  background: var(--surface);
+  border-color: var(--btnLine);
+  color: var(--ink);
+}
+
+.syn-btn--secondary:hover {
+  border-color: var(--lineHover);
+}
+
+.syn-btn--ghost {
+  background: transparent;
+  color: var(--muted);
+}
+
+.syn-btn--ghost:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.syn-btn--link {
+  background: transparent;
+  color: var(--blueFg);
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.syn-btn--link:hover {
+  text-decoration: underline;
+}
+
+.syn-btn:disabled,
+.syn-btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Chips and kind tags */
+.syn-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 9px;
+  border-radius: var(--r-pill);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+  background: var(--chip);
+  color: var(--muted);
+}
+
+.syn-chip--mono {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.syn-chip--red {
+  background: var(--redBg);
+  color: var(--redFg);
+}
+
+.syn-chip--amber {
+  background: var(--amberBg);
+  color: var(--amberFg);
+}
+
+.syn-chip--green {
+  background: var(--greenBg);
+  color: var(--greenFg);
+}
+
+.syn-chip--blue {
+  background: var(--blueBg);
+  color: var(--blueFg);
+}
+
+/* Cards */
+.syn-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  padding: 18px 20px;
+}
+
+.syn-card--quiet {
+  background: var(--surface2);
+  border-color: var(--line2);
+}
+
+/* Avatars (colour comes from inline oklch over --avBgL/--avFgL, spec D5) */
+.syn-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  border-radius: 50%;
+  font-weight: 600;
+  line-height: 1;
+  user-select: none;
+}
+
+.syn-avatar--channel {
+  border-radius: var(--r-control);
+  background: var(--chip);
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+/* Switch */
+.syn-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink2);
+  cursor: pointer;
+}
+
+.syn-switch-track {
+  position: relative;
+  width: 30px;
+  height: 18px;
+  border-radius: var(--r-pill);
+  background: var(--toggleOff);
+  transition: background 0.15s;
+}
+
+.syn-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--surface);
+  transition: transform 0.15s;
+}
+
+.syn-switch[aria-checked="true"] .syn-switch-track {
+  background: var(--ink);
+}
+
+.syn-switch[aria-checked="true"] .syn-switch-thumb {
+  transform: translateX(12px);
+}
+
+.syn-switch[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.syn-switch-wrap {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.syn-switch-hint {
+  font-size: 12px;
+  color: var(--muted2);
+}
+
+/* Segmented control */
+.syn-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r-control);
+  background: var(--subtle2);
+}
+
+.syn-seg-option {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.syn-seg-option:hover {
+  color: var(--ink);
+}
+
+.syn-seg-option[aria-checked="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+/* Toasts */
+.syn-toasts {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 50;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.syn-toast {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px 10px 16px;
+  border: 1px solid var(--panelBorder);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--panelInk);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+  pointer-events: auto;
+  animation: synIn 0.18s ease-out both;
+}
+
+.syn-toast-undo {
+  padding: 3px 10px;
+  border: 1px solid var(--panelLine);
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--panelInk);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.syn-toast-close {
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--panelInk);
+  opacity: 0.6;
+  cursor: pointer;
+}

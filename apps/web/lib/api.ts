@@ -5,6 +5,9 @@ import type {
   CommitmentFilter,
   CommitmentStatus,
   CommitmentView,
+  ConversationSummary,
+  ConversationThread,
+  DashboardOverview,
   EvaluateResult,
   FlagStatus,
   FollowupView,
@@ -18,6 +21,25 @@ import type {
   UrgencyStatus,
   UrgentItem,
 } from "@synapse/contracts";
+
+/** A non-2xx answer from the API. The message keeps the "<METHOD> <url> failed with <status>" form. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+/** Why the overview failed: the API could not be reached, or it answered with an HTTP error. */
+export type OverviewFailure = { kind: "network" } | { kind: "http"; status: number };
+
+/** An ApiError is an HTTP error; anything else (fetch throws a TypeError) means unreachable. */
+export function classifyOverviewFailure(reason: unknown): OverviewFailure {
+  return reason instanceof ApiError ? { kind: "http", status: reason.status } : { kind: "network" };
+}
 
 async function request<T>(
   url: string,
@@ -34,7 +56,10 @@ async function request<T>(
     } catch {
       // body was not JSON; the status alone is reported
     }
-    throw new Error(`${init?.method ?? "GET"} ${url} failed with ${res.status}${detail}`);
+    throw new ApiError(
+      `${init?.method ?? "GET"} ${url} failed with ${res.status}${detail}`,
+      res.status,
+    );
   }
   return (await res.json()) as T;
 }
@@ -96,6 +121,12 @@ export interface ClaudeQuotaWindow {
   resetsAt?: string;
 }
 
+/** Utilization fractions (0–1, like `utilization`) at which the orchestrator gates jobs (ADR-029). */
+export interface ClaudeQuotaThresholds {
+  fiveHour: { soft: number; hard: number; stop: number };
+  sevenDay: { soft: number; hard: number };
+}
+
 export interface ClaudeStatus {
   quota: {
     level: "ok" | "soft" | "hard" | "stop";
@@ -104,6 +135,7 @@ export interface ClaudeStatus {
     fiveHour?: ClaudeQuotaWindow;
     sevenDay?: ClaudeQuotaWindow;
   } | null;
+  thresholds: ClaudeQuotaThresholds;
   auth: { refreshExpiresAt: string | null; slides: boolean | null };
 }
 
@@ -149,6 +181,30 @@ export function getInboxMessages(
   fetchImpl: typeof fetch = fetch,
 ): Promise<InboxMessageDto[]> {
   return request(`/api/inbox/messages?limit=${limit}`, undefined, fetchImpl);
+}
+
+export function getOverview(fetchImpl: typeof fetch = fetch): Promise<DashboardOverview> {
+  return request("/api/dashboard/overview", undefined, fetchImpl);
+}
+
+export function getConversations(
+  limit = 50,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ConversationSummary[]> {
+  return request(`/api/inbox/conversations?limit=${limit}`, undefined, fetchImpl);
+}
+
+/** Messages oldest first; 404 (thrown) when the conversation is unknown. */
+export function getThread(
+  id: string,
+  limit = 200,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ConversationThread> {
+  return request(
+    `/api/inbox/conversations/${encodeURIComponent(id)}/thread?limit=${limit}`,
+    undefined,
+    fetchImpl,
+  );
 }
 
 export function getSlackStatus(fetchImpl: typeof fetch = fetch): Promise<SlackStatusDto> {

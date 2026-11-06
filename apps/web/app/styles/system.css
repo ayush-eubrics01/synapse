@@ -1,0 +1,349 @@
+/* How Synapse is running and System (spec D12, D14). */
+.syn-running-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.syn-running-head h2 {
+  margin: 0;
+}
+
+.syn-running-live {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+/* The dark panel is dark in both themes. */
+.syn-panel {
+  background: var(--panel);
+  color: var(--panelInk);
+  border: 1px solid var(--panelBorder);
+  border-radius: var(--r-card);
+  padding: 20px 22px;
+}
+
+.syn-stages {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.syn-stages-empty {
+  margin: 0;
+  opacity: 0.6;
+}
+
+.syn-stage-rail {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 14px;
+  margin-bottom: 10px;
+}
+
+.syn-stage-dot {
+  position: relative;
+  z-index: 1;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--dotIdle);
+}
+
+.syn-stage-dot[data-state="ok"] {
+  background: var(--dotOk);
+}
+
+.syn-stage-dot[data-state="waiting"] {
+  background: var(--dotWarn);
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--dotWarn) 30%, transparent);
+  animation: synPulse 1.6s ease-in-out infinite;
+}
+
+.syn-stage-dot[data-state="failing"] {
+  background: var(--redFg);
+}
+
+.syn-stage-line {
+  position: absolute;
+  left: 12px;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  background: var(--dotIdle);
+}
+
+.syn-stage-line[data-state="ok"] {
+  background: var(--dotOk);
+}
+
+.syn-stage-line[data-state="waiting"] {
+  background: var(--dotWarn);
+}
+
+.syn-stage-line[data-state="failing"] {
+  background: var(--redFg);
+}
+
+.syn-stage-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.syn-stage-what {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  opacity: 0.6;
+}
+
+.syn-stage-summary {
+  margin-top: 4px;
+  padding-right: 10px;
+  font-size: 12.5px;
+  opacity: 0.85;
+}
+
+.syn-panel-explainer {
+  margin: 16px 0 0;
+  font-size: 12.5px;
+  opacity: 0.65;
+}
+
+.syn-panel-divider {
+  border: 0;
+  border-top: 1px solid var(--panelLine);
+  margin: 16px 0;
+}
+
+.syn-quota-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+
+.syn-quota-title {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.syn-quota-level {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  opacity: 0.75;
+}
+
+.syn-quota-row {
+  display: grid;
+  grid-template-columns: 130px 1fr 40px;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+}
+
+.syn-quota-track {
+  position: relative;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--panelLine);
+}
+
+.syn-quota-fill {
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--dotOk);
+}
+
+.syn-quota-marker {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  background: var(--panelInk);
+  opacity: 0.8;
+}
+
+.syn-quota-pct {
+  font-family: var(--mono);
+  text-align: right;
+}
+
+.syn-quota-caption {
+  margin: 4px 0 0;
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.syn-run-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.syn-run-fact-label {
+  font-size: 11.5px;
+  opacity: 0.55;
+}
+
+.syn-run-fact-value {
+  margin-top: 2px;
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.syn-run-fact-sub {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  opacity: 0.55;
+}
+
+.syn-system h2 {
+  margin: 0 0 12px;
+}
+
+.syn-system-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+@media (min-width: 900px) {
+  .syn-system-cards {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+}
+
+.syn-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+
+.syn-card-head h3,
+.syn-system-sub {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.syn-system-sub {
+  margin-top: 24px;
+  margin-bottom: 8px;
+}
+
+.syn-card-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.syn-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.syn-jobs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.syn-job {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line2);
+}
+
+.syn-job:first-child {
+  border-top: 0;
+}
+
+.syn-job-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.syn-job-label {
+  font-size: 13px;
+}
+
+.syn-job-type,
+.syn-job-meta,
+.syn-mono {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.syn-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  font-size: 13px;
+}
+
+/* A divider between rows only: the card head comes first, so :first-of-type never matched a kv row. */
+.syn-kv + .syn-kv {
+  border-top: 1px solid var(--line2);
+}
+
+.syn-kv-label {
+  color: var(--muted);
+}
+
+.syn-link-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--blueFg);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+
+.syn-table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.syn-table th,
+.syn-table td {
+  text-align: left;
+  padding: 4px 16px 4px 0;
+}
+
+.syn-table th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+@media (max-width: 700px) {
+  .syn-stages,
+  .syn-run-facts {
+    grid-template-columns: 1fr 1fr;
+    row-gap: 16px;
+  }
+
+  .syn-quota-row {
+    grid-template-columns: 1fr 40px;
+  }
+
+  .syn-quota-label {
+    grid-column: 1 / -1;
+  }
+}

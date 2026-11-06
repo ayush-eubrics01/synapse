@@ -42,12 +42,14 @@ import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notif
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
-import { SlackSender } from "./integrations/slack/sender";
+import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
 import { ExtractionQueue } from "./modules/commitments/extraction-queue";
 import { FollowupService } from "./modules/commitments/followups";
 import { CommitmentLifecycle } from "./modules/commitments/lifecycle";
 import { StallService } from "./modules/commitments/stall";
 import { CommitmentStore } from "./modules/commitments/store";
+import { DashboardService } from "./modules/dashboard/service";
+import { InboxConversations } from "./modules/inbox/conversations";
 import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
@@ -92,6 +94,7 @@ export interface Container {
   orchestrator: ClaudeOrchestrator;
   health: HealthService;
   inbox: InboxStore;
+  conversations: InboxConversations;
   urgent: UrgentInbox;
   sync: SyncStateService;
   people: PeopleService;
@@ -113,6 +116,7 @@ export interface Container {
   recoverySweeps: RecoverySweep[];
   /** Job handler registry; the urgency smoke script runs one handler directly. */
   handlers: ReadonlyMap<string, HandlerRegistration>;
+  dashboard: DashboardService;
   slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
@@ -222,6 +226,12 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     events,
     audit,
     replyStates: (ids) => replyStates(db, ids),
+  });
+  const conversations = new InboxConversations({
+    db,
+    settings,
+    urgent,
+    normalise: normaliseSentText,
   });
   const people = new PeopleService({ db, clock, events, audit, settings });
   const securityFlags = new SecurityFlagsService({
@@ -383,6 +393,20 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     "desktop-notifier": desktopNotifierCheck(notifier),
   });
 
+  const dashboard = new DashboardService({
+    db,
+    clock,
+    settings,
+    urgent,
+    approvals,
+    securityFlags,
+    commitmentLifecycle,
+    followups: followupService,
+    peopleViews,
+    sync,
+    health,
+  });
+
   return {
     config,
     clock,
@@ -406,6 +430,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     orchestrator,
     health,
     inbox,
+    conversations,
     urgent,
     sync,
     people,
@@ -419,6 +444,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     commitments,
     commitmentLifecycle,
     followups: followupService,
+    dashboard,
     handlers,
     recoverySweeps: [
       { name: "urgency.assess", run: urgency.recoverySweep },
