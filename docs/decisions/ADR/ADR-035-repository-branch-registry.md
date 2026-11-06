@@ -61,6 +61,13 @@ PR:           origin/stage  ─▶  upstream/stage
 - **Negative:** one extra confirmation per task. It's merged into the existing plan approval, so it isn't a separate wait.
 - Environment detection from branch names is only a suggestion. The user's confirmation is the source of truth.
 
+## Implementation note (Phase 9)
+
+- The registry was built as decided: database only, entered through the UI as a proposal that the user confirms. Module doc: [engineering-brain.md](../../modules/engineering-brain.md).
+- **`protected` and `auto_deploys_on_merge`** are per-environment booleans on `repository_environments`, set by the user at registration or edit. In Phase 9 they are **recorded and displayed only** (chips such as `stage` with "auto-deploys" and `prod` with "protected"); nothing enforces them yet. Phase 10 must enforce them: `protected` means Synapse never writes to that branch (no push, merge or PR target without an explicit user override), and `auto_deploys_on_merge` means a merge into that branch ships, so the branch confirmation and merge steps must say so. Environments are detected only as suggestions (branch names); the user's confirmation is the source of truth.
+- A registered path must be the top level of a git work tree, match `^/[A-Za-z0-9._/-]+$`, and may not be `/`, `$HOME` or an ancestor of it, or inside `~/.claude`, `~/.ssh` or `~/.config`. Nested registrations are refused. The same safe-path predicate backs path-scoped reads (validator rule L).
+- The drift check only reports. The one automatic-looking change, "accept remotes", is an explicit user action.
+
 ## Related
 
 - [ADR-030](ADR-030-single-engineering-task-and-git-workflow.md), [ADR-013](ADR-013-manual-approval-for-external-writes.md), [ADR-016](ADR-016-central-engineering-brain.md)
