@@ -1,4 +1,4 @@
-import { readdirSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { type Job, JobError, SANDBOX_MASKED_ROOTS } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
@@ -32,13 +32,16 @@ export interface StepJobDeps {
   steps: Pick<EngineeringStepService, "runBranch" | "runDevelop" | "runUpdateParent" | "cleanup">;
   handlers: Map<string, HandlerRegistration>;
   /**
-   * ADR-040. Each develop run gets `<scratchDir>/runs/<jobId>`, removed when the run ends, with the
-   * sandbox `tmpDir` inside it. `home` and `protectedDirs` (the data and backup dirs) feed the
-   * deny list. `maskedRoots` defaults to SANDBOX_MASKED_ROOTS: a repository at or under one is
-   * refused (`repo_in_masked_path`). Tests, whose repositories live under the OS temp dir, pass [].
+   * ADR-040. Each develop run gets `<runRoot>/runs/<jobId>`, removed when the run ends, with the
+   * sandbox `tmpDir` inside it. `runRoot` (default `~/.cache/synapse`, Task 4b) must be outside
+   * the data and backup dirs: a TMPDIR under a sandbox mask breaks every Bash call, and rule M
+   * refuses it. `runRoot` and `runs` are kept 0700. `home` and `protectedDirs` (the data and
+   * backup dirs) feed the deny list. `maskedRoots` defaults to SANDBOX_MASKED_ROOTS: a repository
+   * at or under one is refused (`repo_in_masked_path`). Tests, whose repositories live under the
+   * OS temp dir, pass [].
    */
   sandbox: {
-    scratchDir: string;
+    runRoot: string;
     home: string;
     protectedDirs: string[];
     maskedRoots?: readonly string[];
@@ -46,12 +49,12 @@ export interface StepJobDeps {
 }
 
 /**
- * Removes leftover `<scratchDir>/runs/*` entries (develop runs whose process was killed before its
+ * Removes leftover `<runRoot>/runs/*` entries (develop runs whose process was killed before its
  * `finally` ran). Called once at API start, when no engineering step runs in this process. Best
  * effort: an entry that cannot be removed logs one fixed line and the others still go.
  */
-export function sweepRunScratch(scratchDir: string): void {
-  const runs = join(scratchDir, "runs");
+export function sweepRunScratch(runRoot: string): void {
+  const runs = join(runRoot, "runs");
   let entries: string[];
   try {
     entries = readdirSync(runs);
@@ -64,6 +67,20 @@ export function sweepRunScratch(scratchDir: string): void {
     } catch {
       console.error("engineering.step: run scratch sweep failed");
     }
+  }
+}
+
+/**
+ * Creates `<runRoot>/runs` and keeps `runRoot` and `runs` at 0700 (Task 4b). Each must be a real
+ * directory, not a symlink that chmod would follow. Throws on any failure (the run never starts).
+ */
+function prepareRunsDir(runRoot: string): void {
+  const runs = join(runRoot, "runs");
+  mkdirSync(runs, { recursive: true, mode: 0o700 });
+  for (const d of [runRoot, runs]) {
+    if (!lstatSync(d).isDirectory())
+      throw new Error("engineering.step: run root is not a directory");
+    chmodSync(d, 0o700);
   }
 }
 
@@ -113,8 +130,9 @@ export function registerStepJob(deps: StepJobDeps): void {
               // unmasking it would expose a credential dir, synapse.db or the backups.
               throw new JobError({ kind: "invalid_input", message: REPO_IN_MASKED_PATH });
             }
-            const runScratch = join(sandbox.scratchDir, "runs", job.id);
+            const runScratch = join(sandbox.runRoot, "runs", job.id);
             try {
+              if (sandboxed) prepareRunsDir(sandbox.runRoot);
               return await orchestrator.run(
                 buildDevelopRequest(
                   { approvedDescription: t.approvedDescription, plan: t.plan },
@@ -137,7 +155,7 @@ export function registerStepJob(deps: StepJobDeps): void {
                 ctx.signal,
               );
             } finally {
-              // Also after a throw, timeout or abort: stale run dirs must not fill the data dir.
+              // Also after a throw, timeout or abort: stale run dirs must not pile up in the cache.
               // A failure never replaces the run's result or error; the startup sweep retries.
               try {
                 rmSync(runScratch, { recursive: true, force: true });

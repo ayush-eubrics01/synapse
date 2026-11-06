@@ -299,6 +299,23 @@ export interface GitWorkflow {
    * Unaffected by refs and commits. Filesystem reads only.
    */
   configFingerprint(repo: string): Promise<string>;
+  /**
+   * ADR-040, Task 4b: the known Claude Code sandbox placeholder paths that exist now, relative to
+   * the repository top with `/` separators, sorted: `.git/{branches,remotes,config.worktree,
+   * objects/info/alternates,objects/info/commit-graphs}`, every `.claude-sandbox-noreplace` dir
+   * under `.git` (bounded walk, symlinks not entered), `.claude/.cc-writes` and `.claude`. Taken
+   * right before a develop run. Filesystem reads only: no git command runs.
+   */
+  sandboxPlaceholders(repo: string): Promise<string[]>;
+  /**
+   * ADR-040, Task 4b: after a sandboxed run, removes each known placeholder path that is not in
+   * `before` and is empty: a zero-byte regular file where a file is expected, or a directory that
+   * holds only empty directories. Deepest first, so `.claude` goes only when it was absent before
+   * and is empty once `.claude/.cc-writes` is gone. Never removes anything non-empty, pre-existing,
+   * a symlink, or reached through a symlink. Best effort: a path that cannot be removed is left
+   * for the git-dir fingerprint to flag. Returns the number of entries removed. No git command.
+   */
+  removeSandboxPlaceholders(repo: string, before: readonly string[]): Promise<number>;
   /** E10: the working tree's changes against HEAD. Read-only. */
   diffSummary(repo: string, opts?: GitDiffOptions): Promise<GitDiffSummary>;
   /** E10: `git add -A` and `git commit -m <message>`, only when the hash still matches. */

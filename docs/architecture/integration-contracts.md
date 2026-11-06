@@ -318,6 +318,8 @@ interface GitWorkflow {
   createTaskBranch(repo, parent, taskBranch): Promise<{ baseSha: string }>;
   gitDirFingerprint(repo): Promise<string>;   // filesystem reads only; includes configFingerprint
   configFingerprint(repo): Promise<string>;   // .git/config, hooks, info/attributes, global config; filesystem reads only
+  sandboxPlaceholders(repo): Promise<string[]>;                // ADR-040: known sandbox placeholder paths that exist now
+  removeSandboxPlaceholders(repo, before): Promise<number>;    // removes new, empty ones only; no symlinks; no git command
   diffSummary(repo, opts?: { gitDirBaseline?: string }): Promise<GitDiffSummary>;
   commitAll(repo, message, expectedHash, opts?: GitCommitOptions): Promise<{ sha: string }>;
   updateParent(repo, parent, opts?: GitConfigGuard): Promise<{ ok: true } | { ok: false; conflict: true }>;

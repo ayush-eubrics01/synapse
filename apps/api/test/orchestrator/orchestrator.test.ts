@@ -949,7 +949,7 @@ describe("beforeSpawn (Phase 6b I2)", () => {
 describe("sandbox (ADR-040, rule M)", () => {
   const WD = "/home/u/projects/demo";
   const SANDBOX = {
-    tmpDir: "/home/u/.local/share/synapse/scratch/runs/j1/tmp",
+    tmpDir: "/home/u/.cache/synapse/runs/j1/tmp",
     denyRead: ["/home/u/.ssh", "/home/u/.local/share/synapse"],
   };
   const develop = (over: Partial<ClaudeJobRequest> = {}) =>

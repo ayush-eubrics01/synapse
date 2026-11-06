@@ -7,6 +7,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -211,7 +212,7 @@ let repo: string;
 let repoId: string;
 let requests: ClaudeJobRequest[];
 let reply: (req: ClaudeJobRequest) => AIExecutionResult;
-/** The step worker's scratch dir: develop runs get `<it>/runs/<jobId>/tmp` (ADR-040). */
+/** The step worker's run root: develop runs get `<it>/runs/<jobId>/tmp` (ADR-040). */
 let sandboxScratch: string;
 
 const taskRow = (id: string) =>
@@ -451,7 +452,7 @@ beforeEach(async () => {
     },
     // The test repositories live under the OS temp dir, which the real sandbox masks.
     sandbox: {
-      scratchDir: sandboxScratch,
+      runRoot: sandboxScratch,
       home: fx.home,
       protectedDirs: [join(sandboxScratch, "data")],
       maskedRoots: [],
@@ -513,7 +514,7 @@ describe("develop request (E9)", () => {
         maxTurns: 60,
         timeoutMinutes: 30,
         sandbox: {
-          tmpDir: "/home/demo/.local/share/synapse/scratch/runs/j1/tmp",
+          tmpDir: "/home/demo/.cache/synapse/runs/j1/tmp",
           home: "/home/demo",
           protectedDirs: ["/home/demo/.local/share/synapse"],
         },
@@ -555,6 +556,103 @@ describe("develop sandbox (ADR-040)", () => {
     expect(req.sandbox?.tmpDir).toBe(join(runDir(jobId), "tmp"));
     expect(req.sandbox?.denyRead).toContain(join(fx.home, ".ssh"));
     expect(req.sandbox?.denyRead).toContain(join(sandboxScratch, "data"));
+  });
+
+  test("the run root and runs dir are created 0700, outside every deny entry (Task 4b)", async () => {
+    const root = join(scratch(), "cache", "synapse");
+    handlers.delete(STEP_JOB);
+    registerStepJob({
+      db,
+      settings,
+      steps,
+      handlers,
+      orchestrator: {
+        run: async (req: ClaudeJobRequest) => {
+          requests.push(req);
+          return reply(req);
+        },
+      },
+      sandbox: {
+        runRoot: root,
+        home: fx.home,
+        protectedDirs: [join(sandboxScratch, "data")],
+        maskedRoots: [],
+      },
+    });
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+    const req = requests[0] as ClaudeJobRequest;
+    expect(req.sandbox?.tmpDir).toBe(join(root, "runs", req.jobId as string, "tmp"));
+    expect(statSync(root).mode & 0o777).toBe(0o700);
+    expect(statSync(join(root, "runs")).mode & 0o777).toBe(0o700);
+    const tmp = req.sandbox?.tmpDir as string;
+    for (const e of req.sandbox?.denyRead ?? []) {
+      expect(tmp === e || tmp.startsWith(`${e}/`)).toBe(false);
+    }
+  });
+
+  test("sandbox placeholders left by the run are removed before the diff check (Task 4b)", async () => {
+    // Some git templates ship an empty branches/: make the observed set exactly new.
+    rmSync(join(repo, ".git", "branches"), { recursive: true, force: true });
+    const edit = editingRun();
+    reply = (req) => {
+      const wd = req.workingDirectory as string;
+      for (const d of [
+        "branches",
+        "remotes",
+        "objects/info/commit-graphs/.claude-sandbox-noreplace",
+        "info/.claude-sandbox-noreplace",
+        "objects/info/.claude-sandbox-noreplace",
+      ]) {
+        mkdirSync(join(wd, ".git", d), { recursive: true });
+      }
+      writeFileSync(join(wd, ".git", "config.worktree"), "");
+      writeFileSync(join(wd, ".git", "objects", "info", "alternates"), "");
+      mkdirSync(join(wd, ".claude", ".cc-writes"), { recursive: true });
+      return edit(req);
+    };
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.sandboxPlaceholdersRemoved).toBe(10);
+    expect(out.unsafeReasons).toEqual([]);
+    expect(existsSync(join(repo, ".claude"))).toBe(false);
+    expect(existsSync(join(repo, ".git", "config.worktree"))).toBe(false);
+    expect(pendingOf("engineering.commit")).toBeDefined();
+  });
+
+  test("a non-empty placeholder is kept and the run is unsafe (Task 4b)", async () => {
+    const edit = editingRun();
+    reply = (req) => {
+      const wd = req.workingDirectory as string;
+      mkdirSync(join(wd, ".git", "info", ".claude-sandbox-noreplace"), { recursive: true });
+      writeFileSync(join(wd, ".git", "objects", "info", "alternates"), "/elsewhere/objects\n");
+      return edit(req);
+    };
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("unsafe_change");
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.sandboxPlaceholdersRemoved).toBe(1);
+    expect(out.unsafeReasons).toEqual(["git_dir_changed"]);
+    expect(existsSync(join(repo, ".git", "objects", "info", "alternates"))).toBe(true);
+    expect(pendingOf("engineering.commit")).toBeUndefined();
+  });
+
+  test("placeholders are also removed after a failed run, so a clean tree fails cleanly (Task 4b)", async () => {
+    rmSync(join(repo, ".git", "branches"), { recursive: true, force: true });
+    reply = (req) => {
+      const wd = req.workingDirectory as string;
+      mkdirSync(join(wd, ".git", "branches"), { recursive: true });
+      writeFileSync(join(wd, ".git", "config.worktree"), "");
+      throw new JobError({ kind: "timeout", message: "timed out" });
+    };
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("timeout");
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.sandboxPlaceholdersRemoved).toBe(2);
+    expect(existsSync(join(repo, ".git", "branches"))).toBe(false);
   });
 
   test("with the setting off the request has no sandbox", async () => {
@@ -684,7 +782,7 @@ describe("develop sandbox (ADR-040)", () => {
       },
       // The repository's parent stands in for the Synapse data dir.
       sandbox: {
-        scratchDir: sandboxScratch,
+        runRoot: sandboxScratch,
         home: fx.home,
         protectedDirs: [join(repo, "..")],
         maskedRoots: [],
@@ -730,7 +828,7 @@ describe("develop sandbox (ADR-040)", () => {
           return reply(req);
         },
       },
-      sandbox: { scratchDir: sandboxScratch, home, protectedDirs: [], maskedRoots: [] },
+      sandbox: { runRoot: sandboxScratch, home, protectedDirs: [], maskedRoots: [] },
     });
     const id = await developed();
     expect(requests).toHaveLength(0);
@@ -755,7 +853,7 @@ describe("develop sandbox (ADR-040)", () => {
       // The repository's parent stands in for /tmp (the default roots are tested in
       // develop-prompt.test.ts).
       sandbox: {
-        scratchDir: sandboxScratch,
+        runRoot: sandboxScratch,
         home: fx.home,
         protectedDirs: [],
         maskedRoots: [join(repo, "..")],

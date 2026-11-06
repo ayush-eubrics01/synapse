@@ -66,6 +66,19 @@ export function resolveHome(env: Record<string, string | undefined>): string {
   return env.HOME || homedir();
 }
 
+/**
+ * ADR-040, Task 4b: the root of develop-run scratch dirs, `<XDG_CACHE_HOME>/synapse` when that is
+ * absolute (a relative value is invalid per the XDG spec and ignored), else `<home>/.cache/synapse`.
+ * Never inside the data dir: the sandbox masks the data dir, and bwrap cannot create Claude
+ * Code's files in a TMPDIR under a mask.
+ */
+export function defaultRunScratchRoot(env: Record<string, string | undefined>): string {
+  const xdg = env.XDG_CACHE_HOME;
+  return xdg && isAbsolute(xdg)
+    ? join(xdg, "synapse")
+    : join(resolveHome(env), ".cache", "synapse");
+}
+
 function homePath(
   env: Record<string, string | undefined>,
   override: string | undefined,

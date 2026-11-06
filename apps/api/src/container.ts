@@ -13,7 +13,13 @@ import { type Clock, newId, systemClock } from "@synapse/shared";
 import { ApprovalEngine } from "./core/approvals/approvals";
 import { registerApprovalExecution } from "./core/approvals/execution";
 import { AuditLogger } from "./core/audit/audit";
-import { type AppConfig, checkBackupDir, REPO_ROOT, resolveHome } from "./core/config/config";
+import {
+  type AppConfig,
+  checkBackupDir,
+  defaultRunScratchRoot,
+  REPO_ROOT,
+  resolveHome,
+} from "./core/config/config";
 import { SettingsService } from "./core/config/settings";
 import { OutboxDispatcher } from "./core/events/dispatcher";
 import { LiveBus } from "./core/events/live-bus";
@@ -224,6 +230,11 @@ export interface ContainerDeps {
    * SANDBOX_MASKED_ROOTS). Tests only: their repositories live under the OS temp dir.
    */
   sandboxMaskedRoots?: readonly string[];
+  /**
+   * Replaces the develop-run scratch root (default `defaultRunScratchRoot(process.env)`, i.e.
+   * `~/.cache/synapse`; a temp dir for `:memory:`). Runs get `<it>/runs/<jobId>` (ADR-040).
+   */
+  runScratchRoot?: string;
 }
 
 const CORE_MODULES = [
@@ -686,8 +697,15 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   if (explicitBackupDir !== null && checkBackupDir(explicitBackupDir) !== "ok") {
     throw new Error("ops.backup.dir must be an absolute path outside the repository");
   }
-  // ADR-040: develop runs get a per-run scratch under scratchDir; the data and backup dirs are
-  // masked in the sandbox along with the home credential dirs.
+  // ADR-040: develop runs get a per-run scratch under the run root; the data and backup dirs are
+  // masked in the sandbox along with the home credential dirs. Task 4b: the run root is never
+  // inside the data dir (a TMPDIR under a mask breaks every Bash call): `~/.cache/synapse`, or a
+  // separate temp dir for an in-memory container (whose data dir is the temp scratchDir).
+  const runRoot =
+    deps.runScratchRoot ??
+    (config.dbPath === ":memory:"
+      ? mkdtempSync(join(tmpdir(), "synapse-runs-"))
+      : defaultRunScratchRoot(process.env));
   registerStepJob({
     db,
     settings,
@@ -695,14 +713,14 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     steps: engineeringSteps,
     handlers,
     sandbox: {
-      scratchDir,
+      runRoot,
       home,
       protectedDirs: [dataDir, backupDir],
       ...(deps.sandboxMaskedRoots ? { maskedRoots: deps.sandboxMaskedRoots } : {}),
     },
   });
   // Startup: no engineering step runs in this process yet, so every run dir is a leftover.
-  sweepRunScratch(scratchDir);
+  sweepRunScratch(runRoot);
   const diskFree = deps.diskFree ?? defaultDiskFree;
   const startedAt = clock.now();
   const backup = new BackupService({

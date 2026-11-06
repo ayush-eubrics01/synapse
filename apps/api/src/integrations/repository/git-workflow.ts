@@ -27,6 +27,7 @@ import {
 } from "@synapse/contracts";
 import { type GitExec, type GitResult, lines, runGit } from "./git";
 import { pushDisabled, stripCredentials } from "./local-git";
+import { existingSandboxPlaceholders, removeNewSandboxPlaceholders } from "./sandbox-placeholders";
 
 /**
  * The engineering git workflow (E7, E8, E10–E13, E15) over the hardened runner (E17). Every
@@ -378,6 +379,14 @@ export class LocalGitWorkflow implements GitWorkflow {
       this.walk(h, gitDir, "", null);
     }
     return h.digest("hex");
+  }
+
+  async sandboxPlaceholders(repo: string): Promise<string[]> {
+    return existingSandboxPlaceholders(repo);
+  }
+
+  async removeSandboxPlaceholders(repo: string, before: readonly string[]): Promise<number> {
+    return removeNewSandboxPlaceholders(repo, before);
   }
 
   async diffSummary(repo: string, opts: GitDiffOptions = {}): Promise<GitDiffSummary> {

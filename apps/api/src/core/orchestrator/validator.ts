@@ -79,8 +79,9 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *     repository and the credentials and sockets masked. A non-engineering run must not carry one.
  *     `denyRead` must be non-empty; `tmpDir` and every `denyRead` entry must satisfy
  *     isSafeAbsolutePath; `tmpDir` must be neither equal to nor an ancestor of a `denyRead` entry
- *     or of SANDBOX_MASKED_ROOTS, nor equal to or under `/run` or `/var/run` (its `allowRead`
- *     would re-expose them). Last of all
+ *     or of SANDBOX_MASKED_ROOTS, nor inside a `denyRead` entry (bwrap cannot write under a
+ *     mask), nor equal to or under `/run` or `/var/run` (its `allowRead` would re-expose them).
+ *     Last of all
  * Tool names are normalised (specifier stripped) before classification.
  */
 export function validateRequest(
@@ -266,6 +267,13 @@ export function validateRequest(
     const masks = [...sandbox.denyRead, ...SANDBOX_MASKED_ROOTS].map((e) => e.replace(/\/+$/, ""));
     if (masks.some((e) => e === tmp || e.startsWith(`${tmp}/`))) {
       return fail("sandbox tmpDir must not contain a masked path");
+    }
+    // Inside a request mask, bwrap cannot create Claude Code's files under TMPDIR ("Read-only
+    // file system") and every Bash call exits 1 (Task 4b). The fixed /tmp mask is different: the
+    // sandbox makes it a private writable tmpfs.
+    const requestMasks = sandbox.denyRead.map((e) => e.replace(/\/+$/, ""));
+    if (requestMasks.some((e) => tmp.startsWith(`${e}/`))) {
+      return fail("sandbox tmpDir must not be inside a masked path");
     }
     // Under /run or /var/run, allowRead would re-expose sockets (SSH agent, rootless Docker).
     if (["/run", "/var/run"].some((r) => tmp === r || tmp.startsWith(`${r}/`))) {

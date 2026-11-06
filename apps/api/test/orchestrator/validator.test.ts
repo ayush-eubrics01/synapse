@@ -22,7 +22,7 @@ const untrusted: PromptPart = { provenance: "untrusted", source: "slack", conten
 const GUARD = { toolName: SEND, expectedInputSha256: "d".repeat(64) };
 /** A valid rule-M sandbox (ADR-040): every engineering Bash case carries one. */
 const SANDBOX = {
-  tmpDir: "/home/u/.local/share/synapse/scratch/runs/j1/tmp",
+  tmpDir: "/home/u/.cache/synapse/runs/j1/tmp",
   denyRead: ["/home/u/.ssh", "/home/u/.local/share/synapse"],
 };
 
@@ -625,12 +625,39 @@ describe("rule M: engineering Bash requires the sandbox (ADR-040)", () => {
     expect(reason(v(eng({ sandbox: { ...SANDBOX, tmpDir: "/var" } })))).toBe(
       "sandbox paths must be absolute paths of safe characters",
     );
-    // A masked dir that contains tmpDir is fine: allowRead re-exposes only tmpDir.
     expect(v(eng({ sandbox: SANDBOX }))).toEqual({ ok: true });
     // A sibling with a shared prefix is not an ancestor.
     expect(
       v(eng({ sandbox: { tmpDir: "/home/u/.s/tmp", denyRead: ["/home/u/.s/tmp2"] } })),
     ).toEqual({ ok: true });
+  });
+  test("a tmpDir inside a denyRead entry fails (Task 4b: bwrap cannot write under a mask)", () => {
+    const INSIDE = "sandbox tmpDir must not be inside a masked path";
+    expect(
+      reason(
+        v(
+          eng({
+            sandbox: {
+              tmpDir: "/home/u/.local/share/synapse/scratch/runs/j1/tmp",
+              denyRead: ["/home/u/.ssh", "/home/u/.local/share/synapse"],
+            },
+          }),
+        ),
+      ),
+    ).toBe(INSIDE);
+    expect(
+      reason(
+        v(eng({ sandbox: { tmpDir: "/home/u/.config/x/tmp/", denyRead: ["/home/u/.config/"] } })),
+      ),
+    ).toBe(INSIDE);
+    // Equal is still the "contains" reason, checked first.
+    expect(
+      reason(v(eng({ sandbox: { tmpDir: "/home/u/.config", denyRead: ["/home/u/.config"] } }))),
+    ).toBe("sandbox tmpDir must not contain a masked path");
+    // The fixed /tmp mask is not a request entry: a per-run dir under it stays allowed.
+    expect(v(eng({ sandbox: { ...SANDBOX, tmpDir: "/tmp/synapse-runs-x/runs/j1/tmp" } }))).toEqual({
+      ok: true,
+    });
   });
   test("a tmpDir equal to or under /run or /var/run fails (fix round 1)", () => {
     const UNDER = "sandbox tmpDir must not be under /run or /var/run";

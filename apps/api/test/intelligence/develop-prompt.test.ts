@@ -124,7 +124,11 @@ describe("buildDevelopRequest sandbox", () => {
     },
   };
   const S = { model: "sonnet", maxTurns: 30, timeoutMinutes: 30 };
-  const SANDBOX = { tmpDir: `${DATA}/scratch/runs/j1/tmp`, home: HOME, protectedDirs: [DATA] };
+  const SANDBOX = {
+    tmpDir: `${HOME}/.cache/synapse/runs/j1/tmp`,
+    home: HOME,
+    protectedDirs: [DATA],
+  };
 
   test("a null sandbox setting leaves no sandbox key", () => {
     const req = buildDevelopRequest(

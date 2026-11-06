@@ -174,6 +174,13 @@ export interface EngineeringStepDeps {
   prs: PullRequestProvider;
 }
 
+/** The develop step's pre-run fingerprints plus the placeholder count (ADR-040, Task 4b). */
+interface DevelopFingerprints {
+  gitDirBaseline: string;
+  configFingerprint: string;
+  sandboxPlaceholdersRemoved: number;
+}
+
 interface Ctx {
   task: TaskRow;
   path: string;
@@ -297,6 +304,7 @@ export class EngineeringStepService {
       }
       let gitDirBaseline: string;
       let configFingerprint: string;
+      let placeholdersBefore: string[];
       try {
         if ((await this.deps.git.currentBranch(path)) !== taskBranch) {
           return this.attention(taskId, "develop", "branch_changed");
@@ -307,13 +315,16 @@ export class EngineeringStepService {
         }
         gitDirBaseline = await this.deps.git.gitDirFingerprint(path);
         configFingerprint = await this.deps.git.configFingerprint(path);
+        placeholdersBefore = await this.deps.git.sandboxPlaceholders(path);
       } catch (e) {
         return this.attention(taskId, "develop", codeOf(e));
       }
       const fingerprints = { gitDirBaseline, configFingerprint };
       this.mark(taskId, "develop", "running", { output: fingerprints, claudeRunId: null });
 
-      let result: AIExecutionResult;
+      let result: AIExecutionResult | undefined;
+      let runError: unknown;
+      let failed = false;
       try {
         result = await runner.run({
           taskId,
@@ -323,6 +334,25 @@ export class EngineeringStepService {
           plan: task.plan as InvestigationOutput,
         });
       } catch (err) {
+        failed = true;
+        runError = err;
+      }
+      // ADR-040, Task 4b: the sandbox leaves empty mount placeholders in .git and the repository
+      // top. Remove the ones this run created, before any fingerprint, diff or unsafe check;
+      // anything non-empty stays and is flagged as before. Every develop run that started was
+      // sandboxed (rule M), and a refused run created nothing, so this runs after every outcome.
+      let sandboxPlaceholdersRemoved = 0;
+      try {
+        sandboxPlaceholdersRemoved = await this.deps.git.removeSandboxPlaceholders(
+          path,
+          placeholdersBefore,
+        );
+      } catch {
+        sandboxPlaceholdersRemoved = 0;
+      }
+      const fp = { ...fingerprints, sandboxPlaceholdersRemoved };
+      if (failed) {
+        const err = runError;
         // Quota or auth pause: the queue runs the job again later; the step waits again.
         if (err instanceof JobError && retryDecision(err.classified.kind) === "defer") {
           this.mark(taskId, "develop", "pending", { claudeRunId: runner.runId() });
@@ -334,7 +364,7 @@ export class EngineeringStepService {
             taskId,
             "develop",
             "sandbox_unavailable",
-            { ...fingerprints, failure: "sandbox_unavailable" },
+            { ...fp, failure: "sandbox_unavailable" },
             runner.runId(),
           );
         }
@@ -353,9 +383,9 @@ export class EngineeringStepService {
           : sandboxOff
             ? "sandbox_disabled"
             : (stopKind(err) ?? (err instanceof JobError ? err.classified.kind : "unknown"));
-        return this.developFailed(ctx, kind, fingerprints, runner.runId());
+        return this.developFailed(ctx, kind, fp, runner.runId());
       }
-      return this.developDone(ctx, result, testCommand, fingerprints, runner.runId());
+      return this.developDone(ctx, result as AIExecutionResult, testCommand, fp, runner.runId());
     });
   }
 
@@ -363,7 +393,7 @@ export class EngineeringStepService {
     ctx: Ctx,
     result: AIExecutionResult,
     testCommand: string,
-    fp: { gitDirBaseline: string; configFingerprint: string },
+    fp: DevelopFingerprints,
     claudeRunId: string | null,
   ): Promise<StepResult> {
     const { task, path } = ctx;
@@ -436,7 +466,7 @@ export class EngineeringStepService {
   private async developFailed(
     ctx: Ctx,
     code: string,
-    fp: { gitDirBaseline: string; configFingerprint: string },
+    fp: DevelopFingerprints,
     claudeRunId: string | null,
   ): Promise<StepResult> {
     let clean = false;
