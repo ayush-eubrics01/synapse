@@ -171,6 +171,7 @@ function toggleTheme() {
 
 export default function Dashboard() {
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
+  const [overviewFailed, setOverviewFailed] = useState(false);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const now = useClock();
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -240,6 +241,7 @@ export default function Dashboard() {
     if (rq.status === "fulfilled") setReviewQueue(rq.value);
     if (fu.status === "fulfilled") setFollowups(fu.value);
     if (ov.status === "fulfilled") setOverview(ov.value);
+    setOverviewFailed(ov.status === "rejected");
     if (cv.status === "fulfilled") setConversations(cv.value);
     // The open profile is refetched with everything else; if that fails, the stale profile closes.
     if (openUser && personRef.current === openUser) {
@@ -422,6 +424,7 @@ export default function Dashboard() {
           <section id="overview" className="syn-section">
             <Header
               overview={overview}
+              unreachable={overviewFailed}
               now={now}
               onOpenPalette={() => setPaletteOpen(true)}
               backfillStarted={backfillStarted(slackStatus)}

@@ -39,10 +39,11 @@ const issue = (label: string, detail: string | null, hint: string | null) => ({
   hint,
 });
 
-const render = (o: DashboardOverview, initiallyOpen = false) =>
+const render = (o: DashboardOverview | null, initiallyOpen = false, unreachable = false) =>
   renderToString(
     <Header
       overview={o}
+      unreachable={unreachable}
       now={now}
       onOpenPalette={() => {}}
       backfillStarted
@@ -117,4 +118,30 @@ test("palette lists items with their group", () => {
   expect(html).toContain("Inbox");
   expect(html).toContain("go to");
   expect(html).toContain("esc close");
+});
+
+test("null overview and unreachable", () => {
+  const html = render(null, false, true);
+  expect(html).toContain("Unreachable");
+  expect(html).toContain("Can&#x27;t reach the Synapse API.");
+  expect(html).not.toContain("Showing the last data loaded");
+});
+
+test("stale overview and unreachable is not Healthy", () => {
+  const html = render(overview({ status: "ok", issues: [] }), false, true);
+  expect(html).toContain("Unreachable");
+  expect(html).not.toContain("Healthy");
+  expect(html).toContain("Showing the last data loaded.");
+  expect(html).toContain("Good morning, Ada.");
+});
+
+test("unreachable popover", () => {
+  const html = render(null, true, true);
+  expect(html).toContain("Can&#x27;t reach Synapse");
+  expect(html).toContain("The Synapse API is not responding.");
+  expect(html).not.toContain("syn-health-row");
+});
+
+test("no overview yet and not failed shows Checking", () => {
+  expect(render(null)).toContain("Checking…");
 });

@@ -24,7 +24,11 @@ export function CommandPalette({ open, items, onClose }: CommandPaletteProps) {
     setQuery("");
     setIndex(0);
     inputRef.current?.focus();
-    return () => openerRef.current?.focus();
+    return () => {
+      // Restore focus unless the chosen item moved it somewhere else.
+      const a = document.activeElement;
+      if (!a || a === document.body) openerRef.current?.focus();
+    };
   }, [open]);
 
   if (!open) return null;

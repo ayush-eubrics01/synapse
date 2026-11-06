@@ -11,6 +11,8 @@ export const AWAY_HINT = "Away mode isn't available yet. Until it is, every repl
 
 export interface HeaderProps {
   overview: DashboardOverview | null;
+  /** The latest overview fetch failed; `overview` (if any) is the last good one. */
+  unreachable: boolean;
   /** The browser clock; null until mounted so server and client markup match. */
   now: Date | null;
   onOpenPalette: () => void;
@@ -23,6 +25,7 @@ export interface HeaderProps {
 
 export function Header({
   overview,
+  unreachable,
   now,
   onOpenPalette,
   backfillStarted,
@@ -43,7 +46,13 @@ export function Header({
         {now ? greeting(now, overview?.self.name ?? null) : "Synapse"}
       </h1>
       <p className="syn-header-briefing">
-        {now && overview ? briefing(overview, now, { backfillStarted }) : " "}
+        {unreachable
+          ? overview
+            ? "Can't reach the Synapse API. Showing the last data loaded."
+            : "Can't reach the Synapse API."
+          : now && overview
+            ? briefing(overview, now, { backfillStarted })
+            : " "}
       </p>
       <div className="syn-header-row">
         <button type="button" className="syn-search" onClick={onOpenPalette}>
@@ -53,9 +62,12 @@ export function Header({
         <span className="syn-away">
           <Switch checked={false} onChange={() => {}} label="Away mode" disabled hint={AWAY_HINT} />
         </span>
-        {overview && (
-          <HealthPill health={overview.health} open={healthOpen} onOpenChange={setHealthOpen} />
-        )}
+        <HealthPill
+          health={overview?.health ?? null}
+          unreachable={unreachable}
+          open={healthOpen}
+          onOpenChange={setHealthOpen}
+        />
       </div>
     </header>
   );

@@ -318,6 +318,11 @@
   color: var(--amberFg);
 }
 
+.syn-health-pill--checking {
+  background: var(--subtle);
+  color: var(--muted);
+}
+
 .syn-health-pill--down {
   background: var(--redBg);
   color: var(--redFg);
