@@ -47,3 +47,20 @@ test("engineering task requires an existing repository", () => {
     ),
   ).toThrow();
 });
+
+test("fresh DB: priority defaults to 0 and environment delete sets null", () => {
+  const s = setup();
+  s.run(
+    "insert into repository_environments (id, repository_id, name, branch, protected, auto_deploys_on_merge) values ('e1','r1','prod','main',0,0)",
+  );
+  s.run(
+    "insert into engineering_tasks (id, repository_id, environment_id, source, title, draft_description, status, created_at, updated_at) values ('t1','r1','e1','manual','t','d','proposed','t','t')",
+  );
+  expect(s.query("select priority from engineering_tasks where id='t1'").get()).toEqual({
+    priority: 0,
+  });
+  s.run("delete from repository_environments where id='e1'");
+  expect(s.query("select environment_id e from engineering_tasks where id='t1'").get()).toEqual({
+    e: null,
+  });
+});

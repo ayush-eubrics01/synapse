@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "a2b427c7-dcd6-4578-bf24-3d0f54bfec62",
+  "id": "cc470d64-1bba-4763-bccb-c00da6de5deb",
   "prevId": "5757cb63-3342-423e-a736-b1a55c8475c7",
   "tables": {
     "app_settings": {
@@ -1263,6 +1263,14 @@
           "notNull": true,
           "autoincrement": false
         },
+        "priority": {
+          "name": "priority",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
         "current_step": {
           "name": "current_step",
           "type": "text",
@@ -1348,6 +1356,19 @@
             "id"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "engineering_tasks_environment_id_repository_environments_id_fk": {
+          "name": "engineering_tasks_environment_id_repository_environments_id_fk",
+          "tableFrom": "engineering_tasks",
+          "tableTo": "repository_environments",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },

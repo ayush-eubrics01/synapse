@@ -851,6 +851,18 @@ export const projectMilestones = sqliteTable(
   (t) => [index("project_milestones_project_date_idx").on(t.projectId, t.targetDate)],
 );
 
+const STEPS = [
+  "investigate",
+  "branch",
+  "develop",
+  "commit",
+  "update_parent",
+  "merge_local",
+  "push_pr",
+  "merge_pr",
+  "cleanup",
+] as const;
+
 export const engineeringTasks = sqliteTable(
   "engineering_tasks",
   {
@@ -858,8 +870,10 @@ export const engineeringTasks = sqliteTable(
     repositoryId: text("repository_id")
       .notNull()
       .references(() => repositories.id, { onDelete: "cascade" }),
-    environmentId: text("environment_id"),
-    source: text("source").notNull(),
+    environmentId: text("environment_id").references(() => repositoryEnvironments.id, {
+      onDelete: "set null",
+    }),
+    source: text("source", { enum: ["manual", "jira", "slack"] }).notNull(),
     sourceRef: text("source_ref"),
     title: text("title").notNull(),
     draftDescription: text("draft_description").notNull(),
@@ -867,8 +881,23 @@ export const engineeringTasks = sqliteTable(
     plan: json("plan").$type<unknown>(),
     parentBranch: text("parent_branch"),
     taskBranch: text("task_branch"),
-    status: text("status").notNull(),
-    currentStep: text("current_step"),
+    status: text("status", {
+      enum: [
+        "proposed",
+        "investigating",
+        "planned",
+        "approved",
+        "queued",
+        "in_progress",
+        "awaiting_approval",
+        "completed",
+        "failed",
+        "cancelled",
+        "needs_attention",
+      ],
+    }).notNull(),
+    priority: integer("priority").notNull().default(0),
+    currentStep: text("current_step", { enum: STEPS }),
     prUrl: text("pr_url"),
     prNumber: integer("pr_number"),
     baseSha: text("base_sha"),
@@ -890,8 +919,10 @@ export const engineeringTaskSteps = sqliteTable(
     taskId: text("task_id")
       .notNull()
       .references(() => engineeringTasks.id, { onDelete: "cascade" }),
-    step: text("step").notNull(),
-    status: text("status").notNull(),
+    step: text("step", { enum: STEPS }).notNull(),
+    status: text("status", {
+      enum: ["pending", "awaiting_approval", "running", "done", "failed", "skipped"],
+    }).notNull(),
     approvalId: text("approval_id"),
     claudeRunId: text("claude_run_id"),
     output: json("output").$type<unknown>(),

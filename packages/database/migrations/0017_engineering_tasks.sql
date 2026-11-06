@@ -25,6 +25,7 @@ CREATE TABLE `engineering_tasks` (
 	`parent_branch` text,
 	`task_branch` text,
 	`status` text NOT NULL,
+	`priority` integer DEFAULT 0 NOT NULL,
 	`current_step` text,
 	`pr_url` text,
 	`pr_number` integer,
@@ -33,7 +34,8 @@ CREATE TABLE `engineering_tasks` (
 	`failure` text,
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL,
-	FOREIGN KEY (`repository_id`) REFERENCES `repositories`(`id`) ON UPDATE no action ON DELETE cascade
+	FOREIGN KEY (`repository_id`) REFERENCES `repositories`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`environment_id`) REFERENCES `repository_environments`(`id`) ON UPDATE no action ON DELETE set null
 );
 --> statement-breakpoint
 CREATE INDEX `engineering_tasks_status_idx` ON `engineering_tasks` (`status`);--> statement-breakpoint

@@ -177,9 +177,26 @@ describe("validateRequest", () => {
       expect(
         v(eng(["Read(//tmp/demo-repo/**)", "Edit(//tmp/demo-repo/**)", "Bash(npm test:*)"])),
       ).toEqual({ ok: true });
-      for (const bad of ["Bash", "Bash(curl x:*)", "Bash(bun test; rm:*)", "Bash(git:*)"]) {
+      for (const bad of ["Bash", "Bash(curl x:*)", "Bash(git:*)"]) {
         expect(reason(v(eng([bad])))).toBe("write tools must be scoped to the working directory");
       }
+    });
+    test("a chained command is malformed at rule 0", () => {
+      expect(reason(v(eng(["Bash(bun test; rm:*)"])))).toBe(
+        "malformed tool name Bash(bun test; rm:*)",
+      );
+    });
+    test("more than one Bash grant fails", () => {
+      expect(reason(v(eng(["Bash(bun test:*)", "Bash(npm test:*)"])))).toBe(
+        "only one Bash grant is allowed",
+      );
+    });
+    test("bare interpreters and odd characters are refused", () => {
+      for (const bad of ["Bash(bun:*)", "Bash(python:*)", "Bash(npx:*)"]) {
+        expect(reason(v(eng([bad])))).toBe("write tools must be scoped to the working directory");
+      }
+      expect(reason(v(eng(["Bash(bun test$x:*)"])))).toBe("malformed tool name Bash(bun test$x:*)");
+      expect(v(eng(["Bash(pytest:*)"]))).toEqual({ ok: true });
     });
     test("a Bash specifier without the :* prefix form is malformed", () => {
       expect(reason(v(eng(["Bash(bun test)"])))).toBe("malformed tool name Bash(bun test)");
@@ -190,19 +207,18 @@ describe("validateRequest", () => {
       expect(r.disallowedTools).not.toContain("Bash");
       expect(r.disallowedTools).toEqual(expect.arrayContaining(["Write", "MultiEdit", "WebFetch"]));
       expect(v(r)).toEqual({ ok: true });
-      expect(
-        v({ ...r, disallowedTools: [...r.disallowedTools, "Write"].filter((t) => t !== "Write") }),
-      ).toEqual({ ok: false, reason: "denylist missing Write" });
+      expect(v({ ...r, disallowedTools: r.disallowedTools.filter((t) => t !== "Write") })).toEqual({
+        ok: false,
+        reason: "denylist missing Write",
+      });
     });
     test("untrusted content in an engineering run with writes still fails", () => {
-      const r = { ...eng(["Edit(//tmp/demo-repo/**)"]) };
       const withU = make({
         workerProfile: "engineering",
         allowed: ["Edit(//tmp/demo-repo/**)"],
         workingDirectory: "/tmp/demo-repo",
         promptParts: [untrusted],
       });
-      expect(r.workerProfile).toBe("engineering");
       expect(reason(v(withU))).toBe("untrusted content with write-capable tool Edit");
     });
   });

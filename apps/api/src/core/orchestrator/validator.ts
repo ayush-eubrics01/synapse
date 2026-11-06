@@ -15,7 +15,7 @@ export type ValidationResult = { ok: true } | { ok: false; reason: string };
 const BUILTIN_RE = /^[A-Za-z][A-Za-z0-9_]*(\([^(),\s]*\))?$/;
 // A Bash grant is a command prefix, `Bash(<cmd>:*)`, and the command has spaces (`bun test`). Spaces
 // are accepted inside that one form only; rule L then checks the command itself (E5).
-const BASH_PREFIX_RE = /^Bash\([^(),]+:\*\)$/;
+const BASH_PREFIX_RE = /^Bash\([A-Za-z0-9 ._:/=@+-]+:\*\)$/;
 const CONNECTOR_RE = /^mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+$/;
 
 const DENY_BUILTIN_RE = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -56,8 +56,9 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *     single-slash form `/abs/dir/**` is cwd-relative on the CLI and grants nothing (final review),
  *     so it fails, as does a bare Read (C7). Write tools: `Edit`/`Write`/`MultiEdit` must equal the same
  *     `Tool(/<wd>/**)`, and `Bash` only as exactly `Bash(<cmd>:*)` with `isSafeTestCommand(cmd)`
- *     (E5, E9); a bare Bash or any other specifier fails. Last, so the other rules keep their order. Tools
- *     other than the fs reads are unaffected
+ *     (E5, E9); a bare Bash or any other specifier fails, and at most one Bash grant is allowed.
+ *     Rule 0 admits a Bash specifier with spaces only in the `Bash(<safe chars>:*)` form. Last, so
+ *     the other rules keep their order. Tools other than fs reads and writes are unaffected
  * Tool names are normalised (specifier stripped) before classification.
  */
 export function validateRequest(
@@ -196,6 +197,9 @@ export function validateRequest(
       }
     }
     const writeErr = "write tools must be scoped to the working directory";
+    if (raw.filter((t) => normalizeTool(t) === "Bash").length > 1) {
+      return fail("only one Bash grant is allowed");
+    }
     for (const t of raw.filter((t) => BUILTIN_WRITE.includes(normalizeTool(t)))) {
       const name = normalizeTool(t);
       if (name === "Bash") {

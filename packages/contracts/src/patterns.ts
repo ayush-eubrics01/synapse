@@ -23,14 +23,19 @@ const TEST_COMMAND_RUNNERS = [
   "deno",
 ];
 
+const SINGLE_WORD_RUNNERS = ["pytest", "make"];
+
 /**
  * E5: a test command safe to grant as `Bash(<cmd>:*)`. Safe characters only (no `;`, `&`, `|`, `>`,
  * `<`, backquote, `$` or newline), at most 120 characters, and the first word is a known runner.
  */
 export function isSafeTestCommand(cmd: string): boolean {
   if (!TEST_COMMAND_RE.test(cmd)) return false;
-  const first = cmd.split(" ")[0] ?? "";
-  return TEST_COMMAND_RUNNERS.includes(first);
+  const words = cmd.split(" ").filter((w) => w !== "");
+  const first = words[0] ?? "";
+  if (!TEST_COMMAND_RUNNERS.includes(first)) return false;
+  // Interpreters and package runners alone would run arbitrary code or a REPL (amended: final T1 review).
+  return words.length >= 2 || SINGLE_WORD_RUNNERS.includes(first);
 }
 
 /** E-branch: `synapse/<first 8 of id>-<slug of title, at most 32>`. */
