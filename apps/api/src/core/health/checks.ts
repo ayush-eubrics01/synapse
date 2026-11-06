@@ -3,6 +3,7 @@ import type { AIProvider, ClaudeActivityHealth } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { type Clock, isoNow, systemClock } from "@synapse/shared";
 import { and, count, eq, lte, min } from "drizzle-orm";
+import type { PrivateFilesResult } from "../../infrastructure/private-files";
 import type { SettingsService } from "../config/settings";
 import type { AuthMonitor } from "../orchestrator/auth";
 import type { HealthCheck } from "./health";
@@ -33,6 +34,14 @@ export function databaseCheck(sqlite: Database): HealthCheck {
     }
     return { status: "ok" };
   });
+}
+
+export function filePermissionsCheck(r: PrivateFilesResult): HealthCheck {
+  return guarded(async () =>
+    r.ok
+      ? { status: "ok" }
+      : { status: "degraded", detail: `chmod failed for ${r.failed} path(s)` },
+  );
 }
 
 export function jobsCheck(db: Db, clock: Clock): HealthCheck {

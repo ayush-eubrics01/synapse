@@ -8,9 +8,15 @@ import {
   recoverOrphanRuns,
 } from "./core/recovery/recovery";
 import { NotifySendNotifier } from "./infrastructure/notifier";
+import { PRIVATE_FILES_LOG_LINE, securePrivateFiles } from "./infrastructure/private-files";
 
 const config = loadConfig(process.env);
+// R1: new files are private; existing data files are tightened before anything opens them.
+process.umask(0o077);
+const filePermissions = securePrivateFiles(config.dbPath);
+if (!filePermissions.ok) console.error(PRIVATE_FILES_LOG_LINE);
 const c = createContainer(config, {
+  filePermissions,
   testHandlers: process.env.SYNAPSE_TEST_HANDLERS === "1",
   notifier: new NotifySendNotifier(),
 });

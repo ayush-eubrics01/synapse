@@ -12,6 +12,7 @@ export const HEALTH_LABELS: Record<string, string> = {
   "screening-rules": "Screening rules",
   "desktop-notifier": "Desktop notifications",
   claude_activity: "Claude Code activity",
+  file_permissions: "Data file permissions",
 };
 
 /** What to do about a failing check. A check with no entry has no hint. */
@@ -28,5 +29,7 @@ export const HEALTH_HINTS: Record<string, string> = {
   "screening-rules": "A rule file failed to load. Check the API logs.",
   claude_activity:
     "Observation of your Claude Code sessions is paused. Other features are unaffected; check the projects directory is readable, or that Claude Code was updated.",
+  file_permissions:
+    "Synapse's data files are readable by other users; run chmod 700 on the data directory",
   bun: "Upgrade Bun to 1.4.4 or newer.",
 };

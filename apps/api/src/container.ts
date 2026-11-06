@@ -26,6 +26,7 @@ import {
   databaseCheck,
   desktopNotifierCheck,
   eventsCheck,
+  filePermissionsCheck,
   heartbeatCheck,
   jobsCheck,
   lingerCheck,
@@ -45,6 +46,7 @@ import type { RecoverySweep } from "./core/recovery/recovery";
 import { SchedulerService } from "./core/scheduler/scheduler";
 import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
 import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notifier";
+import type { PrivateFilesResult } from "./infrastructure/private-files";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadUserSettings } from "./integrations/claude-code/settings-override";
 import { GitHubCliProvider } from "./integrations/github/gh-cli";
@@ -190,6 +192,8 @@ export interface ContainerDeps {
   notifier?: DesktopNotifier & NotifierHealth;
   /** Replaces the Claude Code projects dir that the activity scanner reads (tests inject a temp dir). */
   claudeProjectsDir?: string;
+  /** Result of securePrivateFiles from main.ts; defaults to ok. */
+  filePermissions?: PrivateFilesResult;
 }
 
 const CORE_MODULES = [
@@ -644,6 +648,9 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     "screening-rules": screeningRulesCheck(screening),
     "desktop-notifier": desktopNotifierCheck(notifier),
     claude_activity: claudeActivityCheck(claudeActivity),
+    file_permissions: filePermissionsCheck(
+      deps.filePermissions ?? { ok: true, changed: 0, failed: 0 },
+    ),
   });
 
   const dashboardLayouts = new DashboardLayoutService({ db, clock, audit, events });

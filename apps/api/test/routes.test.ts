@@ -67,6 +67,7 @@ test("health ready is 200 with a report", async () => {
     "database",
     "desktop-notifier",
     "events",
+    "file_permissions",
     "heartbeat",
     "jobs",
     "linger",
