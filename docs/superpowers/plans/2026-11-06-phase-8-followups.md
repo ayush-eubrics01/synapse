@@ -11,6 +11,8 @@ Phase 8 delivered read-only Jira tracking (`docs/modules/jira.md`, spec `docs/su
 - **Multi-site.** One site only today; more than one parks `jira.resolve_cloud_id` with `multiple_sites` and the user sets `jira.cloudId` by hand (there is no route for it yet). Supporting several sites needs per-site settings, streams and checkpoints.
 - **Inbox chips for issue keys.** Show a chip on Slack messages that mention a tracked issue key, linking to the issue. Today the correlation runs one way (issue to messages, at read time).
 - **Count-only list view for performance.** `GET /api/jira/issues` computes Slack mentions per issue (a `LIKE` scan of `slack_messages` each). Add a view that returns counts only, or index or cache mentions, before the issue count or message volume grows.
+- **Per-issue mention scan on every list.** Part of the item above: each `list`/`get` runs one `LIKE` scan per issue. Parked by the final review; the count-only view is the fix.
+- **Lookup by `jira_id`.** A project move is matched by `jira_id`, which has no index. That's fine at today's issue counts; add an index (with a migration) if the table grows.
 - **Smaller items.** A route to set `jira.cloudId`; `jira.analyze`-free Engineering Brain links; offering issues as engineering-task candidates (requirement 7); applying interval and page-budget changes without a restart.
 
 ## Real-connector smoke
@@ -22,4 +24,4 @@ Run by the controller on 2026-11-06 against the real connector, with the user's 
   - Fix: `jira.pageSize` now defaults to 20 (about 49 KB, measured) with a maximum of 30, and `jira.maxPagesPerRun` defaults to 6.
 - **After the fix:** `sites: 1`, `issues: 20`, `hasNextPage: true`, `statusCategory: new=6 indeterminate=7 done=7`, `projects: 1`.
   - The argument check and the parser passed on real data.
-- **Follow-up:** detect the CLI's oversized-output notice and report it as its own error kind with a "lower jira.pageSize" hint, so it isn't shown as a generic `parse_failed`.
+- **Follow-up (done in the final-review fix wave):** the adapter detects the CLI's oversized-output notice and reports it as `output_too_large` (parked as needs-attention, never retried into a loop); the web shows "Jira page too large — lower jira.pageSize".

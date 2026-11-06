@@ -9,7 +9,7 @@ This list amends the phase plan in `pre-project-concept-document/concept.md`. Wh
 | 2 | Claude orchestrator | Done |
 | 3 | Slack collector | Done |
 | 4 | Urgency engine and inbox | Done |
-| 5 | People Memory | Built; PR #6 open for merge |
+| 5 | People Memory | Done (merged, PR #6) |
 | 6 | Commitments, follow-ups and approved sending | Done (merged; PR #7/#9) |
 | 6b | Away-mode auto-replies (ADR-033) and the return digest | Done (merged; PR #11). Module doc: `docs/modules/auto-reply.md`. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-6b-followups.md` |
 | 7 | **Design revamp** | Done (merged; PR #8/#9). Inserted at the user's request (2026-11-06), before the Jira integration. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-7-followups.md` |

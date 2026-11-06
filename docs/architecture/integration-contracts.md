@@ -280,18 +280,18 @@ interface SourceIssue {
   dueDate: string | null; // YYYY-MM-DD
   createdAt: string;
   updatedAt: string;
-  webUrl: string;
+  webUrl: string | null;  // https:// links only; null otherwise
 }
 ```
 
 Rules:
 
 - One call is one collector run: `resolveCloudId` runs `mcp__claude_ai_Atlassian__getAccessibleAtlassianResources`; `searchPage` runs `mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql` with the fields in `JIRA_FIELDS` (`summary, status, priority, issuetype, project, labels, duedate, created, updated`), one page per run (haiku, `maxTurns: 4`, allowed tools `[tool, ToolSearch]`).
-- Only the raw `tool_result` is parsed (ADR-026). It must be the single result for that tool, not an error, and its `tool_use` input must equal the requested arguments (`fields` as a set; only `responseContentFormat: "markdown"`, `actionSource: "model_tool_call"` and, for search, `searchResultMode: "issues"` may be added by the connector). A mismatch or missing result is `incomplete_ai_output`; a shape mismatch is `parse_failed`.
+- Only the raw `tool_result` is parsed (ADR-026). It must be the single result for that tool, not an error, and its `tool_use` input must equal the requested arguments (`fields` as a set; only `responseContentFormat: "markdown"`, `actionSource: "model_tool_call"` and, for search, `searchResultMode: "issues"` may be added by the connector). A mismatch or missing result is `incomplete_ai_output`; a shape mismatch is `parse_failed`. When the CLI has replaced the result with its oversized-output notice (`Error: result (... exceeds maximum allowed tokens`, or `<persisted-output>`), the error is `output_too_large` (retry decision `needs_attention`: lower `jira.pageSize`, default 20).
 - A tool error that looks like a rate limit is `rate_limited` through `integrations/rate-limit.ts` (`throwIfRateLimited`, shared with Slack).
 - The next page passes `nextPageToken = pageInfo.endCursor`. `total` is always `null` (the adapter never requests a count).
 - The cloudId is stored in the `jira.cloudId` setting after exactly one site is found.
-- Read models: `JiraIssueView` (a `SourceIssue` plus `attention`, `inScope`, `slackMentions`), `JiraStatusDto`, `JiraIssueViewKind` (`attention|open|done|all`).
+- Read models: `JiraIssueView` (a `SourceIssue` plus `attention`, `inScope`, `slackMentions`), `JiraStatusDto` (`enabled, cloudIdSet, lastSyncAt, lastReconcileAt, issueCount, lastError, scopeJql, excludedProjects`), `JiraIssueViewKind` (`attention|open|done|all`). The scope JQL is validated by `jiraScopeJqlSchema` (no newline, no `ORDER BY`, balanced parentheses and closed double-quoted strings).
 - Events: `jira.issue_updated {key}`, `jira.issue_attention {key, attention}`.
 - Writes (`IssueSink`: comment, transition, edit) are deferred; they will require approval.
 
