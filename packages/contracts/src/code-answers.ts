@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { flagSeveritySchema, strictSuspectedInjectionSchema } from "./urgency";
+import { type flagSeveritySchema, strictSuspectedInjectionSchema } from "./urgency";
 
 export const CODE_ANSWER_MAX_ANSWER = 1500;
 export const CODE_ANSWER_MAX_EVIDENCE = 8;

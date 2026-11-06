@@ -49,6 +49,8 @@ export interface CreatePrInput {
 export interface PullRequestProvider {
   /** Owner and repo of a stored (credential-stripped) remote URL on a supported host, else null. */
   repoRef(url: string): PrRef | null;
+  /** Read-only state of a PR by its github.com URL (`OPEN`, `MERGED`, `CLOSED`). */
+  view(url: string): Promise<{ state: string }>;
   createPr(input: CreatePrInput): Promise<{ url: string; number: number }>;
   prStatus(input: { upstream: PrRef; number: number }): Promise<PrStatus>;
   /** Merges only while the PR head is still `headSha` (the commit the user approved pushing). */

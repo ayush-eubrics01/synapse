@@ -17,6 +17,7 @@ import {
 
 export const GH_TIMEOUT_MS = 60_000;
 
+const PR_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+$/;
 const NAME = /^[A-Za-z0-9_.-]+$/;
 
 function ref(owner: string | undefined, repo: string | undefined): PrRef | null {
@@ -113,6 +114,19 @@ export class GitHubCliProvider implements PullRequestProvider {
 
   repoRef(url: string): PrRef | null {
     return parseGithubRemote(url);
+  }
+
+  async view(url: string): Promise<{ state: string }> {
+    if (!PR_URL.test(url)) throw new PullRequestError("unsupported_remote");
+    const res = await this.run(["pr", "view", url, "--json", "state"], "pr_status_failed");
+    let j: { state?: unknown };
+    try {
+      j = JSON.parse(res.stdout);
+    } catch {
+      throw new PullRequestError("pr_status_failed");
+    }
+    if (!j || typeof j.state !== "string") throw new PullRequestError("pr_status_failed");
+    return { state: j.state };
   }
 
   async createPr(input: CreatePrInput): Promise<{ url: string; number: number }> {

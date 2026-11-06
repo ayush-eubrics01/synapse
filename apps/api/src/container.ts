@@ -54,6 +54,7 @@ import { LocalGitProvider } from "./integrations/repository/local-git";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
 import { AutoReplyService } from "./modules/auto-reply/service";
+import { WipReminders } from "./modules/claude-activity/reminders";
 import { ClaudeActivityService } from "./modules/claude-activity/service";
 import { ExtractionQueue } from "./modules/commitments/extraction-queue";
 import { FollowupService } from "./modules/commitments/followups";
@@ -272,7 +273,14 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
         ? join(scratchDir, "no-claude-projects")
         : join(home, ".claude", "projects")),
   });
-  registerClaudeActivityJobs({ handlers, scheduler, settings, service: claudeActivity });
+  const prs: PullRequestProvider = deps.prs ?? new GitHubCliProvider();
+  registerClaudeActivityJobs({
+    handlers,
+    scheduler,
+    settings,
+    service: claudeActivity,
+    reminders: new WipReminders({ db, clock, settings, notifications, prs }),
+  });
   const orchestrator = new ClaudeOrchestrator({
     db,
     clock,
@@ -567,7 +575,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     approvals,
     lock: engineeringLock,
     git: gitWorkflow,
-    prs: deps.prs ?? new GitHubCliProvider(),
+    prs,
   });
   engineeringSteps.register(approvals, dispatcher);
   registerInvestigateJob({ db, settings, orchestrator, service: engineering, handlers });

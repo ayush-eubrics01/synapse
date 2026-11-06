@@ -1,16 +1,19 @@
 import type { SettingsService } from "../../core/config/settings";
 import type { HandlerRegistration } from "../../core/jobs/worker";
 import type { SchedulerService } from "../../core/scheduler/scheduler";
+import { REMINDERS_JOB, type WipReminders } from "../../modules/claude-activity/reminders";
 import type { ClaudeActivityService } from "../../modules/claude-activity/service";
 
 export const CLAUDE_ACTIVITY_SCAN_JOB = "claude_activity.scan";
 const HANDLER_TIMEOUT_MS = 60_000;
+const REMINDERS_TIMEOUT_MS = 120_000;
 
 export interface ClaudeActivityJobDeps {
   handlers: Map<string, HandlerRegistration>;
   scheduler: SchedulerService;
   settings: SettingsService;
   service: Pick<ClaudeActivityService, "scan">;
+  reminders?: Pick<WipReminders, "runIfDue">;
 }
 
 /**
@@ -36,4 +39,27 @@ export function registerClaudeActivityJobs(deps: ClaudeActivityJobDeps): void {
     intervalSeconds: deps.settings.get("claudeActivity.scanIntervalSeconds"),
     coalesce: true,
   });
+  const reminders = deps.reminders;
+  if (reminders) {
+    deps.handlers.set(REMINDERS_JOB, {
+      handler: async () => {
+        try {
+          return await reminders.runIfDue();
+        } catch (e) {
+          console.error(
+            `claude-activity: reminders failed ${e instanceof Error ? e.name : "Error"}`,
+          );
+          throw new Error("claude_activity reminders failed");
+        }
+      },
+      timeoutMs: REMINDERS_TIMEOUT_MS,
+    });
+    // 15 minutes covers "09:30 local, and once at startup if missed": the scheduler's cron runs in UTC.
+    deps.scheduler.upsert({
+      name: REMINDERS_JOB,
+      jobType: REMINDERS_JOB,
+      intervalSeconds: 900,
+      coalesce: true,
+    });
+  }
 }
