@@ -5,7 +5,9 @@ import {
   type MessageSink,
   type MessageSource,
   type RawToolResult,
+  type RunOptions,
   type SendMessageCommand,
+  type SendOptions,
   type SendResult,
 } from "@synapse/contracts";
 import { sendInputSha256 } from "../claude-code/send-guard";
@@ -45,7 +47,9 @@ const SEND_INSTRUCTION = [
 ].join("\n");
 
 interface Deps {
-  orchestrator: { run(req: ClaudeJobRequest, signal: AbortSignal): Promise<AIExecutionResult> };
+  orchestrator: {
+    run(req: ClaudeJobRequest, signal: AbortSignal, opts?: RunOptions): Promise<AIExecutionResult>;
+  };
   /** The verified Phase 3 search collector (`SlackConnectorSource`), reused by `findSent`. */
   searchSource: Pick<MessageSource, "collect">;
   /** `slack.selfUserId`; `findSent` cannot attribute a message without it. */
@@ -151,7 +155,12 @@ export const normaliseSentText = (s: string) =>
 export class SlackSender implements MessageSink {
   constructor(private readonly deps: Deps) {}
 
-  async send(cmd: SendMessageCommand, signal: AbortSignal): Promise<SendResult> {
+  /** `opts.beforeSpawn` reaches the orchestrator; its cancel is rethrown (nothing was sent). */
+  async send(
+    cmd: SendMessageCommand,
+    signal: AbortSignal,
+    opts?: SendOptions,
+  ): Promise<SendResult> {
     const jobId = cmd.jobId;
     const before = jobId !== undefined ? this.runIdOf(jobId) : null;
     const withRun = (r: SendResult): SendResult => {
@@ -161,7 +170,7 @@ export class SlackSender implements MessageSink {
 
     let result: AIExecutionResult;
     try {
-      result = await this.deps.orchestrator.run(buildSendRequest(cmd), signal);
+      result = await this.deps.orchestrator.run(buildSendRequest(cmd), signal, opts);
     } catch (e) {
       // After spawn the tool may have run (timeout, crash): never rethrown, so never retried.
       if (e instanceof JobError && e.classified.details?.uncertain === true) {

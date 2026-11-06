@@ -1,8 +1,10 @@
 import {
   type Approval,
+  AUTO_REPLY_TAG,
   JobError,
   type MessageSink,
   type SendMessageCommand,
+  type SendOptions,
   type SendResult,
 } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
@@ -17,7 +19,6 @@ import type { OutboxDispatcher } from "../../core/events/dispatcher";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
 import type { NotificationService } from "../../core/notifications/notifications";
-import { AUTO_REPLY_TAG } from "../auto-reply/policy";
 import type { SecurityFlagsService } from "../security-flags/service";
 
 const {
@@ -28,6 +29,7 @@ const {
   jobs,
   autoReplies,
   awaySessions,
+  auditEvents,
 } = schema;
 
 export const OUTGOING_VERIFY_JOB = "outgoing.verify";
@@ -49,6 +51,7 @@ const MISMATCH_TITLE = "Send went out with changed arguments — check Slack for
 const MISMATCH_REASON = "send tool called with changed arguments";
 
 const payloadSchema = z.object({ outgoingId: z.string().min(1) });
+const autoPayloadSchema = payloadSchema.extend({ autoReplyId: z.string().min(1) });
 const AUTO_SEND_MODULE = "auto-reply";
 
 type Row = typeof schema.outgoingMessages.$inferSelect;
@@ -119,6 +122,31 @@ export class AutoReplyNotFound extends Error {
   constructor(readonly autoReplyId: string) {
     super("auto-reply not found");
     this.name = "AutoReplyNotFound";
+  }
+}
+
+/** I1: a request field differs from its `auto_replies` row. Fixed message; ids only. */
+export class AutoSendMismatch extends Error {
+  constructor(
+    readonly autoReplyId: string,
+    readonly field: "conversationExternalId" | "threadTs" | "text" | "followupId",
+  ) {
+    super("auto-send request does not match its auto-reply");
+    this.name = "AutoSendMismatch";
+  }
+}
+
+/**
+ * M2: away is off, or the auto-reply's session is no longer the open one, when the send is
+ * requested. Nothing is recorded. (A shut permission gate is `AutoReplyDisabledByPermission`.)
+ */
+export class AutoSendBlocked extends Error {
+  constructor(
+    readonly autoReplyId: string,
+    readonly reason: "away_off",
+  ) {
+    super(`auto-send blocked: ${reason}`);
+    this.name = "AutoSendBlocked";
   }
 }
 
@@ -248,7 +276,7 @@ export class OutgoingService {
   /** Records a send and requests its approval, inside the caller's transaction. */
   requestSend(tx: DbOrTx, input: SendRequest): SendRequested {
     const { clock, approvals } = this.deps;
-    return this.#record(tx, input, (outgoingId) =>
+    return this.#record(tx, input, "send_requested", (outgoingId) =>
       approvals.request(tx, {
         action: "slack.send",
         targetIntegration: "slack",
@@ -276,9 +304,18 @@ export class OutgoingService {
     if (ar.decision !== "sent" || ar.outgoingId !== null) {
       throw new AutoReplyNotSendable(input.autoReplyId);
     }
+    // I1: the auto_replies row is what the policy decided on; the request must be exactly it.
+    const mismatch = autoSendMismatch(input, ar);
+    if (mismatch !== null) throw new AutoSendMismatch(input.autoReplyId, mismatch);
+    // M2: away off / another session blocks up front. A shut permission gate is left to
+    // recordPolicyApproval, which throws AutoReplyDisabledByPermission (the controller's ruling).
+    if (this.autoSendBlock(tx, ar) === "away_off") {
+      throw new AutoSendBlocked(input.autoReplyId, "away_off");
+    }
     const requested = this.#record(
       tx,
       { ...input, requestedByModule: AUTO_SEND_MODULE },
+      "auto_send_requested",
       (outgoingId) =>
         approvals.recordPolicyApproval(
           tx,
@@ -306,6 +343,7 @@ export class OutgoingService {
   #record(
     tx: DbOrTx,
     input: SendRequest,
+    historyEvent: "send_requested" | "auto_send_requested",
     approve: (outgoingId: string) => Approval,
   ): SendRequested {
     const { clock } = this.deps;
@@ -350,7 +388,7 @@ export class OutgoingService {
         .set({ status: "awaiting_approval", approvalId: approval.id, outgoingId, updatedAt: now })
         .where(eq(followups.id, followupId))
         .run();
-      this.followupEvent(tx, followupId, "awaiting_approval", "send_requested", outgoingId);
+      this.followupEvent(tx, followupId, "awaiting_approval", historyEvent, outgoingId);
     }
     return { outgoingId, approvalId: approval.id };
   }
@@ -361,9 +399,9 @@ export class OutgoingService {
    * open. On false the approval is revoked and the auto-reply held, in one transaction.
    */
   #revalidateAutoSend(a: Approval): boolean {
-    const payload = payloadSchema.safeParse(a.payload);
-    // Let execute() fail it as invalid_payload / not_found.
-    if (!payload.success) return true;
+    const payload = autoPayloadSchema.safeParse(a.payload);
+    // Never run an auto-send whose approval does not name its auto-reply.
+    if (!payload.success) return false;
     return this.deps.db.transaction(
       (tx) => {
         const row = tx
@@ -373,7 +411,8 @@ export class OutgoingService {
           .get();
         if (!row) return true;
         const ar = this.autoReplyFor(tx, row.id);
-        if (!ar) return false;
+        // I1: the approval must name the auto-reply linked to its message.
+        if (!ar || ar.id !== payload.data.autoReplyId) return false;
         const block = this.autoSendBlock(tx, ar);
         if (block === null) return true;
         this.deps.approvals.revokeAsSystem(tx, a.id, block);
@@ -408,10 +447,16 @@ export class OutgoingService {
     if ("skip" in claim) return { outgoingId, status: "skipped", reason: claim.skip };
     // The auto-send was cancelled (and the auto-reply held) at the claim: nothing was sent.
     if ("cancel" in claim) throw new OutgoingSendError(claim.cancel);
-    const { row, jobId } = claim;
+    const { row, jobId, autoReply } = claim;
     this.#inFlight.add(outgoingId);
     try {
-      return await this.#send(row, jobId, signal ?? new AbortController().signal, authorisedBy);
+      return await this.#send(
+        row,
+        jobId,
+        signal ?? new AbortController().signal,
+        authorisedBy,
+        autoReply,
+      );
     } finally {
       this.#inFlight.delete(outgoingId);
     }
@@ -422,17 +467,49 @@ export class OutgoingService {
     jobId: string | undefined,
     signal: AbortSignal,
     authorisedBy: AuthorisedBy,
+    autoReply: AutoReplyRow | undefined,
   ): Promise<SendOutcome> {
     const { db, sink } = this.deps;
     const outgoingId = row.id;
+    // I2: a policy send re-checks A13 and the gate once it has a Claude slot, just before spawn.
+    const gate: { blocked: AutoSendBlock | null } = { blocked: null };
+    const opts: SendOptions | undefined = autoReply
+      ? {
+          beforeSpawn: () => {
+            gate.blocked = this.autoSendBlock(db, autoReply);
+            return gate.blocked === null;
+          },
+        }
+      : undefined;
     // 2. Send.
     let result: SendResult;
     try {
       result = await sink.send(
         { ...this.command(row), authorisedBy, ...(jobId !== undefined ? { jobId } : {}) },
         signal,
+        opts,
       );
     } catch (e) {
+      const blocked = gate.blocked;
+      if (
+        autoReply &&
+        blocked !== null &&
+        e instanceof JobError &&
+        e.classified.kind === "cancelled_before_spawn"
+      ) {
+        // Not spawned, so certainly not sent: cancelled and held, never uncertain. If even this
+        // write fails, the row stays `sending` and the sweep hands it to the user.
+        try {
+          db.transaction((tx) => this.holdAutoSend(tx, row, autoReply, blocked), {
+            behavior: "immediate",
+          });
+        } catch (w) {
+          console.error(
+            `outgoing outcome not recorded outgoing=${outgoingId} error=${errorName(w)}`,
+          );
+        }
+        throw new OutgoingSendError(`cancelled_${blocked}`);
+      }
       // The sink rethrows only failures before spawn: nothing was sent. The engine fails the
       // approval for any thrown error, so this send can never run under it again: not_started,
       // and the draft goes back for a new request. If even this write fails, the row stays
@@ -678,7 +755,10 @@ export class OutgoingService {
     approvalId: string,
     outgoingId: string,
     authorisedBy: AuthorisedBy,
-  ): { skip: string } | { cancel: SendFailure } | { row: Row; jobId: string | undefined } {
+  ):
+    | { skip: string }
+    | { cancel: SendFailure }
+    | { row: Row; jobId: string | undefined; autoReply?: AutoReplyRow } {
     const row = tx.select().from(outgoingMessages).where(eq(outgoingMessages.id, outgoingId)).get();
     if (!row) throw new OutgoingSendError("not_found");
     if (row.approvalId !== approvalId) return { skip: "approval_mismatch" };
@@ -701,13 +781,14 @@ export class OutgoingService {
     }
     // Defence in depth on top of the engine's claim: only a pending message is ever sent.
     if (row.status !== "pending") return { skip: `status_${row.status}` };
+    let autoReply: AutoReplyRow | undefined;
     if (authorisedBy === "policy") {
       // A13 again, serialised with the away toggle: the user's return wins even after revalidate.
-      const ar = this.autoReplyFor(tx, outgoingId);
-      if (!ar) return { skip: "auto_reply_missing" };
-      const block = this.autoSendBlock(tx, ar);
+      autoReply = this.autoReplyFor(tx, outgoingId);
+      if (!autoReply) return { skip: "auto_reply_missing" };
+      const block = this.autoSendBlock(tx, autoReply);
       if (block !== null) {
-        this.holdAutoSend(tx, row, ar, block);
+        this.holdAutoSend(tx, row, autoReply, block);
         return { cancel: `cancelled_${block}` };
       }
     }
@@ -723,7 +804,11 @@ export class OutgoingService {
       .from(jobs)
       .where(eq(jobs.idempotencyKey, `${APPROVAL_EXECUTE_JOB}:${approvalId}`))
       .get();
-    return { row: { ...row, status: "sending", sendingAt: now }, jobId: job?.id };
+    return {
+      row: { ...row, status: "sending", sendingAt: now },
+      jobId: job?.id,
+      ...(autoReply ? { autoReply } : {}),
+    };
   }
 
   private recordOutcome(
@@ -855,11 +940,21 @@ export class OutgoingService {
     if (row?.status !== "pending") return;
     if (a.action === "slack.auto_reply") {
       const ar = this.autoReplyFor(tx, row.id);
-      const block = ar ? this.autoSendBlock(tx, ar) : null;
+      // M4: the engine revoked it because the gate shut; that stays the reason even if the gate
+      // reopened before this consumer ran.
+      const block =
+        ar === undefined
+          ? null
+          : this.revokeReason(tx, approvalId) === "policy_disabled"
+            ? "policy_disabled"
+            : this.autoSendBlock(tx, ar);
       if (ar && block !== null) {
         this.holdAutoSend(tx, row, ar, block);
         return;
       }
+      // Gate still open (a user revoke, or expiry): the message fails below and the auto-reply
+      // keeps `decision='sent'`. Intended: decision is the policy's verdict, delivery is the
+      // outgoing status (the digest shows both).
     }
     tx.update(outgoingMessages)
       .set({ status: "failed", failure: reason, updatedAt: isoNow(this.deps.clock) })
@@ -868,6 +963,19 @@ export class OutgoingService {
     this.statusChanged(tx, row.id, "failed");
     this.moveFollowup(tx, row, "draft", `approval_${reason}`);
     this.auditSend(tx, row, "outgoing.cancelled", "failed", { reason });
+  }
+
+  /** The reason recorded on this approval's revoke, if any (the engine audits it). */
+  private revokeReason(tx: DbOrTx, approvalId: string): string | undefined {
+    const row = tx
+      .select({ details: auditEvents.details })
+      .from(auditEvents)
+      .where(
+        and(eq(auditEvents.approvalId, approvalId), eq(auditEvents.action, "approval.revoked")),
+      )
+      .get();
+    const reason = (row?.details as { reason?: unknown } | null | undefined)?.reason;
+    return typeof reason === "string" ? reason : undefined;
   }
 
   private autoReplyFor(tx: DbOrTx, outgoingId: string): AutoReplyRow | undefined {
@@ -898,7 +1006,13 @@ export class OutgoingService {
     const cancelled = tx
       .update(outgoingMessages)
       .set({ status: "failed", failure, updatedAt: now })
-      .where(and(eq(outgoingMessages.id, row.id), eq(outgoingMessages.status, "pending")))
+      .where(
+        and(
+          eq(outgoingMessages.id, row.id),
+          // `sending` only when cancelled before spawn (I2): nothing was posted.
+          inArray(outgoingMessages.status, ["pending", "sending"]),
+        ),
+      )
       .returning({ id: outgoingMessages.id })
       .all();
     if (cancelled.length > 0) {
@@ -1055,6 +1169,18 @@ export class OutgoingService {
       details: { outgoingId: row.id, followupId: row.followupId, ...details },
     });
   }
+}
+
+/** I1: the first request field that differs from the auto_replies row, or null. */
+function autoSendMismatch(
+  input: AutoSendRequest,
+  ar: AutoReplyRow,
+): AutoSendMismatch["field"] | null {
+  if (input.conversationExternalId !== ar.conversationExternalId) return "conversationExternalId";
+  if ((input.threadTs ?? null) !== ar.threadTs) return "threadTs";
+  if (ar.text === null || input.text.trimEnd() !== ar.text.trimEnd()) return "text";
+  if (input.followupId !== ar.followupId) return "followupId";
+  return null;
 }
 
 /**

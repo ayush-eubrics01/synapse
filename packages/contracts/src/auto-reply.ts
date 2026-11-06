@@ -2,6 +2,9 @@ import { z } from "zod";
 
 /** Phase 6b away-mode auto-replies (ADR-033). */
 
+/** ADR-033 / A10: every auto-reply ends with this tag, added in code. */
+export const AUTO_REPLY_TAG = "Sent using @claude";
+
 export type AutoReplyKind =
   | "code_answer"
   | "stalled_reminder"

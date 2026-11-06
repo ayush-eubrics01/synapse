@@ -44,6 +44,18 @@ export interface ClaudeJobRequest {
   sendGuard?: SendGuard;
 }
 
+/**
+ * Per-call options for `orchestrator.run`. Not part of the request: the request is zod-validated
+ * data, and a function would be dropped.
+ */
+export interface RunOptions {
+  /**
+   * Called after the Claude slot is acquired and the quota re-checked, immediately before the
+   * provider runs. false (or a throw) fails the run with a not-spawned `cancelled_before_spawn`.
+   */
+  beforeSpawn?: () => boolean;
+}
+
 export interface AIExecutionRequest {
   runId: string;
   jobId: string | null;

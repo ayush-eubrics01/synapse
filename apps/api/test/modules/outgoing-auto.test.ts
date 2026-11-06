@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import type { MessageSink, SendMessageCommand, SendResult } from "@synapse/contracts";
+import {
+  JobError,
+  type MessageSink,
+  type SendMessageCommand,
+  type SendOptions,
+  type SendResult,
+} from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
 import { eq } from "drizzle-orm";
@@ -18,6 +24,8 @@ import { withAutoReplyTag } from "../../src/modules/auto-reply/policy";
 import {
   AutoReplyNotFound,
   AutoReplyNotSendable,
+  AutoSendBlocked,
+  AutoSendMismatch,
   MissingAutoReplyTag,
   OUTGOING_VERIFY_JOB,
   OutgoingService,
@@ -32,11 +40,30 @@ const TAGGED = withAutoReplyTag(SECRET);
 const CHANNEL = "C0SYNTH01";
 const THREAD = "1793880000.000100";
 
+/** Mimics the orchestrator: waits for a slot, then calls `beforeSpawn` just before spawning. */
 class FakeSink implements MessageSink {
+  /** Commands that reached the (fake) spawn. */
   sends: SendMessageCommand[] = [];
+  /** Every call, spawned or not, with its options. */
+  calls: { cmd: SendMessageCommand; opts: SendOptions | undefined }[] = [];
   findResults: (boolean | null)[] = [];
+  /** Runs while the send "waits for a Claude slot". */
+  whileWaiting: () => void = () => {};
   sendImpl: () => Promise<SendResult> = async () => ({ status: "sent_unverified" });
-  async send(cmd: SendMessageCommand): Promise<SendResult> {
+  async send(
+    cmd: SendMessageCommand,
+    _signal: AbortSignal,
+    opts?: SendOptions,
+  ): Promise<SendResult> {
+    this.calls.push({ cmd, opts });
+    this.whileWaiting();
+    if (opts?.beforeSpawn && !opts.beforeSpawn()) {
+      throw new JobError({
+        kind: "cancelled_before_spawn",
+        message: "cancelled before spawn",
+        details: { notSpawned: true },
+      });
+    }
     this.sends.push(cmd);
     return this.sendImpl();
   }
@@ -120,7 +147,10 @@ function setup() {
     })
     .run();
 
-  const autoReply = (id = "ar1", over: { followupId?: string | null; session?: string } = {}) =>
+  const autoReply = (
+    id = "ar1",
+    over: { followupId?: string | null; session?: string; threadTs?: string | null } = {},
+  ) =>
     db
       .insert(schema.autoReplies)
       .values({
@@ -129,7 +159,7 @@ function setup() {
         kind: over.followupId ? "stalled_reminder" : "acknowledgement",
         recipientSlackUserId: "UTHEM00001",
         conversationExternalId: CHANNEL,
-        threadTs: THREAD,
+        threadTs: over.threadTs === undefined ? THREAD : over.threadTs,
         followupId: over.followupId ?? null,
         decision: "sent",
         text: TAGGED,
@@ -138,14 +168,20 @@ function setup() {
       .run();
 
   const requestAuto = (
-    over: { autoReplyId?: string; followupId?: string | null; text?: string } = {},
+    over: {
+      autoReplyId?: string;
+      followupId?: string | null;
+      text?: string;
+      conversationExternalId?: string;
+      threadTs?: string | null;
+    } = {},
   ) =>
     db.transaction(
       (tx) =>
         outgoing.requestAutoSend(tx, {
           autoReplyId: over.autoReplyId ?? "ar1",
-          conversationExternalId: CHANNEL,
-          threadTs: THREAD,
+          conversationExternalId: over.conversationExternalId ?? CHANNEL,
+          threadTs: over.threadTs === undefined ? THREAD : over.threadTs,
           text: over.text ?? TAGGED,
           followupId: over.followupId ?? null,
         }),
@@ -386,6 +422,7 @@ test("a slack.send user approval still sends with authorisedBy user and emits no
   await s.run();
   expect(s.sink.sends).toHaveLength(1);
   expect(s.sink.sends[0]?.authorisedBy).toBe("user");
+  expect(s.sink.calls[0]?.opts?.beforeSpawn).toBeUndefined();
   expect(s.approval(approvalId)?.decidedBy).toBe("user");
   expect(s.eventsOf("autoreply.sent")).toHaveLength(0);
 });
@@ -399,6 +436,10 @@ test("a user revoke of a still-unexecuted auto-send cancels the outgoing row", a
   expect(s.sink.sends).toHaveLength(0);
   expect(s.out(outgoingId)?.status).toBe("failed");
   expect(s.out(outgoingId)?.failure).toBe("revoked");
+  // M3: decision is the policy's verdict; delivery is the outgoing status.
+  expect(s.ar()?.decision).toBe("sent");
+  expect(s.ar()?.text).toBe(TAGGED);
+  expect(s.eventsOf("autoreply.held")).toHaveLength(0);
 });
 
 test("verify jobs exist only for real sends", async () => {
@@ -454,4 +495,244 @@ test("requestAutoSend refuses an auto-reply that is held or already has a send",
   s.requestAuto();
   expect(() => s.requestAuto()).toThrow(AutoReplyNotSendable);
   expect(s.db.select().from(schema.outgoingMessages).all()).toHaveLength(1);
+});
+
+// I1: requestAutoSend never trusts its caller; every field must equal the auto_replies row.
+const expectNothingRecorded = (s: ReturnType<typeof setup>) => {
+  expect(s.db.select().from(schema.outgoingMessages).all()).toHaveLength(0);
+  expect(s.db.select().from(schema.approvals).all()).toHaveLength(0);
+  expect(s.ar()?.outgoingId ?? null).toBeNull();
+};
+
+test("I1: a conversation differing from the auto-reply row throws AutoSendMismatch", () => {
+  const s = setup();
+  s.autoReply();
+  expect(() => s.requestAuto({ conversationExternalId: "C0OTHER01" })).toThrow(AutoSendMismatch);
+  expectNothingRecorded(s);
+});
+
+test("I1: a thread differing from the auto-reply row throws AutoSendMismatch (null vs ts too)", () => {
+  const s = setup();
+  s.autoReply();
+  expect(() => s.requestAuto({ threadTs: "1793880000.000999" })).toThrow(AutoSendMismatch);
+  expect(() => s.requestAuto({ threadTs: null })).toThrow(AutoSendMismatch);
+  expectNothingRecorded(s);
+});
+
+test("I1: a null thread on both sides matches", async () => {
+  const s = setup();
+  s.autoReply("ar1", { threadTs: null });
+  s.requestAuto({ threadTs: null });
+  await s.run();
+  expect(s.sink.sends).toHaveLength(1);
+  expect(s.sink.sends[0]?.threadTs).toBeUndefined();
+});
+
+test("I1: text differing from the auto-reply row throws AutoSendMismatch; trailing whitespace is ignored", () => {
+  const s = setup();
+  s.autoReply();
+  expect(() => s.requestAuto({ text: withAutoReplyTag(`${SECRET} edited`) })).toThrow(
+    AutoSendMismatch,
+  );
+  expectNothingRecorded(s);
+  s.requestAuto({ text: `${TAGGED}  \n` });
+  expect(s.db.select().from(schema.outgoingMessages).all()).toHaveLength(1);
+});
+
+test("I1: a follow-up differing from the auto-reply row throws AutoSendMismatch", () => {
+  const s = setup();
+  s.autoReply();
+  expect(() => s.requestAuto({ followupId: "f1" })).toThrow(AutoSendMismatch);
+  expectNothingRecorded(s);
+  const t = setup();
+  t.autoReply("ar1", { followupId: "f1" });
+  expect(() => t.requestAuto({ followupId: null })).toThrow(AutoSendMismatch);
+  expectNothingRecorded(t);
+});
+
+test("I1: AutoSendMismatch carries ids only", () => {
+  const s = setup();
+  s.autoReply();
+  try {
+    s.requestAuto({ text: withAutoReplyTag("SECRET-OTHER") });
+    throw new Error("expected AutoSendMismatch");
+  } catch (e) {
+    expect(e).toBeInstanceOf(AutoSendMismatch);
+    expect(JSON.stringify({ m: (e as Error).message, ...(e as object) })).not.toContain("SECRET");
+  }
+});
+
+test("I1: revalidate refuses an approval whose payload names another auto-reply", async () => {
+  const s = setup();
+  s.autoReply();
+  s.autoReply("ar2");
+  const { approvalId } = s.requestAuto();
+  const a = s.approval(approvalId);
+  s.db
+    .update(schema.approvals)
+    .set({ payload: { ...(a?.payload as object), autoReplyId: "ar2" } })
+    .where(eq(schema.approvals.id, approvalId))
+    .run();
+  await s.run();
+  expect(s.sink.calls).toHaveLength(0);
+  expect(s.approval(approvalId)?.executionStartedAt).toBeNull();
+});
+
+// M2: blocked up front, nothing recorded.
+test("M2: requestAutoSend while away is off throws AutoSendBlocked away_off", () => {
+  const s = setup();
+  s.autoReply();
+  s.settings.set("autoReply.awayMode", false, { emit: false });
+  try {
+    s.requestAuto();
+    throw new Error("expected AutoSendBlocked");
+  } catch (e) {
+    expect(e).toBeInstanceOf(AutoSendBlocked);
+    expect((e as AutoSendBlocked).reason).toBe("away_off");
+  }
+  expectNothingRecorded(s);
+});
+
+test("M2: requestAutoSend for a closed session throws AutoSendBlocked away_off", () => {
+  const s = setup();
+  s.db.insert(schema.awaySessions).values({ id: "old", startedAt: NOW, endedAt: NOW }).run();
+  s.autoReply("ar1", { session: "old" });
+  expect(() => s.requestAuto()).toThrow(AutoSendBlocked);
+  expectNothingRecorded(s);
+});
+
+// M3
+test("M3: mark_sent from needs_attention emits autoreply.sent once", async () => {
+  const s = setup();
+  s.autoReply();
+  const { outgoingId } = s.requestAuto();
+  s.sink.sendImpl = async () => ({ status: "uncertain", failure: "uncertain_outcome" });
+  await s.run();
+  expect(s.out(outgoingId)?.status).toBe("needs_attention");
+  s.outgoing.resolveNeedsAttention(outgoingId, "mark_sent");
+  expect(s.out(outgoingId)?.status).toBe("sent");
+  expect(s.eventsOf("autoreply.sent").map((e) => e.payload)).toEqual([{ autoReplyId: "ar1" }]);
+});
+
+test("M3: the slack.send executor refuses a policy approval (approval_kind_mismatch)", async () => {
+  const s = setup();
+  s.autoReply();
+  const { outgoingId, approvalId } = s.requestAuto();
+  // Route the policy approval to the user-send executor.
+  s.db
+    .update(schema.approvals)
+    .set({ action: "slack.send" })
+    .where(eq(schema.approvals.id, approvalId))
+    .run();
+  // The engine's own claim check would revoke it first (slack.send is not policy-gated); open it
+  // so the executor's check is what is exercised.
+  s.permissions.policyGateOpen = () => true;
+  await s.run();
+  expect(s.sink.calls).toHaveLength(0);
+  expect(s.out(outgoingId)?.status).toBe("pending");
+  expect(s.approval(approvalId)?.executionResult).toMatchObject({
+    status: "skipped",
+    reason: "approval_kind_mismatch",
+  });
+});
+
+test("M3: the engine itself revokes a policy approval routed to a non-policy-gated action", async () => {
+  const s = setup();
+  s.autoReply();
+  const { approvalId } = s.requestAuto();
+  s.db
+    .update(schema.approvals)
+    .set({ action: "slack.send" })
+    .where(eq(schema.approvals.id, approvalId))
+    .run();
+  await s.run();
+  expect(s.sink.calls).toHaveLength(0);
+  expect(s.approval(approvalId)?.status).toBe("revoked");
+});
+
+// M4
+test("M4: a policy_disabled revoke holds policy_disabled even if the gate reopened before the consumer", async () => {
+  const s = setup();
+  s.autoReply();
+  const { outgoingId, approvalId } = s.requestAuto();
+  let calls = 0;
+  // Open for revalidate, shut at the engine's claim, open again for the revoke consumer.
+  s.permissions.policyGateOpen = () => ++calls !== 2;
+  await s.run();
+  expect(calls).toBeGreaterThanOrEqual(2);
+  expect(s.sink.calls).toHaveLength(0);
+  expect(s.approval(approvalId)?.status).toBe("revoked");
+  expect(s.out(outgoingId)?.failure).toBe("cancelled_policy_disabled");
+  expect(s.ar()?.decision).toBe("held");
+  expect(s.ar()?.reason).toBe("policy_disabled");
+});
+
+// Concern 3
+test("follow-up history for an auto-send says auto_send_requested", () => {
+  const s = setup();
+  s.autoReply("ar1", { followupId: "f1" });
+  s.requestAuto({ followupId: "f1" });
+  const history = s.db
+    .select()
+    .from(schema.followupHistory)
+    .where(eq(schema.followupHistory.followupId, "f1"))
+    .all()
+    .map((h) => h.event);
+  expect(history).toContain("auto_send_requested");
+  expect(history).not.toContain("send_requested");
+});
+
+// I2: away ends while the run waits for a Claude slot.
+test("I2: away switched off while waiting for a slot cancels before spawn; held away_off, never uncertain", async () => {
+  const s = setup();
+  s.autoReply("ar1", { followupId: "f1" });
+  const { outgoingId, approvalId } = s.requestAuto({ followupId: "f1" });
+  s.sink.whileWaiting = () => s.settings.set("autoReply.awayMode", false, { emit: false });
+  await s.run();
+  expect(s.sink.calls).toHaveLength(1);
+  expect(s.sink.calls[0]?.opts?.beforeSpawn).toBeFunction();
+  expect(s.sink.sends).toHaveLength(0);
+  expect(s.out(outgoingId)?.status).toBe("failed");
+  expect(s.out(outgoingId)?.failure).toBe("cancelled_away_off");
+  expect(s.approval(approvalId)?.status).toBe("failed");
+  expect(s.ar()?.decision).toBe("held");
+  expect(s.ar()?.reason).toBe("away_off");
+  expect(s.ar()?.text).toBeNull();
+  expect(s.eventsOf("autoreply.held")).toHaveLength(1);
+  expect(s.eventsOf("autoreply.sent")).toHaveLength(0);
+  const f = s.db.select().from(schema.followups).where(eq(schema.followups.id, "f1")).get();
+  expect(f?.status).toBe("draft");
+  // Never uncertain: nothing to verify, nothing for the user to resolve.
+  const verify = s.db.select().from(schema.jobs).where(eq(schema.jobs.type, OUTGOING_VERIFY_JOB));
+  expect(verify.all()).toHaveLength(0);
+  s.expectNoContent();
+});
+
+test("I2: the gate shutting while waiting for a slot holds policy_disabled", async () => {
+  const s = setup();
+  s.autoReply();
+  const { outgoingId } = s.requestAuto();
+  s.sink.whileWaiting = () => s.permissions.setOverride("slack.auto_reply", "approval_required");
+  await s.run();
+  expect(s.sink.sends).toHaveLength(0);
+  expect(s.out(outgoingId)?.failure).toBe("cancelled_policy_disabled");
+  expect(s.ar()?.reason).toBe("policy_disabled");
+});
+
+test("I2: a new away session opened while waiting cancels the send", async () => {
+  const s = setup();
+  s.autoReply();
+  const { outgoingId } = s.requestAuto();
+  s.sink.whileWaiting = () => {
+    s.db
+      .update(schema.awaySessions)
+      .set({ endedAt: NOW })
+      .where(eq(schema.awaySessions.id, "s1"))
+      .run();
+    s.db.insert(schema.awaySessions).values({ id: "s2", startedAt: NOW }).run();
+  };
+  await s.run();
+  expect(s.sink.sends).toHaveLength(0);
+  expect(s.out(outgoingId)?.failure).toBe("cancelled_away_off");
+  expect(s.ar()?.reason).toBe("away_off");
 });

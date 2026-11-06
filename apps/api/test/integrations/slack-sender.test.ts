@@ -6,6 +6,7 @@ import {
   type CollectResult,
   JobError,
   type RawToolResult,
+  type RunOptions,
   type SendMessageCommand,
   type SourceMessage,
 } from "@synapse/contracts";
@@ -69,7 +70,7 @@ const result = (toolResults: RawToolResult[]): AIExecutionResult => ({
 });
 
 interface Setup {
-  run?: (req: ClaudeJobRequest) => Promise<AIExecutionResult>;
+  run?: (req: ClaudeJobRequest, opts?: RunOptions) => Promise<AIExecutionResult>;
   collect?: (req: CollectRequest) => Promise<CollectResult>;
   self?: string | null;
   runIds?: (string | null)[];
@@ -82,9 +83,9 @@ function setup(o: Setup = {}) {
   const runIds = [...(o.runIds ?? [null, "run-1"])];
   const sender = new SlackSender({
     orchestrator: {
-      run: async (req) => {
+      run: async (req, _signal, opts) => {
         seen.push(req);
-        return (o.run ?? (async () => result([tr(args)])))(req);
+        return (o.run ?? (async () => result([tr(args)])))(req, opts);
       },
     },
     searchSource: {
@@ -379,6 +380,28 @@ describe("SlackSender.send", () => {
       },
     });
     await expect(sender.send(cmd(), signal)).rejects.toBe(quota);
+  });
+
+  test("I2: beforeSpawn reaches the orchestrator; a cancel before spawn is rethrown, never uncertain", async () => {
+    const cancelled = new JobError({
+      kind: "cancelled_before_spawn",
+      message: "cancelled before spawn",
+      details: { notSpawned: true },
+    });
+    let seenOpts: RunOptions | undefined;
+    const { sender } = setup({
+      run: async (_req, opts) => {
+        seenOpts = opts;
+        if (opts?.beforeSpawn?.() === false) throw cancelled;
+        return result([tr(args)]);
+      },
+    });
+    const beforeSpawn = () => false;
+    await expect(sender.send(cmd(), signal, { beforeSpawn })).rejects.toBe(cancelled);
+    expect(seenOpts?.beforeSpawn).toBe(beforeSpawn);
+    // Without options nothing is passed.
+    await sender.send(cmd(), signal);
+    expect(seenOpts?.beforeSpawn).toBeUndefined();
   });
 
   test("a non-JobError is rethrown", async () => {

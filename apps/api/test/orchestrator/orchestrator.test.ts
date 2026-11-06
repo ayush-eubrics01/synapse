@@ -813,3 +813,96 @@ describe("recoverOrphanRuns", () => {
     expect(byId.r2?.error).toBeNull();
   });
 });
+
+describe("beforeSpawn (Phase 6b I2)", () => {
+  test("false: the provider is never called and the error is not-spawned cancelled_before_spawn", async () => {
+    let calls = 0;
+    const e = await fails(
+      orch.run(req(), S(), {
+        beforeSpawn: () => {
+          calls++;
+          return false;
+        },
+      }),
+    );
+    expect(calls).toBe(1);
+    expect(e.classified.kind).toBe("cancelled_before_spawn");
+    expect(e.classified.details?.notSpawned).toBe(true);
+    expect(e.classified.details?.uncertain).toBeUndefined();
+    expect(provider.requests).toHaveLength(0);
+    expect(runs()).toHaveLength(0);
+    // The slot was released.
+    settings.set("orchestrator.maxConcurrent", 1);
+    await run(req());
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("a throwing callback cancels the same way", async () => {
+    const e = await fails(
+      orch.run(req(), S(), {
+        beforeSpawn: () => {
+          throw new Error("boom");
+        },
+      }),
+    );
+    expect(e.classified.kind).toBe("cancelled_before_spawn");
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  test("true: the run proceeds", async () => {
+    await orch.run(req(), S(), { beforeSpawn: () => true });
+    expect(provider.requests).toHaveLength(1);
+    expect(runs()[0]?.status).toBe("succeeded");
+  });
+
+  test("it is called only after the slot is acquired", async () => {
+    settings.set("orchestrator.maxConcurrent", 1);
+    let release: (r: AIExecutionResult) => void = () => {};
+    provider.next = () =>
+      new Promise<AIExecutionResult>((r) => {
+        release = r;
+      });
+    const first = run(req());
+    await new Promise((r) => setTimeout(r, 0));
+    let calls = 0;
+    const second = orch.run(req(), S(), {
+      beforeSpawn: () => {
+        calls++;
+        return true;
+      },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toBe(0);
+    provider.next = () => result();
+    release(result());
+    await first;
+    await second;
+    expect(calls).toBe(1);
+  });
+
+  test("it is not called when the quota re-check after the slot fails", async () => {
+    settings.set("orchestrator.maxConcurrent", 1);
+    let release: (r: AIExecutionResult) => void = () => {};
+    provider.next = () =>
+      new Promise<AIExecutionResult>((r) => {
+        release = r;
+      });
+    const first = run(req());
+    await new Promise((r) => setTimeout(r, 0));
+    let calls = 0;
+    const second = fails(
+      orch.run(req({ priorityClass: "batch" }), S(), {
+        beforeSpawn: () => {
+          calls++;
+          return true;
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    snap(0.9, "allowed", "2026-11-05T14:00:00.000Z");
+    release(result());
+    await first;
+    expect((await second).classified.kind).toBe("quota_exhausted");
+    expect(calls).toBe(0);
+  });
+});

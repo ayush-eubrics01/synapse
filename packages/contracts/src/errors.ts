@@ -14,6 +14,8 @@ export type ErrorKind =
   | "needs_attention"
   | "provider_error"
   | "timeout"
+  /** A run option's `beforeSpawn` refused just before the provider ran: nothing was spawned. */
+  | "cancelled_before_spawn"
   | "unknown";
 
 export const errorKindSchema = z.enum([
@@ -30,6 +32,7 @@ export const errorKindSchema = z.enum([
   "needs_attention",
   "provider_error",
   "timeout",
+  "cancelled_before_spawn",
   "unknown",
 ] as const satisfies readonly ErrorKind[]);
 
@@ -65,6 +68,7 @@ const DECISIONS: Record<ErrorKind, RetryDecision> = {
   parse_failed: "needs_attention",
   needs_attention: "needs_attention",
   invalid_input: "fail",
+  cancelled_before_spawn: "fail",
   quota_exhausted: "defer",
   auth_paused: "defer",
 };
