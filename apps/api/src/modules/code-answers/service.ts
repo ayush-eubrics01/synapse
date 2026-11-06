@@ -12,6 +12,7 @@ import {
 import { type Db, type DbOrTx, schema, type Tx } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
 import { and, desc, eq, inArray, isNotNull, like, lt, or, sql } from "drizzle-orm";
+import { type ApprovalEngine, InvalidApprovalTransition } from "../../core/approvals/approvals";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { SettingsService } from "../../core/config/settings";
 import type { EventPublisher } from "../../core/events/publisher";
@@ -85,6 +86,7 @@ export interface CodeAnswerServiceDeps {
   settings: Pick<SettingsService, "get">;
   securityFlags: Pick<SecurityFlagsService, "recordAiFlag" | "recordRuntimeFlag">;
   outgoing: Pick<OutgoingService, "requestSend">;
+  approvals: Pick<ApprovalEngine, "reject" | "revoke">;
 }
 
 export interface CodeAnswerTarget {
@@ -552,9 +554,36 @@ export class CodeAnswerService {
     );
   }
 
+  /**
+   * A held away answer carries a user review approval. Dismissing the answer withdraws it: a pending
+   * approval is rejected and an approved, unclaimed one revoked, so the outgoing consumer fails the
+   * linked outgoing row as for any other withdrawn send. Runs before the dismiss transaction (the
+   * engine opens its own). An approval already decided or claimed is left alone.
+   */
+  private cancelPendingReview(id: string): void {
+    const { db, approvals } = this.deps;
+    const row = this.row(db, id);
+    if (!row || !DISMISSABLE.includes(row.status) || row.outgoingId === null) return;
+    const a = db
+      .select({ id: schema.approvals.id, status: schema.approvals.status })
+      .from(schema.outgoingMessages)
+      .innerJoin(schema.approvals, eq(schema.approvals.id, schema.outgoingMessages.approvalId))
+      .where(eq(schema.outgoingMessages.id, row.outgoingId))
+      .get();
+    if (!a) return;
+    try {
+      if (a.status === "pending") approvals.reject(a.id, "code_answer_dismissed");
+      else if (a.status === "approved") approvals.revoke(a.id, "code_answer_dismissed");
+    } catch (e) {
+      if (e instanceof InvalidApprovalTransition) throw new CodeAnswerError("invalid_state");
+      throw e;
+    }
+  }
+
   /** The user drops an answer. Only a settled row can be dismissed (not queued, running or sent). */
   dismiss(id: string): void {
     const { db, audit } = this.deps;
+    this.cancelPendingReview(id);
     db.transaction(
       (tx) => {
         const row = this.row(tx, id);

@@ -382,7 +382,15 @@ export class ClaudeActivityService implements UserActivitySignal {
       const prs = db
         .select({ pr: claudeSessionPrs, taskId: engineeringTasks.id })
         .from(claudeSessionPrs)
-        .leftJoin(engineeringTasks, eq(engineeringTasks.prUrl, claudeSessionPrs.prUrl))
+        // Two tasks may share a pr_url: pick the most recent one (largest created_at, then id) so a
+        // PR is never listed twice.
+        .leftJoin(
+          engineeringTasks,
+          eq(
+            engineeringTasks.id,
+            sql`(select t.id from engineering_tasks t where t.pr_url = ${claudeSessionPrs.prUrl} order by t.created_at desc, t.id desc limit 1)`,
+          ),
+        )
         .where(eq(claudeSessionPrs.repositoryId, r.id))
         .orderBy(desc(claudeSessionPrs.firstSeenAt))
         .limit(VIEW_LIMIT)

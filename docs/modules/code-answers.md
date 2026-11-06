@@ -21,11 +21,11 @@ The reply is one fenced json block, parsed strictly: `answerable`, `answer` (1 t
 
 ## Table `code_answers` (migration 0020)
 
-Statuses: `queued`, `running`, `ready`, `not_answerable`, `unverified`, `failed`, `held`, `sent`, `dismissed`. One live row per (message, repository, trigger): a partial unique index over rows not `failed` or `dismissed`, so a retry replaces a failed row. `failure` holds a fixed code, never message text or a path. An orphaned `running` row (restart) is reclaimed by a recovery sweep at start. `answer` is nulled with Slack content after `retention.slackContentDays`, together with any injection quote. A repository unregistered while a job is queued leaves `repository_id` null and the row ends `failed` / `repository_unavailable` without a retry.
+Statuses: `queued`, `running`, `ready`, `not_answerable`, `unverified`, `failed`, `held`, `sent`, `dismissed`. One live row per (message, repository, trigger): a partial unique index over rows not `failed` or `dismissed`, so a retry replaces a failed row. `failure` holds a fixed code, never message text or a path. A recovery sweep (at startup and in the reaper) fails orphaned `running` rows as `interrupted`; the prepare step reclaims a row only on its own job's re-entry. `answer` is nulled with Slack content after `retention.slackContentDays`, together with any injection quote. A repository unregistered while a job is queued leaves `repository_id` null and the row ends `failed` / `repository_unavailable` without a retry.
 
 ## User trigger (C5)
 
-- `POST /api/inbox/messages/:id/code-answer {repositoryId}`: 202 `{codeAnswerId}`; 404 `not_found`; 400 `invalid_repository`; 409 `already_running` or `already_answered`. Job key `code-answer:<messageId>:<repoId>`.
+- `POST /api/inbox/messages/:id/code-answer {repositoryId}`: 202 `{codeAnswerId}`; 404 `not_found`; 400 `invalid_repository`; 409 `already_running` or `already_answered`. Job key `code-answer:<messageId>:<repoId>:<codeAnswerId>`.
 - `GET /api/inbox/messages/:id/code-answers`: the message's rows.
 - `POST /api/code-answers/:id/dismiss`: 204.
 - `POST /api/code-answers/:id/send {text, useAnyway?}`: requests the send through `OutgoingService.requestSend` (a normal `slack.send` approval, exact text, no tag). Errors carry a fixed code only; the body never echoes text.

@@ -507,6 +507,17 @@ describe("evaluate: before the session or already answered", () => {
     expect(ack(m.id)).toMatchObject({ status: "held", reason: "already_answered" });
   });
 
+  test("the user's own tagged auto-reply is not an answer: not already_answered", () => {
+    const m = msg();
+    msg({
+      sender: "u-self",
+      text: "Back later.\n\nSent using @claude",
+      thread: m.ts,
+      sentAt: later(MIN),
+    });
+    expect(ack(m.id).status).toBe("sent");
+  });
+
   test("in a channel, a reply by the user in another thread is not an answer", () => {
     const m = msg();
     msg({ sender: "u-self", text: "elsewhere", thread: TS, sentAt: later(MIN) });

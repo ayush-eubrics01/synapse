@@ -168,6 +168,36 @@ describe("scan", () => {
     });
   });
 
+  test("view lists a PR once and links the most recent task when two tasks share its pr_url", async () => {
+    await (async () => {
+      write(ID, baseLines(), 30);
+      await service().scan();
+    })();
+    const url = "https://github.com/demo-org/demo-app/pull/7";
+    const task = (id: string, createdAt: string) =>
+      db
+        .insert(schema.engineeringTasks)
+        .values({
+          id,
+          repositoryId: repoId,
+          source: "manual",
+          title: "t",
+          draftDescription: "d",
+          status: "completed",
+          prUrl: url,
+          createdAt,
+          updatedAt: createdAt,
+        })
+        .run();
+    task("task-old", "2026-11-01T00:00:00.000Z");
+    task("task-new", "2026-11-02T00:00:00.000Z");
+    const repo = service()
+      .view()
+      .repositories.find((r) => r.repositoryId === repoId);
+    expect(repo?.prs).toHaveLength(1);
+    expect(repo?.prs[0]?.engineeringTaskId).toBe("task-new");
+  });
+
   test("unchanged file is skipped without reads; an append reads only new bytes", async () => {
     const path = write(ID, baseLines(), 30);
     const svc = service();

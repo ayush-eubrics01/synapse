@@ -132,6 +132,14 @@ beforeEach(() => {
         throw new Error("never sends");
       },
     },
+    approvals: {
+      reject: () => {
+        throw new Error("never rejects");
+      },
+      revoke: () => {
+        throw new Error("never revokes");
+      },
+    } as never,
   });
   const parent = tempDir();
   roots.push(parent);

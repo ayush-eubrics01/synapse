@@ -82,7 +82,7 @@ export class InboxConversations {
         text: schema.outgoingMessages.text,
         status: schema.outgoingMessages.status,
         at: schema.outgoingMessages.sendingAt,
-        auto: sql<number>`exists (select 1 from auto_replies ar where ar.outgoing_id = outgoing_messages.id)`,
+        auto: sql<number>`exists (select 1 from auto_replies ar where ar.outgoing_id = outgoing_messages.id and ar.decision = 'sent')`,
       })
       .from(schema.outgoingMessages)
       .where(

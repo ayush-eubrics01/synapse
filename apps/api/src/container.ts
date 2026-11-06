@@ -378,6 +378,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     settings,
     securityFlags,
     outgoing,
+    approvals,
   });
   const autoReply = new AutoReplyService({
     db,

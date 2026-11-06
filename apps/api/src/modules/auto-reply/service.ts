@@ -34,7 +34,7 @@ import type { CodeAnswerService } from "../code-answers/service";
 import { AutoSendBlocked, type OutgoingService } from "../outgoing/service";
 import type { PeopleService } from "../people/service";
 import type { SecurityFlagsService } from "../security-flags/service";
-import { ACK_TEXT, decideAutoReply, withAutoReplyTag } from "./policy";
+import { ACK_TEXT, decideAutoReply, hasAutoReplyTag, withAutoReplyTag } from "./policy";
 
 const {
   awaySessions,
@@ -665,11 +665,15 @@ export class AutoReplyService {
     const self = this.deps.settings.get("slack.selfUserId");
     if (!self) return true;
     const thread = m.threadTs ?? m.ts;
-    return (
-      this.selfMessage(
-        tx,
-        self,
+    // Synapse's own away replies are posted as the user and carry the tag: they are not the user
+    // answering, so an earlier auto-acknowledgement does not make a later answer `already_answered`.
+    const rows = tx
+      .select({ text: slackMessages.text })
+      .from(slackMessages)
+      .innerJoin(slackUsers, eq(slackUsers.id, slackMessages.senderUserId))
+      .where(
         and(
+          eq(slackUsers.externalId, self),
           eq(slackMessages.conversationId, m.conversationId),
           ne(slackMessages.id, m.id),
           gte(slackMessages.sentAt, m.sentAt),
@@ -677,8 +681,9 @@ export class AutoReplyService {
             ? or(eq(slackMessages.threadTs, thread), eq(slackMessages.ts, thread))
             : undefined,
         ),
-      ) !== undefined
-    );
+      )
+      .all();
+    return rows.some((r) => r.text === null || !hasAutoReplyTag(r.text));
   }
 
   private selfMessage(tx: DbOrTx, self: string, where: ReturnType<typeof and>) {

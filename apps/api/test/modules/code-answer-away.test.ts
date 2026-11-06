@@ -415,6 +415,20 @@ describe("away decision (C7)", () => {
     }
   });
 
+  test("dismissing a held answer rejects its pending review approval and fails the outgoing", async () => {
+    const a = seedAway();
+    evaluate(a.id);
+    const [ap] = approvals();
+    expect(ap?.status).toBe("pending");
+    c.codeAnswers.dismiss(a.id);
+    c.dispatcher.dispatchOnce();
+    expect(row(a.id)?.status).toBe("dismissed");
+    expect(approvals()[0]?.status).toBe("rejected");
+    expect(outgoing()[0]).toMatchObject({ status: "failed", failure: "rejected" });
+    while (await c.worker.runOnce()) c.dispatcher.dispatchOnce();
+    expect(sink.sends).toHaveLength(0);
+  });
+
   test("the user can approve the review send; its delivery is not reported as an auto-reply", async () => {
     const a = seedAway();
     evaluate(a.id);

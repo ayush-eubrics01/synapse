@@ -150,3 +150,13 @@ Away mode itself is the `autoReply.awayMode` key in `app_settings`, with changes
 | `claude_sessions` | Owned by `claude-activity` (ADR-036). `session_id` PK, `repository_id` FK (cascade), `cwd`, `git_branch?`, `title?`, `first_at`, `last_at`, `version?`, `entrypoint?`, `file_path` unique, `file_offset` (bytes fully parsed), `file_size`, `file_mtime_ms`, `updated_at`. Index on (`repository_id`, `last_at`). Metadata only, never message content |
 | `claude_session_prs` | Owned by `claude-activity`. `id`, `session_id` FK (cascade), `repository_id`, `pr_url` unique, `pr_number`, `pr_repository`, `git_branch?`, `first_seen_at`, `reminded_at?`. Index on `repository_id`. Links to engineering tasks and projects are computed on read |
 | `code_answers` | Owned by `code-answers`. `id`, `message_id` FK `slack_messages`, `repository_id?` FK (set null), `trigger` (`user`\|`away`), `status` (`queued`, `running`, `ready`, `not_answerable`, `unverified`, `failed`, `held`, `sent`, `dismissed`), `answer?`, `confidence?`, `evidence` (json, verified repository-relative paths), `dropped_evidence_count`, `suspected_injection?` (json), `not_answerable_reason?`, `claude_run_id?`, `failure?` (fixed code), `auto_reply_id?` FK, `outgoing_id?`, `created_at`, `updated_at`. Partial unique index `code_answers_live_uq` on (`message_id`, `repository_id`, `trigger`) where status not in (`failed`, `dismissed`). `answer` is nulled by Slack retention |
+
+## Dashboard tables (owned by `dashboard`)
+
+`dashboard_layouts`, `dashboard_widgets`, `dashboard_widget_settings`.
+
+## Retention
+
+Slack message content is kept for 180 days (configurable). The cleanup job sets `slack_messages.text = NULL`, deletes local attachments, and sets `content_expired_at`, keeping IDs, `ts` and permalinks. People profiles, commitments, follow-ups, Engineering Brain records, approvals and audit events are never deleted by message retention. The same job also clears text derived from Slack content (Phase 6b): `auto_replies.text`, the text of `sent`/`failed` outgoing messages (blanked to `''`) and the draft of `sent`/`discarded`/`failed` follow-ups, for rows created before the cutoff. Rows in any other status keep their text. Evidence rows keep `source_external_ref`, so the UI can show "original message no longer available locally."
+
+Phase 10b: `code_answers.answer`, `not_answerable_reason` and the `suspected_injection` quote are nulled with Slack content after `retention.slackContentDays`; the rows are kept.
