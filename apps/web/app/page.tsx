@@ -3,6 +3,7 @@
 import type {
   ApprovalView,
   AwayDigest,
+  BackupEntry,
   CandidatesResponse,
   ClaudeActivityView,
   CodeAnswerView,
@@ -18,6 +19,7 @@ import type {
   ProjectDetail,
   RecommendationView,
   RepositoryView,
+  RuntimeView,
 } from "@synapse/contracts";
 import {
   type DashboardLayout,
@@ -60,6 +62,7 @@ import {
   type GroupedFlagsDto,
   getApprovals,
   getAwayDigest,
+  getBackups,
   getCandidates,
   getClaudeActivity,
   getClaudeRuns,
@@ -81,6 +84,7 @@ import {
   getProjects,
   getRecommendations,
   getRepositories,
+  getRuntime,
   getSecurityFlags,
   getSettings,
   getSlackIdentity,
@@ -97,12 +101,14 @@ import {
   registerRepository,
   resetLayout,
   type SecurityFlagDto,
+  type SettingsDto,
   type SlackIdentityDto,
   type SlackStatusDto,
   sendCodeAnswer,
   setCommitmentStatus,
   setPersonPriority,
   skipUnreadablePage,
+  startBackup,
   type UrgentItemDto,
   updateLayout,
   updateMilestone,
@@ -158,6 +164,7 @@ import { Sidebar } from "./components/shell/Sidebar";
 import { ClaudeCodeCard } from "./components/system/ClaudeCodeCard";
 import { ClaudeSettings } from "./components/system/ClaudeSettings";
 import { Running } from "./components/system/Running";
+import { RuntimePanel } from "./components/system/RuntimePanel";
 import { SystemDetails } from "./components/system/SystemDetails";
 import { NeedsYou } from "./components/triage/NeedsYou";
 import { BACKFILL_CARD_ID } from "./components/triage/SetupCards";
@@ -317,7 +324,10 @@ export default function Dashboard() {
   });
   const [projectDetails, setProjectDetails] = useState<ProjectDetail[]>([]);
   const [claudeActivity, setClaudeActivity] = useState<ClaudeActivityView | null>(null);
-  const [claudeSettings, setClaudeSettings] = useState<ClaudeSettingsDto | null>(null);
+  const [claudeSettings, setClaudeSettings] = useState<SettingsDto | null>(null);
+  const [runtime, setRuntime] = useState<RuntimeView | null>(null);
+  const [backups, setBackups] = useState<BackupEntry[]>([]);
+  const [backupPending, setBackupPending] = useState(false);
   const [engineeringTasks, setEngineeringTasks] = useState<EngineeringTaskView[]>([]);
   const [engineeringDetails, setEngineeringDetails] = useState<
     Record<string, EngineeringTaskDetail>
@@ -413,6 +423,8 @@ export default function Dashboard() {
       ca,
       st,
       lo,
+      rt,
+      bk,
     ] = await Promise.allSettled([
       getApprovals(),
       getJobs(20),
@@ -442,6 +454,8 @@ export default function Dashboard() {
       getClaudeActivity(),
       getSettings(),
       getLayouts(),
+      getRuntime(),
+      getBackups(),
     ]);
     if (a.status === "fulfilled") setApprovals(a.value);
     if (j.status === "fulfilled") setJobs(j.value);
@@ -467,6 +481,8 @@ export default function Dashboard() {
     if (rp.status === "fulfilled") setRepos(rp.value);
     if (ca.status === "fulfilled") setClaudeActivity(ca.value);
     if (st.status === "fulfilled") setClaudeSettings(st.value);
+    if (rt.status === "fulfilled") setRuntime(rt.value);
+    if (bk.status === "fulfilled") setBackups(bk.value);
     // A refresh that lands while an edit is debounced or in flight must not undo that edit.
     // A fetch that began before a save settled is older than that save and is dropped.
     if (lo.status === "fulfilled" && !saver.isBusy() && gate.isCurrent(layoutToken))
@@ -997,6 +1013,11 @@ export default function Dashboard() {
     { id: "act-theme", label: "Toggle theme", group: "action", run: toggleTheme },
   ];
 
+  // The latest backup job's own status, not the click, says whether a backup failed.
+  const latestBackupJob = jobs
+    .filter((j) => j.type === "ops.backup")
+    .reduce<Job | null>((a, j) => (a === null || j.createdAt > a.createdAt ? j : a), null);
+  const lastBackupFailed = latestBackupJob?.status === "FAILED";
   const sectionBodies: Record<DashboardSectionId, ReactNode> = {
     triage: (
       <>
@@ -1161,6 +1182,38 @@ export default function Dashboard() {
           runs={claudeRuns}
           onSkip={() => void skipPage()}
           now={now}
+        />
+        <RuntimePanel
+          runtime={runtime}
+          backups={backups}
+          settings={claudeSettings}
+          now={now}
+          backupPending={backupPending}
+          lastBackupFailed={lastBackupFailed}
+          onBackupNow={() => {
+            setBackupPending(true);
+            void startBackup()
+              .then(() => {
+                toast.show("Backup started");
+                void refresh();
+              })
+              .catch((e: unknown) =>
+                toast.show(
+                  e instanceof ApiError && e.status === 409
+                    ? "A backup is already running"
+                    : "Couldn't start the backup",
+                ),
+              )
+              .finally(() => setBackupPending(false));
+          }}
+          onSetting={(key, value) => {
+            void putSettings({ [key]: value })
+              .then(setClaudeSettings)
+              .catch(() => {
+                toast.show("Could not save that setting");
+                void refresh();
+              });
+          }}
         />
         <ClaudeSettings
           values={claudeSettings}

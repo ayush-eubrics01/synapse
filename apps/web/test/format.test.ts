@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { dateLine, dayLabel, greeting, relMinutes, timeOfDay } from "../lib/format";
+import { dateLine, dayLabel, formatBytes, greeting, relMinutes, timeOfDay } from "../lib/format";
 
 const at = (h: number, m = 0) => new Date(2026, 10, 6, h, m);
 
@@ -49,4 +49,10 @@ test("dayLabel says Today, Yesterday, or the weekday and date", () => {
   expect(dayLabel(new Date(2026, 10, 5, 0, 1).toISOString(), now)).toBe("Yesterday");
   expect(dayLabel(new Date(2026, 10, 4, 12).toISOString(), now)).toBe("Wednesday, 4 November");
   expect(dayLabel(new Date(2025, 10, 4, 12).toISOString(), now)).toBe("Tuesday, 4 November 2025");
+});
+
+test("formatBytes uses binary units", () => {
+  expect(formatBytes(0)).toBe("0 B");
+  expect(formatBytes(1536)).toBe("1.5 KiB");
+  expect(formatBytes(5 * 2 ** 30)).toBe("5.0 GiB");
 });

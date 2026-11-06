@@ -13,7 +13,7 @@ import { type Clock, newId, systemClock } from "@synapse/shared";
 import { ApprovalEngine } from "./core/approvals/approvals";
 import { registerApprovalExecution } from "./core/approvals/execution";
 import { AuditLogger } from "./core/audit/audit";
-import { type AppConfig, checkBackupDir, resolveHome } from "./core/config/config";
+import { type AppConfig, checkBackupDir, REPO_ROOT, resolveHome } from "./core/config/config";
 import { SettingsService } from "./core/config/settings";
 import { OutboxDispatcher } from "./core/events/dispatcher";
 import { LiveBus } from "./core/events/live-bus";
@@ -44,6 +44,7 @@ import { NotificationService } from "./core/notifications/notifications";
 import { BackupService } from "./core/ops/backup";
 import { DatabaseIntegrity } from "./core/ops/integrity";
 import { RetentionService } from "./core/ops/retention";
+import { RuntimeService, readVersion } from "./core/ops/runtime";
 import { AuthMonitor } from "./core/orchestrator/auth";
 import { ClaudeOrchestrator } from "./core/orchestrator/orchestrator";
 import { PermissionManager } from "./core/permissions/permissions";
@@ -138,6 +139,7 @@ export interface Container {
   backup: BackupService;
   integrity: DatabaseIntegrity;
   retention: RetentionService;
+  runtime: RuntimeService;
   startedAt: Date;
   /** Claude Code session observation (Phase 10b, ADR-036). */
   claudeActivity: ClaudeActivityService;
@@ -681,6 +683,18 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     diskFree,
   });
   const integrity = new DatabaseIntegrity(sqlite, clock);
+  const runtime = new RuntimeService({
+    db,
+    sqlite,
+    clock,
+    settings,
+    startedAt,
+    dbPath: config.dbPath,
+    dataDir,
+    diskFree,
+    backup,
+    version: readVersion(REPO_ROOT, run),
+  });
   const retention = new RetentionService({ db, sqlite, clock, settings, audit, integrity });
   registerOpsJobs({ db, handlers, scheduler, queue, settings, clock, backup, retention });
 
@@ -747,6 +761,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     backup,
     integrity,
     retention,
+    runtime,
     startedAt,
     claudeActivity,
     inbox,

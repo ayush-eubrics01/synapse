@@ -427,3 +427,19 @@
   color: var(--faint);
   white-space: nowrap;
 }
+
+.syn-runtime .syn-card-head:not(:first-child) {
+  margin-top: 16px;
+}
+
+.syn-runtime-error {
+  margin: 8px 0;
+  font-size: 13px;
+  color: var(--redFg);
+}
+
+.syn-backups {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}

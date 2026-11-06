@@ -2,6 +2,7 @@ import type {
   Approval,
   ApprovalView,
   AwayDigest,
+  BackupEntry,
   CandidatesResponse,
   ClaudeActivityView,
   CodeAnswerView,
@@ -41,6 +42,7 @@ import type {
   RepositoryRegisterInput,
   RepositoryUpdateInput,
   RepositoryView,
+  RuntimeView,
   UpcomingMilestone,
   UrgencyStatus,
   UrgentItem,
@@ -1052,4 +1054,17 @@ export async function deleteLayout(id: string, fetchImpl: typeof fetch = fetch):
     { method: "DELETE" },
     fetchImpl,
   );
+}
+
+export function getRuntime(fetchImpl: typeof fetch = fetch): Promise<RuntimeView> {
+  return request("/api/system/runtime", undefined, fetchImpl);
+}
+
+export function getBackups(fetchImpl: typeof fetch = fetch): Promise<BackupEntry[]> {
+  return request("/api/system/backups", undefined, fetchImpl);
+}
+
+/** 202 with the job id; 409 (`already_running`) when a manual backup is already queued or running. */
+export function startBackup(fetchImpl: typeof fetch = fetch): Promise<{ jobId: string }> {
+  return request("/api/system/backups", { method: "POST" }, fetchImpl, [202]);
 }
