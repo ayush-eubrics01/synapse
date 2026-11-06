@@ -1,6 +1,9 @@
 [Unit]
 Description=Synapse web
 After=synapse-api.service
+Wants=synapse-api.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -10,7 +13,9 @@ Environment=SYNAPSE_DB_PATH={{DB_PATH}}
 Restart=on-failure
 RestartSec=5
 KillSignal=SIGTERM
-TimeoutStopSec=20
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=yes
 
 [Install]
 WantedBy=default.target

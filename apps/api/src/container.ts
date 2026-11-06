@@ -125,6 +125,7 @@ export interface Container {
   live: LiveBus;
   queue: JobQueue;
   worker: JobWorker;
+  workerId: string;
   leases: LeaseService;
   scheduler: SchedulerService;
   settings: SettingsService;
@@ -272,8 +273,9 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   }
   scheduler.upsert(HEARTBEAT_SCHEDULE);
 
+  const workerId = `${hostname()}-${process.pid}-${newId()}`;
   const worker = new JobWorker(queue, handlers, {
-    workerId: `${hostname()}-${process.pid}-${newId()}`,
+    workerId,
     concurrency: config.workerConcurrency,
     onSettled: (job) => live.publish({ type: "job.updated", data: job }),
   });
@@ -747,6 +749,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     live,
     queue,
     worker,
+    workerId,
     leases,
     scheduler,
     settings,
