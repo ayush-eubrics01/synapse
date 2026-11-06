@@ -48,3 +48,43 @@ export function taskBranchName(id: string, title: string): string {
     .replace(/-+$/g, "");
   return `synapse/${id.slice(0, 8)}-${slug === "" ? "task" : slug}`;
 }
+
+/**
+ * Phase 10: the fixed reason codes an engineering task can carry in `failure` or a step output, or
+ * an engineering route can answer with, beyond the git, pull request and error-kind lists
+ * (`GIT_PREFLIGHT_REASONS`, `GIT_WORKFLOW_ERROR_CODES`, `GIT_UNSAFE_REASONS`, `PR_ERROR_CODES`,
+ * `errorKindSchema`). Client code labels every one of them (`reasonLabel`); a test keeps the two in step.
+ */
+export const ENGINEERING_REASON_CODES = [
+  // Route refusals (E19).
+  "not_found",
+  "invalid_input",
+  "invalid_state",
+  "ambiguous_repository",
+  "repository_required",
+  "no_content",
+  "unknown_branch",
+  "unknown_environment",
+  "protected_branch",
+  "unsafe_test_command",
+  "path_unavailable",
+  // Step outcomes.
+  "unsafe_change",
+  "no_changes",
+  "config_changed",
+  "parent_conflict",
+  "merge_conflict",
+  "pr_head_moved",
+  "branch_kept",
+  "pushed_not_pr",
+  "resume_unsafe",
+  "branch_changed",
+  "revalidate_failed",
+  "invalid_payload",
+  "unsupported_remote",
+  "state_changed",
+  "lock_held",
+  "max_turns",
+  "timeout",
+] as const;
+export type EngineeringReasonCode = (typeof ENGINEERING_REASON_CODES)[number];

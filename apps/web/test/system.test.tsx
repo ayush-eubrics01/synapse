@@ -72,7 +72,7 @@ test("Running shows four stages with data-state, the explainer and the Claude lo
   expect(html).toContain("Succeeded · 11.4s");
   expect(html).toContain("collector · haiku");
   expect(html).toContain("None running");
-  expect(html).toContain("lock not in use yet");
+  expect(html).toContain("lock free");
   expect(html).toContain("ok · jobs allowed");
 });
 

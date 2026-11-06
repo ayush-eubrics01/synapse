@@ -166,6 +166,7 @@ test("sidebarItems shows the Needs-you card count and marks it hot", () => {
     "commitments",
     "jira",
     "projects",
+    "engineering",
     "people",
     "system",
   ]);

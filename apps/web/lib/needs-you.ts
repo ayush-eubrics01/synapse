@@ -2,6 +2,7 @@ import type {
   ApprovalView,
   AwayDigest,
   CandidatesResponse,
+  EngineeringTaskView,
   JiraIssueView,
   ProjectFactView,
   RecommendationView,
@@ -20,6 +21,7 @@ import type {
 } from "./api";
 import { backfillAction } from "./backfill-action";
 import { brainFactKey } from "./brain";
+import { isEngineeringApproval } from "./engineering";
 import { conversationLabel } from "./format";
 
 /** A send whose delivery Synapse could not confirm: the user decides (mark sent, resend, discard). */
@@ -54,6 +56,9 @@ export type NeedsCard = CardBase &
     | { kind: "urgent"; data: UrgentItemDto }
     | { kind: "outgoing"; data: OutgoingAttention }
     | { kind: "approval"; data: ApprovalView }
+    | { kind: "engineering-approval"; data: ApprovalView }
+    | { kind: "engineering-plan"; data: EngineeringTaskView }
+    | { kind: "engineering-attention"; data: EngineeringTaskView }
     | { kind: "flag"; data: GroupedFlagsDto }
     | { kind: "followup"; data: FollowupViewDto }
     | { kind: "commitment"; data: CommitmentViewDto }
@@ -91,6 +96,8 @@ export interface NeedsYouInput {
   brainReview?: BrainReviewFact[];
   /** Registered repositories; null until loaded, so a slow load never shows the setup card. */
   repositories?: RepositoryView[] | null;
+  /** Engineering tasks (Phase 10); absent in older callers. */
+  engineeringTasks?: EngineeringTaskView[];
   /** Keys of items pending a deferred commit (spec D8): never shown, whatever the data says. */
   hidden: Set<string>;
 }
@@ -111,6 +118,8 @@ const FLAG_RANK: Record<GroupedFlagsDto["maxSeverity"], number> = {
 const AWAY_DIGEST_RANK = -1;
 const RANK = {
   outgoing: 10,
+  /** After urgent items and sends, before every other approval. */
+  engineering: 15,
   approval: 20,
   followup: 40,
   commitment: 50,
@@ -203,7 +212,34 @@ export function buildNeedsYou(input: NeedsYouInput): NeedsCard[] {
   );
   for (const a of input.approvals) {
     if (onRecommendation.has(a.id)) continue;
+    if (isEngineeringApproval(a)) {
+      cards.push({
+        key: `approval:${a.id}`,
+        kind: "engineering-approval",
+        rank: RANK.engineering,
+        data: a,
+      });
+      continue;
+    }
     cards.push({ key: `approval:${a.id}`, kind: "approval", rank: RANK.approval, data: a });
+  }
+
+  for (const t of input.engineeringTasks ?? []) {
+    if (t.status === "needs_attention") {
+      cards.push({
+        key: `eng-attention:${t.id}`,
+        kind: "engineering-attention",
+        rank: RANK.engineering,
+        data: t,
+      });
+    } else if (t.status === "planned") {
+      cards.push({
+        key: `eng-plan:${t.id}`,
+        kind: "engineering-plan",
+        rank: RANK.engineering,
+        data: t,
+      });
+    }
   }
 
   for (const g of input.flags) {
@@ -324,6 +360,8 @@ const CLEAR: Array<{ kind: NeedsKind; label: string; value: string }> = [
 
 /** One "✓" row for each of these categories that has no card. */
 export function allClearRows(input: NeedsYouInput): Array<{ label: string; value: string }> {
-  const kinds = new Set(buildNeedsYou(input).map((c) => c.kind));
+  const kinds = new Set<NeedsKind>(
+    buildNeedsYou(input).map((c) => (c.kind === "engineering-approval" ? "approval" : c.kind)),
+  );
   return CLEAR.filter((r) => !kinds.has(r.kind)).map(({ label, value }) => ({ label, value }));
 }

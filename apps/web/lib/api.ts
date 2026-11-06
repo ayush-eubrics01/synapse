@@ -9,6 +9,10 @@ import type {
   ConversationSummary,
   ConversationThread,
   DashboardOverview,
+  EngineeringTaskCreateInput,
+  EngineeringTaskDetail,
+  EngineeringTaskStatus,
+  EngineeringTaskView,
   EvaluateResult,
   FlagStatus,
   FollowupView,
@@ -795,4 +799,100 @@ export function deleteMilestone(
 
 export function getUpcoming(fetchImpl: typeof fetch = fetch): Promise<UpcomingMilestone[]> {
   return request("/api/brain/upcoming", undefined, fetchImpl);
+}
+
+// ---- Engineering automation (Phase 10, E19) ----
+
+export function getEngineeringTasks(
+  status?: EngineeringTaskStatus,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EngineeringTaskView[]> {
+  const q = status ? `?status=${encodeURIComponent(status)}` : "";
+  return request(`/api/engineering/tasks${q}`, undefined, fetchImpl);
+}
+
+/** The only read that carries the plan and step outputs (diff text, test tail). */
+export function getEngineeringTask(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EngineeringTaskDetail> {
+  return request(`/api/engineering/tasks/${encodeURIComponent(id)}`, undefined, fetchImpl);
+}
+
+export function createEngineeringTask(
+  input: EngineeringTaskCreateInput,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EngineeringTaskDetail> {
+  return send("POST", "/api/engineering/tasks", input, fetchImpl);
+}
+
+/** A refusal (`ambiguous_repository`, `no_content`, ...) is an ApiError whose `code` is the reason. */
+export function createTaskFromJira(
+  key: string,
+  repositoryId?: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EngineeringTaskDetail> {
+  return send(
+    "POST",
+    "/api/engineering/tasks/from-jira",
+    repositoryId ? { key, repositoryId } : { key },
+    fetchImpl,
+  );
+}
+
+export function createTaskFromSlack(
+  messageId: string,
+  repositoryId?: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EngineeringTaskDetail> {
+  return send(
+    "POST",
+    "/api/engineering/tasks/from-slack",
+    repositoryId ? { messageId, repositoryId } : { messageId },
+    fetchImpl,
+  );
+}
+
+export function approveTaskDescription(
+  id: string,
+  description: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EngineeringTaskDetail> {
+  return send(
+    "POST",
+    `/api/engineering/tasks/${encodeURIComponent(id)}/approve-description`,
+    { description },
+    fetchImpl,
+  );
+}
+
+export interface PlanApprovalBody {
+  parentBranch: string;
+  testCommand: string;
+  environmentId?: string;
+  rememberAsTracked?: boolean;
+}
+
+export function approveTaskPlan(
+  id: string,
+  body: PlanApprovalBody,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EngineeringTaskDetail> {
+  return send(
+    "POST",
+    `/api/engineering/tasks/${encodeURIComponent(id)}/approve-plan`,
+    body,
+    fetchImpl,
+  );
+}
+
+export function cancelEngineeringTask(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EngineeringTaskDetail> {
+  return request(
+    `/api/engineering/tasks/${encodeURIComponent(id)}/cancel`,
+    { method: "POST" },
+    fetchImpl,
+  );
 }

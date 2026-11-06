@@ -7,6 +7,7 @@ export type SectionId =
   | "commitments"
   | "jira"
   | "projects"
+  | "engineering"
   | "people"
   | "system";
 
@@ -24,6 +25,7 @@ export const SECTION_IDS: SectionId[] = [
   "commitments",
   "jira",
   "projects",
+  "engineering",
   "people",
   "system",
 ];
@@ -45,6 +47,7 @@ export function sidebarItems(
     { id: "commitments", label: "Commitments", count: counts?.commitmentsToReview ?? 0 },
     { id: "jira", label: "Jira", count: counts?.jiraAttention ?? 0 },
     { id: "projects", label: "Projects", count: counts?.brainReview ?? 0 },
+    { id: "engineering", label: "Engineering", count: counts?.engineeringAwaiting ?? 0 },
     { id: "people", label: "People", count: counts?.peopleToEvaluate ?? 0 },
     { id: "system", label: "System" },
   ];

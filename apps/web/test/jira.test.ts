@@ -248,6 +248,7 @@ test("nav: a Jira item sits between Commitments and Projects; its badge is jiraA
     "commitments",
     "jira",
     "projects",
+    "engineering",
     "people",
     "system",
   ]);

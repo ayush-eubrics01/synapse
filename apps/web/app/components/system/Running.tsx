@@ -1,6 +1,7 @@
 import type { DashboardOverview, UpcomingMilestone } from "@synapse/contracts";
 import type { ClaudeRun, ClaudeStatus } from "../../../lib/api";
 import { milestoneLabel } from "../../../lib/brain";
+import { relMinutes } from "../../../lib/format";
 import { QuotaBars } from "./QuotaBars";
 
 export const seconds = (ms: number | null) => (ms === null ? "-" : `${(ms / 1000).toFixed(1)}s`);
@@ -34,6 +35,7 @@ export function Running({
   runs,
   now,
   upcoming = [],
+  engineeringLock,
 }: {
   pipeline: DashboardOverview["pipeline"];
   status: ClaudeStatus | null;
@@ -41,6 +43,8 @@ export function Running({
   now: Date | null;
   /** The next milestones (Phase 9); the first three are shown. */
   upcoming?: UpcomingMilestone[];
+  /** The global engineering lock from the overview (Phase 10); absent until the overview loads. */
+  engineeringLock?: DashboardOverview["engineeringLock"];
 }) {
   const last = runs[0];
   return (
@@ -91,7 +95,19 @@ export function Running({
           ) : (
             <Fact label="Last Claude run" value="No Claude runs yet." />
           )}
-          <Fact label="Engineering task" value="None running" sub="lock not in use yet" />
+          {engineeringLock?.held ? (
+            <Fact
+              label="Engineering task"
+              value={engineeringLock.taskTitle ?? "A task"}
+              sub={
+                engineeringLock.since && now
+                  ? `lock held · since ${relMinutes(engineeringLock.since, now)}`
+                  : "lock held"
+              }
+            />
+          ) : (
+            <Fact label="Engineering task" value="None running" sub="lock free" />
+          )}
         </div>
         {upcoming.length > 0 && (
           <>

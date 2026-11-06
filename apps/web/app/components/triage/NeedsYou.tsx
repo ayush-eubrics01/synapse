@@ -1,5 +1,6 @@
 "use client";
 
+import type { EngineeringTaskDetail, EngineeringTaskView } from "@synapse/contracts";
 import type { SecurityFlagDto } from "../../../lib/api";
 import { type NeedsCard, needsYouCount } from "../../../lib/needs-you";
 import type { NeedsYouHandlers } from "../../../lib/needs-you-actions";
@@ -10,6 +11,11 @@ import { AwayDigestCard } from "./AwayDigestCard";
 import { BrainReviewCard } from "./BrainReviewCard";
 import { BrainSetupCard } from "./BrainSetupCard";
 import { CommitmentReviewCard } from "./CommitmentReviewCard";
+import {
+  EngineeringApprovalCard,
+  EngineeringAttentionCard,
+  EngineeringPlanCard,
+} from "./EngineeringCards";
 import { FlagCard } from "./FlagCard";
 import { FollowupCard } from "./FollowupCard";
 import { JiraAttentionCard } from "./JiraAttentionCard";
@@ -36,6 +42,11 @@ export interface NeedsYouProps {
   backfillConfirmSignal?: number;
   /** Evaluations requested this session, shared with the People section. */
   queuedEvaluations?: ReadonlySet<string>;
+  /** Engineering tasks and their details (diff, plan), for the engineering cards. */
+  engineering?: {
+    tasks: EngineeringTaskView[];
+    details: Record<string, EngineeringTaskDetail>;
+  };
 }
 
 function Card({ card, p }: { card: NeedsCard; p: NeedsYouProps }) {
@@ -57,6 +68,37 @@ function Card({ card, p }: { card: NeedsCard; p: NeedsYouProps }) {
       return <OutgoingAttentionCard out={card.data} now={p.now} onResolve={h.resolve} />;
     case "approval":
       return <ApprovalCard approval={card.data} now={p.now} onDecide={h.decide} />;
+    case "engineering-approval": {
+      const taskId = (card.data.payload as { taskId?: unknown } | null)?.taskId;
+      const id = typeof taskId === "string" ? taskId : null;
+      return (
+        <EngineeringApprovalCard
+          approval={card.data}
+          taskTitle={p.engineering?.tasks.find((t) => t.id === id)?.title ?? null}
+          detail={id ? (p.engineering?.details[id] ?? null) : null}
+          now={p.now}
+          onDecide={h.decide}
+        />
+      );
+    }
+    case "engineering-plan":
+      return (
+        <EngineeringPlanCard
+          task={card.data}
+          detail={p.engineering?.details[card.data.id] ?? null}
+          now={p.now}
+          onOpen={h.seeAllEngineering}
+        />
+      );
+    case "engineering-attention":
+      return (
+        <EngineeringAttentionCard
+          task={card.data}
+          now={p.now}
+          onCancel={h.cancelEngineeringTask}
+          onOpen={h.seeAllEngineering}
+        />
+      );
     case "flag":
       return (
         <FlagCard

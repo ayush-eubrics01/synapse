@@ -1,0 +1,367 @@
+/* Engineering section, diff viewer and Needs-you engineering cards (Phase 10, E20). Tokens only. */
+.syn-eng-note {
+  margin: 8px 0;
+  font-size: 12.5px;
+  color: var(--faint);
+}
+
+.syn-eng-faint {
+  font-size: 12.5px;
+  color: var(--faint);
+}
+
+.syn-eng-lock {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.syn-eng-new {
+  margin: 8px 0 4px;
+}
+
+.syn-eng-new > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink2);
+}
+
+.syn-eng-group {
+  margin-top: 16px;
+}
+
+.syn-eng-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.syn-eng-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.syn-eng-task {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  scroll-margin-top: 80px;
+}
+
+.syn-eng-task-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.syn-eng-task-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.syn-eng-task-meta,
+.syn-eng-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.syn-eng-reason {
+  margin: 0;
+  font-size: 13px;
+  color: var(--redFg);
+}
+
+.syn-eng-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.syn-eng-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.syn-eng-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--ink2);
+}
+
+.syn-eng-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 560px;
+}
+
+.syn-eng-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.syn-eng-field input,
+.syn-eng-field select,
+.syn-eng-field textarea {
+  padding: 8px 10px;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.syn-eng-field input:focus,
+.syn-eng-field select:focus,
+.syn-eng-field textarea:focus {
+  outline: 2px solid var(--blueLine);
+  outline-offset: 1px;
+}
+
+.syn-eng-field-error {
+  margin: -4px 0 0;
+  font-size: 12.5px;
+  color: var(--redFg);
+}
+
+.syn-eng-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink2);
+}
+
+.syn-eng-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.syn-eng-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.syn-eng-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--subtle2);
+}
+
+.syn-eng-plan-summary {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.syn-eng-plan-steps,
+.syn-eng-files,
+.syn-eng-commits {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--ink2);
+  overflow-wrap: anywhere;
+}
+
+.syn-eng-files {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.syn-eng-commits {
+  list-style: none;
+  padding-left: 0;
+}
+
+.syn-eng-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.syn-eng-facts dt {
+  color: var(--muted);
+}
+
+.syn-eng-facts dd {
+  margin: 0;
+  font-family: var(--mono);
+  color: var(--ink2);
+  overflow-wrap: anywhere;
+}
+
+/* The auto-deploy warning: the one red banner (spec E14). */
+.syn-eng-deploy {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--redLine);
+  border-radius: 8px;
+  background: var(--redBg);
+  color: var(--redFg);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.syn-eng-message {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--subtle2);
+  color: var(--ink2);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.syn-eng-pr-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.syn-eng-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.syn-eng-confirm-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--redFg);
+}
+
+.syn-eng-changes > summary,
+.syn-eng-tail > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--ink2);
+}
+
+/* Diff viewer: plain text, +/- colouring by class. */
+.syn-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.syn-diff-file {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface2);
+}
+
+.syn-diff-file--bare {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+}
+
+.syn-diff-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.syn-diff-path {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.syn-diff-counts {
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.syn-diff-count--add {
+  color: var(--greenFg);
+}
+
+.syn-diff-count--del {
+  color: var(--redFg);
+}
+
+.syn-diff-pre {
+  margin: 0;
+  padding: 8px 0;
+  max-height: 420px;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  color: var(--ink2);
+  font-size: 12px;
+  line-height: 1.5;
+  tab-size: 4;
+}
+
+.syn-diff-line {
+  display: block;
+  padding: 0 10px;
+  white-space: pre;
+}
+
+.syn-diff-line--add {
+  background: var(--greenBg);
+  color: var(--greenFg);
+}
+
+.syn-diff-line--del {
+  background: var(--redBg);
+  color: var(--redFg);
+}
+
+.syn-diff-line--hunk {
+  color: var(--blueFg);
+}
+
+.syn-diff-line--meta {
+  color: var(--faint);
+}
+
+.syn-msg-task {
+  margin-top: 2px;
+}

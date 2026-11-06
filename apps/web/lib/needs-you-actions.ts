@@ -8,6 +8,7 @@ import * as apiModule from "./api";
 import { brainFactKey } from "./brain";
 import { decideThenRefresh } from "./decide";
 import type { Deferred } from "./deferred";
+import { friendly } from "./engineering";
 import { flagKey } from "./needs-you";
 import type { Decision } from "./people-decision";
 
@@ -41,6 +42,11 @@ export interface NeedsYouHandlers {
   rejectBrainFact: (factId: string) => void;
   seeAllProjects: () => void;
   registerRepository: () => void;
+  /** Engineering (Phase 10): proposals from a Jira issue or an inbox message, and cancelling a task. */
+  createTaskFromJira: (key: string) => void;
+  createTaskFromSlack: (messageId: string) => void;
+  cancelEngineeringTask: (taskId: string) => void;
+  seeAllEngineering: (taskId?: string) => void;
 }
 
 /** The `lib/api.ts` calls the feed uses; injectable so the routing can be tested. */
@@ -67,6 +73,9 @@ export type NeedsYouApi = Pick<
   | "updateJiraSettings"
   | "acceptBrainFact"
   | "rejectBrainFact"
+  | "createTaskFromJira"
+  | "createTaskFromSlack"
+  | "cancelEngineeringTask"
 >;
 
 export const realNeedsYouApi: NeedsYouApi = apiModule;
@@ -86,6 +95,8 @@ export const TOASTS = {
   awayOff: "Away mode off",
   jiraSyncQueued: "Jira sync queued · runs in the background",
   jiraEnabled: "Jira tracking on · first sync queued",
+  taskProposed: "Task proposed · review it in Engineering. Nothing runs until you approve.",
+  taskCancelled: "Task cancelled",
   factAccepted: "Fact approved",
   factRejected: "Fact rejected",
   draftDiscarded: "Draft discarded",
@@ -119,6 +130,7 @@ export interface NeedsYouActionsDeps {
   seeAllJira: () => void;
   seeAllProjects: () => void;
   registerRepository: () => void;
+  seeAllEngineering?: (taskId?: string) => void;
   /** A person whose evaluation was queued: added to the session's queued set People shares. */
   onEvaluationQueued?: (slackUserId: string) => void;
 }
@@ -231,6 +243,14 @@ export function createNeedsYouActions(d: NeedsYouActionsDeps): NeedsYouHandlers 
       defer(brainFactKey(id), TOASTS.factRejected, () => api.rejectBrainFact(id)),
     seeAllProjects: d.seeAllProjects,
     registerRepository: d.registerRepository,
+    // Immediate: a proposal only stores a draft; cancelling a task is the user's explicit call.
+    createTaskFromJira: (key) =>
+      void now(() => friendly(() => api.createTaskFromJira(key)), TOASTS.taskProposed),
+    createTaskFromSlack: (id) =>
+      void now(() => friendly(() => api.createTaskFromSlack(id)), TOASTS.taskProposed),
+    cancelEngineeringTask: (id) =>
+      void now(() => friendly(() => api.cancelEngineeringTask(id)), TOASTS.taskCancelled),
+    seeAllEngineering: (taskId) => d.seeAllEngineering?.(taskId),
     setAway: (on) => void now(() => api.setAway(on), on ? TOASTS.awayOn : TOASTS.awayOff),
   };
 }

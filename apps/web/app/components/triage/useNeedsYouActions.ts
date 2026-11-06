@@ -19,6 +19,7 @@ export interface NeedsYouActionsOptions {
   seeAllJira: () => void;
   seeAllProjects: () => void;
   registerRepository: () => void;
+  seeAllEngineering?: (taskId?: string) => void;
   onEvaluationQueued?: (slackUserId: string) => void;
 }
 
