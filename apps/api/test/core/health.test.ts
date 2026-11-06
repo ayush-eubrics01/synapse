@@ -195,3 +195,12 @@ test("database check goes down when the last quick_check failed", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a failed quick_check is down even when the database is not in WAL mode", async () => {
+  const { sqlite } = openDatabase(":memory:");
+  const at = "2026-11-07T12:00:00.000Z";
+  expect(await databaseCheck(sqlite, { last: () => ({ result: "failed", at }) })()).toEqual({
+    status: "down",
+    detail: "quick_check failed",
+  });
+});

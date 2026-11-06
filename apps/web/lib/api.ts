@@ -142,7 +142,8 @@ export interface ClaudeRun {
     cacheCreation: number | null;
   };
   costUsdEquivalent: number | null;
-  permissionDenialCount: number;
+  /** null once the run was compacted by retention. */
+  permissionDenialCount: number | null;
   errorKind: string | null;
   startedAt: string;
   finishedAt: string | null;

@@ -247,7 +247,7 @@ test("/api/claude/runs is newest first, limited, and has no content fields", asy
         model: "haiku",
         status,
         inputTokens: 5,
-        permissionDenials: i === 1 ? ["Bash", "Write"] : [],
+        permissionDenials: i === 1 ? ["Bash", "Write"] : null,
         error: i === 1 ? { kind: "timeout", message: "x" } : null,
         startedAt: `2026-01-01T00:00:0${i}.000Z`,
       })
@@ -274,6 +274,8 @@ test("/api/claude/runs is newest first, limited, and has no content fields", asy
   );
   expect(rows[0]?.permissionDenialCount).toBe(2);
   expect(rows[0]?.errorKind).toBe("timeout");
+  // a run whose denials column is gone (compacted by retention) reports null, not 0
+  expect(rows[1]?.permissionDenialCount).toBeNull();
   expect(rows[1]?.errorKind).toBeNull();
   const one = (await (await req("/api/claude/runs?limit=1")).json()) as unknown[];
   expect(one).toHaveLength(1);

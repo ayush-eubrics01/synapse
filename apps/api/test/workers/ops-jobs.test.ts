@@ -209,3 +209,21 @@ test("the retention handler runs once per date", async () => {
     skipped: "done_today",
   });
 });
+
+test("the retention handler rejects bad input with a fixed-code non-retryable error", async () => {
+  const d = deps();
+  registerOpsJobs(d);
+  const h = d.handlers.get(OPS_RETENTION_JOB)?.handler;
+  for (const input of [null, {}, { date: 5 }, { date: "yesterday" }]) {
+    let caught: unknown = null;
+    try {
+      await h?.({ input } as never, { signal: new AbortController().signal } as never);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(JobError);
+    const err = caught as JobError;
+    expect(err.classified.message).toBe("retention_bad_input");
+    expect(retryDecision(err.classified.kind)).toBe("fail");
+  }
+});

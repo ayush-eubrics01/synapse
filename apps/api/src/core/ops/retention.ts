@@ -29,9 +29,16 @@ const defaultYield = () => new Promise<void>((r) => setTimeout(r, 0));
  * auto-replies, security flags, engineering tasks and commitments are never touched.
  */
 export class RetentionService {
+  private signal: AbortSignal | undefined;
+
   constructor(private readonly d: RetentionDeps) {}
 
-  async run(date: string): Promise<RetentionSummary> {
+  /**
+   * With an aborted `signal` the run stops cleanly after the current batch: the partial counts are
+   * audited (result `aborted`) and `ops.retention.lastRun` is not set, so the next run resumes.
+   */
+  async run(date: string, signal?: AbortSignal): Promise<RetentionSummary> {
+    this.signal = signal;
     const { settings, clock } = this.d;
     const cutoff = (days: number) => new Date(clock.now().getTime() - days * DAY_MS).toISOString();
 
@@ -78,6 +85,7 @@ export class RetentionService {
       ],
     );
 
+    const aborted = signal?.aborted === true;
     this.d.sqlite.exec("pragma wal_checkpoint(TRUNCATE)");
     this.d.sqlite.exec("pragma optimize");
     const quickCheck = this.d.integrity.check();
@@ -96,7 +104,7 @@ export class RetentionService {
       actor: "system",
       module: "ops",
       action: "ops.retention_ran",
-      result: quickCheck === "ok" ? "ok" : "failed",
+      result: aborted ? "aborted" : quickCheck === "ok" ? "ok" : "failed",
       details: {
         jobs,
         notifications,
@@ -106,7 +114,7 @@ export class RetentionService {
         quickCheck,
       },
     });
-    settings.set("ops.retention.lastRun", summary, { emit: false });
+    if (!aborted) settings.set("ops.retention.lastRun", summary, { emit: false });
     return summary;
   }
 
@@ -120,6 +128,7 @@ export class RetentionService {
     const size = this.d.batchSize ?? RETENTION_BATCH;
     const yieldFn = this.d.yieldFn ?? defaultYield;
     let total = 0;
+    if (this.signal?.aborted) return total;
     for (;;) {
       const batch = sqlite
         .transaction(() => {
@@ -133,6 +142,7 @@ export class RetentionService {
       if (batch === 0) return total;
       total += batch;
       await yieldFn();
+      if (this.signal?.aborted) return total;
     }
   }
 }

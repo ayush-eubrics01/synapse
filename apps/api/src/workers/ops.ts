@@ -89,12 +89,15 @@ export function registerOpsJobs(deps: OpsJobDeps): void {
     timeoutMs: BACKUP_TIMEOUT_MS,
   });
   deps.handlers.set(OPS_RETENTION_JOB, {
-    handler: async (job) => {
-      const date = (job.input as { date: string }).date;
+    handler: async (job, ctx) => {
+      const date = (job.input as { date?: unknown } | null)?.date;
+      if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        throw new JobError({ kind: "invalid_input", message: "retention_bad_input" });
+      }
       if (deps.settings.get("ops.retention.lastRun")?.date === date) {
         return { skipped: "done_today" };
       }
-      return deps.retention.run(date);
+      return deps.retention.run(date, ctx.signal);
     },
     timeoutMs: RETENTION_TIMEOUT_MS,
   });

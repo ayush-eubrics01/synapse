@@ -138,12 +138,11 @@ function seedMinimal(table: string, overrides: Record<string, unknown> = {}) {
     else if (c.notnull && c.dflt_value === null) {
       values[c.name] = /int|real|bool/i.test(c.type)
         ? 1
-        : c.name.endsWith("_at") || c.name.endsWith("At")
+        : c.name.endsWith("_at")
           ? ago(400)
           : /json|text/i.test(c.type)
             ? "{}"
             : "x";
-      if (c.name.endsWith("_at")) values[c.name] = ago(400);
     }
   }
   const names = Object.keys(values);
@@ -295,6 +294,59 @@ test("protected tables are never touched and no foreign key breaks", async () =>
   insertAudit(400);
   await service().run("2026-11-07");
   expect(tables.map((t) => count(t))).toEqual(before);
+});
+
+test("pruning every category leaves foreign_key_check empty", async () => {
+  const j = insertJob("COMPLETED", 40);
+  insertAttempt(j);
+  insertRun({ days: 100, jobId: j, error: { kind: "k", message: "m" }, denials: ["Bash"] });
+  insertEvent(8, true, ["done"]);
+  insertNotification(40, true);
+  insertAudit(400);
+  const r = await service().run("2026-11-07");
+  expect([r.jobs, r.events, r.notifications, r.audit, r.claudeRunsCompacted]).toEqual([
+    1, 1, 1, 1, 1,
+  ]);
+  expect(sqlite.query("pragma foreign_key_check").all()).toEqual([]);
+});
+
+test("the foreign-key columns retention walks are indexed", () => {
+  const has = (table: string, col: string) =>
+    (sqlite.query(`pragma index_list(${table})`).all() as { name: string }[]).some(
+      (i) =>
+        (sqlite.query(`pragma index_info(${i.name})`).all() as { seqno: number; name: string }[])[0]
+          ?.name === col,
+    );
+  expect(has("job_attempts", "job_id")).toBe(true);
+  expect(has("job_checkpoints", "job_id")).toBe(true);
+  expect(has("claude_runs", "job_id")).toBe(true);
+  expect(has("event_consumptions", "event_id")).toBe(true);
+});
+
+test("an aborted signal stops after the current batch, audits partial counts and is not recorded", async () => {
+  sqlite.exec("begin");
+  for (let i = 0; i < 1203; i++) insertJob("COMPLETED", 40);
+  sqlite.exec("commit");
+  const ac = new AbortController();
+  const svc = new RetentionService({
+    db,
+    sqlite,
+    clock,
+    settings,
+    audit: new AuditLogger(clock),
+    integrity: new DatabaseIntegrity(sqlite, clock),
+    batchSize: 500,
+    yieldFn: async () => ac.abort(),
+  });
+  const r = await svc.run("2026-11-07", ac.signal);
+  expect(r.jobs).toBe(500);
+  expect(count("jobs")).toBe(703);
+  expect(settings.get("ops.retention.lastRun")).toBeNull();
+  const row = sqlite
+    .query("select result, details from audit_events where action = 'ops.retention_ran'")
+    .get() as { result: string; details: string };
+  expect(row.result).toBe("aborted");
+  expect(JSON.parse(row.details).jobs).toBe(500);
 });
 
 test("summary, setting and a counts-only audit row", async () => {

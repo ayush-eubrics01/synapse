@@ -42,7 +42,9 @@ export function claudeRoutes(c: Container): Hono {
           cacheCreation: r.cacheCreationTokens,
         },
         costUsdEquivalent: r.costUsdEquivalent,
-        permissionDenialCount: Array.isArray(r.permissionDenials) ? r.permissionDenials.length : 0,
+        permissionDenialCount: Array.isArray(r.permissionDenials)
+          ? r.permissionDenials.length
+          : null,
         errorKind: errorKind(r.error),
         startedAt: r.startedAt,
         finishedAt: r.finishedAt,
