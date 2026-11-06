@@ -5,6 +5,9 @@ import type {
   CommitmentFilter,
   CommitmentStatus,
   CommitmentView,
+  ConversationSummary,
+  ConversationThread,
+  DashboardOverview,
   EvaluateResult,
   FlagStatus,
   FollowupView,
@@ -96,6 +99,12 @@ export interface ClaudeQuotaWindow {
   resetsAt?: string;
 }
 
+/** Utilization percentages at which the orchestrator gates jobs (ADR-029). */
+export interface ClaudeQuotaThresholds {
+  fiveHour: { soft: number; hard: number; stop: number };
+  sevenDay: { soft: number; hard: number };
+}
+
 export interface ClaudeStatus {
   quota: {
     level: "ok" | "soft" | "hard" | "stop";
@@ -104,6 +113,7 @@ export interface ClaudeStatus {
     fiveHour?: ClaudeQuotaWindow;
     sevenDay?: ClaudeQuotaWindow;
   } | null;
+  thresholds: ClaudeQuotaThresholds;
   auth: { refreshExpiresAt: string | null; slides: boolean | null };
 }
 
@@ -149,6 +159,30 @@ export function getInboxMessages(
   fetchImpl: typeof fetch = fetch,
 ): Promise<InboxMessageDto[]> {
   return request(`/api/inbox/messages?limit=${limit}`, undefined, fetchImpl);
+}
+
+export function getOverview(fetchImpl: typeof fetch = fetch): Promise<DashboardOverview> {
+  return request("/api/dashboard/overview", undefined, fetchImpl);
+}
+
+export function getConversations(
+  limit = 50,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ConversationSummary[]> {
+  return request(`/api/inbox/conversations?limit=${limit}`, undefined, fetchImpl);
+}
+
+/** Messages oldest first; 404 (thrown) when the conversation is unknown. */
+export function getThread(
+  id: string,
+  limit = 200,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ConversationThread> {
+  return request(
+    `/api/inbox/conversations/${encodeURIComponent(id)}/thread?limit=${limit}`,
+    undefined,
+    fetchImpl,
+  );
 }
 
 export function getSlackStatus(fetchImpl: typeof fetch = fetch): Promise<SlackStatusDto> {

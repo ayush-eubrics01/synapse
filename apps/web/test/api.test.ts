@@ -8,9 +8,11 @@ import {
   getCandidates,
   getClaudeRuns,
   getClaudeStatus,
+  getConversations,
   getHealth,
   getInboxMessages,
   getJobs,
+  getOverview,
   getPeople,
   getPersonFlags,
   getPersonProfile,
@@ -18,6 +20,7 @@ import {
   getSecurityFlags,
   getSlackIdentity,
   getSlackStatus,
+  getThread,
   getUrgent,
   retryApply,
   reviewFlag,
@@ -165,4 +168,47 @@ test("evaluatePerson returns a refusal as data and a 409 retry as an error", asy
   });
   const conflict = fake(409, { error: "apply retry not allowed" });
   await expect(retryApply("r1", conflict.impl)).rejects.toThrow("409: apply retry not allowed");
+});
+
+test("getOverview reads the dashboard aggregate", async () => {
+  const { calls, impl } = fake(200, { engineeringLock: null });
+  expect((await getOverview(impl)).engineeringLock).toBeNull();
+  expect(calls[0]?.url).toBe("/api/dashboard/overview");
+  expect(calls[0]?.init?.method).toBeUndefined();
+});
+
+test("getConversations passes the limit, default 50", async () => {
+  const a = fake(200, []);
+  await getConversations(undefined, a.impl);
+  expect(a.calls[0]?.url).toBe("/api/inbox/conversations?limit=50");
+  const b = fake(200, []);
+  await getConversations(20, b.impl);
+  expect(b.calls[0]?.url).toBe("/api/inbox/conversations?limit=20");
+});
+
+test("getThread encodes the id and passes the limit", async () => {
+  const a = fake(200, { conversation: { id: "D0ADA" }, messages: [] });
+  expect((await getThread("D0ADA", undefined, a.impl)).messages).toEqual([]);
+  expect(a.calls[0]?.url).toBe("/api/inbox/conversations/D0ADA/thread?limit=200");
+  const b = fake(200, { conversation: { id: "C 1" }, messages: [] });
+  await getThread("C 1", 30, b.impl);
+  expect(b.calls[0]?.url).toBe("/api/inbox/conversations/C%201/thread?limit=30");
+});
+
+test("getThread throws on 404 with the server error", async () => {
+  const { impl } = fake(404, { error: "conversation not found" });
+  await expect(getThread("D0NONE", undefined, impl)).rejects.toThrow(/404.*conversation not found/);
+});
+
+test("getClaudeStatus exposes the quota thresholds", async () => {
+  const thresholds = {
+    fiveHour: { soft: 70, hard: 85, stop: 95 },
+    sevenDay: { soft: 70, hard: 85 },
+  };
+  const { impl } = fake(200, {
+    quota: null,
+    thresholds,
+    auth: { refreshExpiresAt: null, slides: null },
+  });
+  expect((await getClaudeStatus(impl)).thresholds).toEqual(thresholds);
 });
