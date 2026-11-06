@@ -12,8 +12,9 @@ export type AutoReplyKind =
   | "acknowledgement";
 
 /**
- * The A4 check list in order, plus `missing_context` (a producer could not build the reply) and
- * `policy_disabled` (the user tightened the `slack.auto_reply` permission, so the policy gate is shut).
+ * The A4 check list in order, plus `missing_context` (a producer could not build the reply),
+ * `policy_disabled` (the user tightened the `slack.auto_reply` permission, so the policy gate is shut)
+ * and `recipient_mismatch` (a DM reply whose recipient is not the DM partner).
  */
 export const holdReasonSchema = z.enum([
   "away_off",
@@ -29,6 +30,7 @@ export const holdReasonSchema = z.enum([
   "content_promise",
   "missing_context",
   "policy_disabled",
+  "recipient_mismatch",
 ]);
 export type HoldReason = z.infer<typeof holdReasonSchema>;
 

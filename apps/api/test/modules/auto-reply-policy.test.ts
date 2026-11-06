@@ -52,6 +52,14 @@ test.each([
   expect(decideAutoReply(base(o as Partial<PolicyInput>))).toEqual({ send: false, reason });
 });
 
+test("a candidate that already carries the tag is held: loop_tag (no double tag)", () => {
+  expect(
+    decideAutoReply(
+      base({ incomingText: null, candidateText: "Any update?\n\nsent using @claude" }),
+    ),
+  ).toEqual({ send: false, reason: "loop_tag" });
+});
+
 test("first failure wins in A4 order", () => {
   const all = base({
     awayOn: false,

@@ -7,7 +7,7 @@ import type {
 } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { AutoReplyDisabledByPermission } from "../../core/approvals/approvals";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { SettingsService } from "../../core/config/settings";
@@ -21,6 +21,7 @@ import { ACK_TEXT, decideAutoReply, withAutoReplyTag } from "./policy";
 const {
   awaySessions,
   autoReplies,
+  commitmentSources,
   followups,
   slackMessages,
   slackUsers,
@@ -51,13 +52,7 @@ export type SkipReason =
 
 export type AutoReplyOutcome =
   | { status: "sent"; autoReplyId: string; outgoingId: string; approvalId: string }
-  | {
-      status: "held";
-      autoReplyId: string;
-      reason: HoldReason;
-      /** A6: the acknowledgement evaluated in place of a low-confidence follow-up question. */
-      acknowledgement?: AutoReplyOutcome;
-    }
+  | { status: "held"; autoReplyId: string; reason: HoldReason }
   | { status: "skipped"; reason: SkipReason };
 
 export interface AwayStatus {
@@ -74,7 +69,7 @@ export interface AutoReplyServiceDeps {
   queue: Pick<JobQueue, "enqueue">;
   settings: SettingsService;
   people: Pick<PeopleService, "getPriorityBySlackUser">;
-  securityFlags: Pick<SecurityFlagsService, "hasOpenFlag">;
+  securityFlags: Pick<SecurityFlagsService, "hasOpenFlag" | "hasOpenRunFlag">;
   outgoing: Pick<OutgoingService, "requestAutoSend">;
 }
 
@@ -95,6 +90,9 @@ type Resolved =
       candidate: Candidate;
       /** Set when the reply cannot be built safely (A16 `missing_context`). */
       missing: boolean;
+      /** A DM reply whose recipient is not the DM partner. */
+      recipientMismatch: boolean;
+      conversationType: "im" | "mpim" | "channel" | null;
       incomingText: string | null;
       incomingFlagged: boolean;
       text: string;
@@ -229,42 +227,21 @@ export class AutoReplyService {
    */
   evaluate(trigger: Trigger): AutoReplyOutcome {
     const { db } = this.deps;
-    let outcome: AutoReplyOutcome;
-    let originMessageId: string | null = null;
     try {
-      const r = db.transaction(
-        (tx) => {
+      return db.transaction(
+        (tx): AutoReplyOutcome => {
           const resolved = this.resolve(tx, trigger);
-          if ("skip" in resolved) return { outcome: { status: "skipped", reason: resolved.skip } };
-          return {
-            outcome: this.decideAndRecord(tx, resolved),
-            originMessageId: resolved.originMessageId,
-          };
+          if ("skip" in resolved) return { status: "skipped", reason: resolved.skip };
+          return this.decideAndRecord(tx, resolved);
         },
         { behavior: "immediate" },
-      ) as { outcome: AutoReplyOutcome; originMessageId?: string | null };
-      outcome = r.outcome;
-      originMessageId = r.originMessageId ?? null;
+      );
     } catch (e) {
       if (!(e instanceof HoldAfterRollback)) throw e;
-      outcome = db.transaction((tx) => this.recordHold(tx, e.candidate, e.reason), {
+      return db.transaction((tx) => this.recordHold(tx, e.candidate, e.reason), {
         behavior: "immediate",
       });
     }
-    // A6: a low-confidence follow-up question is answered by an acknowledgement of its origin
-    // message instead (a stalled reminder has no incoming message to acknowledge).
-    if (
-      trigger.kind === "followup_question" &&
-      outcome.status === "held" &&
-      outcome.reason === "low_confidence" &&
-      originMessageId !== null
-    ) {
-      outcome.acknowledgement = this.evaluate({
-        kind: "acknowledgement",
-        messageId: originMessageId,
-      });
-    }
-    return outcome;
   }
 
   /** A17: the most recently ended, undismissed session with its sent and held auto-replies. */
@@ -321,7 +298,9 @@ export class AutoReplyService {
             : null
           : conv?.type === "im"
             ? name
-            : null;
+            : conv?.type === "mpim"
+              ? "Group DM"
+              : null;
       return {
         id: r.id,
         kind: r.kind,
@@ -386,6 +365,8 @@ export class AutoReplyService {
         .get();
       if (done) return { skip: "already_evaluated" };
       return {
+        recipientMismatch: this.notDmPartner(tx, m.conversationType, m.conversationId, m.sender),
+        conversationType: m.conversationType,
         candidate: {
           sessionId: session.id,
           kind: "acknowledgement",
@@ -416,7 +397,11 @@ export class AutoReplyService {
     if (done) return { skip: "already_evaluated" };
     // R15: the follow-up stores the internal conversation id (older rows: the external one).
     const conv = tx
-      .select({ externalId: slackConversations.externalId })
+      .select({
+        id: slackConversations.id,
+        externalId: slackConversations.externalId,
+        type: slackConversations.type,
+      })
       .from(slackConversations)
       .where(
         or(
@@ -431,7 +416,25 @@ export class AutoReplyService {
       conv === undefined ||
       f.draftText === null ||
       (f.originMessageId !== null && (incoming === null || incoming.text === null));
+    // A3 extension (Phase 6b review): a model-drafted follow-up is held as `flagged` when any open
+    // warning-or-higher flag touches what the draft was built from: the drafting run, the origin
+    // message, or (stalled) any source message of its commitment.
+    const flagged =
+      (f.claudeRunId !== null &&
+        this.deps.securityFlags.hasOpenRunFlag(f.claudeRunId, "warning")) ||
+      (f.originMessageId !== null &&
+        this.deps.securityFlags.hasOpenFlag(f.originMessageId, "warning")) ||
+      (trigger.kind === "stalled_reminder" &&
+        f.commitmentId !== null &&
+        this.sourceMessageIds(tx, f.commitmentId).some((id) =>
+          this.deps.securityFlags.hasOpenFlag(id, "warning"),
+        ));
     return {
+      recipientMismatch:
+        conv !== undefined &&
+        f.recipientSlackUserId !== null &&
+        this.notDmPartner(tx, conv.type, conv.id, f.recipientSlackUserId),
+      conversationType: conv?.type ?? null,
       candidate: {
         sessionId: session.id,
         kind: trigger.kind,
@@ -444,14 +447,50 @@ export class AutoReplyService {
       },
       missing,
       incomingText: incoming?.text ?? null,
-      incomingFlagged:
-        f.originMessageId === null
-          ? false
-          : this.deps.securityFlags.hasOpenFlag(f.originMessageId, "warning"),
+      incomingFlagged: flagged,
       text: f.draftText ?? "",
       confidence: f.confidence,
       originMessageId: incoming ? incoming.id : null,
     };
+  }
+
+  private sourceMessageIds(tx: DbOrTx, commitmentId: string): string[] {
+    return tx
+      .select({ messageId: commitmentSources.messageId })
+      .from(commitmentSources)
+      .where(
+        and(
+          eq(commitmentSources.commitmentId, commitmentId),
+          isNotNull(commitmentSources.messageId),
+        ),
+      )
+      .all()
+      .map((r) => r.messageId as string);
+  }
+
+  /**
+   * Defensive DM membership: in an `im` the recipient must be the DM partner, by the inbox rule
+   * (the first non-self sender). A DM without a known partner, or without a known self id, cannot
+   * be verified, so it counts as a mismatch (a false hold costs little).
+   */
+  private notDmPartner(
+    tx: DbOrTx,
+    type: "im" | "mpim" | "channel",
+    conversationId: string,
+    recipient: string,
+  ): boolean {
+    if (type !== "im") return false;
+    const self = this.deps.settings.get("slack.selfUserId");
+    if (!self) return true;
+    const partner = tx
+      .select({ id: slackUsers.externalId })
+      .from(slackMessages)
+      .innerJoin(slackUsers, eq(slackUsers.id, slackMessages.senderUserId))
+      .where(and(eq(slackMessages.conversationId, conversationId), ne(slackUsers.externalId, self)))
+      .orderBy(asc(slackMessages.sentAt), sql`${slackMessages}.rowid ASC`)
+      .limit(1)
+      .get();
+    return partner?.id !== recipient;
   }
 
   private decideAndRecord(
@@ -461,9 +500,11 @@ export class AutoReplyService {
     const { settings, clock, people } = this.deps;
     const c = r.candidate;
     if (r.missing) return this.recordHold(tx, c, "missing_context");
+    if (r.recipientMismatch) return this.recordHold(tx, c, "recipient_mismatch");
     const now = isoNow(clock);
     const since = new Date(clock.now().getTime() - DAY_MS).toISOString();
-    // A5: rolling 24 h per recipient, and the latest send in this conversation and thread.
+    // A5: rolling 24 h per recipient, and the latest send in this conversation and thread. In a DM
+    // the gap is per conversation (Phase 6b review): a thread there reaches the same person.
     const [{ n }] = tx
       .select({ n: sql<number>`count(*)` })
       .from(autoReplies)
@@ -481,7 +522,11 @@ export class AutoReplyService {
       .where(
         and(
           eq(autoReplies.conversationExternalId, c.conversationExternalId),
-          c.threadTs === null ? isNull(autoReplies.threadTs) : eq(autoReplies.threadTs, c.threadTs),
+          r.conversationType === "im"
+            ? undefined
+            : c.threadTs === null
+              ? isNull(autoReplies.threadTs)
+              : eq(autoReplies.threadTs, c.threadTs),
           eq(autoReplies.decision, "sent"),
         ),
       )
@@ -504,7 +549,20 @@ export class AutoReplyService {
       minGapMinutes: settings.get("autoReply.minMinutesBetweenInThread"),
       minConfidence: settings.get("autoReply.minConfidence"),
     });
-    if (!decision.send) return this.recordHold(tx, c, decision.reason);
+    if (!decision.send) {
+      const held = this.recordHold(tx, c, decision.reason);
+      // A6: a low-confidence follow-up question is answered by an acknowledgement of its origin
+      // message instead, queued in this transaction as its own retried, deduplicated job (the key
+      // matches the urgent trigger's). A stalled reminder has no incoming message to acknowledge.
+      if (
+        c.kind === "followup_question" &&
+        decision.reason === "low_confidence" &&
+        r.originMessageId !== null
+      ) {
+        this.enqueue(tx, { kind: "acknowledgement", messageId: r.originMessageId });
+      }
+      return held;
+    }
 
     // A10: the tag is added in code just before the send is requested.
     const tagged = withAutoReplyTag(r.text);
@@ -581,6 +639,8 @@ export class AutoReplyService {
           threadTs: slackMessages.threadTs,
           text: slackMessages.text,
           sender: slackUsers.externalId,
+          conversationId: slackConversations.id,
+          conversationType: slackConversations.type,
           conversationExternalId: slackConversations.externalId,
         })
         .from(slackMessages)

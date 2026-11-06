@@ -51,6 +51,8 @@ export function decideAutoReply(i: PolicyInput): AutoReplyDecision {
   if (i.recipientPriority !== "high" && i.recipientPriority !== "critical")
     return hold("not_priority");
   if (i.incomingText !== null && hasAutoReplyTag(i.incomingText)) return hold("loop_tag");
+  // A candidate that already carries the tag would post it twice (and is a loop by construction).
+  if (hasAutoReplyTag(i.candidateText)) return hold("loop_tag");
   if (i.incomingFlagged) return hold("flagged");
   if (i.sentToRecipientLast24h >= i.maxPerDay) return hold("daily_cap");
   if (i.lastSentInThreadAt !== null) {

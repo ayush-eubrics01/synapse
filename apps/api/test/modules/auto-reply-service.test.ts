@@ -6,8 +6,13 @@ import { eq } from "drizzle-orm";
 import { type Container, createContainer } from "../../src/container";
 import { loadConfig } from "../../src/core/config/config";
 import { ACK_TEXT, withAutoReplyTag } from "../../src/modules/auto-reply/policy";
-import { AutoReplyService } from "../../src/modules/auto-reply/service";
+import {
+  AUTOREPLY_EVALUATE_JOB,
+  AutoReplyService,
+  type AutoReplyServiceDeps,
+} from "../../src/modules/auto-reply/service";
 import { AutoSendBlocked } from "../../src/modules/outgoing/service";
+import { registerAutoReplyJobs } from "../../src/workers/auto-reply/evaluate";
 
 const NOW = "2026-11-06T12:00:00.000Z";
 const MIN = 60_000;
@@ -69,7 +74,21 @@ beforeEach(() => {
     .values([
       { id: "c-ch", externalId: CHANNEL, type: "channel", name: "eng" },
       { id: "c-dm", externalId: DM, type: "im" },
+      { id: "c-mp", externalId: "G0GROUP001", type: "mpim" },
     ])
+    .run();
+  // Ada wrote first in the DM, so she is its partner (the inbox partner rule).
+  c.db
+    .insert(schema.slackMessages)
+    .values({
+      id: "m-dm0",
+      conversationId: "c-dm",
+      ts: "1793870000.000100",
+      senderUserId: "u-ada",
+      text: "hello",
+      sentAt: "2026-11-01T12:00:00.000Z",
+      collectedAt: NOW,
+    })
     .run();
   c.people.setPriority(ADA, { priority: "high" });
 });
@@ -108,6 +127,8 @@ function followup(
     originMessageId?: string | null;
     text?: string;
     status?: "draft" | "discarded";
+    commitmentId?: string | null;
+    runId?: string | null;
   } = {},
 ): string {
   const id = newId();
@@ -123,6 +144,8 @@ function followup(
       draftText: over.text ?? DRAFT,
       confidence: over.confidence === undefined ? 0.9 : over.confidence,
       status: over.status ?? "draft",
+      commitmentId: over.commitmentId ?? null,
+      claudeRunId: over.runId ?? null,
       createdAt: NOW,
       updatedAt: NOW,
     })
@@ -144,6 +167,36 @@ const eventsOf = (type: string) =>
     .where(eq(schema.domainEvents.type, type))
     .all()
     .map((e) => e.payload);
+const ackJobs = () =>
+  c.db
+    .select()
+    .from(schema.jobs)
+    .where(eq(schema.jobs.type, AUTOREPLY_EVALUATE_JOB))
+    .all()
+    .filter((j) => j.idempotencyKey.startsWith("autoreply:acknowledgement:"));
+function flag(over: {
+  messageId?: string | null;
+  runId?: string | null;
+  severity?: "info" | "warning" | "high";
+}) {
+  c.db
+    .insert(schema.securityFlags)
+    .values({
+      id: newId(),
+      messageId: over.messageId ?? null,
+      claudeRunId: over.runId ?? null,
+      sourceExternalRef: `ref-${newId()}`,
+      slackUserId: ADA,
+      detector: over.runId ? "runtime" : "rules",
+      ruleId: `r-${newId()}`,
+      severity: over.severity ?? "warning",
+      excerpt: "x",
+      reason: "x",
+      createdAt: NOW,
+      updatedAt: NOW,
+    })
+    .run();
+}
 const audits = (action: string) =>
   c.db.select().from(schema.auditEvents).where(eq(schema.auditEvents.action, action)).all();
 
@@ -415,12 +468,12 @@ describe("evaluate: follow-ups", () => {
     const f = followup({ confidence: 0.5, originMessageId: m.id });
     const r = c.autoReply.evaluate({ kind: "stalled_reminder", followupId: f });
     expect(r).toMatchObject({ status: "held", reason: "low_confidence" });
-    expect(r).not.toHaveProperty("acknowledgement");
+    expect(ackJobs()).toHaveLength(0);
     expect(fu(f)?.status).toBe("draft");
     expect(allAr()).toHaveLength(1);
   });
 
-  test("a spec-clarity draft at 0.5 is held and an acknowledgement goes out instead", () => {
+  test("a spec-clarity draft at 0.5 is held and an acknowledgement is queued instead", async () => {
     const m = msg();
     const f = followup({
       origin: "spec_clarity",
@@ -431,9 +484,18 @@ describe("evaluate: follow-ups", () => {
     });
     const r = c.autoReply.evaluate({ kind: "followup_question", followupId: f });
     expect(r).toMatchObject({ status: "held", reason: "low_confidence" });
-    if (r.status !== "held") return;
-    expect(r.acknowledgement?.status).toBe("sent");
+    expect(r).not.toHaveProperty("acknowledgement");
     expect(fu(f)?.status).toBe("draft");
+    // A6: the acknowledgement is its own job, keyed like the urgent trigger's.
+    expect(ackJobs().map((j) => [j.idempotencyKey, j.concurrencyGroup, j.input])).toEqual([
+      [
+        `autoreply:acknowledgement:${m.id}`,
+        "autoreply",
+        { kind: "acknowledgement", messageId: m.id },
+      ],
+    ]);
+    expect(allAr()).toHaveLength(1);
+    expect(await c.worker.runOnce()).toBe(true);
     const ack = allAr().find((a) => a.kind === "acknowledgement");
     expect(ack).toMatchObject({
       decision: "sent",
@@ -449,6 +511,7 @@ describe("evaluate: follow-ups", () => {
     expect(r).toMatchObject({ status: "held", reason: "low_confidence" });
     // No origin message, so no acknowledgement.
     expect(allAr()).toHaveLength(1);
+    expect(ackJobs()).toHaveLength(0);
   });
 
   test("a follow-up without a recipient is held: missing_context", () => {
@@ -465,6 +528,99 @@ describe("evaluate: follow-ups", () => {
     expect(c.autoReply.evaluate({ kind: "stalled_reminder", followupId: f })).toMatchObject({
       status: "held",
       reason: "content_promise",
+    });
+  });
+
+  test("A3 extension: an open flag on the drafting run holds the draft: flagged", () => {
+    c.db
+      .insert(schema.claudeRuns)
+      .values({ id: "run-1", workerProfile: "intelligence", status: "succeeded", startedAt: NOW })
+      .run();
+    flag({ runId: "run-1" });
+    const f = followup({ runId: "run-1" });
+    expect(c.autoReply.evaluate({ kind: "stalled_reminder", followupId: f })).toMatchObject({
+      status: "held",
+      reason: "flagged",
+    });
+    // An info flag on a run does not count.
+    c.db
+      .insert(schema.claudeRuns)
+      .values({ id: "run-2", workerProfile: "intelligence", status: "succeeded", startedAt: NOW })
+      .run();
+    flag({ runId: "run-2", severity: "info" });
+    const ok = followup({ runId: "run-2", conv: "c-ch", thread: TS });
+    expect(c.autoReply.evaluate({ kind: "stalled_reminder", followupId: ok }).status).toBe("sent");
+  });
+
+  test("A3 extension: an open flag on the origin message holds the draft: flagged", () => {
+    const m = msg();
+    flag({ messageId: m.id, severity: "high" });
+    const f = followup({ origin: "spec_clarity", originMessageId: m.id });
+    expect(c.autoReply.evaluate({ kind: "followup_question", followupId: f })).toMatchObject({
+      status: "held",
+      reason: "flagged",
+    });
+  });
+
+  test("A3 extension: an open flag on a commitment source message holds a stalled draft", () => {
+    const src = msg();
+    c.db
+      .insert(schema.commitments)
+      .values({
+        id: "cm1",
+        description: "d",
+        ownerSlackUserId: ADA,
+        direction: "theirs",
+        status: "open",
+        reviewStatus: "accepted",
+        dedupKey: "k1",
+        createdAt: NOW,
+        updatedAt: NOW,
+      })
+      .run();
+    c.db
+      .insert(schema.commitmentSources)
+      .values({
+        id: newId(),
+        commitmentId: "cm1",
+        messageId: src.id,
+        sourceExternalRef: `${CHANNEL}:${src.ts}`,
+        conversationId: "c-ch",
+        createdAt: NOW,
+      })
+      .run();
+    flag({ messageId: src.id });
+    const f = followup({ commitmentId: "cm1" });
+    expect(c.autoReply.evaluate({ kind: "stalled_reminder", followupId: f })).toMatchObject({
+      status: "held",
+      reason: "flagged",
+    });
+  });
+
+  test("a draft that already carries the tag is held: loop_tag", () => {
+    const f = followup({ text: "Any update?\n\nSent using @claude" });
+    expect(c.autoReply.evaluate({ kind: "stalled_reminder", followupId: f })).toMatchObject({
+      status: "held",
+      reason: "loop_tag",
+    });
+  });
+
+  test("a DM draft to someone other than the DM partner is held: recipient_mismatch", () => {
+    const f = followup({ recipient: GRACE });
+    c.people.setPriority(GRACE, { priority: "high" });
+    expect(c.autoReply.evaluate({ kind: "stalled_reminder", followupId: f })).toMatchObject({
+      status: "held",
+      reason: "recipient_mismatch",
+    });
+    // A DM with no partner yet (no message from anyone but the user) cannot be verified.
+    c.db
+      .insert(schema.slackConversations)
+      .values({ id: "c-dm2", externalId: "D0EMPTY001", type: "im" })
+      .run();
+    const g = followup({ conv: "c-dm2" });
+    expect(c.autoReply.evaluate({ kind: "stalled_reminder", followupId: g })).toMatchObject({
+      status: "held",
+      reason: "recipient_mismatch",
     });
   });
 
@@ -526,6 +682,17 @@ describe("evaluate: caps", () => {
     );
   });
 
+  test("in a DM the gap is per conversation: a threaded ack blocks a top-level question", () => {
+    const m = msg({ conv: "c-dm", thread: TS });
+    expect(c.autoReply.evaluate({ kind: "acknowledgement", messageId: m.id }).status).toBe("sent");
+    clock.advance(10 * MIN);
+    const f = followup({ origin: "spec_clarity", conv: "c-dm", thread: null });
+    expect(c.autoReply.evaluate({ kind: "followup_question", followupId: f })).toMatchObject({
+      status: "held",
+      reason: "thread_gap",
+    });
+  });
+
   test("a top-level (null thread) send gates the next top-level send in that conversation", () => {
     expect(c.autoReply.evaluate({ kind: "stalled_reminder", followupId: followup() }).status).toBe(
       "sent",
@@ -547,19 +714,68 @@ describe("evaluate: away off and failures", () => {
     expect(allAr()).toHaveLength(0);
   });
 
-  function withOutgoing(requestAutoSend: () => never): AutoReplyService {
+  function withOutgoing(
+    requestAutoSend: AutoReplyServiceDeps["outgoing"]["requestAutoSend"],
+    queue: AutoReplyServiceDeps["queue"] = c.queue,
+  ): AutoReplyService {
     return new AutoReplyService({
       db: c.db,
       clock,
       events: c.events,
       audit: c.audit,
-      queue: c.queue,
+      queue,
       settings: c.settings,
       people: c.people,
       securityFlags: c.securityFlags,
       outgoing: { requestAutoSend },
     });
   }
+
+  test("A6: the fallback acknowledgement is enqueued in the hold's transaction", () => {
+    c.autoReply.setAway(true);
+    const svc = withOutgoing((tx, i) => c.outgoing.requestAutoSend(tx, i), {
+      enqueue: () => {
+        throw new Error("enqueue failed");
+      },
+    });
+    const m = msg();
+    const f = followup({ origin: "spec_clarity", confidence: 0.5, originMessageId: m.id });
+    expect(() => svc.evaluate({ kind: "followup_question", followupId: f })).toThrow(
+      "enqueue failed",
+    );
+    // The hold rolled back with the enqueue: the retried job re-evaluates from scratch.
+    expect(allAr()).toHaveLength(0);
+    expect(eventsOf("autoreply.held")).toHaveLength(0);
+  });
+
+  test("A6: a failing fallback acknowledgement is retried by its own job", async () => {
+    c.autoReply.setAway(true);
+    let failures = 1;
+    const svc = withOutgoing((tx, i) => {
+      if (failures-- > 0) throw new Error("transient");
+      return c.outgoing.requestAutoSend(tx, i);
+    });
+    registerAutoReplyJobs({
+      handlers: c.handlers as Map<string, never>,
+      autoReply: svc,
+    });
+    const m = msg();
+    const f = followup({ origin: "spec_clarity", confidence: 0.5, originMessageId: m.id });
+    expect(svc.evaluate({ kind: "followup_question", followupId: f })).toMatchObject({
+      status: "held",
+      reason: "low_confidence",
+    });
+    expect(await c.worker.runOnce()).toBe(true);
+    expect(ackJobs()[0]?.status).toBe("RETRY");
+    expect(allAr().filter((a) => a.kind === "acknowledgement")).toHaveLength(0);
+    clock.advance(H);
+    expect(await c.worker.runOnce()).toBe(true);
+    expect(ackJobs()[0]?.status).toBe("COMPLETED");
+    expect(allAr().find((a) => a.kind === "acknowledgement")).toMatchObject({
+      decision: "sent",
+      sourceMessageId: m.id,
+    });
+  });
 
   test("AutoSendBlocked rolls the sent row back and records a held away_off row", () => {
     c.autoReply.setAway(true);
@@ -600,6 +816,10 @@ describe("digest", () => {
     });
     clock.advance(MIN);
     const dmSent = c.autoReply.evaluate({ kind: "stalled_reminder", followupId: followup() });
+    const mpHeld = c.autoReply.evaluate({
+      kind: "stalled_reminder",
+      followupId: followup({ conv: "c-mp", confidence: 0.1 }),
+    });
     // An open session has no digest yet.
     expect(c.autoReply.digest()).toBeNull();
     clock.advance(H);
@@ -628,13 +848,18 @@ describe("digest", () => {
       conversationLabel: "Ada",
       threadTs: null,
     });
-    expect(d?.held).toHaveLength(1);
+    expect(d?.held).toHaveLength(2);
     expect(d?.held[0]).toMatchObject({
       id: (held as { autoReplyId: string }).autoReplyId,
       decision: "held",
       reason: "not_priority",
       recipient: { slackUserId: GRACE, name: "Grace" },
       outgoingStatus: null,
+    });
+    expect(d?.held[1]).toMatchObject({
+      id: (mpHeld as { autoReplyId: string }).autoReplyId,
+      reason: "low_confidence",
+      conversationLabel: "Group DM",
     });
     // Views carry no reply text.
     expect(JSON.stringify(d)).not.toContain("SECRET");
