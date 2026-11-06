@@ -185,6 +185,7 @@ beforeEach(async () => {
     events,
     audit,
     git: workflow,
+    queue,
   });
   service = new EngineeringTaskService({
     db,

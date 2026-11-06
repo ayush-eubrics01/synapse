@@ -1,0 +1,885 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type {
+  AIExecutionResult,
+  Approval,
+  ClaudeJobRequest,
+  Operation,
+  RawToolResult,
+} from "@synapse/contracts";
+import { openDatabase, runMigrations, schema } from "@synapse/database";
+import { FakeClock, newId } from "@synapse/shared";
+import { and, eq, sql } from "drizzle-orm";
+import { ApprovalEngine } from "../../src/core/approvals/approvals";
+import { AuditLogger } from "../../src/core/audit/audit";
+import { SettingsService } from "../../src/core/config/settings";
+import { OutboxDispatcher } from "../../src/core/events/dispatcher";
+import { LiveBus } from "../../src/core/events/live-bus";
+import { EventPublisher } from "../../src/core/events/publisher";
+import { JobQueue } from "../../src/core/jobs/queue";
+import type { HandlerRegistration } from "../../src/core/jobs/worker";
+import { LeaseService } from "../../src/core/leases/leases";
+import { assemblePrompt } from "../../src/core/orchestrator/prompt";
+import { buildDenylist, DEFAULT_KNOWN_SERVERS } from "../../src/core/orchestrator/tool-catalog";
+import { validateRequest } from "../../src/core/orchestrator/validator";
+import { PermissionManager } from "../../src/core/permissions/permissions";
+import { GitHubCliProvider } from "../../src/integrations/github/gh-cli";
+import { LocalGitWorkflow } from "../../src/integrations/repository/git-workflow";
+import { LocalGitProvider } from "../../src/integrations/repository/local-git";
+import {
+  buildDevelopRequest,
+  testResultFrom,
+} from "../../src/intelligence/engineering/develop-prompt";
+import { RepositoryRegistry } from "../../src/modules/engineering-brain/registry";
+import {
+  ENGINEERING_LEASE,
+  EngineeringLock,
+  STEP_JOB,
+} from "../../src/modules/engineering-tasks/lock";
+import { EngineeringTaskService } from "../../src/modules/engineering-tasks/service";
+import { EngineeringStepService } from "../../src/modules/engineering-tasks/steps";
+import { registerStepJob } from "../../src/workers/engineering/steps";
+import { type RemoteRepoFixture, remoteRepoFixture } from "../fixtures/engineering";
+import { git, tempDir } from "../fixtures/git-repo";
+
+const NOW = "2026-11-06T09:00:00.000Z";
+const roots: string[] = [];
+const scratch = () => {
+  const d = tempDir("synapse-steps-");
+  roots.push(d);
+  return d;
+};
+
+/** Markers that must never reach audit rows or events. */
+const DIFF_MARKER = "DIFF-MARKER-7c1";
+const TEST_MARKER = "TEST-OUTPUT-MARKER-91a";
+const FILE_MARKER = "path-marker-feature";
+const APPROVED = "APPROVED-MARKER Fix the redirect after login.";
+
+const ctx = {
+  signal: new AbortController().signal,
+  checkpoint() {},
+  getCheckpoint: () => undefined,
+} as never;
+
+// ---- fake gh (a real executable the real GitHubCliProvider spawns) ------------------------------
+
+let ghDir: string;
+let fakeGh: string;
+beforeAll(() => {
+  ghDir = scratch();
+  fakeGh = join(ghDir, "gh");
+  writeFileSync(
+    fakeGh,
+    `#!/usr/bin/env bun
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+const d = import.meta.dir;
+const argv = process.argv.slice(2);
+appendFileSync(d + "/argv.log", JSON.stringify(argv) + "\\n");
+const cfg = existsSync(d + "/cfg.json") ? JSON.parse(readFileSync(d + "/cfg.json", "utf8")) : {};
+const sub = argv[0] + " " + argv[1];
+if (cfg.fail === sub) process.exit(1);
+if (sub === "pr create") process.stdout.write("https://github.com/up/app/pull/7\\n");
+if (sub === "pr view") process.stdout.write(JSON.stringify({ number: 7, url: "u", state: "OPEN", mergeable: "MERGEABLE", statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }] }));
+process.exit(0);
+`,
+  );
+  chmodSync(fakeGh, 0o755);
+});
+afterAll(() => {
+  for (const d of roots) rmSync(d, { recursive: true, force: true });
+});
+const ghCalls = (): string[][] => {
+  const log = join(ghDir, "argv.log");
+  if (!existsSync(log)) return [];
+  return readFileSync(log, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
+};
+
+// ---- fake orchestrator --------------------------------------------------------------------------
+
+const tool = (
+  toolName: string,
+  input: unknown,
+  content: string,
+  isError = false,
+): RawToolResult => ({
+  toolUseId: `t-${newId()}`,
+  toolName,
+  input,
+  isError,
+  content,
+});
+
+function aiResult(over: Partial<AIExecutionResult> = {}): AIExecutionResult {
+  return {
+    status: "succeeded",
+    toolResults: [],
+    finalText: "",
+    numTurns: 3,
+    durationMs: 10,
+    usage: {
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      costUsdEquivalent: 0,
+    },
+    permissionDenials: [],
+    connectors: [],
+    availableTools: [],
+    exitCode: 0,
+    ...over,
+  };
+}
+
+const modelReply = (testsPassed: boolean) =>
+  `Done.\n\`\`\`json\n${JSON.stringify({
+    summary: "Changed the redirect.",
+    testsPassed,
+    testOutputTail: "model claims all good",
+    notes: "",
+  })}\n\`\`\``;
+
+/** The develop "run": edits files in the repo (side effect) and returns crafted tool results. */
+function editingRun(
+  files: Record<string, string> = {
+    "src/index.ts": `export const redirect = "${DIFF_MARKER}";\n`,
+    [`src/${FILE_MARKER}.ts`]: "export const x = 1;\n",
+  },
+  bash: RawToolResult[] = [tool("Bash", { command: "bun test" }, `3 pass\n0 fail\n${TEST_MARKER}`)],
+  testsClaim = true,
+) {
+  return (req: ClaudeJobRequest) => {
+    const wd = req.workingDirectory as string;
+    for (const [rel, content] of Object.entries(files)) {
+      mkdirSync(join(wd, rel, ".."), { recursive: true });
+      writeFileSync(join(wd, rel), content);
+    }
+    return aiResult({
+      toolResults: [tool("Edit", { file_path: join(wd, "src/index.ts") }, "ok"), ...bash],
+      finalText: modelReply(testsClaim),
+    });
+  };
+}
+
+// ---- harness ------------------------------------------------------------------------------------
+
+let db: ReturnType<typeof openDatabase>["db"];
+let clock: FakeClock;
+let settings: SettingsService;
+let queue: JobQueue;
+let leases: LeaseService;
+let audit: AuditLogger;
+let events: EventPublisher;
+let handlers: Map<string, HandlerRegistration>;
+let approvals: ApprovalEngine;
+let dispatcher: OutboxDispatcher;
+let workflow: LocalGitWorkflow;
+let lock: EngineeringLock;
+let service: EngineeringTaskService;
+let steps: EngineeringStepService;
+let fx: RemoteRepoFixture;
+let repo: string;
+let repoId: string;
+let requests: ClaudeJobRequest[];
+let reply: (req: ClaudeJobRequest) => AIExecutionResult;
+
+const taskRow = (id: string) =>
+  db.select().from(schema.engineeringTasks).where(eq(schema.engineeringTasks.id, id)).get();
+const stepRow = (id: string, step: string) =>
+  db
+    .select()
+    .from(schema.engineeringTaskSteps)
+    .where(
+      and(
+        eq(schema.engineeringTaskSteps.taskId, id),
+        eq(schema.engineeringTaskSteps.step, step as never),
+      ),
+    )
+    .get();
+const leaseRow = () =>
+  db.select().from(schema.leases).where(eq(schema.leases.name, ENGINEERING_LEASE)).get();
+const auditDump = () => JSON.stringify(db.select().from(schema.auditEvents).all());
+const eventDump = () => JSON.stringify(db.select().from(schema.domainEvents).all());
+const approvalRow = (id: string) =>
+  db.select().from(schema.approvals).where(eq(schema.approvals.id, id)).get();
+const pendingOf = (action: Operation): Approval | undefined =>
+  approvals.listPending().find((a) => a.action === action);
+
+/** Runs queued `engineering.step` jobs in order until none is left. */
+async function drain(): Promise<void> {
+  const h = handlers.get(STEP_JOB);
+  if (!h) throw new Error("step handler not registered");
+  for (let i = 0; i < 20; i++) {
+    const next = db
+      .select()
+      .from(schema.jobs)
+      .where(and(eq(schema.jobs.type, STEP_JOB), eq(schema.jobs.status, "PENDING")))
+      .orderBy(sql`${schema.jobs}.rowid asc`)
+      .get();
+    if (!next) return;
+    db.update(schema.jobs).set({ status: "COMPLETED" }).where(eq(schema.jobs.id, next.id)).run();
+    const job = queue.get(next.id);
+    if (!job) throw new Error("job vanished");
+    await h.handler(job, ctx);
+  }
+  throw new Error("drain did not settle");
+}
+
+/** Approves the pending approval for `action`, executes it, delivers events, runs step jobs. */
+async function approve(action: Operation) {
+  const a = pendingOf(action);
+  if (!a) throw new Error(`no pending ${action}`);
+  approvals.approve(a.id);
+  const outcome = await approvals.execute(a.id);
+  dispatcher.dispatchOnce();
+  await drain();
+  return { approval: a, outcome };
+}
+
+async function reject(action: Operation) {
+  const a = pendingOf(action);
+  if (!a) throw new Error(`no pending ${action}`);
+  approvals.reject(a.id, "no");
+  dispatcher.dispatchOnce();
+  await drain();
+  return a;
+}
+
+const PLAN = {
+  summary: "Fix the redirect.",
+  plan: [{ step: "Change the handler" }],
+  filesLikelyTouched: ["src/index.ts"],
+  testCommand: "bun test",
+  risk: "low" as const,
+  size: "s" as const,
+  unclear: [],
+};
+
+/** A task picked up under the lock, with its branch and develop steps run. */
+async function developed(parentBranch = "main"): Promise<string> {
+  const t = service.create({ repositoryId: repoId, title: "Fix redirect", draftDescription: "x" });
+  db.update(schema.engineeringTasks)
+    .set({ status: "planned", approvedDescription: APPROVED, plan: PLAN })
+    .where(eq(schema.engineeringTasks.id, t.id))
+    .run();
+  await service.approvePlan(t.id, { parentBranch, testCommand: "bun test" });
+  expect(await service.pickupNext()).toEqual({ pickedUp: t.id });
+  await drain();
+  return t.id;
+}
+
+const head = (dir: string, ref: string) => git(dir, "rev-parse", ref);
+const branches = () => git(repo, "branch", "--format=%(refname:short)").split("\n");
+
+/** Pushes a commit changing README.md to `bare`'s `branch` from a throwaway clone. */
+function pushRemoteCommit(bare: string, content: string, branch = "main"): void {
+  const dir = join(scratch(), "c");
+  git(scratch(), "clone", "-q", "-b", branch, `file://${bare}`, dir);
+  git(dir, "config", "user.email", "x@example.com");
+  git(dir, "config", "user.name", "X");
+  writeFileSync(join(dir, "README.md"), content);
+  git(dir, "commit", "-q", "-am", "remote change");
+  git(dir, "push", "-q", "origin", branch);
+}
+
+beforeEach(async () => {
+  db = openDatabase(":memory:").db;
+  runMigrations(db);
+  clock = new FakeClock(NOW);
+  settings = new SettingsService(db, clock, () => "e");
+  events = new EventPublisher(clock);
+  audit = new AuditLogger(clock);
+  queue = new JobQueue(db, clock);
+  leases = new LeaseService(db, clock);
+  handlers = new Map();
+  approvals = new ApprovalEngine(db, clock, events, audit, new PermissionManager(db, audit));
+  dispatcher = new OutboxDispatcher(db, clock, new LiveBus());
+  fx = remoteRepoFixture(scratch());
+  repo = fx.repo;
+  const provider = new LocalGitProvider({ home: fx.home });
+  const registry = new RepositoryRegistry({ db, clock, audit, events, provider });
+  const view = await registry.register({
+    path: repo,
+    name: "app",
+    trackedBranch: "main",
+    environments: [
+      { name: "prod", branch: "prod", protected: true, autoDeploysOnMerge: true },
+      { name: "stage", branch: "stage", protected: false, autoDeploysOnMerge: true },
+    ],
+    jiraProjectKeys: [],
+  });
+  repoId = view.id;
+  // The PR goes fork → upstream on github.com (stored URLs); git itself pushes to the bare file:// origin.
+  db.update(schema.repositories)
+    .set({ originUrl: "https://github.com/fork/app", upstreamUrl: "https://github.com/up/app" })
+    .where(eq(schema.repositories.id, repoId))
+    .run();
+  workflow = new LocalGitWorkflow({ home: fx.home, extraEnv: { GIT_CONFIG_NOSYSTEM: "1" } });
+  lock = new EngineeringLock({ db, clock, leases, settings, events, audit, git: workflow, queue });
+  service = new EngineeringTaskService({
+    db,
+    clock,
+    events,
+    audit,
+    queue,
+    provider,
+    registry,
+    lock,
+    git: workflow,
+  });
+  steps = new EngineeringStepService({
+    db,
+    clock,
+    events,
+    audit,
+    queue,
+    approvals,
+    lock,
+    git: workflow,
+    prs: new GitHubCliProvider({ binary: fakeGh }),
+  });
+  steps.register(approvals, dispatcher);
+  requests = [];
+  reply = editingRun();
+  registerStepJob({
+    db,
+    settings,
+    steps,
+    handlers,
+    orchestrator: {
+      run: async (req: ClaudeJobRequest) => {
+        requests.push(req);
+        return reply(req);
+      },
+    },
+  });
+  rmSync(join(ghDir, "argv.log"), { force: true });
+  rmSync(join(ghDir, "cfg.json"), { force: true });
+});
+
+// ---- tests --------------------------------------------------------------------------------------
+
+describe("develop request (E9)", () => {
+  test("scoped tools pass rule L; only system and user_approved parts; settings drive it", async () => {
+    settings.set("engineering.model", "opus");
+    settings.set("engineering.develop.maxTurns", 40);
+    settings.set("engineering.develop.timeoutMinutes", 25);
+    await developed();
+    const req = requests[0] as ClaudeJobRequest;
+    expect(req.workerProfile).toBe("engineering");
+    expect(req.workingDirectory).toBe(repo);
+    expect(req.allowedTools).toEqual([
+      `Read(/${repo}/**)`,
+      `Grep(/${repo}/**)`,
+      `Glob(/${repo}/**)`,
+      `Edit(/${repo}/**)`,
+      `Write(/${repo}/**)`,
+      `MultiEdit(/${repo}/**)`,
+      "Bash(bun test:*)",
+    ]);
+    expect(req.model).toBe("opus");
+    expect(req.maxTurns).toBe(40);
+    expect(req.timeoutMs).toBe(25 * 60_000);
+    const parts = req.parts ?? [];
+    expect(parts.every((p) => p.provenance === "system" || p.provenance === "user_approved")).toBe(
+      true,
+    );
+    const approved = parts.filter((p) => p.provenance === "user_approved");
+    expect(approved.map((p) => p.source)).toEqual([
+      "engineering_task.approved_description",
+      "engineering_task.plan",
+    ]);
+    expect(approved[0]?.content).toBe(APPROVED);
+    expect(JSON.parse(approved[1]?.content ?? "{}").plan).toEqual(PLAN.plan);
+    // Neither the draft nor the title reaches the run.
+    expect(JSON.stringify(req)).not.toContain("Fix redirect");
+    const system = parts.find((p) => p.provenance === "system")?.content ?? "";
+    for (const s of [".gitattributes", ".gitmodules", ".lfsconfig", "commit"]) {
+      expect(system).toContain(s);
+    }
+  });
+
+  test("the built request passes the real validator (rule L), with turns capped at 50", () => {
+    const req = buildDevelopRequest(
+      { approvedDescription: APPROVED, plan: PLAN },
+      { localPath: "/home/demo/app", testCommand: "bun test" },
+      { model: "sonnet", maxTurns: 60, timeoutMinutes: 30 },
+    );
+    expect(req.maxTurns).toBe(50);
+    const parts = req.parts ?? [];
+    const r = validateRequest(
+      {
+        runId: "r",
+        jobId: null,
+        workerProfile: req.workerProfile,
+        model: "sonnet",
+        systemPrompt: req.systemPrompt ?? "",
+        prompt: assemblePrompt(req.instructions, parts, "BND"),
+        promptParts: parts,
+        allowedTools: req.allowedTools,
+        disallowedTools: buildDenylist(req.allowedTools, DEFAULT_KNOWN_SERVERS, "engineering"),
+        maxTurns: req.maxTurns,
+        timeoutMs: req.timeoutMs ?? 0,
+        workingDirectory: req.workingDirectory ?? "",
+      },
+      DEFAULT_KNOWN_SERVERS,
+      { instructions: req.instructions, boundary: "BND" },
+    );
+    expect(r).toEqual({ ok: true });
+  });
+});
+
+describe("happy path (E8–E15)", () => {
+  test("develop → commit → update → merge_local → push + PR → merge_pr → completed, cleaned, lock released", async () => {
+    const id = await developed();
+    const task = taskRow(id);
+    expect(task?.status).toBe("awaiting_approval");
+    expect(task?.currentStep).toBe("commit");
+    const taskBranch = task?.taskBranch as string;
+    const develop = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(develop.testsPassed).toBe(true);
+    expect(String(develop.testOutputTail)).toContain(TEST_MARKER);
+    expect(String(develop.diffText)).toContain(DIFF_MARKER);
+    expect(develop.gitDirBaseline).toMatch(/^[0-9a-f]{64}$/);
+    expect(develop.configFingerprint).toMatch(/^[0-9a-f]{64}$/);
+
+    const commit = pendingOf("engineering.commit") as Approval;
+    expect(commit.riskLevel).toBe("medium");
+    const cp = commit.payload as Record<string, unknown>;
+    expect(cp.taskId).toBe(id);
+    expect(cp.testsPassed).toBe(true);
+    expect((cp.files as { path: string }[]).map((f) => f.path)).toEqual([
+      "src/index.ts",
+      `src/${FILE_MARKER}.ts`,
+    ]);
+    expect(String(cp.message)).toContain(`Task: ${id}`);
+    expect(String(cp.message).startsWith("Fix redirect\n\n")).toBe(true);
+    // Diff text lives on the step output only.
+    expect(JSON.stringify(cp)).not.toContain(DIFF_MARKER);
+    expect(cp.diffHash).toBe(develop.diffHash);
+    expect(cp.gitDirBaseline).toBe(develop.gitDirBaseline);
+
+    const mainBefore = head(repo, "main");
+    expect((await approve("engineering.commit")).outcome.status).toBe("executed");
+    expect(git(repo, "log", "-1", "--format=%B", taskBranch)).toContain(`Task: ${id}`);
+    expect(stepRow(id, "update_parent")?.status).toBe("done");
+    const ml = pendingOf("engineering.merge_local") as Approval;
+    expect(ml.riskLevel).toBe("medium");
+    expect(taskRow(id)?.currentStep).toBe("merge_local");
+
+    expect((await approve("engineering.merge_local")).outcome.status).toBe("executed");
+    expect(head(repo, "main")).not.toBe(mainBefore);
+    expect(taskRow(id)?.mergeSha).toBe(head(repo, "main"));
+    const push = pendingOf("engineering.push_pr") as Approval;
+    const pp = push.payload as Record<string, unknown>;
+    expect(push.riskLevel).toBe("medium");
+    expect(pp.autoDeploys).toBe(false);
+    expect((pp.commits as unknown[]).length).toBe(2); // the task commit and the --no-ff merge
+    expect(pp.prTitle).toBe("Fix redirect");
+
+    const upstreamBefore = head(fx.upstream, "main");
+    expect((await approve("engineering.push_pr")).outcome.status).toBe("executed");
+    expect(head(fx.origin, "main")).toBe(head(repo, "main"));
+    expect(head(fx.upstream, "main")).toBe(upstreamBefore); // never pushed to upstream
+    const create = ghCalls().find((c) => c[1] === "create") as string[];
+    expect(create.slice(0, 8)).toEqual([
+      "pr",
+      "create",
+      "--repo",
+      "up/app",
+      "--head",
+      "fork:main",
+      "--base",
+      "main",
+    ]);
+    expect(taskRow(id)?.prNumber).toBe(7);
+    const mp = pendingOf("engineering.merge_pr") as Approval;
+    expect(mp.riskLevel).toBe("high"); // E14: always
+    expect((mp.payload as Record<string, unknown>).status).toEqual({
+      state: "OPEN",
+      mergeable: "MERGEABLE",
+      checks: "passing",
+    });
+
+    expect((await approve("engineering.merge_pr")).outcome.status).toBe("executed");
+    expect(ghCalls().find((c) => c[1] === "merge")).toEqual([
+      "pr",
+      "merge",
+      "7",
+      "--repo",
+      "up/app",
+      "--merge",
+    ]);
+    expect(taskRow(id)?.status).toBe("completed");
+    expect(stepRow(id, "cleanup")?.status).toBe("done");
+    expect(branches()).not.toContain(taskBranch);
+    expect(git(repo, "symbolic-ref", "--short", "HEAD")).toBe("main");
+    expect(leaseRow()).toBeUndefined();
+
+    // No diff text, test output, paths or branch names in audit rows or events.
+    for (const dump of [auditDump(), eventDump()]) {
+      for (const m of [DIFF_MARKER, TEST_MARKER, FILE_MARKER, "synapse/", repo, APPROVED]) {
+        expect(dump).not.toContain(m);
+      }
+    }
+  }, 30_000);
+});
+
+describe("test result source (ADR-026)", () => {
+  test("a failing Bash tool_result wins over the model's claim", async () => {
+    reply = editingRun(
+      undefined,
+      [tool("Bash", { command: "bun test" }, `1 fail\n${TEST_MARKER}`, true)],
+      true,
+    );
+    const id = await developed();
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.testsPassed).toBe(false);
+    expect(String(out.testOutputTail)).toContain("1 fail");
+    expect(
+      (pendingOf("engineering.commit")?.payload as { testsPassed: boolean } | undefined)
+        ?.testsPassed,
+    ).toBe(false);
+  });
+
+  test("the last test-command result counts; other commands and missing results do not", () => {
+    const ok = tool("Bash", { command: "bun test" }, "pass");
+    const bad = tool("Bash", { command: "bun test src/a.test.ts" }, "fail", true);
+    const other = tool("Bash", { command: "bun testx" }, "pass");
+    expect(testResultFrom([bad, ok], "bun test")).toEqual({
+      testsPassed: true,
+      testOutputTail: "pass",
+    });
+    expect(testResultFrom([ok, bad, other], "bun test").testsPassed).toBe(false);
+    expect(testResultFrom([other], "bun test")).toEqual({
+      testsPassed: false,
+      testOutputTail: null,
+    });
+    expect(testResultFrom([], "bun test")).toEqual({ testsPassed: false, testOutputTail: null });
+    const long = tool("Bash", { command: "bun test" }, `${"x".repeat(5000)}END`);
+    const tail = testResultFrom([long], "bun test").testOutputTail as string;
+    expect(tail.length).toBe(2000);
+    expect(tail.endsWith("END")).toBe(true);
+  });
+});
+
+describe("unsafe and empty develop runs (E9)", () => {
+  test("a write into .git/hooks is unsafe_change: no commit approval, needs attention, lock kept", async () => {
+    reply = editingRun({ ".git/hooks/x": "#!/bin/sh\n", "src/index.ts": "changed\n" });
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("unsafe_change");
+    expect(stepRow(id, "develop")?.status).toBe("failed");
+    expect(
+      (stepRow(id, "develop")?.output as { unsafeReasons: string[] } | undefined)?.unsafeReasons,
+    ).toEqual(["git_dir_changed"]);
+    expect(approvals.listPending()).toEqual([]);
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+  });
+
+  test("a .gitattributes change is unsafe_change", async () => {
+    reply = editingRun({ ".gitattributes": "*.ts filter=evil\n" });
+    const id = await developed();
+    expect(taskRow(id)?.failure).toBe("unsafe_change");
+    expect(
+      (stepRow(id, "develop")?.output as { unsafeReasons: string[] } | undefined)?.unsafeReasons,
+    ).toEqual(["git_metadata_changed"]);
+    expect(approvals.listPending()).toEqual([]);
+  });
+
+  test("an empty diff fails the task (no_changes), cleans up and releases the lock", async () => {
+    reply = editingRun({});
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("no_changes");
+    expect(branches()).not.toContain(taskRow(id)?.taskBranch);
+    expect(git(repo, "symbolic-ref", "--short", "HEAD")).toBe("main");
+    expect(leaseRow()).toBeUndefined();
+  });
+});
+
+describe("rejection and cancel (E16)", () => {
+  test("rejecting the commit leaves no commit, cancels, discards the run's changes, deletes the branch, releases the lock", async () => {
+    const id = await developed();
+    const taskBranch = taskRow(id)?.taskBranch as string;
+    const mainBefore = head(repo, "main");
+    await reject("engineering.commit");
+    expect(taskRow(id)?.status).toBe("cancelled");
+    expect(stepRow(id, "commit")?.status).toBe("skipped");
+    expect(stepRow(id, "cleanup")?.status).toBe("done");
+    expect(head(repo, "main")).toBe(mainBefore);
+    expect(branches()).not.toContain(taskBranch);
+    expect(git(repo, "status", "--porcelain")).toBe("");
+    expect(git(repo, "symbolic-ref", "--short", "HEAD")).toBe("main");
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("rejecting a later step keeps the committed task branch (not merged) and releases the lock", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    await reject("engineering.merge_local");
+    expect(taskRow(id)?.status).toBe("cancelled");
+    expect(branches()).toContain(taskRow(id)?.taskBranch as string);
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("cancel() while the commit approval waits expires it and cleans up", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    service.cancel(id);
+    await drain();
+    dispatcher.dispatchOnce();
+    expect(approvalRow(a.id)?.status).toBe("expired");
+    expect(taskRow(id)?.status).toBe("cancelled");
+    expect(branches()).not.toContain(taskRow(id)?.taskBranch);
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("a tree the user changed after the approval is not discarded: needs attention, lock kept; tidy and cancel again releases", async () => {
+    const id = await developed();
+    writeFileSync(join(repo, "src/index.ts"), "my own edit\n");
+    await reject("engineering.commit");
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("dirty_tree");
+    expect(readFileSync(join(repo, "src/index.ts"), "utf8")).toBe("my own edit\n");
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+    git(repo, "checkout", "--", ".");
+    git(repo, "clean", "-fdq");
+    service.cancel(id);
+    await drain();
+    expect(taskRow(id)?.status).toBe("cancelled");
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("cleanup never touches git while another task holds the lock", async () => {
+    const id = await developed();
+    const taskBranch = taskRow(id)?.taskBranch as string;
+    db.update(schema.engineeringTasks)
+      .set({ status: "cancelled" })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+    db.update(schema.leases)
+      .set({ holder: "task:someone-else" })
+      .where(eq(schema.leases.name, ENGINEERING_LEASE))
+      .run();
+    expect(await steps.cleanup(id)).toEqual({
+      status: "skipped",
+      step: "cleanup",
+      reason: "lock_held_by_other",
+    });
+    expect(stepRow(id, "cleanup")?.status).toBe("skipped");
+    expect(branches()).toContain(taskBranch);
+    expect(git(repo, "status", "--porcelain")).not.toBe("");
+  });
+});
+
+describe("revalidation (E18)", () => {
+  test("stale commit approval: the diff changed, nothing is committed, approval revoked, needs attention", async () => {
+    const id = await developed();
+    const taskBranch = taskRow(id)?.taskBranch as string;
+    const base = head(repo, taskBranch);
+    writeFileSync(join(repo, "src/index.ts"), "changed after the approval\n");
+    const { approval, outcome } = await approve("engineering.commit");
+    expect(outcome.status).toBe("skipped");
+    expect(approvalRow(approval.id)?.status).toBe("revoked");
+    expect(head(repo, taskBranch)).toBe(base);
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("diff_changed");
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+    // The system revoke does not cancel the task.
+    dispatcher.dispatchOnce();
+    expect(taskRow(id)?.status).toBe("needs_attention");
+  });
+
+  test("a git config change before the commit executes is config_changed", async () => {
+    const id = await developed();
+    git(repo, "config", "core.pager", "less");
+    const { outcome } = await approve("engineering.commit");
+    expect(outcome.status).toBe("skipped");
+    expect(taskRow(id)?.failure).toBe("config_changed");
+  });
+
+  test("a git config change before merge_local executes is config_changed", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    const mainBefore = head(repo, "main");
+    git(repo, "config", "core.pager", "less");
+    const { outcome } = await approve("engineering.merge_local");
+    expect(outcome.status).toBe("skipped");
+    expect(taskRow(id)?.failure).toBe("config_changed");
+    expect(head(repo, "main")).toBe(mainBefore);
+  });
+
+  test("a parent that became protected after plan approval fails push_pr revalidation", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    db.insert(schema.repositoryEnvironments)
+      .values({
+        id: newId(),
+        repositoryId: repoId,
+        name: "main-env",
+        branch: "main",
+        protected: true,
+        autoDeploysOnMerge: false,
+      })
+      .run();
+    const originBefore = head(fx.origin, "main");
+    const { outcome } = await approve("engineering.push_pr");
+    expect(outcome.status).toBe("skipped");
+    expect(taskRow(id)?.failure).toBe("protected_branch");
+    expect(head(fx.origin, "main")).toBe(originBefore);
+    expect(ghCalls().some((c) => c[1] === "create")).toBe(false);
+  });
+});
+
+describe("conflicts (E11, E12)", () => {
+  test("an update_parent conflict sets needs_attention (parent_conflict), aborts the merge and keeps the lock", async () => {
+    const id = await developed();
+    pushRemoteCommit(fx.origin, "origin side\n");
+    pushRemoteCommit(fx.upstream, "upstream side\n");
+    expect((await approve("engineering.commit")).outcome.status).toBe("executed");
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("parent_conflict");
+    expect(stepRow(id, "update_parent")?.status).toBe("failed");
+    expect(existsSync(join(repo, ".git", "MERGE_HEAD"))).toBe(false);
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+    expect(approvals.listPending()).toEqual([]);
+  });
+
+  test("a merge_local conflict sets needs_attention (merge_conflict) and keeps the lock", async () => {
+    reply = editingRun({ "README.md": "task side\n" });
+    const id = await developed();
+    pushRemoteCommit(fx.origin, "origin side\n");
+    pushRemoteCommit(fx.upstream, "origin side\n");
+    await approve("engineering.commit");
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+    const { outcome } = await approve("engineering.merge_local");
+    expect(outcome.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("merge_conflict");
+    expect(existsSync(join(repo, ".git", "MERGE_HEAD"))).toBe(false);
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+  });
+});
+
+describe("auto-deploy notice and PR failures (E13, E14)", () => {
+  test("an auto-deploy parent makes push_pr and merge_pr high risk and carries the notice", async () => {
+    const id = await developed("stage");
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    const push = pendingOf("engineering.push_pr") as Approval;
+    expect(push.riskLevel).toBe("high");
+    expect(push.payload).toMatchObject({ autoDeploys: true, environmentName: "stage" });
+    await approve("engineering.push_pr");
+    const merge = pendingOf("engineering.merge_pr") as Approval;
+    expect(merge.riskLevel).toBe("high");
+    expect(merge.payload).toMatchObject({ autoDeploys: true, environmentName: "stage" });
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+  });
+
+  test("a non-GitHub upstream is unsupported_remote before anything is pushed", async () => {
+    db.update(schema.repositories)
+      .set({ upstreamUrl: "https://gitlab.com/up/app" })
+      .where(eq(schema.repositories.id, repoId))
+      .run();
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    const originBefore = head(fx.origin, "main");
+    expect((await approve("engineering.push_pr")).outcome.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("unsupported_remote");
+    expect(head(fx.origin, "main")).toBe(originBefore);
+  });
+
+  test("a failed PR creation after the push needs attention (pr_create_failed)", async () => {
+    writeFileSync(join(ghDir, "cfg.json"), JSON.stringify({ fail: "pr create" }));
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    expect((await approve("engineering.push_pr")).outcome.status).toBe("failed");
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("pr_create_failed");
+    expect(stepRow(id, "push_pr")?.output).toMatchObject({ pushed: true });
+  });
+});
+
+describe("restart while an approval waits (E6 refinement)", () => {
+  const restartLock = () =>
+    new EngineeringLock({ db, clock, leases, settings, events, audit, git: workflow, queue });
+
+  test("commit approval pending, same diff and config: resumed, approval still pending, lock kept", async () => {
+    const id = await developed();
+    clock.advance(30 * 60_000);
+    expect(await restartLock().recover()).toEqual({ action: "resumed", taskId: id });
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+    expect(pendingOf("engineering.commit")).toBeDefined();
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+    expect(new Date(leaseRow()?.expiresAt as string).getTime()).toBeGreaterThan(
+      clock.now().getTime(),
+    );
+  });
+
+  test("commit approval pending but the diff changed: needs attention (diff_changed)", async () => {
+    const id = await developed();
+    writeFileSync(join(repo, "src/index.ts"), "edited while down\n");
+    expect(await restartLock().recover()).toEqual({
+      action: "needs_attention",
+      taskId: id,
+      reason: "diff_changed",
+    });
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+  });
+
+  test("commit approval pending but the config changed: needs attention (config_changed)", async () => {
+    const id = await developed();
+    git(repo, "config", "core.pager", "less");
+    expect(await restartLock().recover()).toMatchObject({ reason: "config_changed" });
+    expect(taskRow(id)?.status).toBe("needs_attention");
+  });
+
+  test("an executor that was running (in_progress at commit) cannot be re-driven: resume_unsafe", async () => {
+    const id = await developed();
+    git(repo, "stash", "-u");
+    db.update(schema.engineeringTasks)
+      .set({ status: "in_progress" })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+    expect(await restartLock().recover()).toMatchObject({
+      action: "needs_attention",
+      reason: "resume_unsafe",
+    });
+  });
+
+  test("in_progress at develop with a clean tree re-drives develop; a touched git dir does not", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    // Undo the run's edits with plain file writes: no git command may touch .git here.
+    writeFileSync(join(repo, "src/index.ts"), "export {};\n");
+    rmSync(join(repo, `src/${FILE_MARKER}.ts`));
+    db.update(schema.approvals)
+      .set({ status: "expired" })
+      .where(eq(schema.approvals.id, a.id))
+      .run();
+    db.update(schema.engineeringTasks)
+      .set({ status: "in_progress", currentStep: "develop" })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+    expect(await restartLock().recover()).toEqual({ action: "resumed", taskId: id });
+    const pending = db
+      .select()
+      .from(schema.jobs)
+      .where(and(eq(schema.jobs.type, STEP_JOB), eq(schema.jobs.status, "PENDING")))
+      .all();
+    expect(pending.map((j) => j.input)).toEqual([{ taskId: id, step: "develop" }]);
+
+    // Same state, but something wrote into .git after the baseline: not re-driven.
+    db.update(schema.jobs).set({ status: "COMPLETED" }).run();
+    writeFileSync(join(repo, ".git", "hooks", "post-checkout"), "#!/bin/sh\n");
+    expect(await restartLock().recover()).toMatchObject({ reason: "resume_unsafe" });
+  });
+});

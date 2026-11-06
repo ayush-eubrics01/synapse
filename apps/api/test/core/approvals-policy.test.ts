@@ -131,6 +131,35 @@ test("revokeAsSystem revokes an unclaimed approval with actor system, inside the
   expect(revoke?.actor).toBe("system");
 });
 
+test("expireAsSystem expires a pending or approved-unclaimed approval as system; not a claimed or decided one", async () => {
+  const { db, engine, row, auditFor, eventsFor } = setup();
+  const pending = engine.request(db, { ...req("slack.send"), idempotencyKey: "exp-1" });
+  db.transaction((tx) => engine.expireAsSystem(tx, pending.id, "task_cancelled"));
+  expect(row(pending.id)?.status).toBe("expired");
+  const exp = auditFor(pending.id).find((x) => x.action === "approval.expired");
+  expect(exp?.actor).toBe("system");
+  expect(exp?.details).toEqual({ reason: "task_cancelled" });
+  expect(eventsFor(pending.id)).toContain("approval.expired");
+
+  const approved = engine.request(db, { ...req("slack.send"), idempotencyKey: "exp-2" });
+  engine.approve(approved.id);
+  db.transaction((tx) => engine.expireAsSystem(tx, approved.id, "task_cancelled"));
+  expect(row(approved.id)?.status).toBe("expired");
+
+  const rejected = engine.request(db, { ...req("slack.send"), idempotencyKey: "exp-3" });
+  engine.reject(rejected.id, "no");
+  expect(() => db.transaction((tx) => engine.expireAsSystem(tx, rejected.id, "x"))).toThrow();
+
+  const claimed = engine.request(db, { ...req("slack.send"), idempotencyKey: "exp-4" });
+  engine.approve(claimed.id);
+  db.update(schema.approvals)
+    .set({ executionStartedAt: "2026-11-06T12:00:00.000Z" })
+    .where(eq(schema.approvals.id, claimed.id))
+    .run();
+  expect(() => db.transaction((tx) => engine.expireAsSystem(tx, claimed.id, "x"))).toThrow();
+  expect(row(claimed.id)?.status).toBe("approved");
+});
+
 test("a policy approval whose gate closes after approval is never executed", async () => {
   const { db, perms, engine, row } = setup();
   let ran = 0;

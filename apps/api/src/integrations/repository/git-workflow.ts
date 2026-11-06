@@ -512,6 +512,29 @@ export class LocalGitWorkflow implements GitWorkflow {
     return { ok: true };
   }
 
+  async discardChanges(
+    repo: string,
+    expectedHash: string,
+    opts: GitConfigGuard = {},
+  ): Promise<{ ok: true }> {
+    await this.guardConfig(repo, opts);
+    if (await this.mergeInProgress(repo)) throw new GitWorkflowError("dirty_tree");
+    const c = await this.collect(repo);
+    if (c.files.length === 0) return { ok: true };
+    if (c.reasons.size > 0) throw new GitWorkflowError("unsafe_change");
+    if (c.hash !== expectedHash) throw new GitWorkflowError("diff_changed");
+    const untracked = c.entries.filter((e) => e.xy === "??").map((e) => `:(literal)${e.path}`);
+    await this.must(repo, ["reset", "-q", "--hard", "--no-recurse-submodules", "HEAD"]);
+    if (untracked.length > 0) await this.must(repo, ["clean", "-f", "-q", "--", ...untracked]);
+    if (await this.dirty(repo)) throw new GitWorkflowError("dirty_tree");
+    return { ok: true };
+  }
+
+  async branchExists(repo: string, name: string): Promise<boolean> {
+    this.ref(name);
+    return this.refExists(repo, `refs/heads/${name}`);
+  }
+
   async commitsAhead(repo: string, parent: string): Promise<GitCommitSummary[]> {
     this.ref(parent);
     const tracking = `refs/remotes/origin/${parent}`;

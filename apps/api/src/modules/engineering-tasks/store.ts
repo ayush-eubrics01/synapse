@@ -30,7 +30,10 @@ export const ENGINEERING_TASK_ERROR_CODES = [
   "unsafe_test_command",
   "path_unavailable",
 ] as const;
-export type EngineeringTaskErrorCode = (typeof ENGINEERING_TASK_ERROR_CODES)[number];
+/** `registry_error:<RegistryErrorCode>` wraps a refusal of the repository registry. */
+export type EngineeringTaskErrorCode =
+  | (typeof ENGINEERING_TASK_ERROR_CODES)[number]
+  | `registry_error:${string}`;
 
 /** A refused call. The message is the fixed code only: never a branch, path or any task text. */
 export class EngineeringTaskError extends Error {
@@ -53,9 +56,12 @@ export const ACTIVE_STATUSES: readonly EngineeringTaskStatus[] = [
 ];
 
 /**
- * The task state machine (E1–E6, E16). `investigating → proposed` is a failed investigation (the
- * user edits the description and re-approves); `planned → investigating` is a re-investigation.
- * `approved` is kept for a future two-step approval; plan approval goes straight to `queued`.
+ * The task state machine (E1–E6, E15, E16). `investigating → proposed` is a failed investigation
+ * (the user edits the description and re-approves); `planned → investigating` is a
+ * re-investigation. `approved` is kept for a future two-step approval; plan approval goes straight
+ * to `queued`. A terminal status moves on only to `needs_attention`, and only from the cleanup
+ * step: the local cleanup found a dirty tree, so the task keeps the lock until the user tidies up
+ * and cancels again (which re-runs cleanup).
  */
 export const ALLOWED_TRANSITIONS: Readonly<
   Record<EngineeringTaskStatus, readonly EngineeringTaskStatus[]>
@@ -68,9 +74,9 @@ export const ALLOWED_TRANSITIONS: Readonly<
   in_progress: ["awaiting_approval", "completed", "failed", "cancelled", "needs_attention"],
   awaiting_approval: ["in_progress", "completed", "failed", "cancelled", "needs_attention"],
   needs_attention: ["queued", "in_progress", "awaiting_approval", "failed", "cancelled"],
-  completed: [],
-  failed: [],
-  cancelled: [],
+  completed: ["needs_attention"],
+  failed: ["needs_attention"],
+  cancelled: ["needs_attention"],
 };
 
 export function canTransition(from: EngineeringTaskStatus, to: EngineeringTaskStatus): boolean {

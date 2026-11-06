@@ -110,6 +110,10 @@ export class GitHubCliProvider implements PullRequestProvider {
     }
   }
 
+  repoRef(url: string): PrRef | null {
+    return parseGithubRemote(url);
+  }
+
   async createPr(input: CreatePrInput): Promise<{ url: string; number: number }> {
     const { upstream, headOwner, branch, title, body } = input;
     const res = await this.run(

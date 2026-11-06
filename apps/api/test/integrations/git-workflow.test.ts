@@ -607,6 +607,62 @@ describe("cleanup (E15)", () => {
   });
 });
 
+describe("discardChanges (E16) and branchExists", () => {
+  test("discards exactly the approved changes: tracked edits, new files and staged additions; ignored files stay", async () => {
+    const f = setup();
+    writeFileSync(join(f.repo, ".gitignore"), "build/\n");
+    git(f.repo, "add", ".gitignore");
+    git(f.repo, "commit", "-q", "-m", "ignore");
+    mkdirSync(join(f.repo, "build"));
+    writeFileSync(join(f.repo, "build", "out.js"), "ignored\n");
+    writeFileSync(join(f.repo, "a.txt"), "edit\n");
+    mkdirSync(join(f.repo, "src"));
+    writeFileSync(join(f.repo, "src", "[x]*.ts"), "glob-looking name\n");
+    writeFileSync(join(f.repo, "staged.txt"), "staged\n");
+    git(f.repo, "add", "staged.txt");
+    const { hash } = await f.wf.diffSummary(f.repo);
+    expect(await f.wf.discardChanges(f.repo, hash)).toEqual({ ok: true });
+    expect(git(f.repo, "status", "--porcelain")).toBe("");
+    expect(readFileSync(join(f.repo, "a.txt"), "utf8")).toBe("one\ntwo\nthree\n");
+    expect(existsSync(join(f.repo, "staged.txt"))).toBe(false);
+    expect(readFileSync(join(f.repo, "build", "out.js"), "utf8")).toBe("ignored\n");
+  });
+
+  test("refuses a tree that changed since the hash (diff_changed) and leaves it as it is", async () => {
+    const f = setup();
+    writeFileSync(join(f.repo, "a.txt"), "edit\n");
+    const { hash } = await f.wf.diffSummary(f.repo);
+    writeFileSync(join(f.repo, "mine.txt"), "the user's own file\n");
+    expect(await codeOf(f.wf.discardChanges(f.repo, hash))).toBe("diff_changed");
+    expect(readFileSync(join(f.repo, "mine.txt"), "utf8")).toBe("the user's own file\n");
+    expect(readFileSync(join(f.repo, "a.txt"), "utf8")).toBe("edit\n");
+  });
+
+  test("refuses an unsafe diff and a changed config; a clean tree is a no-op", async () => {
+    const f = setup();
+    expect(await f.wf.discardChanges(f.repo, "0".repeat(64))).toEqual({ ok: true });
+    const fp = await f.wf.configFingerprint(f.repo);
+    writeFileSync(join(f.repo, ".gitattributes"), "* filter=x\n");
+    const { hash } = await f.wf.diffSummary(f.repo);
+    expect(await codeOf(f.wf.discardChanges(f.repo, hash))).toBe("unsafe_change");
+    rmSync(join(f.repo, ".gitattributes"));
+    writeFileSync(join(f.repo, "a.txt"), "edit\n");
+    const d = await f.wf.diffSummary(f.repo);
+    git(f.repo, "config", "core.pager", "less");
+    expect(
+      await codeOf(f.wf.discardChanges(f.repo, d.hash, { expectedConfigFingerprint: fp })),
+    ).toBe("config_changed");
+    expect(readFileSync(join(f.repo, "a.txt"), "utf8")).toBe("edit\n");
+  });
+
+  test("branchExists checks a local branch and refuses an unsafe name", async () => {
+    const f = setup();
+    expect(await f.wf.branchExists(f.repo, "main")).toBe(true);
+    expect(await f.wf.branchExists(f.repo, "synapse/none")).toBe(false);
+    expect(await codeOf(f.wf.branchExists(f.repo, "-x"))).toBe("invalid_ref");
+  });
+});
+
 describe("no configured auto-resolution or rewriting (review fixes)", () => {
   test("branch.<parent>.mergeOptions=-Xtheirs cannot resolve an updateParent conflict", async () => {
     const f = setup();

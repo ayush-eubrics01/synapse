@@ -14,7 +14,7 @@ import { LeaseService } from "../../src/core/leases/leases";
 import { SchedulerService } from "../../src/core/scheduler/scheduler";
 import { LocalGitWorkflow } from "../../src/integrations/repository/git-workflow";
 import { LocalGitProvider } from "../../src/integrations/repository/local-git";
-import { RepositoryRegistry } from "../../src/modules/engineering-brain/registry";
+import { RegistryError, RepositoryRegistry } from "../../src/modules/engineering-brain/registry";
 import { ENGINEERING_LEASE, EngineeringLock } from "../../src/modules/engineering-tasks/lock";
 import {
   EngineeringTaskError,
@@ -156,7 +156,7 @@ beforeEach(async () => {
   prodEnvId = view.environments.find((e) => e.name === "prod")?.id as string;
   stageEnvId = view.environments.find((e) => e.name === "stage")?.id as string;
   workflow = new LocalGitWorkflow({ home: fx.home, extraEnv: { GIT_CONFIG_NOSYSTEM: "1" } });
-  lock = new EngineeringLock({ db, clock, leases, settings, events, audit, git: workflow });
+  lock = new EngineeringLock({ db, clock, leases, settings, events, audit, git: workflow, queue });
   service = new EngineeringTaskService({
     db,
     clock,
@@ -177,9 +177,9 @@ beforeEach(async () => {
 });
 
 describe("status transitions", () => {
-  test("terminal statuses allow no transition; queued only moves to pickup outcomes or cancel", () => {
+  test("terminal statuses move only to needs_attention (a dirty cleanup); queued only to pickup outcomes or cancel", () => {
     for (const s of ["completed", "failed", "cancelled"] as const) {
-      expect(ALLOWED_TRANSITIONS[s]).toEqual([]);
+      expect(ALLOWED_TRANSITIONS[s]).toEqual(["needs_attention"]);
     }
     expect(canTransition("queued", "in_progress")).toBe(true);
     expect(canTransition("queued", "completed")).toBe(false);
@@ -406,6 +406,52 @@ describe("approvePlan (E4/E5)", () => {
     expect(repoRow()?.trackedBranch).toBe("stage");
     expect(auditDump()).toContain("repo.updated");
   });
+
+  /** The same service with a registry stub, to see when (and whether) it is called. */
+  function serviceWithRegistry(update: (id: string) => Promise<unknown>) {
+    return new EngineeringTaskService({
+      db,
+      clock,
+      events: new EventPublisher(clock),
+      audit: new AuditLogger(clock),
+      queue,
+      provider: new LocalGitProvider({ home: join(repo, "..", "home") }),
+      registry: { update: (rid) => update(rid) },
+      lock,
+      git: workflow,
+    });
+  }
+
+  test("the registry update runs only after the transition to queued succeeded", async () => {
+    const id = plannedTask();
+    const seen: string[] = [];
+    const svc = serviceWithRegistry(async () => {
+      seen.push(taskRow(id)?.status as string);
+    });
+    await svc.approvePlan(id, approval({ parentBranch: "stage", rememberAsTracked: true }));
+    expect(seen).toEqual(["queued"]);
+    // A refused approval never reaches the registry.
+    const other = plannedTask("other");
+    expect(
+      await codeOf(
+        svc.approvePlan(other, approval({ parentBranch: "nope", rememberAsTracked: true })),
+      ),
+    ).toBe("unknown_branch");
+    expect(seen).toEqual(["queued"]);
+  });
+
+  test("a RegistryError is wrapped as registry_error:<code>; the task stays queued", async () => {
+    const id = plannedTask();
+    const svc = serviceWithRegistry(async () => {
+      throw new RegistryError("not_found");
+    });
+    expect(
+      await codeOf(
+        svc.approvePlan(id, approval({ parentBranch: "stage", rememberAsTracked: true })),
+      ),
+    ).toBe("registry_error:not_found");
+    expect(taskRow(id)?.status).toBe("queued");
+  });
 });
 
 describe("lock and pickup (E6, E7)", () => {
@@ -511,6 +557,30 @@ describe("lock and pickup (E6, E7)", () => {
     expect(leaseRow()?.holder).toBe(`task:${id}`);
   });
 
+  test("renew releases a terminal holder whose lease expired and that has no live step job", async () => {
+    const id = await queuedTask();
+    await handler(PICKUP_JOB);
+    db.update(schema.engineeringTasks)
+      .set({ status: "cancelled" })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+    // Not expired yet: kept (its cleanup may still be coming).
+    db.update(schema.jobs).set({ status: "COMPLETED" }).where(eq(schema.jobs.type, STEP_JOB)).run();
+    expect(lock.renew()).toBe(false);
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+    // Expired but a step job is still live: kept.
+    clock.advance(30 * 60_000);
+    db.update(schema.jobs).set({ status: "PENDING" }).where(eq(schema.jobs.type, STEP_JOB)).run();
+    expect(lock.renew()).toBe(false);
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+    // Expired, no live step job: released, and the next task can start.
+    db.update(schema.jobs).set({ status: "COMPLETED" }).where(eq(schema.jobs.type, STEP_JOB)).run();
+    expect(lock.renew()).toBe(false);
+    expect(leaseRow()).toBeUndefined();
+    const next = await queuedTask("next");
+    expect(await handler(PICKUP_JOB)).toEqual({ pickedUp: next });
+  });
+
   test("the TTL comes from the setting", async () => {
     settings.set("engineering.lock.ttlMinutes", 3);
     await queuedTask();
@@ -579,6 +649,51 @@ describe("startup recovery (E6)", () => {
     const exp = new Date(leaseRow()?.expiresAt as string).getTime();
     expect(exp).toBeGreaterThan(clock.now().getTime());
     expect(leaseRow()?.holder).toBe(`task:${id}`);
+    // The pending branch job from pickup still runs: no second one.
+    expect(jobsOf(STEP_JOB)).toHaveLength(1);
+  });
+
+  test("resumed re-drives: the branch step is enqueued again when its job is gone and the branch does not exist", async () => {
+    const id = await inProgressWithExpiredLease();
+    db.update(schema.jobs).set({ status: "COMPLETED" }).where(eq(schema.jobs.type, STEP_JOB)).run();
+    expect(await lock.recover()).toEqual({ action: "resumed", taskId: id });
+    const pending = jobsOf(STEP_JOB).filter((j) => j.status === "PENDING");
+    expect(pending.map((j) => j.input)).toEqual([{ taskId: id, step: "branch" }]);
+  });
+
+  test("resumed at branch when the task branch already exists: needs attention (resume_unsafe)", async () => {
+    const id = await inProgressWithExpiredLease();
+    git(repo, "branch", taskRow(id)?.taskBranch as string);
+    expect(await lock.recover()).toEqual({
+      action: "needs_attention",
+      taskId: id,
+      reason: "resume_unsafe",
+    });
+    expect(taskRow(id)?.failure).toBe("resume_unsafe");
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+  });
+
+  test("a queued holder with a dirty tree is released (Synapse never touched the tree)", async () => {
+    const id = await queuedTask();
+    expect(lock.acquire(id)).toBe(true);
+    writeFileSync(join(repo, "user-edit.ts"), "x\n");
+    expect(await lock.recover()).toEqual({ action: "released", taskId: id });
+    expect(taskRow(id)?.status).toBe("queued");
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("a holder in a pre-queue status (corrupt state) is released without a transition", async () => {
+    for (const status of ["proposed", "investigating", "planned", "approved"] as const) {
+      const t = service.create({ repositoryId: repoId, title: "Fix", draftDescription: "x" });
+      db.update(schema.engineeringTasks)
+        .set({ status })
+        .where(eq(schema.engineeringTasks.id, t.id))
+        .run();
+      expect(lock.acquire(t.id)).toBe(true);
+      expect(await lock.recover()).toEqual({ action: "released", taskId: t.id });
+      expect(taskRow(t.id)?.status).toBe(status);
+      expect(leaseRow()).toBeUndefined();
+    }
   });
 
   test("a lease whose task is terminal with no live step job is released", async () => {
@@ -609,6 +724,17 @@ describe("cancel", () => {
     expect(service.cancel(id).status).toBe("cancelled");
     expect(jobsOf(STEP_JOB).map((j) => j.input)).toContainEqual({ taskId: id, step: "cleanup" });
     expect(lock.holder()?.taskId).toBe(id);
+  });
+
+  test("cancelling a queued task enqueues no cleanup, even while pickup holds the lock for it", async () => {
+    const a = await queuedTask("a");
+    service.cancel(a);
+    const b = await queuedTask("b");
+    expect(lock.acquire(b)).toBe(true); // pickup between acquire and its transition
+    service.cancel(b);
+    expect(jobsOf(STEP_JOB)).toHaveLength(0);
+    expect(taskRow(a)?.status).toBe("cancelled");
+    expect(taskRow(b)?.status).toBe("cancelled");
   });
 
   test("a finished task cannot be cancelled", async () => {

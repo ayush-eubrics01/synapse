@@ -42,6 +42,8 @@ export interface CreatePrInput {
 }
 
 export interface PullRequestProvider {
+  /** Owner and repo of a stored (credential-stripped) remote URL on a supported host, else null. */
+  repoRef(url: string): PrRef | null;
   createPr(input: CreatePrInput): Promise<{ url: string; number: number }>;
   prStatus(input: { upstream: PrRef; number: number }): Promise<PrStatus>;
   mergePr(input: { upstream: PrRef; number: number }): Promise<{ merged: boolean; sha?: string }>;

@@ -155,6 +155,69 @@ test("port in use: exits 1 with a message", async () => {
   }
 }, 20_000);
 
+test("port in use: a second process changes nothing (no recovery before the bind)", async () => {
+  const dbPath = tempDb();
+  const { sqlite, db } = openDatabase(dbPath);
+  runMigrations(db);
+  const past = new Date(Date.now() - 60 * 60_000).toISOString();
+  // The live process's state: an engineering lease (of a vanished task), a running Claude run
+  // and an expired RUNNING job. Recovery would release, fail and park them respectively.
+  db.insert(schema.leases)
+    .values({
+      name: "engineering",
+      holder: "task:gone",
+      acquiredAt: past,
+      expiresAt: past,
+      heartbeatAt: past,
+    })
+    .run();
+  const runId = newId();
+  db.insert(schema.claudeRuns)
+    .values({ id: runId, workerProfile: "collector", status: "running", startedAt: past })
+    .run();
+  const jobId = newId();
+  db.insert(schema.jobs)
+    .values({
+      id: jobId,
+      type: "test.noop",
+      priority: 100,
+      status: "RUNNING",
+      input: {},
+      attempts: 1,
+      maxAttempts: 3,
+      idempotencyKey: `inuse-${jobId}`,
+      runAfter: past,
+      leaseOwner: "live-worker",
+      leaseExpiresAt: past,
+      createdAt: past,
+    })
+    .run();
+  sqlite.close();
+  const port = freePort();
+  const blocker = Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("") });
+  try {
+    const p = start(dbPath, port);
+    const code = await Promise.race([p.exited, Bun.sleep(8000).then(() => "timeout")]);
+    expect(code).toBe(1);
+  } finally {
+    blocker.stop(true);
+  }
+  const d = new Database(dbPath, { readonly: true });
+  try {
+    expect(d.query("select holder from leases where name = 'engineering'").get()).toEqual({
+      holder: "task:gone",
+    });
+    expect(d.query("select status from claude_runs where id = ?").get(runId)).toEqual({
+      status: "running",
+    });
+    expect(d.query("select status from jobs where id = ?").get(jobId)).toEqual({
+      status: "RUNNING",
+    });
+  } finally {
+    d.close();
+  }
+}, 20_000);
+
 test("SSE stream flushes headers promptly and survives past 10 s idle", async () => {
   const port = freePort();
   start(tempDb(), port);

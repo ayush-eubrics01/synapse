@@ -295,6 +295,16 @@ export interface GitWorkflow {
    * `owner/repo`), or when there is nothing to compare against.
    */
   pushParent(repo: string, parent: string, opts: GitPushOptions): Promise<{ ok: true }>;
+  /**
+   * E16: throws away the uncommitted develop changes of a rejected or cancelled task, only when the
+   * working tree's diff hash still equals `expectedHash` (the state the user saw in the commit
+   * approval) and the diff is safe: `git reset --hard HEAD` plus `git clean` of exactly the
+   * untracked paths of that diff. Ignored files are left alone. A clean tree is a no-op.
+   * Throws `diff_changed`, `unsafe_change`, `dirty_tree` (a merge in progress) or `config_changed`.
+   */
+  discardChanges(repo: string, expectedHash: string, opts?: GitConfigGuard): Promise<{ ok: true }>;
+  /** Whether the local branch `refs/heads/<name>` exists. */
+  branchExists(repo: string, name: string): Promise<boolean>;
   /** Commits on the local parent that `origin/<parent>` lacks, newest first. */
   commitsAhead(repo: string, parent: string): Promise<GitCommitSummary[]>;
   /**

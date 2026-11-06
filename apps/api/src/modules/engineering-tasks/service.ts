@@ -22,6 +22,7 @@ import { eq } from "drizzle-orm";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
+import { RegistryError } from "../engineering-brain/registry";
 import { type EngineeringLock, STEP_JOB } from "./lock";
 import {
   EngineeringTaskError,
@@ -420,10 +421,6 @@ export class EngineeringTaskService {
     if (!allBranchNames(inspected.inspection).includes(input.parentBranch)) {
       throw new EngineeringTaskError("unknown_branch");
     }
-    if (input.rememberAsTracked && repo.trackedBranch !== input.parentBranch) {
-      await this.deps.registry.update(repo.id, { trackedBranch: input.parentBranch });
-    }
-
     db.transaction(
       (tx) => {
         const fresh = this.store.get(tx, id);
@@ -456,6 +453,15 @@ export class EngineeringTaskService {
       },
       { behavior: "immediate" },
     );
+    // After the transition succeeded: a refused approval never changes the registry.
+    if (input.rememberAsTracked && repo.trackedBranch !== input.parentBranch) {
+      try {
+        await this.deps.registry.update(repo.id, { trackedBranch: input.parentBranch });
+      } catch (e) {
+        if (e instanceof RegistryError) throw new EngineeringTaskError(`registry_error:${e.code}`);
+        throw e;
+      }
+    }
     return this.mustGet(id);
   }
 
@@ -557,7 +563,10 @@ export class EngineeringTaskService {
 
   /**
    * Cancels a task that is not finished. A task holding the lock gets its `cleanup` step job
-   * enqueued: the step runner cleans up the local branch and then releases the lock (E15, E16).
+   * enqueued: the step runner expires its pending approvals, cleans up the local branch and then
+   * releases the lock (E15, E16). A `queued` task was never touched by Synapse, so nothing is
+   * cleaned (if pickup holds the lock for it right now, pickup releases it when its transition
+   * fails).
    */
   cancel(id: string): EngineeringTaskDetail {
     const { db, lock, audit } = this.deps;
@@ -567,7 +576,7 @@ export class EngineeringTaskService {
         if (!task) throw new EngineeringTaskError("not_found");
         if (TERMINAL_STATUSES.includes(task.status))
           throw new EngineeringTaskError("invalid_state");
-        const holdsLock = lock.holder()?.taskId === id;
+        const holdsLock = lock.holder()?.taskId === id && task.status !== "queued";
         this.store.transition(tx, id, "cancelled");
         if (holdsLock) this.enqueueStep(tx, id, "cleanup");
         audit.record(tx, {
