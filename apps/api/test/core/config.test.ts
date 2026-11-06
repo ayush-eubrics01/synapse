@@ -239,3 +239,12 @@ test("jira settings validation", () => {
   settings.set("jira.cloudId", "00000000-0000-4000-8000-000000000000");
   expect(settings.get("jira.excludedProjects")).toEqual(["SKIP"]);
 });
+
+test("brain settings defaults and validation", () => {
+  const { settings } = setup();
+  expect(settings.get("brain.inspect.model")).toBe("sonnet");
+  expect(settings.get("brain.inspect.maxTurns")).toBe(30);
+  expect(settings.get("brain.inspect.timeoutMinutes")).toBe(10);
+  expect(settings.get("brain.upcoming.days")).toBe(30);
+  expect(() => settings.set("brain.inspect.model", "gpt" as never)).toThrow();
+});

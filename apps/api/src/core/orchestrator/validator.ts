@@ -1,4 +1,4 @@
-import type { AIExecutionRequest } from "@synapse/contracts";
+import { type AIExecutionRequest, REPO_PATH_RE } from "@synapse/contracts";
 import { assemblePrompt } from "./prompt";
 import {
   BUILTIN_FS_READ,
@@ -32,7 +32,7 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *  A. prompt at most 100 KiB (UTF-8) and not starting with "-" (it is an argv entry, R33);
  *     boundary non-empty; prompt === assemblePrompt(instructions, promptParts, boundary) (R24)
  *  B. built-in tools: unknown (R23), network in any profile (R22), write built-ins and
- *     Read/Grep/Glob for collector/intelligence (rule 0; I4 until Phase 8 path scoping)
+ *     Read/Grep/Glob for collector/intelligence (rule 0; engineering fs reads are path-scoped by rule L)
  *  C. engineering may not allow any connector tool (R20)
  *  D. untrusted content with a write-capable tool (rule 1)
  *  E. engineering with untrusted content (rule 2)
@@ -47,6 +47,9 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *     alongside untrusted content it already fails rule D. A send run must carry a sendGuard
  *     whose toolName is its write tool (J2), so every send is blocked by the PreToolUse hook
  *     unless its arguments are the approved ones
+ *  L. engineering Read/Grep/Glob must each be exactly `Tool(<workingDirectory>/**)`, and the
+ *     working directory must match REPO_PATH_RE (C7; a bare Read fails). Last, so the other
+ *     rules keep their order. Tools other than the fs reads are unaffected
  * Tool names are normalised (specifier stripped) before classification.
  */
 export function validateRequest(
@@ -166,6 +169,22 @@ export function validateRequest(
   }
   if (w !== undefined && req.sendGuard?.toolName !== w) {
     return fail("send run without a matching send guard");
+  }
+
+  // L
+  if (req.workerProfile === "engineering") {
+    const scopedFs = raw.filter((t) => BUILTIN_FS_READ.includes(normalizeTool(t)));
+    if (scopedFs.length > 0) {
+      if (!REPO_PATH_RE.test(req.workingDirectory)) {
+        return fail("working directory must be an absolute path of safe characters");
+      }
+      const dir = req.workingDirectory.replace(/\/+$/, "");
+      for (const t of scopedFs) {
+        if (t !== `${normalizeTool(t)}(${dir}/**)`) {
+          return fail("fs read tools must be scoped to the working directory");
+        }
+      }
+    }
   }
 
   return { ok: true };

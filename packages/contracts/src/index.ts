@@ -1,6 +1,7 @@
 export * from "./ai";
 export * from "./approvals";
 export * from "./auto-reply";
+export * from "./brain";
 export * from "./commitments";
 export * from "./dashboard";
 export * from "./errors";

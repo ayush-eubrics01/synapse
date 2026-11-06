@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { holdReasonSchema } from "./auto-reply";
+import { factStatusSchema } from "./brain";
 import { errorKindSchema } from "./errors";
 import { jiraAttentionSchema } from "./jira";
 import { flagSeveritySchema, urgencyStatusSchema } from "./urgency";
@@ -80,6 +81,10 @@ export const eventCatalog = {
   "away.changed": z.object({ on: z.boolean() }),
   "jira.issue_updated": z.object({ key: z.string() }),
   "jira.issue_attention": z.object({ key: z.string(), attention: jiraAttentionSchema }),
+  "repo.registered": z.object({ repositoryId: z.string() }),
+  "repo.drift_detected": z.object({ repositoryId: z.string() }),
+  "brain.facts_proposed": z.object({ projectId: z.string(), count: z.number().int() }),
+  "brain.fact_decided": z.object({ factId: z.string(), status: factStatusSchema }),
 };
 
 export type EventType = keyof typeof eventCatalog;

@@ -85,6 +85,10 @@ const settingSchemas = {
   // A page chain (one sync or reconcile across continuations) longer than this fails as
   // parse_failed: a connector that never ends its pages must not run Claude without bound.
   "jira.maxPagesPerChain": z.number().int().min(1).max(500).default(50),
+  "brain.inspect.model": z.enum(["haiku", "sonnet", "opus"]).default("sonnet"),
+  "brain.inspect.maxTurns": z.number().int().min(1).max(100).default(30),
+  "brain.inspect.timeoutMinutes": z.number().int().min(1).max(60).default(10),
+  "brain.upcoming.days": z.number().int().positive().default(30),
   "system.lastHeartbeatAt": z.string().nullable().default(null),
   "orchestrator.quota.fiveHour.soft": z.number().min(0).max(1).default(0.6),
   "orchestrator.quota.fiveHour.hard": z.number().min(0).max(1).default(0.85),

@@ -744,3 +744,102 @@ export const jiraIssues = sqliteTable(
     index("jira_issues_updated_idx").on(t.jiraUpdatedAt),
   ],
 );
+
+export const repositories = sqliteTable("repositories", {
+  id: id(),
+  name: text("name").notNull().unique(),
+  localPath: text("local_path").notNull().unique(),
+  originUrl: text("origin_url"),
+  upstreamUrl: text("upstream_url"),
+  upstreamPushDisabled: bool("upstream_push_disabled").notNull(),
+  trackedBranch: text("tracked_branch").notNull(),
+  jiraProjectKeys: json("jira_project_keys").$type<string[]>().notNull(),
+  notes: text("notes"),
+  headSha: text("head_sha"),
+  inspectedHeadSha: text("inspected_head_sha"),
+  drift: json("drift").$type<{ detectedAt: string; reasons: string[] }>(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const repositoryEnvironments = sqliteTable(
+  "repository_environments",
+  {
+    id: id(),
+    repositoryId: text("repository_id")
+      .notNull()
+      .references(() => repositories.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    branch: text("branch").notNull(),
+    protected: bool("protected").notNull(),
+    autoDeploysOnMerge: bool("auto_deploys_on_merge").notNull(),
+    notes: text("notes"),
+  },
+  (t) => [uniqueIndex("repository_environments_repo_name_uq").on(t.repositoryId, t.name)],
+);
+
+export const projects = sqliteTable("projects", {
+  id: id(),
+  name: text("name").notNull().unique(),
+  summary: text("summary"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const projectRepositories = sqliteTable(
+  "project_repositories",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    repositoryId: text("repository_id")
+      .notNull()
+      .references(() => repositories.id, { onDelete: "cascade" }),
+  },
+  (t) => [uniqueIndex("project_repositories_pair_uq").on(t.projectId, t.repositoryId)],
+);
+
+export const projectFacts = sqliteTable(
+  "project_facts",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    kind: text("kind", {
+      enum: ["purpose", "stack", "module", "entrypoint", "convention", "risk", "note"],
+    }).notNull(),
+    content: text("content").notNull(),
+    evidence: json("evidence").$type<{ path: string; line?: number }[]>().notNull(),
+    status: text("status", {
+      enum: ["needs_review", "approved", "rejected", "outdated"],
+    }).notNull(),
+    source: text("source", { enum: ["inspection", "user"] }).notNull(),
+    claudeRunId: text("claude_run_id"),
+    supersedesId: text("supersedes_id"),
+    headSha: text("head_sha"),
+    createdAt: text("created_at").notNull(),
+    decidedAt: text("decided_at"),
+  },
+  (t) => [index("project_facts_project_status_idx").on(t.projectId, t.status)],
+);
+
+export const projectMilestones = sqliteTable(
+  "project_milestones",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    targetDate: text("target_date").notNull(),
+    environmentId: text("environment_id").references(() => repositoryEnvironments.id, {
+      onDelete: "set null",
+    }),
+    status: text("status", { enum: ["planned", "done", "slipped", "cancelled"] }).notNull(),
+    notes: text("notes"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [index("project_milestones_project_date_idx").on(t.projectId, t.targetDate)],
+);

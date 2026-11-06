@@ -46,7 +46,7 @@ describe("validateRequest", () => {
   test("valid engineering without untrusted", () => {
     const r = make({
       workerProfile: "engineering",
-      allowed: ["Read", "Edit", "Bash"],
+      allowed: ["Read(/tmp/**)", "Edit", "Bash"],
       promptParts: [
         { provenance: "system", content: "x" },
         { provenance: "user_approved", content: "y" },
@@ -146,7 +146,7 @@ describe("validateRequest", () => {
   test("R26 Bash(git:*) accepted on engineering", () => {
     const r = make({
       workerProfile: "engineering",
-      allowed: ["Read", "Bash(git:*)"],
+      allowed: ["Read(/tmp/**)", "Bash(git:*)"],
       promptParts: [],
     });
     expect(v(r)).toEqual({ ok: true });
@@ -276,7 +276,7 @@ describe("final-review fixes", () => {
     ).toEqual({ ok: true });
     const e = make({
       workerProfile: "engineering",
-      allowed: ["Read", "Grep", "Glob"],
+      allowed: ["Read(/tmp/**)", "Grep(/tmp/**)", "Glob(/tmp/**)"],
       promptParts: [],
     });
     expect(v(e)).toEqual({ ok: true });
@@ -369,5 +369,55 @@ describe("tool catalog", () => {
   test("denylist never contains allowed", () => {
     const d = buildDenylist([SEND, "ToolSearch"], DEFAULT_KNOWN_SERVERS, "collector");
     expect(d).not.toContain(SEND);
+  });
+});
+
+describe("rule L (engineering fs reads scoped to the working directory)", () => {
+  const WD = "/tmp/demo-repo";
+  const eng = (allowed: string[], workingDirectory = WD) =>
+    make({ workerProfile: "engineering", allowed, promptParts: [], workingDirectory });
+  const MSG = "fs read tools must be scoped to the working directory";
+  test("exactly scoped Read/Grep/Glob pass", () => {
+    const r = eng([`Read(${WD}/**)`, `Grep(${WD}/**)`, `Glob(${WD}/**)`]);
+    expect(v(r)).toEqual({ ok: true });
+  });
+  test("a trailing slash on the working directory is stripped", () => {
+    expect(v(eng([`Read(${WD}/**)`], `${WD}/`))).toEqual({ ok: true });
+  });
+  test("bare Read fails", () => {
+    expect(reason(v(eng(["Read"])))).toBe(MSG);
+    expect(reason(v(eng(["Grep"])))).toBe(MSG);
+    expect(reason(v(eng(["Glob"])))).toBe(MSG);
+  });
+  test("another directory fails", () => {
+    expect(reason(v(eng(["Read(/tmp/other/**)"])))).toBe(MSG);
+  });
+  test("a single-star specifier fails", () => {
+    expect(reason(v(eng([`Read(${WD}/*)`])))).toBe(MSG);
+  });
+  test("one unscoped tool among scoped ones fails", () => {
+    expect(reason(v(eng([`Read(${WD}/**)`, "Glob"])))).toBe(MSG);
+  });
+  test("a working directory with a space fails", () => {
+    expect(reason(v(eng(["Read(/tmp/my repo/**)"], "/tmp/my repo")))).toMatch(
+      /^malformed tool name|working directory/,
+    );
+    expect(reason(v(eng(["Edit", "Read(/tmp/x/**)"], "/tmp/my repo")))).toBe(
+      "working directory must be an absolute path of safe characters",
+    );
+  });
+  test("a relative working directory fails", () => {
+    expect(reason(v(eng([`Read(rel/**)`], "rel")))).toBe(
+      "working directory must be an absolute path of safe characters",
+    );
+  });
+  test("engineering runs without fs reads are unaffected", () => {
+    expect(v(eng(["Edit", "Bash(git:*)"], "/tmp/my repo"))).toEqual({ ok: true });
+  });
+  test("intelligence and collector runs are unaffected", () => {
+    expect(
+      v(make({ workerProfile: "intelligence", allowed: ["ToolSearch"], promptParts: [] })),
+    ).toEqual({ ok: true });
+    expect(v(make())).toEqual({ ok: true });
   });
 });
