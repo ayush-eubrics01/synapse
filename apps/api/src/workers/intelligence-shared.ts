@@ -1,3 +1,4 @@
+import type { SuspectedInjection } from "@synapse/contracts";
 import { type ClassifiedError, JobError } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { desc, eq, sql } from "drizzle-orm";
@@ -108,3 +109,24 @@ export const safely = (fn: () => void) => {
     console.error("claude job: runtime flag recording failed");
   }
 };
+
+/**
+ * R5 flag attribution: the newest message of someone else (a "them" first), never the user's own.
+ * Null when only the user's messages were provided; then no flag is recorded.
+ */
+export function flagTargetOf(items: { messageId: string; author: "them" | "self" | "other" }[]) {
+  const newestBy = (ok: (a: "them" | "self" | "other") => boolean) =>
+    items.findLast((i) => ok(i.author))?.messageId ?? null;
+  return newestBy((a) => a === "them") ?? newestBy((a) => a !== "self");
+}
+
+/** R1/R5: the provided non-self message whose text holds the model's quote, else `fallback`. */
+export function flaggedMessageOf(
+  used: { messageId: string; author: "them" | "self" | "other"; text: string }[],
+  s: SuspectedInjection,
+  fallback: string | null,
+): string | null {
+  const quote = s.quote.trim();
+  if (quote === "") return fallback;
+  return used.find((i) => i.author !== "self" && i.text.includes(quote))?.messageId ?? fallback;
+}

@@ -183,24 +183,58 @@ interface SourceMessage {
 
 ### Message sink (`MessageSink`)
 
-`MessageSink` is deferred to the sending phase; the shape below is indicative only.
+Implemented in Phase 6 (`packages/contracts/src/outgoing.ts`, `integrations/slack/sender.ts`). The only implementation is `SlackSender`; tests and smoke scripts inject a fake through `createContainer`'s `sink` option. The sink is not on the `Container`: only the `slack.send` executor in `OutgoingService` can reach it.
 
 ```typescript
-interface MessageSink {
-  /** Called only by the approval engine after approval and revalidation. */
-  sendMessage(cmd: SendMessageCommand): Promise<SendMessageResult>;
-  /** Used to verify an uncertain send before any retry. */
-  findSentMessage(cmd: SendMessageCommand): Promise<SourceMessage | null>;
-}
-
 interface SendMessageCommand {
+  outgoingId: string;
   approvalId: string;
-  idempotencyKey: string;
-  conversationId: string;
+  conversationExternalId: string;
   threadTs?: string;
   text: string;
+  jobId?: string;            // the approval.execute job; used to find the claude_runs row
+}
+
+interface SendResult {
+  status: "sent_unverified" | "failed" | "uncertain";
+  failure?: string;          // content-free: no_send | argument_mismatch | tool_error | uncertain_outcome
+  mismatch?: boolean;        // the tool was called with other than the approved arguments
+  runId?: string;
+}
+
+interface MessageSink {
+  send(cmd: SendMessageCommand, signal: AbortSignal): Promise<SendResult>;
+  /** true / false when found / not found after sinceTs; null when it could not be checked.
+   *  Throws auth_paused / quota_exhausted / rate_limited (R18). */
+  findSent(cmd: SendMessageCommand, sinceTs: string): Promise<boolean | null>;
 }
 ```
+
+**Send run (`SlackSender.send`).** One orchestrator run: profile `collector`, priority class `send`, model haiku, `maxTurns: 3`, `allowedTools: [slack_send_message, ToolSearch]`. The prompt has a system part (call the tool once with exactly the given arguments) and one `user_approved` part: the JSON of `{channel_id, message, thread_ts?}`. There are no untrusted parts and no `expectedToolNames`; the adapter classifies the raw tool results itself. The request validator rejects a send request with more than one allowed tool or with untrusted content. It cannot check the tool arguments the model will use; that check happens after the run, against the tool_use input.
+
+**Argument verification.** The check runs on the run's recorded tool calls, after the send tool ran: a mismatch is detected after the fact, not prevented, and a message with the changed arguments may already be in Slack (R20). The tool's result text is never read as success (its format is unknown). From the `tool_use` input recorded with each tool result, code checks that `channel_id` and `thread_ts` equal the approved values exactly (both absent matches) and that `message` equals the approved text after trimming trailing whitespace. The only tolerated extra key is `unfurl_app_links: false`; any other key (for example `reply_broadcast`) is a mismatch.
+
+**Outcomes** (classified from the run's raw tool results):
+
+| Situation | Result |
+|---|---|
+| Exactly one send result, not an error, arguments match | `sent_unverified` |
+| Send result with changed arguments | `failed` / `argument_mismatch` with `mismatch: true` (with two sends, or other tools, `uncertain` plus `mismatch`) |
+| No send call at all | `failed` / `no_send` |
+| Send error naming a definitive Slack rejection (`channel_not_found`, `not_in_channel`, `is_archived`, `channel_is_archived`, `msg_too_long`, `no_text`, `invalid_auth`, `not_authed`, `restricted_action`, `cant_post`, `cannot_post`, `user_not_found`) | `failed` / `tool_error` (the content only classifies; it is never stored) |
+| Any other send error, two or more sends, any other tool's result | `uncertain` / `uncertain_outcome` |
+| Run failed after spawn with `details.uncertain` (timeout, crash, an auth pause that replaced the failure) | `uncertain` / `uncertain_outcome` |
+| Run failed before spawn (quota, auth, validation, abort while waiting for a Claude slot) | the error is rethrown: nothing was sent |
+
+**`findSent`.** One incremental search through the verified `SlackConnectorSource.collect` (`afterTs = floor(sinceTs) - 1`, at most 2 pages, `queryTerms: ["from:<@self>"]`, R19). Extra query terms are single tokens (no whitespace or quotes) appended to the query, so they are part of the exact first-page input and of every cursor page's input, and R35 page-chain verification is unchanged. A message matches when it is in the command's conversation, from `slack.selfUserId`, at or after `sinceTs`, in exactly the command's thread (top-level when the command has none) and its text equals the command's after both are decoded (`&amp;` `&lt;` `&gt;`; URL link markup `<url|label>` → label and `<url>` → url; mentions and channel references are left as they are) and whitespace-normalised. Returns `null` (cannot tell) when the self id is unset, the search fails, or nothing matched in an incomplete search. An `auth_paused`, `quota_exhausted` or `rate_limited` search failure is rethrown instead, so the verify job is deferred (or retried at Slack's time) without spending a verify attempt (R18). It never sends.
+
+**The executor (`OutgoingService`).** Registered as the `slack.send` executor with the approval engine. The engine runs it only after approval, inside the `approval.execute` job (timeout = max(120 s, collector timeout + 90 s)), and passes the job's abort signal to the sink. Sequence: (1) claim `pending` to `sending` in one transaction, requiring an approved approval that the engine has claimed; (2) call `sink.send`; (3) record the outcome in a new transaction. A throw from the sink means nothing was sent: the message becomes `failed` / `not_started` and the draft returns for a new request. Errors thrown to the engine carry fixed reasons only, never text.
+
+**Verify and no automatic resend.** `sent_unverified` and an uncertain `needs_attention` queue `outgoing.verify` (default after 120 s, up to `outgoing.verify.maxAttempts` = 5 attempts). A found message becomes `sent`. When attempts run out the row gets failure `unverified` and a notification, and waits for the user: `mark_sent`, `discard`, or (only from `needs_attention`) `resend`, which supersedes the old row and needs a new approval. Nothing ever moves a message back to `pending`, and nothing re-sends without the user. A message whose arguments changed is never verified and never re-sent automatically: it goes to `needs_attention` / `argument_mismatch` with a `high` runtime flag and the notification "Send went out with changed arguments — check Slack for a stray message"; the user checks Slack and resolves it. `outgoing.verify` passes `lastJobAttempt` on the job's final attempt, where a rate-limited search counts as "cannot tell" so a rate limit cannot park the job. A verify job can still park on other failures (for example repeated handler timeouts); such a row then waits for the user.
+
+**In-flight guard.** `OutgoingService` keeps an in-process set of message ids whose executor is running. The recovery sweep (startup and every reaper pass) never touches those, and `resolve` refuses them, so a send that outlived its job timeout cannot be handed to the user for a resend while it may still post. The sweep moves a `sending` row older than 10 minutes with no live executor to `needs_attention` / `uncertain_outcome` and queues a verify, and returns stranded `pending` rows (the approval is terminal, or was claimed by an executor that is gone) to a draft. The guard is single-process: Synapse runs one API process. A partial unique index on `outgoing_messages(followup_id)` for live statuses backs the rule that one follow-up has at most one live send.
+
+Text lives only in `outgoing_messages.text` and the route responses. Audit rows, events, notifications, follow-up history, logs and thrown messages carry ids and fixed reasons.
 
 ## 3. Issue source (`IssueSource`)
 

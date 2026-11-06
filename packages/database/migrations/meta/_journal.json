@@ -64,6 +64,34 @@
       "when": 1793906807615,
       "tag": "0008_people_memory",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1793913296606,
+      "tag": "0009_commitments_outgoing",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1793914623456,
+      "tag": "0010_outgoing_sending_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1793915629641,
+      "tag": "0011_outgoing_followup_live_uq",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1793919663531,
+      "tag": "0012_followups_conversation_internal",
+      "breakpoints": true
     }
   ]
 }

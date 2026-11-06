@@ -1,11 +1,17 @@
 import type {
   Approval,
+  ApprovalView,
   CandidatesResponse,
+  CommitmentFilter,
+  CommitmentStatus,
+  CommitmentView,
   EvaluateResult,
   FlagStatus,
+  FollowupView,
   GroupedFlags,
   HealthReport,
   Job,
+  OutgoingResolveAction,
   PersonDetail,
   PersonFlag,
   RecommendationView,
@@ -38,7 +44,7 @@ export function getHealth(fetchImpl: typeof fetch = fetch): Promise<HealthReport
   return request("/health/ready", undefined, fetchImpl, [503]);
 }
 
-export function getApprovals(fetchImpl: typeof fetch = fetch): Promise<Approval[]> {
+export function getApprovals(fetchImpl: typeof fetch = fetch): Promise<ApprovalView[]> {
   return request("/api/approvals?status=pending", undefined, fetchImpl);
 }
 
@@ -183,6 +189,41 @@ export function setUrgentStatus(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ status }),
+    },
+    fetchImpl,
+  );
+}
+
+export type ResolveDecisionDto = OutgoingResolveAction;
+
+/** Requests approval to send the (edited) reply in the message's thread. */
+export function requestUrgentReply(
+  messageId: string,
+  text: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ followupId: string; approvalId: string }> {
+  return request(
+    `/api/urgent/${encodeURIComponent(messageId)}/reply`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    },
+    fetchImpl,
+  );
+}
+
+export function resolveOutgoing(
+  outgoingId: string,
+  decision: ResolveDecisionDto,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ outgoingId: string; status: string }> {
+  return request(
+    `/api/outgoing/${encodeURIComponent(outgoingId)}/resolve`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision }),
     },
     fetchImpl,
   );
@@ -357,4 +398,93 @@ export function retryApply(
     { method: "POST" },
     fetchImpl,
   );
+}
+
+export type CommitmentViewDto = CommitmentView;
+export type CommitmentFilterDto = CommitmentFilter;
+export type CommitmentStatusDto = CommitmentStatus;
+export type FollowupViewDto = FollowupView;
+
+export interface CommitmentEditsDto {
+  description?: string;
+  dueAt?: string | null;
+}
+
+function postJson<T>(url: string, body: unknown, fetchImpl: typeof fetch): Promise<T> {
+  return request(
+    url,
+    { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+    fetchImpl,
+  );
+}
+
+export function getCommitments(
+  filter: CommitmentFilterDto = "all",
+  fetchImpl: typeof fetch = fetch,
+): Promise<CommitmentViewDto[]> {
+  return request(`/api/commitments?filter=${filter}`, undefined, fetchImpl);
+}
+
+export function reviewCommitment(
+  id: string,
+  decision: "accept" | "reject",
+  edits?: CommitmentEditsDto,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true }> {
+  return postJson(
+    `/api/commitments/${encodeURIComponent(id)}/review`,
+    edits ? { decision, edits } : { decision },
+    fetchImpl,
+  );
+}
+
+export function setCommitmentStatus(
+  id: string,
+  status: CommitmentStatusDto,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true }> {
+  return postJson(`/api/commitments/${encodeURIComponent(id)}/status`, { status }, fetchImpl);
+}
+
+export function decideProposal(
+  updateId: string,
+  accept: boolean,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true }> {
+  return postJson(
+    `/api/commitments/proposals/${encodeURIComponent(updateId)}`,
+    { accept },
+    fetchImpl,
+  );
+}
+
+export function draftFollowup(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ queued: boolean }> {
+  return request(
+    `/api/commitments/${encodeURIComponent(id)}/draft-followup`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export function getFollowups(fetchImpl: typeof fetch = fetch): Promise<FollowupViewDto[]> {
+  return request("/api/followups", undefined, fetchImpl);
+}
+
+/** Requests approval to send the (edited) draft; nothing is sent until the user approves. */
+export function sendFollowup(
+  id: string,
+  text: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ followupId: string; approvalId: string }> {
+  return postJson(`/api/followups/${encodeURIComponent(id)}/send`, { text }, fetchImpl);
+}
+
+export function discardFollowup(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true }> {
+  return request(`/api/followups/${encodeURIComponent(id)}/discard`, { method: "POST" }, fetchImpl);
 }

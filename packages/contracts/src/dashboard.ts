@@ -21,6 +21,22 @@ export interface UrgentItem {
   text: string | null;
   permalink: string | null;
   draft: { text: string | null; confidence: number } | null;
+  /** The approved-send state of this message's reply, or null when none was ever requested. */
+  reply: UrgentReply | null;
+}
+
+/** What the user may do with a reply whose delivery is unknown (computed by the server). */
+export type OutgoingResolveAction = "mark_sent" | "resend" | "discard";
+
+export interface UrgentReply {
+  followupId: string;
+  status: string;
+  approvalId: string | null;
+  outgoingId: string | null;
+  outgoingStatus: string | null;
+  /** True when no send is live or done, so the draft can be edited and sent for approval. */
+  canRequest: boolean;
+  actions: OutgoingResolveAction[];
 }
 
 export type FlagStatus = "open" | "acknowledged" | "contacted" | "dismissed";

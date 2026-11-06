@@ -63,7 +63,7 @@ The intelligence worker receives message text as untrusted content and has no wr
 
 Emitted: `person.discovered`, `person.profile_recommendation_created`, `person.profile_approved`, `person.recommendation_decided`.
 
-Consumed: `message.received` (temporary contacts for unknown senders who interact with the user), `approval.rejected` / `approval.revoked` / `approval.expired` (the `people.decisions` consumer). Approved recommendations are applied by the generic `approval.execute` path, not by a people consumer of `approval.approved`. `followup.sent` (post-send profile flow) arrives with Phase 6.
+Consumed: `message.received` (temporary contacts for unknown senders who interact with the user), `approval.rejected` / `approval.revoked` / `approval.expired` (the `people.decisions` consumer). Approved recommendations are applied by the generic `approval.execute` path, not by a people consumer of `approval.approved`. `followup.sent` (the `people.post_send` consumer, see "Post-send suggestion").
 
 ## Workflows
 
@@ -91,7 +91,7 @@ identify recipient → load identity + conversation context
 → only then start permanent profile recommendation (still needs approval)
 ```
 
-A failed or cancelled send never creates a permanent profile.
+A failed or cancelled send never creates a permanent profile. As built (H2), a sent follow-up to someone without a profile or pending recommendation only produces a `suggest_evaluation` nudge (see "Post-send suggestion"); the profile itself still needs the user's accept and approval.
 
 ## Permissions and approvals
 
@@ -188,9 +188,13 @@ People runs attribute security flags narrowly: runtime flags (permission denials
 
 Approving or rejecting a recommendation goes through the generic approvals routes. The web page (`apps/web`) shows candidates, a person page and a recommendation review list with server actions; it contains no business logic. A recommendation whose stored content is unreadable is shown but cannot be approved. Rejection reasons are capped at 500 characters for all approvals.
 
+### Post-send suggestion (H2, §6.5)
+
+`PostSendSuggestions` (`modules/people/post-send.ts`) is the outbox consumer `people.post_send` of `followup.sent`. The event is emitted once when a follow-up's outgoing message is `sent` (verified or marked sent) or `sent_unverified` (the send tool ran); a failed, cancelled or discarded send never emits it. The recipient is the follow-up's `recipient_slack_user_id`. The consumer skips the recipient when there is none, when it is `slack.selfUserId`, when `slack_users.is_bot` is true, when the person already has a profile, or when the person already has a pending recommendation of any kind. Otherwise it ensures the person row and stores a pending `suggest_evaluation` recommendation with the reason "You messaged this person" (no content, no approval; the user accepts or dismisses it like any suggestion, and accepting requests the initial profile). It runs in a savepoint and never throws: a failure rolls back its own writes and logs one line with the follow-up id and the error name only.
+
 ### Out of scope
 
-- The §6.5 post-send flow (profile recommendation for a new recipient after a verified send, `followup.sent`) waits for Phase 6, which owns sending.
+- Evaluating a recipient automatically: the post-send flow only suggests; the user decides.
 - Group and channel profiles (ADR-020).
 - Per-person cap on evidence queries and a dedicated needs-attention kind for parked approvals are known follow-ups.
 
@@ -205,7 +209,7 @@ Approving or rejecting a recommendation goes through the generic approvals route
 - Observation without evidence → not stored.
 - Claude output attempting to set priority → ignored/rejected by the schema.
 - Unknown sender → temporary contact, no profile, no priority.
-- §6.5: failed/cancelled send → no profile; successful send → recommendation only.
+- §6.5: failed/cancelled send → no profile; successful send → recommendation only (H2: `apps/api/test/modules/people-post-send.test.ts` covers unprofiled, profiled, self, bot and pending recipients, and a failing consumer).
 - Source message expired → evidence still shows the external ref.
 
 ## Open questions

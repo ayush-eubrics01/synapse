@@ -42,6 +42,9 @@ export const suspectedInjectionSchema = z.object({
   quote: z.string().max(300),
   reason: z.string().max(300),
 });
+/** Strict variant for intelligence outputs: no extra key (a priority, say) may ride along. */
+export const strictSuspectedInjectionSchema = suspectedInjectionSchema.strict();
+
 export type SuspectedInjection = z.infer<typeof suspectedInjectionSchema>;
 
 export const urgencyAssessmentSchema = z.object({

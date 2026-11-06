@@ -4,6 +4,7 @@ import type {
   UrgencyLevel,
   UrgencyStatus,
   UrgentItem,
+  UrgentReply,
 } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
@@ -40,11 +41,13 @@ export interface UrgentInboxDeps {
   clock: Clock;
   events: EventPublisher;
   audit: AuditLogger;
+  /** Reply state per message id (outgoing module); omitted where sending is not wired. */
+  replyStates?: (messageIds: string[]) => Map<string, UrgentReply>;
 }
 
 // Critical/high assessed messages, plus unassessed ones notified (or coalesced, R17) during a
 // quota or auth pause.
-const URGENT = sql`(${slackMessages.urgencyLevel} in ('critical','high') or (${slackMessages.urgencyLevel} is null and (json_extract(${slackMessages.screening}, '$.notified') = 1 or json_extract(${slackMessages.screening}, '$.coalesced') = 1)))`;
+export const URGENT = sql`(${slackMessages.urgencyLevel} in ('critical','high') or (${slackMessages.urgencyLevel} is null and (json_extract(${slackMessages.screening}, '$.notified') = 1 or json_extract(${slackMessages.screening}, '$.coalesced') = 1)))`;
 
 export class UrgentInbox {
   constructor(private readonly deps: UrgentInboxDeps) {}
@@ -82,6 +85,7 @@ export class UrgentInbox {
       )
       .where(URGENT)
       .all();
+    const replies = this.deps.replyStates?.(rows.map((r) => r.id)) ?? new Map();
     const items: UrgentItem[] = [];
     for (const r of rows) {
       const screening = r.screening as ScreeningRecord | null;
@@ -109,6 +113,7 @@ export class UrgentInbox {
         permalink: safePermalink(r.permalink),
         draft:
           r.draftId === null ? null : { text: r.draftText, confidence: r.draftConfidence ?? 0 },
+        reply: replies.get(r.id) ?? null,
       });
     }
     return items.sort(

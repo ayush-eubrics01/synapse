@@ -27,6 +27,15 @@ const DOMAIN_EVENTS = [
   "person.profile_recommendation_created",
   "person.profile_approved",
   "person.recommendation_decided",
+  "commitment.detected",
+  "commitment.reviewed",
+  "commitment.status_changed",
+  "commitment.stalled",
+  "commitment.overdue",
+  "followup.draft_created",
+  "followup.status_changed",
+  "followup.sent",
+  "outgoing.status_changed",
 ] as const satisfies readonly EventType[];
 
 // LiveBus-only messages: job settles (worker) and notifications (NotificationService).

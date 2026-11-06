@@ -1,17 +1,22 @@
 import { expect, test } from "bun:test";
 import type {
+  ApprovalView,
   CandidatesResponse,
+  CommitmentFilter,
   EvidenceView,
   PersonDetail,
   RecommendationView,
 } from "@synapse/contracts";
 import { renderToString } from "react-dom/server";
+import { ApprovalsList } from "../app/components/ApprovalsList";
+import { CommitmentsPanel } from "../app/components/CommitmentsPanel";
+import { FollowupDrafts } from "../app/components/FollowupDrafts";
 import { IdentitySetup } from "../app/components/IdentitySetup";
 import { PeopleCandidates } from "../app/components/PeopleCandidates";
 import { PersonProfile } from "../app/components/PersonProfile";
 import { ProfileRecommendations } from "../app/components/ProfileRecommendations";
 import { UrgentInbox } from "../app/components/UrgentInbox";
-import type { UrgentItemDto } from "../lib/api";
+import type { CommitmentViewDto, FollowupViewDto, UrgentItemDto } from "../lib/api";
 
 const item = (o: Partial<UrgentItemDto> = {}): UrgentItemDto => ({
   messageId: "m1",
@@ -28,6 +33,7 @@ const item = (o: Partial<UrgentItemDto> = {}): UrgentItemDto => ({
   text: "hello",
   permalink: null,
   draft: null,
+  reply: null,
   ...o,
 });
 const render = (items: UrgentItemDto[]) =>
@@ -53,7 +59,86 @@ test("UrgentInbox shows expired content, the draft label and Copy", () => {
   expect(html).not.toContain("Copy");
   const live = render([item({ draft: { text: "thanks", confidence: 0.9 } })]);
   expect(live).toContain("Copy");
-  expect(live).not.toContain("Send");
+});
+
+const reply = (o: Partial<NonNullable<UrgentItemDto["reply"]>> = {}) => ({
+  followupId: "f1",
+  status: "awaiting_approval",
+  approvalId: "a1",
+  outgoingId: "o1",
+  outgoingStatus: "pending",
+  canRequest: false,
+  actions: [],
+  ...o,
+});
+const withDraft = (o: Partial<UrgentItemDto> = {}) =>
+  item({ draft: { text: "thanks <b>x</b>", confidence: 0.9 }, ...o });
+
+test("UrgentInbox shows an editable draft and the approval button only when no reply is pending", () => {
+  const html = render([withDraft()]);
+  expect(html).toContain("<textarea");
+  expect(html).toContain('maxLength="4000"');
+  expect(html).toContain("Send for approval");
+  expect(html).toContain("Requires your approval");
+  expect(html).toContain("thanks &lt;b&gt;x&lt;/b&gt;"); // text, never markup
+  const pending = render([withDraft({ reply: reply() })]);
+  expect(pending).toContain("Awaiting approval");
+  expect(pending).not.toContain("Send for approval");
+  expect(pending).not.toContain("<textarea");
+  // After a revoke the draft is editable again.
+  const revoked = render([
+    withDraft({ reply: reply({ status: "draft", outgoingStatus: "failed", canRequest: true }) }),
+  ]);
+  expect(revoked).toContain("Send for approval");
+});
+
+test("UrgentInbox status line and resolve buttons come from the server", () => {
+  const status = (outgoingStatus: string, actions: ("mark_sent" | "resend" | "discard")[] = []) =>
+    render([withDraft({ reply: reply({ outgoingStatus, actions }) })]);
+  expect(status("sending")).toContain("Sending");
+  expect(status("sent")).toContain("Sent");
+  expect(status("sent_unverified")).toContain("Sent (unverified)");
+  const na = status("needs_attention", ["mark_sent", "resend", "discard"]);
+  expect(na).toContain("Needs attention — check Slack");
+  for (const l of ["Mark sent", "Resend", "Discard"]) expect(na).toContain(l);
+  // R15: a resend needs a new approval, and the button says so.
+  expect(na).toContain("Requires your approval");
+  expect(status("needs_attention", ["mark_sent", "discard"])).not.toContain(
+    "Requires your approval",
+  );
+  const exhausted = status("sent_unverified", ["mark_sent", "discard"]);
+  expect(exhausted).not.toContain("Resend");
+  expect(status("sent")).not.toContain("Mark sent");
+});
+
+test("ApprovalsList shows the exact text, recipient and conversation of a send (H4)", () => {
+  const a = {
+    id: "a1",
+    action: "slack.send",
+    targetIntegration: "slack",
+    targetRef: "C1",
+    payload: {},
+    riskLevel: "medium",
+    status: "pending",
+    requestedByModule: "inbox",
+    requestedByWorker: null,
+    expiresAt: null,
+    decidedAt: null,
+    executionResult: null,
+    idempotencyKey: "k",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    outgoing: {
+      text: "ship <i>it</i>",
+      recipientName: "Ada",
+      conversationLabel: "a DM",
+      threadReply: true,
+    },
+  } as unknown as ApprovalView;
+  const html = renderToString(<ApprovalsList approvals={[a]} onDecide={() => {}} />);
+  expect(html).toContain("ship &lt;i&gt;it&lt;/i&gt;");
+  expect(html).toContain("Ada");
+  expect(html).toContain("a DM");
+  expect(html).toContain("thread reply");
 });
 
 test("UrgentInbox status buttons match allowedTransitions only", () => {
@@ -394,4 +479,165 @@ test("ProfileRecommendations renders Discard only when the actions include disca
   expect(renderRecs([rec({ approvalStatus: "failed", actions: ["retry"] })])).not.toContain(
     "Discard",
   );
+});
+
+// Task 9: commitments and follow-up drafts
+const commitment = (o: Partial<CommitmentViewDto> = {}): CommitmentViewDto => ({
+  id: "c1",
+  description: "ship <b>report</b>",
+  ownerSlackUserId: "U1",
+  ownerName: "Ada",
+  counterpartySlackUserId: "U2",
+  counterpartyName: null,
+  direction: "theirs",
+  status: "open",
+  reviewStatus: "accepted",
+  dueAt: null,
+  nextAction: null,
+  completionEvidence: null,
+  stalledAt: null,
+  lastFollowupAt: null,
+  closedAt: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+  sources: [],
+  proposals: [],
+  followups: [],
+  actions: ["start", "block", "complete", "cancel", "draft_followup"],
+  ...o,
+});
+const renderCommitments = (
+  items: CommitmentViewDto[],
+  queue: CommitmentViewDto[] = [],
+  filter: CommitmentFilter = "all",
+) =>
+  renderToString(
+    <CommitmentsPanel
+      queue={queue}
+      items={items}
+      filter={filter}
+      onFilter={() => {}}
+      onReview={() => {}}
+      onStatus={() => {}}
+      onProposal={() => {}}
+      onDraftFollowup={() => {}}
+    />,
+  );
+
+test("CommitmentsPanel shows filter tabs, status buttons from the server's actions, and text as text", () => {
+  const html = renderCommitments([commitment()]);
+  for (const l of ["All", "Mine", "Theirs", "Overdue", "Due soon", "Blocked", "Closed"]) {
+    expect(html).toContain(l);
+  }
+  for (const l of ["Start", "Block", "Complete", "Cancel", "Draft follow-up"]) {
+    expect(html).toContain(l);
+  }
+  expect(html).not.toContain("Unblock");
+  expect(html).toContain("ship &lt;b&gt;report&lt;/b&gt;");
+  expect(html).not.toContain("Accept");
+  const closed = renderCommitments([commitment({ status: "completed", actions: [] })]);
+  expect(closed).not.toContain("Start");
+  expect(closed).not.toContain("Draft follow-up");
+});
+
+test("CommitmentsPanel review queue offers Accept, Edit and Reject; expired sources say so", () => {
+  const queued = commitment({
+    reviewStatus: "pending_review",
+    actions: ["accept", "reject", "edit"],
+    sources: [
+      { sourceExternalRef: "C1:1", messageAvailable: false, permalink: null },
+      { sourceExternalRef: "C1:2", messageAvailable: true, permalink: "https://x.slack.com/a" },
+    ],
+  });
+  const html = renderCommitments([], [queued]);
+  expect(html).toContain("Review queue");
+  for (const l of ["Accept", "Edit", "Reject"]) expect(html).toContain(l);
+  expect(html).toContain("original message no longer available locally");
+  expect(html).toContain('href="https://x.slack.com/a"');
+  // The server computed no review actions: nothing to review.
+  expect(renderCommitments([], [commitment()])).not.toContain("Review queue");
+});
+
+test("CommitmentsPanel shows proposal confirm and reject only with confirm_proposal", () => {
+  const p = { updateId: "u1", sourceExternalRef: "C1:1", proposedAt: "2026-01-01T00:00:00.000Z" };
+  const html = renderCommitments([
+    commitment({ proposals: [p], actions: ["start", "confirm_proposal"] }),
+  ]);
+  expect(html).toContain("Confirm completed");
+  expect(html).toContain("Reject proposal");
+  expect(renderCommitments([commitment({ proposals: [p], actions: ["start"] })])).not.toContain(
+    "Confirm completed",
+  );
+});
+
+const followup = (o: Partial<FollowupViewDto> = {}): FollowupViewDto => ({
+  id: "f1",
+  commitmentId: "c1",
+  origin: "stalled",
+  recipient: { id: "U1", name: "Ada" },
+  conversationLabel: "#ops",
+  threadReply: true,
+  noThread: false,
+  draftText: "any update <i>please</i>?",
+  confidence: 0.8,
+  status: "draft",
+  outgoing: null,
+  approvalId: null,
+  actions: ["send", "discard"],
+  resolveActions: [],
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+  ...o,
+});
+const renderDrafts = (items: FollowupViewDto[]) =>
+  renderToString(
+    <FollowupDrafts items={items} onSend={() => {}} onDiscard={() => {}} onResolve={() => {}} />,
+  );
+
+test("FollowupDrafts shows an editable draft with recipient, conversation and the approval label", () => {
+  const html = renderDrafts([followup()]);
+  expect(html).toContain("<textarea");
+  expect(html).toContain('maxLength="4000"');
+  expect(html).toContain("Ada");
+  expect(html).toContain("#ops");
+  expect(html).toContain("Send for approval");
+  expect(html).toContain("Requires your approval");
+  expect(html).toContain("Discard");
+  expect(html).toContain("any update &lt;i&gt;please&lt;/i&gt;?");
+  expect(html).not.toContain("Posts as a new message");
+  expect(renderDrafts([followup({ noThread: true })])).toContain(
+    "Posts as a new message (original expired)",
+  );
+});
+
+test("FollowupDrafts hides send controls without the send action and shows server status and resolve actions", () => {
+  const waiting = renderDrafts([
+    followup({
+      status: "awaiting_approval",
+      actions: [],
+      outgoing: { id: "o1", status: "pending", failure: null },
+    }),
+  ]);
+  expect(waiting).toContain("Awaiting approval");
+  expect(waiting).not.toContain("Send for approval");
+  expect(waiting).not.toContain("<textarea");
+  const na = renderDrafts([
+    followup({
+      status: "needs_attention",
+      actions: [],
+      outgoing: { id: "o1", status: "needs_attention", failure: "uncertain_outcome" },
+      resolveActions: ["mark_sent", "resend", "discard"],
+    }),
+  ]);
+  expect(na).toContain("Needs attention — check Slack");
+  for (const l of ["Mark sent", "Resend", "Discard send"]) expect(na).toContain(l);
+  const exhausted = renderDrafts([
+    followup({
+      actions: [],
+      outgoing: { id: "o1", status: "sent_unverified", failure: "unverified" },
+      resolveActions: ["mark_sent", "discard"],
+    }),
+  ]);
+  expect(exhausted).not.toContain("Resend");
+  expect(renderDrafts([])).toContain("No follow-up drafts");
 });

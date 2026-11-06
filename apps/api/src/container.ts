@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { AIProvider, DesktopNotifier } from "@synapse/contracts";
+import type { AIProvider, DesktopNotifier, MessageSink } from "@synapse/contracts";
 import { type Db, openDatabase, runMigrations } from "@synapse/database";
 import { type Clock, newId, systemClock } from "@synapse/shared";
 import { ApprovalEngine } from "./core/approvals/approvals";
@@ -42,17 +42,29 @@ import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notif
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
+import { SlackSender } from "./integrations/slack/sender";
+import { ExtractionQueue } from "./modules/commitments/extraction-queue";
+import { FollowupService } from "./modules/commitments/followups";
+import { CommitmentLifecycle } from "./modules/commitments/lifecycle";
+import { StallService } from "./modules/commitments/stall";
+import { CommitmentStore } from "./modules/commitments/store";
 import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
 import { UrgentInbox } from "./modules/inbox/urgent";
+import { OutgoingService } from "./modules/outgoing/service";
+import { replyStates, UrgentReplies } from "./modules/outgoing/urgent-reply";
 import { ContactDiscovery } from "./modules/people/discovery";
+import { PostSendSuggestions } from "./modules/people/post-send";
 import { ProfileService } from "./modules/people/profiles";
 import { ProfileRecommendations } from "./modules/people/recommendations";
 import { PeopleService } from "./modules/people/service";
 import { TemporaryContacts } from "./modules/people/temporary";
 import { PeopleViews } from "./modules/people/views";
 import { SecurityFlagsService } from "./modules/security-flags/service";
+import { registerCommitmentJobs } from "./workers/commitments";
+import { createRunHelpers } from "./workers/intelligence-shared";
+import { registerOutgoingJobs } from "./workers/outgoing";
 import { registerPeopleJobs } from "./workers/people";
 import { registerSlackJobs } from "./workers/slack";
 import { registerUrgencyJobs, responseGuidelinesLookup } from "./workers/urgency";
@@ -89,6 +101,14 @@ export interface Container {
   profileStore: ProfileService;
   peopleViews: PeopleViews;
   securityFlags: SecurityFlagsService;
+  /** Approved Slack sends: requests, the `slack.send` executor, verification and resolution. */
+  outgoing: OutgoingService;
+  /** Commitments and their sources and status proposals (read and review APIs build on it). */
+  commitments: CommitmentStore;
+  commitmentLifecycle: CommitmentLifecycle;
+  followups: FollowupService;
+  /** Urgent-reply drafts sent through approval. */
+  urgentReplies: UrgentReplies;
   /** Run by startup recovery and the reaper (main.ts), so core never imports workers. */
   recoverySweeps: RecoverySweep[];
   /** Job handler registry; the urgency smoke script runs one handler directly. */
@@ -103,6 +123,8 @@ export interface ContainerDeps {
   run?: (cmd: string[]) => Promise<string>;
   /** Registers the `test.noop` job handler (set from SYNAPSE_TEST_HANDLERS by main.ts). */
   testHandlers?: boolean;
+  /** Replaces the real SlackSender behind `outgoing` (tests and smoke scripts inject a fake). */
+  sink?: MessageSink;
   /** Desktop notification adapter. Defaults to a no-op; main.ts injects the real one. */
   notifier?: DesktopNotifier & NotifierHealth;
 }
@@ -194,7 +216,13 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
 
   const sync = new SyncStateService(db, clock);
   const inbox = new InboxStore({ db, clock, events, queue, sync });
-  const urgent = new UrgentInbox({ db, clock, events, audit });
+  const urgent = new UrgentInbox({
+    db,
+    clock,
+    events,
+    audit,
+    replyStates: (ids) => replyStates(db, ids),
+  });
   const people = new PeopleService({ db, clock, events, audit, settings });
   const securityFlags = new SecurityFlagsService({
     db,
@@ -224,10 +252,19 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   dispatcher.subscribe("message.received", "people.temporary", (event, tx) =>
     temporary.handle(event, tx),
   );
+  const slackSource = new SlackConnectorSource({ orchestrator, clock });
+  const messageSink =
+    deps.sink ??
+    new SlackSender({
+      orchestrator,
+      searchSource: slackSource,
+      selfUserId: () => settings.get("slack.selfUserId"),
+      runIdForJob: createRunHelpers(db, securityFlags).runIdBefore,
+    });
   const slack = registerSlackJobs({
     db,
     clock,
-    source: new SlackConnectorSource({ orchestrator, clock }),
+    source: slackSource,
     store: inbox,
     sync,
     queue,
@@ -237,7 +274,22 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     scheduler,
     handlers,
   });
-  registerApprovalExecution({ dispatcher, queue, engine: approvals, handlers });
+  registerApprovalExecution({ dispatcher, queue, engine: approvals, handlers, settings });
+  const outgoing = new OutgoingService({
+    db,
+    clock,
+    events,
+    audit,
+    queue,
+    settings,
+    notifications,
+    approvals,
+    securityFlags,
+    sink: messageSink,
+  });
+  outgoing.register(approvals, dispatcher);
+  const urgentReplies = new UrgentReplies({ db, clock, audit, outgoing });
+  registerOutgoingJobs({ handlers, outgoing });
   const profiles = new ProfileRecommendations({
     db,
     clock,
@@ -260,6 +312,48 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     recommendations: profiles,
     orchestrator,
     securityFlags,
+    handlers,
+  });
+  const commitments = new CommitmentStore({ db, clock, settings, events });
+  const commitmentLifecycle = new CommitmentLifecycle({ db, clock, settings, events });
+  const followupService = new FollowupService({
+    db,
+    clock,
+    audit,
+    events,
+    queue,
+    outgoing,
+    selfUserId: () => settings.get("slack.selfUserId"),
+  });
+  dispatcher.subscribe("followup.sent", "commitments.followup_sent", (event, tx) =>
+    followupService.onFollowupSent(event, tx),
+  );
+  const postSend = new PostSendSuggestions({
+    settings,
+    people,
+    recommendations: profiles,
+    recipientOf: (tx, followupId) => followupService.recipientOf(tx, followupId),
+  });
+  dispatcher.subscribe("followup.sent", "people.post_send", (event, tx) =>
+    postSend.onFollowupSent(event, tx),
+  );
+  const extractionQueue = new ExtractionQueue({ db, clock, settings, queue });
+  dispatcher.subscribe("message.received", "commitments.queue", (event, tx) =>
+    extractionQueue.handle(event, tx),
+  );
+  registerCommitmentJobs({
+    db,
+    clock,
+    settings,
+    scheduler,
+    audit,
+    queue,
+    orchestrator,
+    securityFlags,
+    store: commitments,
+    events,
+    stall: new StallService({ db, clock, settings, events, queue, notifications }),
+    guidelinesFor: responseGuidelinesLookup(db, (id) => profileStore.getResponseGuidelines(id)),
     handlers,
   });
   const urgency = registerUrgencyJobs({
@@ -320,8 +414,16 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     profileStore,
     peopleViews,
     securityFlags,
+    outgoing,
+    urgentReplies,
+    commitments,
+    commitmentLifecycle,
+    followups: followupService,
     handlers,
-    recoverySweeps: [{ name: "urgency.assess", run: urgency.recoverySweep }],
+    recoverySweeps: [
+      { name: "urgency.assess", run: urgency.recoverySweep },
+      { name: "outgoing.sending", run: (tx) => outgoing.recoverySweep(tx) },
+    ],
     slack: { startBackfill: slack.startBackfill, backfillResumable: slack.backfillResumable },
   };
 }
