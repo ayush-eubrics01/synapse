@@ -70,6 +70,7 @@ Message content, tool inputs/outputs, thinking, attachments and prompts are **ne
 | `claudeActivity.scanIntervalSeconds` | `120` |
 | `claudeActivity.activeWindowMinutes` | `10` |
 | `claudeActivity.yieldWhenActive` | `true` |
+| `claudeActivity.yieldEngineering` | `false` (see the 2026-11-06 amendment) |
 | `claudeActivity.staleBranchDays` | `3` (proposal) |
 | `claudeActivity.openPrReminderDays` | `3` (proposal) |
 
@@ -77,3 +78,13 @@ Message content, tool inputs/outputs, thinking, attachments and prompts are **ne
 
 - [ADR-029](ADR-029-quota-gate-on-rate-limit-event.md), [ADR-031](ADR-031-collector-worker-profile.md), [ADR-035](ADR-035-repository-branch-registry.md), [ADR-016](ADR-016-central-engineering-brain.md)
 - [claude-orchestrator.md](../../modules/claude-orchestrator.md), [open-questions.md](../../product/open-questions.md)
+
+## Amendment (2026-11-06, Phase 10b)
+
+Yielding to an active user is implemented in the orchestrator through the optional `UserActivitySignal` port (core never imports the `claude-activity` module). The scope of what yields differs from "all background Claude work":
+
+- `batch` and `backfill` work yields while the user is active and `claudeActivity.yieldWhenActive` is true.
+- `engineering` work yields only when the new setting `claudeActivity.yieldEngineering` is true (default `false`).
+- `urgent`, `send` and `collection` work never yields.
+
+Reason: an engineering task holds the global engineering lock (ADR-030) and an approved plan; deferring it behind an interactive session the user may leave open all day would stall the one task the user explicitly approved, so it is opt-in. Urgent screening and sends are time-sensitive and user-visible, and collection feeds both. A yielded request is not spawned and fails with `user_active` (retry decision `defer`, like `quota_exhausted`), so it neither creates a run row nor consumes a job attempt; `retryAfter` is max(session activity end, now + 2 min).

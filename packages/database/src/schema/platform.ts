@@ -935,3 +935,94 @@ export const engineeringTaskSteps = sqliteTable(
   },
   (t) => [uniqueIndex("engineering_task_steps_task_step_uq").on(t.taskId, t.step)],
 );
+
+export const claudeSessions = sqliteTable(
+  "claude_sessions",
+  {
+    sessionId: text("session_id").primaryKey(),
+    repositoryId: text("repository_id")
+      .notNull()
+      .references(() => repositories.id, { onDelete: "cascade" }),
+    cwd: text("cwd").notNull(),
+    gitBranch: text("git_branch"),
+    title: text("title"),
+    firstAt: text("first_at").notNull(),
+    lastAt: text("last_at").notNull(),
+    version: text("version"),
+    entrypoint: text("entrypoint"),
+    filePath: text("file_path").notNull().unique(),
+    fileOffset: integer("file_offset").notNull(),
+    fileSize: integer("file_size").notNull(),
+    fileMtimeMs: integer("file_mtime_ms").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [index("claude_sessions_repo_last_idx").on(t.repositoryId, t.lastAt)],
+);
+
+export const claudeSessionPrs = sqliteTable(
+  "claude_session_prs",
+  {
+    id: id(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => claudeSessions.sessionId, { onDelete: "cascade" }),
+    repositoryId: text("repository_id").notNull(),
+    prUrl: text("pr_url").notNull().unique(),
+    prNumber: integer("pr_number").notNull(),
+    prRepository: text("pr_repository").notNull(),
+    gitBranch: text("git_branch"),
+    firstSeenAt: text("first_seen_at").notNull(),
+    remindedAt: text("reminded_at"),
+  },
+  (t) => [index("claude_session_prs_repo_idx").on(t.repositoryId)],
+);
+
+export const codeAnswers = sqliteTable(
+  "code_answers",
+  {
+    id: id(),
+    messageId: text("message_id")
+      .notNull()
+      .references(() => slackMessages.id),
+    repositoryId: text("repository_id").references(() => repositories.id, {
+      onDelete: "set null",
+    }),
+    trigger: text("trigger", { enum: ["user", "away"] }).notNull(),
+    status: text("status", {
+      enum: [
+        "queued",
+        "running",
+        "ready",
+        "not_answerable",
+        "unverified",
+        "failed",
+        "held",
+        "sent",
+        "dismissed",
+      ],
+    }).notNull(),
+    answer: text("answer"),
+    confidence: real("confidence"),
+    evidence: json("evidence").$type<{ path: string; line?: number }[]>().notNull(),
+    droppedEvidenceCount: integer("dropped_evidence_count").notNull(),
+    suspectedInjection: json("suspected_injection").$type<{
+      detected: boolean;
+      severity: string;
+      quote: string;
+      reason: string;
+    }>(),
+    notAnswerableReason: text("not_answerable_reason"),
+    claudeRunId: text("claude_run_id"),
+    failure: text("failure"),
+    autoReplyId: text("auto_reply_id").references(() => autoReplies.id),
+    outgoingId: text("outgoing_id"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    // C4: one live row per (message, repository, trigger); failed and dismissed rows are replaced.
+    uniqueIndex("code_answers_live_uq")
+      .on(t.messageId, t.repositoryId, t.trigger)
+      .where(sql`${t.status} not in ('failed','dismissed')`),
+  ],
+);

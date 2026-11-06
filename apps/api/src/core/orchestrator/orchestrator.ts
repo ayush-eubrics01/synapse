@@ -9,6 +9,7 @@ import {
   type QuotaSnapshot,
   type QuotaWindow,
   type RunOptions,
+  type UserActivitySignal,
   type WorkerProfile,
 } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
@@ -25,6 +26,7 @@ import { clampQuotaRetry, decideQuota, quotaLevel, thresholdsFromSettings } from
 import { parseStructured } from "./structured";
 import { buildDenylist, classifyTool, SERVER_NAME_RE } from "./tool-catalog";
 import { validateRequest } from "./validator";
+import { shouldYield, yieldRetryAfter } from "./yield-gate";
 
 export const DEFAULT_SYSTEM_PROMPTS: Record<WorkerProfile, string> = {
   collector:
@@ -33,6 +35,8 @@ export const DEFAULT_SYSTEM_PROMPTS: Record<WorkerProfile, string> = {
     "You are an analysis worker. Use only the tools you are given, which are read-only. Reply with exactly the JSON the instructions ask for.",
   engineering:
     "You are an engineering worker operating only inside the given repository and only within the approved task.",
+  reader:
+    "You answer one question about one local repository by reading its files. You cannot change anything.",
 };
 
 export interface OrchestratorDeps {
@@ -47,6 +51,8 @@ export interface OrchestratorDeps {
   scratchDir: string;
   /** Boundary generator (16 hex chars); injectable for tests. */
   random?: () => string;
+  /** Optional (core never imports the module): background work yields while the user is active. */
+  userActivity?: UserActivitySignal;
 }
 
 // Provider messages for these kinds are generic by design (Task 5); others never echo content.
@@ -63,7 +69,7 @@ const AUTH_PAUSE_RETRY_MS = 15 * 60_000;
 
 /** Fixed, content-free: the user must edit `~/.claude/settings.json` (read once at startup). */
 export const UNSAFE_USER_SETTINGS_MESSAGE =
-  "Claude Code user settings widen file or shell permissions; engineering runs are refused until they are removed and the API is restarted";
+  "Claude Code user settings widen file or shell permissions; engineering and code-answer runs are refused until they are removed and the API is restarted";
 const AUTH_PROBE_AFTER_MS = 30 * 60_000;
 
 const defaultBoundary = () => crypto.randomUUID().replace(/-/g, "").slice(0, 16);
@@ -259,13 +265,20 @@ export class ClaudeOrchestrator {
     // Quota gate (checked again after the slot is acquired)
     const thresholds = thresholdsFromSettings(settings);
     this.checkQuota(request, thresholds);
+    this.checkYield(request);
 
     // Build the execution request
     const profile = request.workerProfile;
     const parts = request.parts ?? [];
     const boundary = this.random();
     const allowedTools = [...request.allowedTools];
-    if (allowedTools.some((t) => t.startsWith("mcp__")) && !allowedTools.includes("ToolSearch")) {
+    // Never for a reader (C1): it may use no connector, so rule C refuses one, and its denylist
+    // holds ToolSearch so no deferred connector tool can be loaded.
+    if (
+      profile !== "reader" &&
+      allowedTools.some((t) => t.startsWith("mcp__")) &&
+      !allowedTools.includes("ToolSearch")
+    ) {
       allowedTools.push("ToolSearch");
     }
     const knownServers = settings.get("orchestrator.knownServers");
@@ -306,7 +319,14 @@ export class ClaudeOrchestrator {
     }
     // Phase 9: user-level permissions merge into the run (`--setting-sources user`) and the
     // override cannot remove them, so a widening user setting would defeat rule L's path scoping.
-    if (profile === "engineering" && provider.userPermissionsWidenScope === true) {
+    // Both path-scoped profiles are refused: engineering, and reader (C1), which reads files next
+    // to untrusted text. A reader is also refused while a user-level `mcp__` allow names a server
+    // outside knownServers: its denylist denies every known server, but not that one.
+    const widens =
+      provider.userPermissionsWidenScope === true ||
+      (profile === "reader" &&
+        (provider.userAllowedConnectorServers ?? []).some((s) => !knownServers.includes(s)));
+    if ((profile === "engineering" || profile === "reader") && widens) {
       db.transaction((tx) => {
         audit.record(tx, {
           actor: "system",
@@ -329,6 +349,7 @@ export class ClaudeOrchestrator {
     try {
       // The quota may have risen while this request waited for a slot.
       this.checkQuota(request, thresholds);
+      this.checkYield(request);
       // Last word for the caller (a policy send whose user came back while it waited). Nothing
       // below awaits before provider.execute, so the answer holds until the spawn.
       this.checkBeforeSpawn(opts);
@@ -480,6 +501,35 @@ export class ClaudeOrchestrator {
         retryAfter: clampQuotaRetry(decision.resetsAt ?? undefined, now),
       });
     }
+  }
+
+  /** ADR-036: defers (never spawns) background work while the user is active in Claude Code. */
+  private checkYield(request: ClaudeJobRequest): void {
+    const signal = this.deps.userActivity;
+    if (!signal) return;
+    const { settings, clock } = this.deps;
+    const cfg = {
+      yieldWhenActive: settings.get("claudeActivity.yieldWhenActive"),
+      yieldEngineering: settings.get("claudeActivity.yieldEngineering"),
+    };
+    // Classes that can never yield do not touch the signal at all.
+    if (!shouldYield(request.priorityClass, cfg, true)) return;
+    const now = clock.now();
+    let a: { active: boolean; until: string | null };
+    try {
+      a = signal.isUserActive(now);
+    } catch (e) {
+      // Fail open: a broken activity signal must never stop background work.
+      console.error("orchestrator: user activity check failed", errName(e));
+      return;
+    }
+    if (!a.active) return;
+    throw new JobError({
+      kind: "user_active",
+      message: `user active in Claude Code: ${request.priorityClass} work deferred`,
+      retryAfter: yieldRetryAfter(a.until, now),
+      details: { notSpawned: true },
+    });
   }
 
   /** Runs one bookkeeping step; a failure is logged as one content-free line. */

@@ -93,6 +93,24 @@ const settingSchemas = {
   "engineering.develop.maxTurns": z.number().int().min(1).max(50).default(50),
   "engineering.develop.timeoutMinutes": z.number().int().min(1).max(120).default(30),
   "engineering.lock.ttlMinutes": z.number().int().min(1).max(120).default(10),
+  "claudeActivity.enabled": z.boolean().default(true),
+  // null: resolved at startup (~/.claude/projects). Tests point it at a temp dir.
+  "claudeActivity.projectsDir": z.string().startsWith("/").nullable().default(null),
+  "claudeActivity.scanIntervalSeconds": z.number().int().min(30).max(3600).default(120),
+  "claudeActivity.activeWindowMinutes": z.number().int().min(1).max(120).default(10),
+  "claudeActivity.yieldWhenActive": z.boolean().default(true),
+  "claudeActivity.yieldEngineering": z.boolean().default(false),
+  "claudeActivity.staleBranchDays": z.number().int().min(1).max(60).default(3),
+  "claudeActivity.openPrReminderDays": z.number().int().min(1).max(60).default(3),
+  // Internal state, not user-editable.
+  "claudeActivity.lastActiveState": z.boolean().default(false),
+  "claudeActivity.reminders.lastRunDate": z.string().nullable().default(null),
+  "codeAnswer.model": z.enum(["haiku", "sonnet", "opus"]).default("sonnet"),
+  "codeAnswer.maxTurns": z.number().int().min(1).max(30).default(16),
+  "codeAnswer.timeoutMinutes": z.number().int().min(1).max(30).default(5),
+  "codeAnswer.away.enabled": z.boolean().default(true),
+  "codeAnswer.away.autoSend": z.boolean().default(false),
+  "codeAnswer.away.maxRunsPerDay": z.number().int().min(0).max(100).default(10),
   "brain.upcoming.days": z.number().int().positive().default(30),
   "system.lastHeartbeatAt": z.string().nullable().default(null),
   "orchestrator.quota.fiveHour.soft": z.number().min(0).max(1).default(0.6),
@@ -103,9 +121,11 @@ const settingSchemas = {
   "orchestrator.timeouts.collector": z.number().int().positive().default(180),
   "orchestrator.timeouts.intelligence": z.number().int().positive().default(300),
   "orchestrator.timeouts.engineering": z.number().int().positive().default(1800),
+  "orchestrator.timeouts.reader": z.number().int().positive().default(300),
   "orchestrator.models.collector": z.string().min(1).default("haiku"),
   "orchestrator.models.intelligence": z.string().min(1).default("haiku"),
   "orchestrator.models.engineering": z.string().min(1).default("sonnet"),
+  "orchestrator.models.reader": z.string().min(1).default("sonnet"),
   "orchestrator.knownServers": z
     .array(z.string().regex(SERVER_NAME_RE))
     .default(() => [...DEFAULT_KNOWN_SERVERS]),
@@ -135,6 +155,32 @@ const settingSchemas = {
 };
 
 export type SettingKey = keyof typeof settingSchemas;
+/** Phase 10b keys the settings API may change: every new key except the test-only and internal ones. */
+export const USER_EDITABLE_SETTINGS = [
+  "claudeActivity.enabled",
+  "claudeActivity.activeWindowMinutes",
+  "claudeActivity.yieldWhenActive",
+  "claudeActivity.yieldEngineering",
+  "claudeActivity.staleBranchDays",
+  "claudeActivity.openPrReminderDays",
+  "codeAnswer.model",
+  "codeAnswer.maxTurns",
+  "codeAnswer.timeoutMinutes",
+  "codeAnswer.away.enabled",
+  "codeAnswer.away.autoSend",
+  "codeAnswer.away.maxRunsPerDay",
+] as const satisfies readonly SettingKey[];
+export type UserEditableKey = (typeof USER_EDITABLE_SETTINGS)[number];
+
+/** Validates `value` against the setting's schema; `ok: false` on a bad value (never throws). */
+export function checkSettingValue(
+  key: SettingKey,
+  value: unknown,
+): { ok: true; value: unknown } | { ok: false } {
+  const r = settingSchemas[key].safeParse(value);
+  return r.success ? { ok: true, value: r.data } : { ok: false };
+}
+
 export type SettingValue<K extends SettingKey> = z.output<(typeof settingSchemas)[K]>;
 
 export type PublishSettingsChanged = (tx: DbOrTx, e: NewDomainEvent<"settings.changed">) => string;

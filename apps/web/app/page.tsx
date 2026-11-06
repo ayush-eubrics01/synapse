@@ -4,6 +4,8 @@ import type {
   ApprovalView,
   AwayDigest,
   CandidatesResponse,
+  ClaudeActivityView,
+  CodeAnswerView,
   CommitmentFilter,
   ConversationSummary,
   ConversationThread,
@@ -26,6 +28,7 @@ import {
   approveTaskDescription,
   approveTaskPlan,
   type ClaudeRun,
+  type ClaudeSettingsDto,
   type ClaudeStatus,
   type CommitmentStatusDto,
   type CommitmentViewDto,
@@ -41,6 +44,7 @@ import {
   getApprovals,
   getAwayDigest,
   getCandidates,
+  getClaudeActivity,
   getClaudeRuns,
   getClaudeStatus,
   getCommitments,
@@ -60,6 +64,7 @@ import {
   getRecommendations,
   getRepositories,
   getSecurityFlags,
+  getSettings,
   getSlackIdentity,
   getSlackStatus,
   getThread,
@@ -70,10 +75,12 @@ import {
   type OverviewFailure,
   type PersonDto,
   type PersonPriorityDto,
+  putSettings,
   registerRepository,
   type SecurityFlagDto,
   type SlackIdentityDto,
   type SlackStatusDto,
+  sendCodeAnswer,
   setCommitmentStatus,
   setPersonPriority,
   skipUnreadablePage,
@@ -81,6 +88,7 @@ import {
   updateMilestone,
 } from "../lib/api";
 import { brainPaletteItems, projectRowId } from "../lib/brain";
+import { codeAnswerErrorText, codeAnswerEventMessageId } from "../lib/code-answers";
 import { trailingDebounce } from "../lib/debounce";
 import { engineeringErrorText, isTerminal, lockText } from "../lib/engineering";
 import { conversationTitle, filterConversations, type InboxFilter } from "../lib/inbox";
@@ -111,6 +119,8 @@ import { People } from "./components/people/People";
 import { ProfileDrawer } from "./components/people/ProfileDrawer";
 import { useQueuedEvaluations } from "./components/people/useQueuedEvaluations";
 import { Sidebar } from "./components/shell/Sidebar";
+import { ClaudeCodeCard } from "./components/system/ClaudeCodeCard";
+import { ClaudeSettings } from "./components/system/ClaudeSettings";
 import { Running } from "./components/system/Running";
 import { SystemDetails } from "./components/system/SystemDetails";
 import { NeedsYou } from "./components/triage/NeedsYou";
@@ -237,7 +247,19 @@ export default function Dashboard() {
   const [jiraIssues, setJiraIssues] = useState<JiraIssueView[]>([]);
   const [jiraAttention, setJiraAttention] = useState<JiraIssueView[]>([]);
   const [repos, setRepos] = useState<RepositoryView[] | null>(null);
+  // Code answers (Phase 10b C5): the answer chosen as a reply, and a counter bumped by live events.
+  const [codeDraft, setCodeDraft] = useState<{
+    codeAnswerId: string;
+    draft: string;
+    useAnyway: boolean;
+  } | null>(null);
+  const [codeAnswerTick, setCodeAnswerTick] = useState<{ n: number; messageId: string | null }>({
+    n: 0,
+    messageId: null,
+  });
   const [projectDetails, setProjectDetails] = useState<ProjectDetail[]>([]);
+  const [claudeActivity, setClaudeActivity] = useState<ClaudeActivityView | null>(null);
+  const [claudeSettings, setClaudeSettings] = useState<ClaudeSettingsDto | null>(null);
   const [engineeringTasks, setEngineeringTasks] = useState<EngineeringTaskView[]>([]);
   const [engineeringDetails, setEngineeringDetails] = useState<
     Record<string, EngineeringTaskDetail>
@@ -295,6 +317,8 @@ export default function Dashboard() {
       rp,
       pr,
       et,
+      ca,
+      st,
     ] = await Promise.allSettled([
       getApprovals(),
       getJobs(20),
@@ -321,6 +345,8 @@ export default function Dashboard() {
       getRepositories(),
       getProjects(),
       getEngineeringTasks(),
+      getClaudeActivity(),
+      getSettings(),
     ]);
     if (a.status === "fulfilled") setApprovals(a.value);
     if (j.status === "fulfilled") setJobs(j.value);
@@ -344,6 +370,8 @@ export default function Dashboard() {
     if (ji.status === "fulfilled") setJiraIssues(ji.value);
     if (ja.status === "fulfilled") setJiraAttention(ja.value);
     if (rp.status === "fulfilled") setRepos(rp.value);
+    if (ca.status === "fulfilled") setClaudeActivity(ca.value);
+    if (st.status === "fulfilled") setClaudeSettings(st.value);
     // The open thread is refetched with everything else; stale answers for another conversation are dropped.
     if (td.status === "fulfilled" && td.value && threadIdRef.current === threadId)
       setThread(td.value);
@@ -439,11 +467,32 @@ export default function Dashboard() {
     source.onmessage = () => debounced.call();
     // Events are named (`event: <type>`), so onmessage alone would miss them.
     for (const t of LIVE_EVENT_TYPES) source.addEventListener(t, () => debounced.call());
+    source.addEventListener("code_answer.status_changed", (e) => {
+      const messageId = codeAnswerEventMessageId((e as MessageEvent).data);
+      setCodeAnswerTick((t) => ({ n: t.n + 1, messageId }));
+    });
     return () => {
       debounced.cancel();
       source.close();
     };
   }, [refresh]);
+
+  // A code-answer draft belongs to the conversation it was made in.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clears on a conversation change only
+  useEffect(() => setCodeDraft(null), [effectiveConversationId]);
+
+  // The backend refuses a suspected injection without `useAnyway`, whatever this UI sends.
+  const sendCodeAnswerDraft = async (id: string, text: string, useAnyway: boolean) => {
+    setActionError(null);
+    try {
+      await sendCodeAnswer(id, text, useAnyway);
+      setCodeDraft(null);
+      toast.show("Approval request created · nothing is sent until you approve");
+    } catch (e) {
+      setActionError(codeAnswerErrorText(e, "Could not request approval for that answer"));
+    }
+    await refresh();
+  };
 
   // Fetches the thread when the shown conversation changes; refresh() keeps it current after that.
   useEffect(() => {
@@ -796,7 +845,9 @@ export default function Dashboard() {
                 now={now}
                 upcoming={overview?.upcoming}
                 engineeringLock={overview?.engineeringLock}
+                claudeActivity={overview?.claudeActivity}
               />
+              <ClaudeCodeCard activity={claudeActivity} now={now} />
             </section>
           </div>
           <section id="inbox" className="syn-section">
@@ -811,6 +862,16 @@ export default function Dashboard() {
               now={now}
               hidden={feed.hidden}
               handlers={feed.handlers}
+              codeAnswers={{
+                repositories: repos ?? [],
+                tick: codeAnswerTick,
+                draft: codeDraft,
+                onUseAsReply: (v: CodeAnswerView, useAnyway: boolean) =>
+                  setCodeDraft({ codeAnswerId: v.id, draft: v.answer ?? "", useAnyway }),
+                onSend: (id, text, useAnyway) => void sendCodeAnswerDraft(id, text, useAnyway),
+                onDiscard: () => setCodeDraft(null),
+                onDismissed: (id) => setCodeDraft((d) => (d?.codeAnswerId === id ? null : d)),
+              }}
             />
           </section>
           <section id="commitments" className="syn-section">
@@ -924,6 +985,17 @@ export default function Dashboard() {
               runs={claudeRuns}
               onSkip={() => void skipPage()}
               now={now}
+            />
+            <ClaudeSettings
+              values={claudeSettings}
+              onChange={(key, value) => {
+                void putSettings({ [key]: value })
+                  .then(setClaudeSettings)
+                  .catch(() => {
+                    toast.show("Could not save that setting");
+                    void refresh();
+                  });
+              }}
             />
           </section>
         </div>

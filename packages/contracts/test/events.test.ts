@@ -48,6 +48,8 @@ test("catalog covers the Phase 1 and 2 events", () => {
       "autoreply.sent",
       "autoreply.held",
       "away.changed",
+      "claude_session.activity_changed",
+      "code_answer.status_changed",
       "jira.issue_updated",
       "jira.issue_attention",
       "repo.registered",

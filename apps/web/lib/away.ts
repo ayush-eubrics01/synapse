@@ -27,6 +27,10 @@ const HOLD_REASON: Record<HoldReason, string> = {
   content_mention: "Draft mentioned people or a group",
   content_link: "Draft contained a link",
   stale: "Too much time passed before it could send",
+  code_answer_review: "Code answer waiting for your approval",
+  content_code_block: "Answer contained a code block",
+  not_answerable: "The code didn't answer the question",
+  unverified: "The answer's evidence couldn't be checked",
 };
 
 /** Digest card title: singular/plural of auto-replies sent, then the held count. */

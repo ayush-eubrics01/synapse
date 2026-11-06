@@ -244,3 +244,28 @@ export function normaliseFactContent(s: string): string {
     .replace(/\s+/g, " ")
     .trim();
 }
+
+/**
+ * Code-answer citations (C3): a cited path is kept only when it is safe, not sensitive, resolves
+ * (realpath) to an existing regular file strictly inside `repoRoot` and was observed through the
+ * run's own tool results (ADR-026). Kept paths are repository-relative and normalised; the line
+ * is carried over. Nothing is logged.
+ */
+export function verifyCitations(
+  repoRoot: string,
+  evidence: readonly { path: string; line?: number }[],
+  observed: ObservedPaths,
+): { kept: { path: string; line?: number }[]; dropped: number } {
+  const root = realpathSync(repoRoot).replace(/\/+$/, "");
+  const kept: { path: string; line?: number }[] = [];
+  let dropped = 0;
+  for (const e of evidence) {
+    const r = checkEvidencePath(root, e.path);
+    if (!r.ok || !observed.has(r.rel)) {
+      dropped++;
+      continue;
+    }
+    kept.push(e.line === undefined ? { path: r.rel } : { path: r.rel, line: e.line });
+  }
+  return { kept, dropped };
+}

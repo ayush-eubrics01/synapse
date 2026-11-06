@@ -1,6 +1,6 @@
 # Auto-Reply (away mode)
 
-Implements ADR-033 (Phase 6b). While away mode is on, Synapse may send three kinds of Slack message to priority people without approval, after deterministic checks. Every one ends with the tag `Sent using @claude`, appended by code. When the user switches away mode off, a digest lists what was sent and held. Spec: `docs/superpowers/specs/2026-11-06-phase-6b-away-mode.md`.
+Implements ADR-033 (Phase 6b). While away mode is on, Synapse may send these kinds of Slack message to priority people without approval, after deterministic checks. Every one ends with the tag `Sent using @claude`, appended by code. When the user switches away mode off, a digest lists what was sent and held. Spec: `docs/superpowers/specs/2026-11-06-phase-6b-away-mode.md`.
 
 Code: `apps/api/src/modules/auto-reply` (`service.ts`, `policy.ts`), `intelligence/auto-reply/content-checks.ts`, `workers/auto-reply/evaluate.ts`, `routes/away.ts`. The send itself is `OutgoingService.requestAutoSend` (`modules/outgoing`).
 
@@ -11,9 +11,11 @@ Code: `apps/api/src/modules/auto-reply` (`service.ts`, `policy.ts`), `intelligen
 | `acknowledgement` | `message.urgent_detected`, level `critical` or `high` | Fixed template `ACK_TEXT` in `policy.ts` (no model text) | Thread of the urgent message (`threadTs ?? ts`) |
 | `stalled_reminder` | `followup.draft_created`, origin `stalled` | The follow-up draft | The follow-up's conversation and thread |
 | `followup_question` | `followup.draft_created`, origin `spec_clarity` | The spec-clarity draft | The follow-up's conversation and thread |
-| `code_answer` | none | none | A valid kind name in settings, but nothing produces it until Phases 9-10 |
+| `code_answer` | The away trigger on `message.received` (Phase 10b, C6; `docs/modules/code-answers.md`) | The verified answer from a read-only `reader` run | The asker's conversation, thread `threadTs ?? ts`. Auto-sent only when `codeAnswer.away.autoSend` is on; otherwise held as `code_answer_review` with a normal user approval |
 
-Never auto-sent: urgent-reply drafts (they stay for approval), anything to a non-priority person, any `code_answer`, anything while away is off, an acknowledgement of a message not addressed to the user, and anything about a message from before the session or that the user already answered.
+A `code_answer` is auto-sent only when `codeAnswer.away.autoSend` is on (default off).
+
+Never auto-sent: urgent-reply drafts (they stay for approval), anything to a non-priority person, anything while away is off, an acknowledgement of a message not addressed to the user, and anything about a message from before the session or that the user already answered.
 
 An acknowledgement depends on `message.urgent_detected`, which is only published for levels in `urgency.notify.levels` (default `critical, high`). Removing `high` there stops high-level acknowledgements.
 
@@ -51,6 +53,19 @@ Then the first failing policy check wins:
 - **Confidence:** acknowledgements have none (fixed text). Others need `confidence >= autoReply.minConfidence`; null counts as below. A low-confidence `followup_question` with an origin message enqueues an acknowledgement for that message in the same transaction (`autoreply:acknowledgement:<messageId>`, shared with the urgent trigger, so it is deduplicated); the draft stays in Needs you. A low-confidence `stalled_reminder` is only held. Acknowledgements replace low-confidence follow-up questions only.
 - **`recipient_mismatch`:** in an `im` the recipient must be the DM partner (the first non-self sender, the inbox rule). A DM with an unknown partner or unknown self id holds.
 - **`policy_disabled`:** the effective permission for `slack.auto_reply` is no longer `policy_gated` (the user tightened it). The auto-reply is held and never pends for manual approval.
+
+### Code answers (Phase 10b, C7)
+
+`code_answer` is decided in `decideAndRecord` on an `away` code-answer row whose status is `ready`, `not_answerable` or `unverified` (the generate worker's `onFinished` hook enqueues `autoreply.evaluate` for an away row that ends in one of those statuses; the decision runs in that job, not directly). The row is decided in the away session it was created in: if the user came back meanwhile that session is closed, so the decision still records a row there (so it shows in the return digest) and holds as `away_off` unless an earlier check holds; nothing is sent. Pre-check holds apply first, in this order: `missing_context` > `recipient_mismatch` > `not_addressed` > `before_session` > `already_answered` > `not_answerable` or `unverified` (the row's status, held with that reason) > `injection_suspected` (from the run's `suspectedInjection`). Then:
+
+`low_confidence` (confidence null or below `autoReply.minConfidence`) > `content_code_block` (a triple backtick anywhere, or more than 3 consecutive lines starting with 4 spaces or a tab; `codeBlockCheck`, separate from the other content checks) > the normal policy order (`away_off`, `kind_not_allowed`, `not_priority`, `loop_tag`, `flagged`, `daily_cap`, `thread_gap`, `low_confidence`, content checks) > `code_answer_review`.
+
+- **`code_answer_review`:** when `codeAnswer.away.autoSend` is off (default) and the answer passed everything above, the auto-reply row is `held` and `OutgoingService.requestSend` creates a normal pending `slack.send` approval for the user: the exact answer, the asker's conversation and thread, no tag. The outgoing and approval ids are stored on the held row, and the code-answer row becomes `held` with that `outgoing_id`. The user finds it in Needs you.
+- **Caps do not block the review.** `daily_cap` and `thread_gap` bound unapproved sends, so while `autoSend` is off they are not evaluated for a `code_answer` (the counts are treated as zero): a review approval is created regardless. With `autoSend` on they apply as for any kind.
+- **Re-request.** A user send for a code answer is allowed again after its earlier outgoing was rejected, expired or cancelled before spawn (`failed` outgoing), so the user is never left with a dead end; it is still a user approval.
+- **`autoSend` on and every check passing:** sent like the other kinds, with the tag and `recordPolicyApproval`; the code-answer row becomes `sent` with the `outgoing_id`. The `autoSend` toggle is read at decision time and, like the other kinds' settings, not re-checked when the send is claimed (away off and `stale` are, as before).
+- **Cancelled auto-send.** If a spawn is cancelled (`cancelled_away_off`, `cancelled_policy_disabled`, `cancelled_stale`) the `auto_replies` row becomes `held` as for any kind, but the code-answer row stays `sent` and its outgoing row is `failed`: `sent` records the policy verdict, delivery is the outgoing status.
+- `not_ready` is a decision skip (no row): the code-answer row is not yet `ready`, `not_answerable` or `unverified`. Other skips: `away_off`, `not_found`, `self`, `kind_mismatch` (a `user` row), `already_evaluated`.
 
 ## Content checks (`content-checks.ts`, pure)
 
@@ -98,6 +113,7 @@ A cancelled send ends as outgoing `failed` with `cancelled_away_off`, `cancelled
 | `autoReply.minMinutesBetweenInThread` | 30 |
 | `autoReply.minConfidence` | 0.75 |
 | `autoReply.maxSendDelayMinutes` | 15 |
+| `codeAnswer.away.enabled` / `autoSend` / `maxRunsPerDay` | `true` / `false` / 10 (Phase 10b; editable through `PUT /api/settings`, see `docs/modules/code-answers.md`) |
 
 Permission: `slack.auto_reply` defaults to `policy_gated`, which only `recordPolicyApproval` accepts. An override can tighten it (which holds auto-replies as `policy_disabled`) but never loosen it.
 
@@ -105,7 +121,7 @@ There is no UI or route yet to tighten the permission or to change the `autoRepl
 
 ## Events and routes
 
-Emitted: `away.changed {on}`, `autoreply.sent {autoReplyId}`, `autoreply.held {autoReplyId, reason}`. Consumed: `message.urgent_detected`, `followup.draft_created`. Routes: `GET /api/away`, `PUT /api/away`, `GET /api/away/digest`, `POST /api/away/digest/:sessionId/dismiss`. Audit and events carry ids and fixed reasons only, never text.
+Emitted: `away.changed {on}`, `autoreply.sent {autoReplyId}`, `autoreply.held {autoReplyId, reason}`. Consumed: `message.urgent_detected`, `followup.draft_created`; the code-answer away trigger consumes `message.received` (`docs/modules/code-answers.md`). Routes: `GET /api/away`, `PUT /api/away`, `GET /api/away/digest`, `POST /api/away/digest/:sessionId/dismiss`. Audit and events carry ids and fixed reasons only, never text.
 
 ## Tests
 

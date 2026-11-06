@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { contentCheck } from "../../src/intelligence/auto-reply/content-checks";
+import { codeBlockCheck, contentCheck } from "../../src/intelligence/auto-reply/content-checks";
 import { ACK_TEXT } from "../../src/modules/auto-reply/policy";
 
 test.each([
@@ -99,4 +99,31 @@ test("first match wins: secret, internal url, link, mention, promise", () => {
   expect(contentCheck("I'll check https://example.com/a with <!here>")).toBe("content_link");
   expect(contentCheck("I'll ask <@U0123ABC>")).toBe("content_mention");
   expect(contentCheck("I'll ask")).toBe("content_promise");
+});
+
+// Phase 10b C7: a code answer with a code block is held (separate from contentCheck).
+test.each([
+  "```ts\nx\n```",
+  "Look:\n```\nretry(3)\n```",
+  "  ```\nindented fence\n```",
+  "Lines:\n    a\n    b\n    c\n    d",
+  "Lines:\n\ta\n\tb\n\tc\n\td",
+  "Mixed:\n    a\n\tb\n    c\n\td\nend",
+  "Windows:\r\n    a\r\n    b\r\n    c\r\n    d",
+])("codeBlockCheck holds %p", (text) => {
+  expect(codeBlockCheck(text)).toBe("content_code_block");
+});
+
+test.each([
+  "The worker retries three times.",
+  "Lines:\n    a\n    b\n    c",
+  "Broken:\n    a\n    b\n\n    c\n    d",
+  "Three spaces:\n   a\n   b\n   c\n   d",
+  "Use `retry()` in src/a.ts.",
+])("codeBlockCheck passes %p", (text) => {
+  expect(codeBlockCheck(text)).toBeNull();
+});
+
+test("codeBlockCheck does not change contentCheck", () => {
+  expect(contentCheck("```ts\nx\n```")).toBeNull();
 });

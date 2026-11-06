@@ -118,6 +118,8 @@ export interface DashboardOverview {
   }>;
   /** The global engineering lock (Phase 10, E19); `taskTitle` only while a task holds it. */
   engineeringLock: { held: boolean; taskId?: string; taskTitle?: string; since?: string };
+  /** Claude Code activity (Phase 10b, A11): counts only, no titles or branches. */
+  claudeActivity: { active: boolean; sessionsToday: number; yielding: boolean };
 }
 
 /** One row of the inbox conversation list (`GET /api/inbox/conversations`). */
@@ -158,6 +160,8 @@ export interface ThreadMessage {
   } | null;
   /** `auto` is true when an away-mode auto-reply sent it (an `auto_replies` row links the message). */
   sentViaSynapse: { status: "sent" | "sent_unverified"; auto: boolean } | null;
+  /** Code answers for this message that are not dismissed (the thread view loads them lazily). */
+  codeAnswerCount: number;
 }
 
 /** Messages are oldest first. */

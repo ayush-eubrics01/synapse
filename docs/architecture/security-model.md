@@ -35,6 +35,7 @@ Each Claude run gets an explicit `--allowedTools` list and a `--disallowedTools`
 | `collector` | `ToolSearch`, read-only connector tools (Slack search/read thread, Jira search/get) | Any send/write/create/update tool, Bash, Edit, Write, WebFetch |
 | `intelligence` | `ToolSearch`, read-only connector tools, read-only repo access (Read/Grep/Glob in the registered path) | Any send/write tool, Bash, Edit, Write |
 | `engineering` | Read, Grep, Glob (investigation: only these), plus Edit, Write, MultiEdit in the develop run, all path-scoped to the **registered repository working directory** (rule L), and one `Bash(<confirmed test command>:*)`. Repository inspection (Phase 9) uses only the read tools, read-only | Any Slack or Jira tool, any claude.ai connector, WebFetch to arbitrary hosts |
+| `reader` (Phase 10b) | `Read`, `Grep`, `Glob`, each exactly once and path-scoped to one registered repository (rule L); **no `ToolSearch`**, no connector | Any write, send, network or shell tool, any connector, `ToolSearch` (denied, so no deferred tool can be loaded) |
 
 **Path-scoped reads (Phase 9).** Claude Code's built-in `Read`, `Grep` and `Glob` otherwise reach any file the user can. For `engineering` runs the request validator (rule L) requires each to be exactly `Tool(/<workingDirectory>/**)`: the CLI's double-slash absolute form, such as `Read(//home/u/app/**)`. The working directory, checked for every engineering run, is a registered repository realpath of safe characters. Registration refuses `/`, `$HOME`, any ancestor of `$HOME`, `~/.claude`, `~/.ssh`, `~/.config` and nested repositories, so a scope can never cover the home directory or credentials.
 
@@ -51,6 +52,8 @@ Each Claude run gets an explicit `--allowedTools` list and a `--disallowedTools`
 Sends and Jira writes are not done by a free-running worker. They run as a narrow execution (one allowed tool, exact arguments from the approval) after approval.
 
 **Send guard (J2).** Every Slack send run carries a per-run Claude Code `PreToolUse` hook on the send tool. The hook blocks the call (exit 2, reason `send arguments differ from the approved message`) unless the sha256 of the call's canonical `tool_input` equals the hash of the approved arguments. A wrong channel, thread or text is therefore stopped before anything reaches Slack, not just detected afterwards. It accepts exactly what the after-the-fact check accepts (`unfurl_app_links: false` dropped, trailing whitespace in the message ignored). The request validator rejects a send run without a matching guard. The hook fails closed: malformed input, a crash, or a hook that cannot start all block. The after-the-fact argument check on the recorded `tool_use` input stays as a second layer. Residual risk: if Claude Code kills the hook at its timeout, the call may proceed; the after-the-fact argument check remains the backstop. The hook also checks that `tool_name` equals the guarded tool, and the guarded settings force `disableAllHooks: false`. See `docs/modules/claude-orchestrator.md` (Send runs).
+
+**Reader profile (Phase 10b).** The one profile that reads untrusted text and files together. Its allow list is the three scoped read tools; its denylist holds Bash, every write and network built-in and `ToolSearch`. It may not use any connector tool (rule C), and, because `ToolSearch` is denied, a deferred connector tool cannot be loaded even if the user's own `permissions.allow` names one. The user-permission guard refuses a reader run when the user's settings widen file scope (as for engineering) and also while a user-level `mcp__<server>` allow entry names a server outside `orchestrator.knownServers`, which the reader denylist would not cover. Only server names are kept from the settings. Real-CLI proof: `scripts/dev/code-answer-smoke.ts`.
 
 ## 3.1 Engineering runs (Phase 10)
 
@@ -123,6 +126,16 @@ The drafting run has no send tool. The send run's only tool is `slack_send_messa
 Away mode is the only exception to approval for external writes, and it is bounded by the checks above. Audit rows, events and logs never contain reply text.
 
 **Kill switch.** There is no UI or route yet to tighten the `slack.auto_reply` permission or to change the `autoReply.*` settings. Today the kill switch is switching away mode off, which also cancels any auto-send not yet spawned. A settings surface is a recorded follow-up (`docs/superpowers/plans/2026-11-06-phase-6b-followups.md`).
+
+## 6.2 Code answers: threat model (Phase 10b, C9)
+
+The question is untrusted, and the `reader` run sees it next to repository files.
+
+- **What an injected instruction can do.** At most make the run read other files **inside the same repository** and put their content into the answer. It cannot read outside the repository (rule L path scope, proven on the real CLI by `scope-smoke` and `code-answer-smoke`, which asks for an outside file with Read, Grep and Glob and exits 1 on any leak), write, run commands, reach the network, load a connector or send anything.
+- **What stops it reaching Slack.** The answer is a draft. Citations must be observed in the run's raw tool results (ADR-026), a suspected injection holds it (`injection_suspected`) and blocks "Use as reply" until the user clicks "Use anyway", and the content checks run on it (secrets, internal URLs, links, mentions, promises, and code blocks for code answers). By default it reaches Slack only after the user reads and approves it: the away path creates a normal approval (`code_answer_review`).
+- **Residual risk.** With `codeAnswer.away.autoSend` on, a repository secret that matches no secret pattern could be auto-sent to a priority person. That is why `autoSend` is off by default, and why the settings page shows this sentence next to the toggle. Another: a user-level `Read` allow entry in `~/.claude/settings.json` would widen the scope, so the orchestrator refuses reader runs while one exists.
+- Away trigger bounds: priority person only, exactly one repository named, `codeAnswer.away.maxRunsPerDay`, questions only (`?`).
+- Logs, audit rows and events carry ids and fixed codes only: never the question, the answer, a path or evidence.
 
 ## 7. Audit
 

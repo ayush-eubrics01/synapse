@@ -18,6 +18,7 @@ import {
   isNotNull,
   isNull,
   lt,
+  lte,
   ne,
   or,
   sql,
@@ -27,11 +28,13 @@ import type { AuditLogger } from "../../core/audit/audit";
 import type { SettingsService } from "../../core/config/settings";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
+import { codeBlockCheck } from "../../intelligence/auto-reply/content-checks";
 import { mentionedIds } from "../../intelligence/commitments/validate";
+import type { CodeAnswerService } from "../code-answers/service";
 import { AutoSendBlocked, type OutgoingService } from "../outgoing/service";
 import type { PeopleService } from "../people/service";
 import type { SecurityFlagsService } from "../security-flags/service";
-import { ACK_TEXT, decideAutoReply, withAutoReplyTag } from "./policy";
+import { ACK_TEXT, decideAutoReply, hasAutoReplyTag, withAutoReplyTag } from "./policy";
 
 const {
   awaySessions,
@@ -54,7 +57,8 @@ const MODULE = "auto-reply";
 
 export type Trigger =
   | { kind: "acknowledgement"; messageId: string }
-  | { kind: "stalled_reminder" | "followup_question"; followupId: string };
+  | { kind: "stalled_reminder" | "followup_question"; followupId: string }
+  | { kind: "code_answer"; codeAnswerId: string };
 
 /** Why nothing was recorded at all (not a policy decision). */
 export type SkipReason =
@@ -63,12 +67,31 @@ export type SkipReason =
   | "self"
   | "not_draft"
   | "kind_mismatch"
+  | "not_ready"
   | "already_evaluated";
 
 export type AutoReplyOutcome =
   | { status: "sent"; autoReplyId: string; outgoingId: string; approvalId: string }
   | { status: "held"; autoReplyId: string; reason: HoldReason }
   | { status: "skipped"; reason: SkipReason };
+
+/** C6 pre-check for the away code-answer trigger; `sender` and `text` only when it passes. */
+export type CodeAnswerPreCheck =
+  | { ok: true; sender: string; text: string }
+  | {
+      ok: false;
+      reason:
+        | "away_off"
+        | "not_found"
+        | "self"
+        | "no_text"
+        | "not_addressed"
+        | "before_session"
+        | "already_answered";
+    };
+
+/** Code-answer rows the away decision runs on (C7). */
+const DECIDABLE_CODE_ANSWER = ["ready", "not_answerable", "unverified"] as const;
 
 export interface AwayStatus {
   on: boolean;
@@ -85,7 +108,9 @@ export interface AutoReplyServiceDeps {
   settings: SettingsService;
   people: Pick<PeopleService, "getPriorityBySlackUser">;
   securityFlags: Pick<SecurityFlagsService, "hasOpenFlag" | "hasOpenRunFlag">;
-  outgoing: Pick<OutgoingService, "requestAutoSend">;
+  /** `requestSend` turns a `code_answer_review` hold into a normal user approval (C7). */
+  outgoing: Pick<OutgoingService, "requestAutoSend" | "requestSend">;
+  codeAnswers: Pick<CodeAnswerService, "get" | "markDecided">;
 }
 
 /** Everything one evaluation decided on; the row fields of its `auto_replies` record. */
@@ -97,6 +122,8 @@ interface Candidate {
   threadTs: string | null;
   sourceMessageId: string | null;
   followupId: string | null;
+  /** Kind `code_answer`: the row decided on; `ready` rows become `held` or `sent`. */
+  codeAnswer: { id: string; ready: boolean } | null;
 }
 
 type Resolved =
@@ -111,6 +138,8 @@ type Resolved =
       notAddressed: boolean;
       beforeSession: boolean;
       alreadyAnswered: boolean;
+      /** C7: a `not_answerable` or `unverified` code answer holds with its status. */
+      codeAnswerHold: "not_answerable" | "unverified" | null;
       injectionSuspected: boolean;
       conversationType: "im" | "mpim" | "channel" | null;
       incomingText: string | null;
@@ -118,6 +147,8 @@ type Resolved =
       text: string;
       confidence: number | null;
       originMessageId: string | null;
+      /** The candidate's session is the open one (always, except for a code answer). */
+      sessionOpen: boolean;
     };
 
 interface SourceMessage {
@@ -240,7 +271,12 @@ export class AutoReplyService {
   }
 
   enqueue(tx: DbOrTx, trigger: Trigger): void {
-    const id = trigger.kind === "acknowledgement" ? trigger.messageId : trigger.followupId;
+    const id =
+      trigger.kind === "acknowledgement"
+        ? trigger.messageId
+        : trigger.kind === "code_answer"
+          ? trigger.codeAnswerId
+          : trigger.followupId;
     this.deps.queue.enqueue(tx, {
       type: AUTOREPLY_EVALUATE_JOB,
       idempotencyKey: `autoreply:${trigger.kind}:${id}`,
@@ -249,6 +285,27 @@ export class AutoReplyService {
       input: trigger,
       externalWrite: false,
     });
+  }
+
+  /**
+   * C6: the away code-answer trigger's pre-check on an incoming message, with the same rules as the
+   * acknowledgement pre-checks, in the order `not_addressed` > `before_session` >
+   * `already_answered`. Reads only; the decision (C7) runs them again.
+   */
+  codeAnswerPreCheck(tx: DbOrTx, messageId: string): CodeAnswerPreCheck {
+    if (!this.deps.settings.get("autoReply.awayMode")) return { ok: false, reason: "away_off" };
+    const session = this.openSession(tx);
+    if (!session) return { ok: false, reason: "away_off" };
+    const m = this.message(tx, messageId);
+    if (!m) return { ok: false, reason: "not_found" };
+    if (m.sender === this.deps.settings.get("slack.selfUserId")) {
+      return { ok: false, reason: "self" };
+    }
+    if (m.text === null || m.text === "") return { ok: false, reason: "no_text" };
+    if (!this.addressedToSelf(tx, m)) return { ok: false, reason: "not_addressed" };
+    if (m.sentAt < session.startedAt) return { ok: false, reason: "before_session" };
+    if (this.answeredBySelf(tx, m)) return { ok: false, reason: "already_answered" };
+    return { ok: true, sender: m.sender, text: m.text };
   }
 
   /**
@@ -394,6 +451,7 @@ export class AutoReplyService {
   }
 
   private resolve(tx: DbOrTx, trigger: Trigger): Resolved {
+    if (trigger.kind === "code_answer") return this.resolveCodeAnswer(tx, trigger.codeAnswerId);
     const session = this.openSession(tx);
     if (!session) return { skip: "away_off" };
     if (trigger.kind === "acknowledgement") {
@@ -416,6 +474,7 @@ export class AutoReplyService {
         notAddressed: !this.addressedToSelf(tx, m),
         beforeSession: m.sentAt < session.startedAt,
         alreadyAnswered: this.answeredBySelf(tx, m),
+        codeAnswerHold: null,
         injectionSuspected: false,
         conversationType: m.conversationType,
         candidate: {
@@ -426,6 +485,7 @@ export class AutoReplyService {
           threadTs: m.threadTs ?? m.ts,
           sourceMessageId: m.id,
           followupId: null,
+          codeAnswer: null,
         },
         missing: m.text === null,
         incomingText: m.text,
@@ -433,6 +493,7 @@ export class AutoReplyService {
         text: ACK_TEXT,
         confidence: null,
         originMessageId: null,
+        sessionOpen: true,
       };
     }
     const f = tx.select().from(followups).where(eq(followups.id, trigger.followupId)).get();
@@ -496,6 +557,7 @@ export class AutoReplyService {
       notAddressed: false,
       beforeSession: question && incoming.sentAt < session.startedAt,
       alreadyAnswered: question && this.answeredBySelf(tx, incoming),
+      codeAnswerHold: null,
       injectionSuspected: f.suspectedInjection,
       conversationType: conv?.type ?? null,
       candidate: {
@@ -507,6 +569,7 @@ export class AutoReplyService {
         threadTs: f.threadTs,
         sourceMessageId: f.originMessageId,
         followupId: f.id,
+        codeAnswer: null,
       },
       missing,
       incomingText: incoming?.text ?? null,
@@ -514,6 +577,59 @@ export class AutoReplyService {
       text: f.draftText ?? "",
       confidence: f.confidence,
       originMessageId: incoming ? incoming.id : null,
+      sessionOpen: true,
+    };
+  }
+
+  /**
+   * C7: an away code answer is decided in the away session it was created in. If the user came back
+   * meanwhile, that session is closed: the decision still records a row there (held, `away_off`
+   * unless an earlier check holds), so it shows in the return digest, and nothing is sent.
+   */
+  private resolveCodeAnswer(tx: DbOrTx, codeAnswerId: string): Resolved {
+    const a = this.deps.codeAnswers.get(codeAnswerId, tx);
+    if (!a) return { skip: "not_found" };
+    if (a.trigger !== "away") return { skip: "kind_mismatch" };
+    if (a.autoReplyId !== null) return { skip: "already_evaluated" };
+    const status = a.status;
+    if (!DECIDABLE_CODE_ANSWER.some((s) => s === status)) return { skip: "not_ready" };
+    const session = tx
+      .select()
+      .from(awaySessions)
+      .where(lte(awaySessions.startedAt, a.createdAt))
+      .orderBy(desc(awaySessions.startedAt))
+      .limit(1)
+      .get();
+    if (!session) return { skip: "away_off" };
+    const m = this.message(tx, a.messageId);
+    if (!m) return { skip: "not_found" };
+    if (m.sender === this.deps.settings.get("slack.selfUserId")) return { skip: "self" };
+    const ready = status === "ready";
+    return {
+      recipientMismatch: this.notDmPartner(tx, m.conversationType, m.conversationId, m.sender),
+      notAddressed: !this.addressedToSelf(tx, m),
+      beforeSession: m.sentAt < session.startedAt,
+      alreadyAnswered: this.answeredBySelf(tx, m),
+      codeAnswerHold: status === "not_answerable" || status === "unverified" ? status : null,
+      injectionSuspected: a.suspectedInjection?.detected === true,
+      conversationType: m.conversationType,
+      candidate: {
+        sessionId: session.id,
+        kind: "code_answer",
+        recipient: m.sender,
+        conversationExternalId: m.conversationExternalId,
+        threadTs: m.threadTs ?? m.ts,
+        sourceMessageId: m.id,
+        followupId: null,
+        codeAnswer: { id: a.id, ready },
+      },
+      missing: m.text === null || (ready && (a.answer === null || a.answer.trim() === "")),
+      incomingText: m.text,
+      incomingFlagged: this.deps.securityFlags.hasOpenFlag(m.id, "warning"),
+      text: a.answer ?? "",
+      confidence: a.confidence,
+      originMessageId: null,
+      sessionOpen: session.endedAt === null,
     };
   }
 
@@ -549,11 +665,15 @@ export class AutoReplyService {
     const self = this.deps.settings.get("slack.selfUserId");
     if (!self) return true;
     const thread = m.threadTs ?? m.ts;
-    return (
-      this.selfMessage(
-        tx,
-        self,
+    // Synapse's own away replies are posted as the user and carry the tag: they are not the user
+    // answering, so an earlier auto-acknowledgement does not make a later answer `already_answered`.
+    const rows = tx
+      .select({ text: slackMessages.text })
+      .from(slackMessages)
+      .innerJoin(slackUsers, eq(slackUsers.id, slackMessages.senderUserId))
+      .where(
         and(
+          eq(slackUsers.externalId, self),
           eq(slackMessages.conversationId, m.conversationId),
           ne(slackMessages.id, m.id),
           gte(slackMessages.sentAt, m.sentAt),
@@ -561,8 +681,9 @@ export class AutoReplyService {
             ? or(eq(slackMessages.threadTs, thread), eq(slackMessages.ts, thread))
             : undefined,
         ),
-      ) !== undefined
-    );
+      )
+      .all();
+    return rows.some((r) => r.text === null || !hasAutoReplyTag(r.text));
   }
 
   private selfMessage(tx: DbOrTx, self: string, where: ReturnType<typeof and>) {
@@ -625,7 +746,19 @@ export class AutoReplyService {
     if (r.notAddressed) return this.recordHold(tx, c, "not_addressed");
     if (r.beforeSession) return this.recordHold(tx, c, "before_session");
     if (r.alreadyAnswered) return this.recordHold(tx, c, "already_answered");
+    if (r.codeAnswerHold) return this.recordHold(tx, c, r.codeAnswerHold);
     if (r.injectionSuspected) return this.recordHold(tx, c, "injection_suspected");
+    if (c.kind === "code_answer") {
+      // C7: before the normal policy order (which repeats the confidence check harmlessly).
+      if (r.confidence === null || r.confidence < settings.get("autoReply.minConfidence")) {
+        return this.recordHold(tx, c, "low_confidence");
+      }
+      const block = codeBlockCheck(r.text);
+      if (block) return this.recordHold(tx, c, block);
+    }
+    // Controller ruling (Task 10 fix 1): the A5 caps bound unapproved sends. A code answer that
+    // will become a user approval anyway (autoSend off) is not stopped by them.
+    const reviewOnly = c.kind === "code_answer" && !settings.get("codeAnswer.away.autoSend");
     const now = isoNow(clock);
     const since = new Date(clock.now().getTime() - DAY_MS).toISOString();
     // A5: rolling 24 h per recipient, and the latest send in this conversation and thread. In a DM
@@ -659,14 +792,14 @@ export class AutoReplyService {
       .limit(1)
       .get();
     const decision = decideAutoReply({
-      awayOn: settings.get("autoReply.awayMode"),
+      awayOn: settings.get("autoReply.awayMode") && r.sessionOpen,
       kind: c.kind,
       allowedKinds: settings.get("autoReply.allowedKinds"),
       recipientPriority: people.getPriorityBySlackUser(c.recipient).priority,
       incomingText: r.incomingText,
       incomingFlagged: r.incomingFlagged,
-      sentToRecipientLast24h: n,
-      lastSentInThreadAt: last?.createdAt ?? null,
+      sentToRecipientLast24h: reviewOnly ? 0 : n,
+      lastSentInThreadAt: reviewOnly ? null : (last?.createdAt ?? null),
       now,
       confidence: r.confidence,
       candidateText: r.text,
@@ -688,6 +821,9 @@ export class AutoReplyService {
       }
       return held;
     }
+    // C7/C8: a code answer is auto-sent only when the user turned `codeAnswer.away.autoSend` on.
+    // Otherwise it becomes a normal send approval for the user: exact text, no tag.
+    if (reviewOnly) return this.recordReviewHold(tx, c, r.text);
 
     // A10: the tag is added in code just before the send is requested.
     const tagged = withAutoReplyTag(r.text);
@@ -710,6 +846,13 @@ export class AutoReplyService {
         text: tagged,
         followupId: c.followupId,
       });
+      if (c.codeAnswer) {
+        this.deps.codeAnswers.markDecided(tx, c.codeAnswer.id, {
+          autoReplyId,
+          status: "sent",
+          outgoingId: sent.outgoingId,
+        });
+      }
       return { status: "sent", autoReplyId, ...sent };
     } catch (e) {
       if (e instanceof AutoReplyDisabledByPermission) {
@@ -720,8 +863,52 @@ export class AutoReplyService {
     }
   }
 
-  /** A16: a held row keeps no text (a follow-up draft stays in its follow-up for the user). */
+  /**
+   * A16: a held row keeps no text (a follow-up draft stays in its follow-up for the user; a code
+   * answer stays in its row, which becomes `held` when it was `ready`).
+   */
   private recordHold(tx: DbOrTx, c: Candidate, reason: HoldReason): AutoReplyOutcome {
+    const autoReplyId = this.insertHold(tx, c, reason);
+    if (c.codeAnswer) {
+      this.deps.codeAnswers.markDecided(
+        tx,
+        c.codeAnswer.id,
+        c.codeAnswer.ready ? { autoReplyId, status: "held" } : { autoReplyId },
+      );
+    }
+    return { status: "held", autoReplyId, reason };
+  }
+
+  /**
+   * C7 `code_answer_review`: the held row, plus a normal pending `slack.send` approval for the user
+   * with the exact answer, to the asker's conversation and thread (no tag: the user sends it). The
+   * outgoing and approval ids are linked on the held row so the digest shows its delivery.
+   */
+  private recordReviewHold(tx: DbOrTx, c: Candidate, text: string): AutoReplyOutcome {
+    const reason: HoldReason = "code_answer_review";
+    const autoReplyId = this.insertHold(tx, c, reason);
+    const requested = this.deps.outgoing.requestSend(tx, {
+      followupId: null,
+      conversationExternalId: c.conversationExternalId,
+      threadTs: c.threadTs,
+      text,
+      requestedByModule: "code-answer",
+    });
+    tx.update(autoReplies)
+      .set({ outgoingId: requested.outgoingId, approvalId: requested.approvalId })
+      .where(eq(autoReplies.id, autoReplyId))
+      .run();
+    if (c.codeAnswer) {
+      this.deps.codeAnswers.markDecided(tx, c.codeAnswer.id, {
+        autoReplyId,
+        status: "held",
+        outgoingId: requested.outgoingId,
+      });
+    }
+    return { status: "held", autoReplyId, reason };
+  }
+
+  private insertHold(tx: DbOrTx, c: Candidate, reason: HoldReason): string {
     const autoReplyId = newId();
     tx.insert(autoReplies)
       .values({
@@ -740,7 +927,7 @@ export class AutoReplyService {
       correlationId: newId(),
       payload: { autoReplyId, reason },
     });
-    return { status: "held", autoReplyId, reason };
+    return autoReplyId;
   }
 
   private columns(c: Candidate) {

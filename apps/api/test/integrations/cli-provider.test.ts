@@ -453,4 +453,14 @@ describe("userPermissionsWidenScope", () => {
     });
     expect(p.userPermissionsWidenScope).toBe(true);
   });
+  test("carries the user-allowed connector server names, empty by default", () => {
+    expect(provider({}).userAllowedConnectorServers).toEqual([]);
+    const p = new ClaudeCliProvider({
+      binary: process.execPath,
+      env: { PATH: process.env.PATH ?? "" },
+      clock: new FakeClock("2026-11-05T00:00:00Z"),
+      userAllowedConnectorServers: ["mcp__demo_srv"],
+    });
+    expect(p.userAllowedConnectorServers).toEqual(["mcp__demo_srv"]);
+  });
 });

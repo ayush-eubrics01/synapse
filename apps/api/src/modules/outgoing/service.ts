@@ -1091,7 +1091,9 @@ export class OutgoingService {
    */
   private autoReplyDelivered(tx: DbOrTx, outgoingId: string): void {
     const ar = this.autoReplyFor(tx, outgoingId);
-    if (!ar) return;
+    // A held `code_answer_review` row links the user-approved send it became (Phase 10b C7): that
+    // delivery is the user's send, not an auto-reply.
+    if (ar?.decision !== "sent") return;
     this.deps.events.publish(tx, {
       type: "autoreply.sent",
       aggregateType: "auto_reply",

@@ -105,6 +105,30 @@ describe("GitHubCliProvider", () => {
     ).rejects.toMatchObject({ code: "pr_create_failed" });
   });
 
+  test("view argv, read-only, returns the state", async () => {
+    const url = "https://github.com/demo-org/demo-app/pull/7";
+    const p = run(JSON.stringify({ state: "OPEN" }));
+    expect(await p.view(url)).toEqual({ state: "OPEN" });
+    expect(argvs()).toEqual([["pr", "view", url, "--json", "state"]]);
+  });
+
+  test("view refuses a non-github url without spawning", async () => {
+    const p = run("{}");
+    await expect(p.view("https://gitlab.example.com/x/y/-/merge_requests/1")).rejects.toMatchObject(
+      { code: "unsupported_remote" },
+    );
+    await expect(p.view("https://github.com/o/r/pull/7?x=1")).rejects.toMatchObject({
+      code: "unsupported_remote",
+    });
+    expect(argvs()).toEqual([]);
+  });
+
+  test("view failure and bad json use fixed codes", async () => {
+    const url = "https://github.com/demo-org/demo-app/pull/7";
+    await expect(run("", 1).view(url)).rejects.toMatchObject({ code: "pr_status_failed" });
+    await expect(run("nonsense").view(url)).rejects.toMatchObject({ code: "pr_status_failed" });
+  });
+
   test("mergePr argv", async () => {
     const p = run("");
     const headSha = "a".repeat(40);

@@ -12,6 +12,7 @@ const triggerSchema = z.discriminatedUnion("kind", [
     kind: z.enum(["stalled_reminder", "followup_question"]),
     followupId: z.string().min(1),
   }),
+  z.object({ kind: z.literal("code_answer"), codeAnswerId: z.string().min(1) }),
 ]);
 
 export interface AutoReplyJobDeps {
@@ -22,7 +23,8 @@ export interface AutoReplyJobDeps {
 /**
  * `autoreply.evaluate` (ADR-033): one trigger per job, in concurrency group `autoreply` with
  * concurrency 1 (A5), keyed `autoreply:<kind>:<id>` so a trigger is evaluated once. The service
- * enqueues it from `message.urgent_detected` and `followup.draft_created` while away is on.
+ * enqueues it from `message.urgent_detected` and `followup.draft_created` while away is on, and
+ * (Phase 10b, C7) when an away code answer finishes `ready`, `not_answerable` or `unverified`.
  * Not an external write: it records the decision and, on send, a policy approval.
  */
 export function registerAutoReplyJobs(deps: AutoReplyJobDeps): void {

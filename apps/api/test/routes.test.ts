@@ -63,6 +63,7 @@ test("health ready is 200 with a report", async () => {
     "auth",
     "bun",
     "claude",
+    "claude_activity",
     "database",
     "desktop-notifier",
     "events",

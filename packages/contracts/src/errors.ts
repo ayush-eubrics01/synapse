@@ -5,6 +5,8 @@ export type ErrorKind =
   | "connector_not_ready"
   | "rate_limited"
   | "quota_exhausted"
+  /** The user is active in Claude Code: background work is deferred, not spawned (ADR-036). */
+  | "user_active"
   | "auth_failed"
   | "auth_paused"
   | "permission_denied"
@@ -28,6 +30,7 @@ export const errorKindSchema = z.enum([
   "connector_not_ready",
   "rate_limited",
   "quota_exhausted",
+  "user_active",
   "auth_failed",
   "auth_paused",
   "permission_denied",
@@ -77,6 +80,7 @@ const DECISIONS: Record<ErrorKind, RetryDecision> = {
   invalid_input: "fail",
   cancelled_before_spawn: "fail",
   quota_exhausted: "defer",
+  user_active: "defer",
   auth_paused: "defer",
 };
 

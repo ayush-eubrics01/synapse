@@ -411,7 +411,11 @@ test("R18 (5): a reply in a known thread is screened exactly once", () => {
 });
 
 test("R18 (1): the container registers the urgency recovery sweep with startup recovery", () => {
-  expect(c.recoverySweeps.map((s) => s.name)).toEqual(["urgency.assess", "outgoing.sending"]);
+  expect(c.recoverySweeps.map((s) => s.name)).toEqual([
+    "urgency.assess",
+    "outgoing.sending",
+    "code_answer.running",
+  ]);
   const id = seed(String(Math.floor(Date.now() / 1000)), "x");
   mark(id, {
     screening: { route: "assess", assessed: false, ruleLevel: "high", matchedRules: [] },

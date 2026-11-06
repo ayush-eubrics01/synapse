@@ -8,6 +8,7 @@ import {
   loadSettingsOverride,
   loadUserSettings,
   readPluginNames,
+  userAllowedConnectorServers,
   userPermissionsWidenScope,
 } from "../../src/integrations/claude-code/settings-override";
 
@@ -77,6 +78,7 @@ test("user permissions that widen file or shell scope are detected, and nothing 
   expect(loaded).toEqual({
     override: buildSettingsOverride(["p@m"]),
     userPermissionsWidenScope: true,
+    userAllowedConnectorServers: [],
   });
   for (const permissions of [
     { allow: ["Read"] },
@@ -114,6 +116,7 @@ test("clean, unrelated or unreadable settings do not widen", () => {
   expect(loadUserSettings(home("clean", { permissions: { allow: ["WebSearch"] } }))).toEqual({
     override: DEFAULT_SETTINGS_OVERRIDE,
     userPermissionsWidenScope: false,
+    userAllowedConnectorServers: [],
   });
   const spies = (["log", "warn", "error", "info"] as const).map((m) => spyOn(console, m));
   try {
@@ -123,4 +126,45 @@ test("clean, unrelated or unreadable settings do not widen", () => {
   } finally {
     for (const s of spies) s.mockRestore();
   }
+});
+
+test("connector allow entries give their server names only; the widening flag is unchanged", () => {
+  const settings = {
+    permissions: {
+      allow: [
+        "mcp__claude_ai_Slack__slack_send_message",
+        "mcp__claude_ai_Slack__slack_read_channel",
+        "mcp__demo_srv__do_thing(x)",
+        " mcp__demo_other ",
+        "mcp__a__b__c",
+        "mcp__*",
+        "mcp____x",
+        "mcp__",
+        "Read",
+        "WebSearch",
+        5,
+      ],
+    },
+  };
+  expect(userAllowedConnectorServers(settings)).toEqual([
+    "mcp__",
+    "mcp__*",
+    "mcp____x",
+    "mcp__a",
+    "mcp__claude_ai_Slack",
+    "mcp__demo_other",
+    "mcp__demo_srv",
+  ]);
+  // Other profiles keep the old rule: a connector entry alone does not widen.
+  const onlyConnectors = { permissions: { allow: ["mcp__demo_srv__do_thing"] } };
+  expect(userPermissionsWidenScope(onlyConnectors)).toBe(false);
+  expect(loadUserSettings(home("connectors", onlyConnectors))).toEqual({
+    override: DEFAULT_SETTINGS_OVERRIDE,
+    userPermissionsWidenScope: false,
+    userAllowedConnectorServers: ["mcp__demo_srv"],
+  });
+  for (const s of [{}, { permissions: { allow: "mcp__x" } }, { permissions: null }, null, []]) {
+    expect(userAllowedConnectorServers(s)).toEqual([]);
+  }
+  expect(loadUserSettings(join(tmp, "nowhere")).userAllowedConnectorServers).toEqual([]);
 });

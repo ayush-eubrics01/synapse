@@ -313,6 +313,13 @@ describe("GET /api/inbox/conversations/:id/thread", () => {
       })
       .run();
     expect(await m6()).toEqual({ status: "sent_unverified", auto: true });
+    // A non-'sent' decision row (e.g. a held code-answer review the user approved) is not an auto-reply.
+    c.db
+      .update(schema.autoReplies)
+      .set({ decision: "held" })
+      .where(eq(schema.autoReplies.id, "ar1"))
+      .run();
+    expect(await m6()).toEqual({ status: "sent_unverified", auto: false });
   });
 
   test("sentViaSynapse matches normalised text within an hour only", async () => {

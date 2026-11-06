@@ -86,6 +86,7 @@ const msg = (id: string, sender: string, sentAt: string): ThreadMessage => ({
   flag: null,
   commitment: null,
   sentViaSynapse: null,
+  codeAnswerCount: 0,
 });
 
 test("groupThread: day separators across midnight", () => {

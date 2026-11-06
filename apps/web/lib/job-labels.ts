@@ -17,6 +17,9 @@ const LABELS: Record<string, string> = {
   "commitments.check_stalled": "Check stalled commitments",
   "commitments.reminders": "Commitment reminders",
   "commitments.draft_followup": "Draft a follow-up",
+  "claude_activity.scan": "Scan Claude Code sessions",
+  "claude_activity.reminders": "Work-in-progress reminders",
+  "code_answer.generate": "Answer a question from the code",
   "approval.execute": "Run an approved action",
   "outgoing.verify": "Verify a sent message",
 };

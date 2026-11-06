@@ -3,6 +3,8 @@ import type {
   ApprovalView,
   AwayDigest,
   CandidatesResponse,
+  ClaudeActivityView,
+  CodeAnswerView,
   CommitmentFilter,
   CommitmentStatus,
   CommitmentView,
@@ -169,6 +171,46 @@ export interface ClaudeStatus {
 
 export function getClaudeRuns(limit = 10, fetchImpl: typeof fetch = fetch): Promise<ClaudeRun[]> {
   return request(`/api/claude/runs?limit=${limit}`, undefined, fetchImpl);
+}
+
+export function getClaudeActivity(fetchImpl: typeof fetch = fetch): Promise<ClaudeActivityView> {
+  return request("/api/claude/activity", undefined, fetchImpl);
+}
+
+/** The keys `GET/PUT /api/settings` expose (Phase 10b). */
+export interface ClaudeSettingsDto {
+  "claudeActivity.enabled": boolean;
+  "claudeActivity.activeWindowMinutes": number;
+  "claudeActivity.yieldWhenActive": boolean;
+  "claudeActivity.yieldEngineering": boolean;
+  "claudeActivity.staleBranchDays": number;
+  "claudeActivity.openPrReminderDays": number;
+  "codeAnswer.model": "haiku" | "sonnet" | "opus";
+  "codeAnswer.maxTurns": number;
+  "codeAnswer.timeoutMinutes": number;
+  "codeAnswer.away.enabled": boolean;
+  "codeAnswer.away.autoSend": boolean;
+  "codeAnswer.away.maxRunsPerDay": number;
+}
+export type ClaudeSettingsKey = keyof ClaudeSettingsDto;
+
+export function getSettings(fetchImpl: typeof fetch = fetch): Promise<ClaudeSettingsDto> {
+  return request("/api/settings", undefined, fetchImpl);
+}
+
+export function putSettings(
+  changes: Partial<ClaudeSettingsDto>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ClaudeSettingsDto> {
+  return request(
+    "/api/settings",
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(changes),
+    },
+    fetchImpl,
+  );
 }
 
 export function getClaudeStatus(fetchImpl: typeof fetch = fetch): Promise<ClaudeStatus> {
@@ -893,6 +935,53 @@ export function cancelEngineeringTask(
   return request(
     `/api/engineering/tasks/${encodeURIComponent(id)}/cancel`,
     { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export function requestCodeAnswer(
+  messageId: string,
+  repositoryId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ codeAnswerId: string }> {
+  return send(
+    "POST",
+    `/api/inbox/messages/${encodeURIComponent(messageId)}/code-answer`,
+    { repositoryId },
+    fetchImpl,
+  );
+}
+
+export function getCodeAnswers(
+  messageId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CodeAnswerView[]> {
+  return request(
+    `/api/inbox/messages/${encodeURIComponent(messageId)}/code-answers`,
+    undefined,
+    fetchImpl,
+  );
+}
+
+export function dismissCodeAnswer(id: string, fetchImpl: typeof fetch = fetch): Promise<void> {
+  return request(
+    `/api/code-answers/${encodeURIComponent(id)}/dismiss`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+/** Requests approval for the (edited) answer; the backend refuses a suspected injection without `useAnyway`. */
+export function sendCodeAnswer(
+  id: string,
+  text: string,
+  useAnyway: boolean,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ outgoingId: string; approvalId: string }> {
+  return send(
+    "POST",
+    `/api/code-answers/${encodeURIComponent(id)}/send`,
+    { text, useAnyway },
     fetchImpl,
   );
 }

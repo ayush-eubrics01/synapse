@@ -2,6 +2,8 @@ export * from "./ai";
 export * from "./approvals";
 export * from "./auto-reply";
 export * from "./brain";
+export * from "./claude-activity";
+export * from "./code-answers";
 export * from "./commitments";
 export * from "./dashboard";
 export * from "./engineering";

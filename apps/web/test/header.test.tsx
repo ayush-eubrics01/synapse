@@ -34,6 +34,7 @@ function overview(
     pipeline: [],
     upcoming: [],
     engineeringLock: { held: false },
+    claudeActivity: { active: false, sessionsToday: 0, yielding: false },
   } as DashboardOverview;
 }
 

@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { AIProvider } from "@synapse/contracts";
+import type { AIProvider, ClaudeActivityHealth } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { type Clock, isoNow, systemClock } from "@synapse/shared";
 import { and, count, eq, lte, min } from "drizzle-orm";
@@ -206,5 +206,15 @@ export function screeningRulesCheck(rules: { invalidKeywordIds(): string[] }): H
     return n > 0
       ? { status: "degraded", detail: `${n} screening keyword rule(s) invalid and skipped` }
       : { status: "ok" };
+  });
+}
+
+/** A8: `disabled` is not a core status, so it reads as ok with the detail "disabled". */
+export function claudeActivityCheck(service: { healthState(): ClaudeActivityHealth }): HealthCheck {
+  return guarded(async () => {
+    const h = service.healthState();
+    if (h.state === "disabled") return { status: "ok", detail: "disabled" };
+    if (h.state === "degraded") return { status: "degraded", detail: h.message ?? undefined };
+    return { status: "ok" };
   });
 }

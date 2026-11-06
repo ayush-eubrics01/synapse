@@ -51,6 +51,8 @@ export interface ClaudeCliProviderOptions {
   settingsOverride?: string;
   /** From the same startup read: user permissions widen engineering scope (Phase 9 guard). */
   userPermissionsWidenScope?: boolean;
+  /** From the same startup read: server names of user-level `mcp__` allow entries (C1). */
+  userAllowedConnectorServers?: readonly string[];
 }
 
 interface SpawnOutcome {
@@ -88,9 +90,12 @@ export class ClaudeCliProvider implements AIProvider {
 
   readonly userPermissionsWidenScope: boolean;
 
+  readonly userAllowedConnectorServers: readonly string[];
+
   constructor(private readonly opts: ClaudeCliProviderOptions) {
     this.killGraceMs = opts.killGraceMs ?? 5000;
     this.userPermissionsWidenScope = opts.userPermissionsWidenScope === true;
+    this.userAllowedConnectorServers = [...(opts.userAllowedConnectorServers ?? [])];
   }
 
   private run(o: SpawnOptions): Promise<SpawnOutcome> {

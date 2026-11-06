@@ -36,6 +36,7 @@ export function Running({
   now,
   upcoming = [],
   engineeringLock,
+  claudeActivity,
 }: {
   pipeline: DashboardOverview["pipeline"];
   status: ClaudeStatus | null;
@@ -45,6 +46,8 @@ export function Running({
   upcoming?: UpcomingMilestone[];
   /** The global engineering lock from the overview (Phase 10); absent until the overview loads. */
   engineeringLock?: DashboardOverview["engineeringLock"];
+  /** Claude Code activity from the overview (Phase 10b); while yielding, the pipeline says so. */
+  claudeActivity?: DashboardOverview["claudeActivity"];
 }) {
   const last = runs[0];
   return (
@@ -73,6 +76,7 @@ export function Running({
             ))}
           </ol>
         )}
+        {claudeActivity?.yielding && <p className="syn-stage-paused">paused while you work</p>}
         <p className="syn-panel-explainer">
           Messages are collected every 10 minutes, screened with cheap rules, and only likely-urgent
           ones go to Claude.

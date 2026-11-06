@@ -4,6 +4,7 @@ import type { Clock } from "@synapse/shared";
 import { and, count, countDistinct, eq, gte, inArray, isNotNull, lte, ne, sql } from "drizzle-orm";
 import type { ApprovalEngine } from "../../core/approvals/approvals";
 import type { SettingsService } from "../../core/config/settings";
+import type { ClaudeActivityService } from "../claude-activity/service";
 import type { FollowupService } from "../commitments/followups";
 import type { CommitmentLifecycle } from "../commitments/lifecycle";
 import type { BrainService } from "../engineering-brain/service";
@@ -29,6 +30,7 @@ export interface DashboardDeps {
   health: { report(): Promise<HealthReport> };
   brain: Pick<BrainService, "reviewCount" | "upcoming">;
   engineeringLock: Pick<EngineeringLock, "view">;
+  claudeActivity: Pick<ClaudeActivityService, "overview">;
 }
 
 const DAY_MS = 86_400_000;
@@ -156,6 +158,7 @@ export class DashboardService {
       ),
       upcoming: this.deps.brain.upcoming().slice(0, 3),
       engineeringLock: this.lockView(),
+      claudeActivity: this.deps.claudeActivity.overview(),
     };
   }
 

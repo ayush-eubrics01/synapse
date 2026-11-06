@@ -76,12 +76,13 @@ export class InboxConversations {
     const ids = rows.map((r) => r.id);
     const flags = this.flagsOf(ids);
     const cms = this.commitmentsOf(ids);
+    const answerCounts = this.codeAnswerCountsOf(ids);
     const outgoing = db
       .select({
         text: schema.outgoingMessages.text,
         status: schema.outgoingMessages.status,
         at: schema.outgoingMessages.sendingAt,
-        auto: sql<number>`exists (select 1 from auto_replies ar where ar.outgoing_id = outgoing_messages.id)`,
+        auto: sql<number>`exists (select 1 from auto_replies ar where ar.outgoing_id = outgoing_messages.id and ar.decision = 'sent')`,
       })
       .from(schema.outgoingMessages)
       .where(
@@ -127,9 +128,28 @@ export class InboxConversations {
         flag: flags.get(r.id) ?? null,
         commitment: cms.get(r.id) ?? null,
         sentViaSynapse,
+        codeAnswerCount: answerCounts.get(r.id) ?? 0,
       };
     });
     return { conversation, messages };
+  }
+
+  private codeAnswerCountsOf(ids: string[]): Map<string, number> {
+    if (ids.length === 0) return new Map();
+    return new Map(
+      this.deps.db
+        .select({ messageId: schema.codeAnswers.messageId, n: sql<number>`count(*)` })
+        .from(schema.codeAnswers)
+        .where(
+          and(
+            inArray(schema.codeAnswers.messageId, ids),
+            ne(schema.codeAnswers.status, "dismissed"),
+          ),
+        )
+        .groupBy(schema.codeAnswers.messageId)
+        .all()
+        .map((r) => [r.messageId, r.n]),
+    );
   }
 
   private flagsOf(ids: string[]): Map<string, { severity: FlagSeverity; reason: string }> {

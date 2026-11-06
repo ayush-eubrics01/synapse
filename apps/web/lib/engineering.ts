@@ -134,6 +134,7 @@ const REASONS: Record<string, string> = {
   connector_not_ready: "A Claude connector was not ready.",
   rate_limited: "Claude was rate limited.",
   quota_exhausted: "The Claude quota is used up for now.",
+  user_active: "Waiting while you work in Claude Code.",
   auth_failed: "Claude is not signed in.",
   auth_paused: "Claude sign-in needs attention.",
   permission_denied: "Claude was refused a permission it needed.",

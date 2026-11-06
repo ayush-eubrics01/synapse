@@ -21,6 +21,7 @@ import { EventPublisher } from "./core/events/publisher";
 import {
   authCheck,
   bunVersionCheck,
+  claudeActivityCheck,
   claudeCheck,
   databaseCheck,
   desktopNotifierCheck,
@@ -53,6 +54,10 @@ import { LocalGitProvider } from "./integrations/repository/local-git";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
 import { AutoReplyService } from "./modules/auto-reply/service";
+import { WipReminders } from "./modules/claude-activity/reminders";
+import { ClaudeActivityService } from "./modules/claude-activity/service";
+import { AwayCodeAnswerTrigger } from "./modules/code-answers/away-trigger";
+import { CodeAnswerService } from "./modules/code-answers/service";
 import { ExtractionQueue } from "./modules/commitments/extraction-queue";
 import { FollowupService } from "./modules/commitments/followups";
 import { CommitmentLifecycle } from "./modules/commitments/lifecycle";
@@ -86,6 +91,8 @@ import { SecurityFlagsService } from "./modules/security-flags/service";
 import { registerAutoReplyJobs } from "./workers/auto-reply/evaluate";
 import { registerDriftCheck } from "./workers/brain/drift";
 import { registerInspectionJobs } from "./workers/brain/inspect";
+import { registerClaudeActivityJobs } from "./workers/claude-activity";
+import { registerCodeAnswerJob } from "./workers/code-answer/generate";
 import { registerCommitmentJobs } from "./workers/commitments";
 import { registerInvestigateJob } from "./workers/engineering/investigate";
 import { registerPickupJobs } from "./workers/engineering/pickup";
@@ -119,6 +126,8 @@ export interface Container {
   auth: AuthMonitor;
   orchestrator: ClaudeOrchestrator;
   health: HealthService;
+  /** Claude Code session observation (Phase 10b, ADR-036). */
+  claudeActivity: ClaudeActivityService;
   inbox: InboxStore;
   conversations: InboxConversations;
   urgent: UrgentInbox;
@@ -129,6 +138,8 @@ export interface Container {
   profiles: ProfileRecommendations;
   profileStore: ProfileService;
   peopleViews: PeopleViews;
+  /** Code answers (Phase 10b, C2-C4). */
+  codeAnswers: CodeAnswerService;
   securityFlags: SecurityFlagsService;
   /** Approved Slack sends: requests, the `slack.send` executor, verification and resolution. */
   outgoing: OutgoingService;
@@ -175,6 +186,8 @@ export interface ContainerDeps {
   prs?: PullRequestProvider;
   /** Desktop notification adapter. Defaults to a no-op; main.ts injects the real one. */
   notifier?: DesktopNotifier & NotifierHealth;
+  /** Replaces the Claude Code projects dir that the activity scanner reads (tests inject a temp dir). */
+  claudeProjectsDir?: string;
 }
 
 const CORE_MODULES = [
@@ -245,6 +258,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
       clock,
       settingsOverride: userSettings.override,
       userPermissionsWidenScope: userSettings.userPermissionsWidenScope,
+      userAllowedConnectorServers: userSettings.userAllowedConnectorServers,
     });
   const auth = new AuthMonitor(db, clock, settings, events, config.credentialsPath);
   const scratchDir =
@@ -252,6 +266,27 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
       ? mkdtempSync(join(tmpdir(), "synapse-scratch-"))
       : join(dirname(config.dbPath), "scratch");
   mkdirSync(scratchDir, { recursive: true });
+  const claudeActivity = new ClaudeActivityService({
+    db,
+    clock,
+    settings,
+    events,
+    audit,
+    projectsDir:
+      deps.claudeProjectsDir ??
+      settings.get("claudeActivity.projectsDir") ??
+      (config.dbPath === ":memory:"
+        ? join(scratchDir, "no-claude-projects")
+        : join(home, ".claude", "projects")),
+  });
+  const prs: PullRequestProvider = deps.prs ?? new GitHubCliProvider();
+  registerClaudeActivityJobs({
+    handlers,
+    scheduler,
+    settings,
+    service: claudeActivity,
+    reminders: new WipReminders({ db, clock, settings, notifications, prs }),
+  });
   const orchestrator = new ClaudeOrchestrator({
     db,
     clock,
@@ -262,6 +297,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     auth,
     notifications,
     scratchDir,
+    userActivity: claudeActivity,
   });
 
   const sync = new SyncStateService(db, clock);
@@ -333,6 +369,17 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   outgoing.register(approvals, dispatcher);
   const urgentReplies = new UrgentReplies({ db, clock, audit, outgoing });
   registerOutgoingJobs({ handlers, outgoing });
+  const codeAnswers = new CodeAnswerService({
+    db,
+    clock,
+    events,
+    audit,
+    queue,
+    settings,
+    securityFlags,
+    outgoing,
+    approvals,
+  });
   const autoReply = new AutoReplyService({
     db,
     clock,
@@ -343,6 +390,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     people,
     securityFlags,
     outgoing,
+    codeAnswers,
   });
   registerAutoReplyJobs({ handlers, autoReply });
   dispatcher.subscribe("message.urgent_detected", "autoreply.acknowledgement", (event, tx) =>
@@ -350,6 +398,17 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   );
   dispatcher.subscribe("followup.draft_created", "autoreply.followup", (event, tx) =>
     autoReply.onFollowupDraftCreated(event, tx),
+  );
+  // C6: while away, a priority person's question naming exactly one repository queues an answer.
+  const awayCodeAnswers = new AwayCodeAnswerTrigger({
+    clock,
+    settings,
+    autoReply,
+    people,
+    codeAnswers,
+  });
+  dispatcher.subscribe("message.received", "code_answer.away", (event, tx) =>
+    awayCodeAnswers.onMessageReceived(event, tx),
   );
   const profiles = new ProfileRecommendations({
     db,
@@ -405,6 +464,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
       autoReplyText: (days) => autoReply.expireText(days),
       outgoingText: (days) => outgoing.expireText(days),
       followupDrafts: (days) => followupService.expireDrafts(days),
+      codeAnswerText: (days) => codeAnswers.expireAnswers(days),
     },
   });
   const postSend = new PostSendSuggestions({
@@ -545,10 +605,27 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     approvals,
     lock: engineeringLock,
     git: gitWorkflow,
-    prs: deps.prs ?? new GitHubCliProvider(),
+    prs,
   });
   engineeringSteps.register(approvals, dispatcher);
   registerInvestigateJob({ db, settings, orchestrator, service: engineering, handlers });
+  registerCodeAnswerJob({
+    db,
+    settings,
+    orchestrator,
+    service: codeAnswers,
+    handlers,
+    // C7: an away run that ended with something to decide goes to the auto-reply policy, queued in
+    // the transaction that settles the row. A failed away run records nothing.
+    onFinished: (tx, row) => {
+      if (
+        row.trigger === "away" &&
+        (row.status === "ready" || row.status === "not_answerable" || row.status === "unverified")
+      ) {
+        autoReply.enqueue(tx, { kind: "code_answer", codeAnswerId: row.id });
+      }
+    },
+  });
   registerStepJob({ db, settings, orchestrator, steps: engineeringSteps, handlers });
   registerPickupJobs({ service: engineering, lock: engineeringLock, scheduler, handlers });
 
@@ -564,6 +641,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     "security-rules": securityRulesCheck(securityFlags),
     "screening-rules": screeningRulesCheck(screening),
     "desktop-notifier": desktopNotifierCheck(notifier),
+    claude_activity: claudeActivityCheck(claudeActivity),
   });
 
   const dashboard = new DashboardService({
@@ -580,6 +658,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     health,
     brain,
     engineeringLock,
+    claudeActivity,
   });
 
   return {
@@ -604,6 +683,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     auth,
     orchestrator,
     health,
+    claudeActivity,
     inbox,
     conversations,
     urgent,
@@ -614,6 +694,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     profileStore,
     peopleViews,
     securityFlags,
+    codeAnswers,
     outgoing,
     urgentReplies,
     autoReply,
@@ -632,6 +713,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     recoverySweeps: [
       { name: "urgency.assess", run: urgency.recoverySweep },
       { name: "outgoing.sending", run: (tx) => outgoing.recoverySweep(tx) },
+      { name: "code_answer.running", run: (tx) => codeAnswers.recoverySweep(tx) },
     ],
     slack: { startBackfill: slack.startBackfill, backfillResumable: slack.backfillResumable },
   };

@@ -9,6 +9,7 @@ import {
   type ClaudeJobRequest,
   JobError,
   type QuotaWindow,
+  type UserActivitySignal,
 } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
@@ -20,7 +21,12 @@ import { LiveBus } from "../../src/core/events/live-bus";
 import { EventPublisher } from "../../src/core/events/publisher";
 import { NotificationService } from "../../src/core/notifications/notifications";
 import { AuthMonitor } from "../../src/core/orchestrator/auth";
-import { ClaudeOrchestrator } from "../../src/core/orchestrator/orchestrator";
+import { buildClaudeArgs } from "../../src/core/orchestrator/cli-args";
+import {
+  ClaudeOrchestrator,
+  DEFAULT_SYSTEM_PROMPTS,
+  UNSAFE_USER_SETTINGS_MESSAGE,
+} from "../../src/core/orchestrator/orchestrator";
 import { recoverOrphanRuns } from "../../src/core/recovery/recovery";
 
 const START = "2026-11-05T12:00:00.000Z";
@@ -921,7 +927,7 @@ describe("user settings that widen engineering scope (Phase 9 guard)", () => {
     const e = await fails(run(engineering()));
     expect(e.classified.kind).toBe("needs_attention");
     expect(e.message).toBe(
-      "Claude Code user settings widen file or shell permissions; engineering runs are refused until they are removed and the API is restarted",
+      "Claude Code user settings widen file or shell permissions; engineering and code-answer runs are refused until they are removed and the API is restarted",
     );
     expect(e.classified.details).toEqual({ notSpawned: true });
     expect(provider.requests).toHaveLength(0);
@@ -945,5 +951,255 @@ describe("user settings that widen engineering scope (Phase 9 guard)", () => {
     (provider as { userPermissionsWidenScope?: boolean }).userPermissionsWidenScope = false;
     await run(engineering());
     expect(provider.requests).toHaveLength(1);
+  });
+});
+
+describe("reader profile (C1)", () => {
+  const WD = "/tmp/demo-repo";
+  const reader = () =>
+    req({
+      workerProfile: "reader",
+      priorityClass: "urgent",
+      instructions: "answer",
+      parts: [{ provenance: "untrusted", source: "slack", content: "where is the config?" }],
+      allowedTools: [`Read(/${WD}/**)`, `Grep(/${WD}/**)`, `Glob(/${WD}/**)`],
+      workingDirectory: WD,
+    });
+
+  test("a valid reader request runs with the reader defaults and a hermetic argv", async () => {
+    await run(reader());
+    expect(provider.requests).toHaveLength(1);
+    const r = provider.requests[0] as AIExecutionRequest;
+    expect(r.workerProfile).toBe("reader");
+    expect(r.systemPrompt).toBe(
+      "You answer one question about one local repository by reading its files. You cannot change anything.",
+    );
+    expect(DEFAULT_SYSTEM_PROMPTS.reader).toBe(r.systemPrompt);
+    expect(r.model).toBe("sonnet");
+    expect(r.timeoutMs).toBe(300_000);
+    expect(r.workingDirectory).toBe(WD);
+    expect(r.allowedTools).toEqual([`Read(/${WD}/**)`, `Grep(/${WD}/**)`, `Glob(/${WD}/**)`]);
+    for (const t of [
+      "Bash",
+      "Edit",
+      "Write",
+      "MultiEdit",
+      "NotebookEdit",
+      "WebFetch",
+      "Agent",
+      "ToolSearch",
+    ]) {
+      expect(r.disallowedTools).toContain(t);
+    }
+    expect(r.disallowedTools).toContain("mcp__claude_ai_Slack");
+    const argv = buildClaudeArgs(r, "{}");
+    expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("default");
+    expect(argv).toContain("--no-session-persistence");
+  });
+
+  test("a reader request with a forbidden tool is rejected before spawn", async () => {
+    const e = await fails(run({ ...reader(), allowedTools: [`Read(/${WD}/**)`, "Bash"] }));
+    expect(e.classified.kind).toBe("invalid_input");
+    expect(e.message).toBe("profile reader may not use Bash");
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  test("a reader request with a connector is rejected; ToolSearch is not added for it", async () => {
+    const e = await fails(run({ ...reader(), allowedTools: [`Read(/${WD}/**)`, SEARCH] }));
+    expect(e.message).toBe(`profile reader may not use connector tool ${SEARCH}`);
+    expect(provider.requests).toHaveLength(0);
+    const audit = db.select().from(schema.auditEvents).all();
+    expect(audit.map((a) => a.details)).toEqual([
+      { reason: `profile reader may not use connector tool ${SEARCH}` },
+    ]);
+  });
+
+  test("other profiles still get ToolSearch added for a connector", async () => {
+    await run(req());
+    expect(provider.requests[0]?.allowedTools).toEqual([SEARCH, "ToolSearch"]);
+    expect(provider.requests[0]?.disallowedTools).not.toContain("ToolSearch");
+  });
+
+  test("a user-level allow for an unknown connector server refuses a reader run", async () => {
+    const p = provider as { userAllowedConnectorServers?: readonly string[] };
+    p.userAllowedConnectorServers = ["mcp__claude_ai_Slack", "mcp__demo_unknown"];
+    const e = await fails(run(reader()));
+    expect(e.classified.kind).toBe("needs_attention");
+    expect(e.message).toBe(UNSAFE_USER_SETTINGS_MESSAGE);
+    expect(e.classified.details).toEqual({ notSpawned: true });
+    expect(provider.requests).toHaveLength(0);
+    expect(runs()).toHaveLength(0);
+    const audit = db.select().from(schema.auditEvents).all();
+    expect(audit.map((a) => [a.action, a.workerProfile, a.details])).toEqual([
+      ["claude.request_rejected", "reader", { reason: "unsafe_user_settings" }],
+    ]);
+  });
+
+  test("a user-level allow for a known server lets a reader run, with that server denied", async () => {
+    const p = provider as { userAllowedConnectorServers?: readonly string[] };
+    p.userAllowedConnectorServers = ["mcp__claude_ai_Slack"];
+    await run(reader());
+    expect(provider.requests).toHaveLength(1);
+    expect(provider.requests[0]?.disallowedTools).toContain("mcp__claude_ai_Slack");
+  });
+
+  test("an unknown user-allowed connector server does not affect other profiles", async () => {
+    const p = provider as { userAllowedConnectorServers?: readonly string[] };
+    p.userAllowedConnectorServers = ["mcp__demo_unknown"];
+    await run(req());
+    await run(
+      req({ workerProfile: "intelligence", priorityClass: "batch", allowedTools: ["ToolSearch"] }),
+    );
+    await run(
+      req({
+        workerProfile: "engineering",
+        priorityClass: "batch",
+        allowedTools: [`Read(/${WD}/**)`],
+        workingDirectory: WD,
+      }),
+    );
+    expect(provider.requests).toHaveLength(3);
+  });
+
+  test("user settings that widen scope refuse a reader run before spawn", async () => {
+    (provider as { userPermissionsWidenScope?: boolean }).userPermissionsWidenScope = true;
+    const e = await fails(run(reader()));
+    expect(e.classified.kind).toBe("needs_attention");
+    expect(e.message).toBe(UNSAFE_USER_SETTINGS_MESSAGE);
+    expect(e.classified.details).toEqual({ notSpawned: true });
+    expect(provider.requests).toHaveLength(0);
+    expect(runs()).toHaveLength(0);
+    const audit = db.select().from(schema.auditEvents).all();
+    expect(audit.map((a) => [a.action, a.workerProfile, a.details])).toEqual([
+      ["claude.request_rejected", "reader", { reason: "unsafe_user_settings" }],
+    ]);
+  });
+});
+
+describe("user activity yield (ADR-036)", () => {
+  const UNTIL = "2026-11-05T12:09:00.000Z";
+  let sig: { active: boolean; until: string | null };
+  let yielding: ClaudeOrchestrator;
+  beforeEach(() => {
+    sig = { active: true, until: UNTIL };
+    const signal: UserActivitySignal = { isUserActive: () => sig };
+    yielding = new ClaudeOrchestrator({
+      db,
+      clock,
+      provider,
+      settings,
+      events: new EventPublisher(clock),
+      audit: new AuditLogger(clock),
+      auth: new AuthMonitor(db, clock, settings, new EventPublisher(clock), credsPath),
+      notifications: new NotificationService(db, clock, new LiveBus()),
+      scratchDir: "/scratch",
+      random: () => "0123456789abcdef",
+      userActivity: signal,
+    });
+  });
+
+  test("a batch request is deferred without spawning or a run row", async () => {
+    const e = await yielding.run(req({ priorityClass: "batch" }), S()).catch((x) => x);
+    expect(e).toBeInstanceOf(JobError);
+    expect(e.classified.kind).toBe("user_active");
+    expect(e.classified.retryAfter).toBe(UNTIL);
+    expect(e.classified.details).toEqual({ notSpawned: true });
+    expect(provider.requests).toHaveLength(0);
+    expect(runs()).toHaveLength(0);
+  });
+
+  test("a backfill request is deferred without spawning", async () => {
+    const e = await yielding.run(req({ priorityClass: "backfill" }), S()).catch((x) => x);
+    expect(e.classified.kind).toBe("user_active");
+    expect(provider.requests).toHaveLength(0);
+    expect(runs()).toHaveLength(0);
+  });
+
+  test("a throwing signal fails open and never-yield classes skip it", async () => {
+    let calls = 0;
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    const throwing = new ClaudeOrchestrator({
+      db,
+      clock,
+      provider,
+      settings,
+      events: new EventPublisher(clock),
+      audit: new AuditLogger(clock),
+      auth: new AuthMonitor(db, clock, settings, new EventPublisher(clock), credsPath),
+      notifications: new NotificationService(db, clock, new LiveBus()),
+      scratchDir: "/scratch",
+      random: () => "0123456789abcdef",
+      userActivity: {
+        isUserActive: () => {
+          calls++;
+          throw new Error("db down SECRET-PATH");
+        },
+      },
+    });
+    await throwing.run(req({ priorityClass: "urgent" }), S());
+    expect(calls).toBe(0);
+    await throwing.run(req({ priorityClass: "batch" }), S());
+    expect(calls).toBeGreaterThan(0);
+    expect(provider.requests).toHaveLength(2);
+    expect(JSON.stringify(spy.mock.calls)).not.toContain("SECRET-PATH");
+    spy.mockRestore();
+  });
+
+  test("urgent, send and collection requests run", async () => {
+    await yielding.run(req({ priorityClass: "urgent" }), S());
+    await yielding.run(req({ priorityClass: "collection" }), S());
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  test("engineering runs unless yieldEngineering is set", async () => {
+    const eng = req({
+      workerProfile: "engineering",
+      priorityClass: "engineering",
+      allowedTools: ["Read(//tmp/demo-repo/**)"],
+      workingDirectory: "/tmp/demo-repo",
+    });
+    await yielding.run(eng, S());
+    expect(provider.requests).toHaveLength(1);
+    settings.set("claudeActivity.yieldEngineering", true, { emit: false });
+    const e = await yielding.run(eng, S()).catch((x) => x);
+    expect(e.classified.kind).toBe("user_active");
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("an idle signal lets batch run (resume)", async () => {
+    sig.active = false;
+    await yielding.run(req({ priorityClass: "batch" }), S());
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("yieldWhenActive false disables the yield", async () => {
+    settings.set("claudeActivity.yieldWhenActive", false, { emit: false });
+    await yielding.run(req({ priorityClass: "batch" }), S());
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("no userActivity dependency: batch runs", async () => {
+    await run(req({ priorityClass: "batch" }));
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("the signal turning active while waiting for a slot defers after acquiring and frees the slot", async () => {
+    sig.active = false;
+    settings.set("orchestrator.maxConcurrent", 1, { emit: false });
+    let release: (r: AIExecutionResult) => void = () => {};
+    provider.next = () => new Promise<AIExecutionResult>((r) => (release = r));
+    const first = yielding.run(req({ priorityClass: "urgent" }), S());
+    await new Promise((r) => setTimeout(r, 0));
+    const second = yielding.run(req({ priorityClass: "batch" }), S());
+    await new Promise((r) => setTimeout(r, 0));
+    sig.active = true;
+    release(result());
+    await first;
+    expect(((await second.catch((x) => x)) as JobError).classified.kind).toBe("user_active");
+    expect(provider.requests).toHaveLength(1);
+    expect(runs()).toHaveLength(1);
+    provider.next = () => result();
+    await yielding.run(req({ priorityClass: "urgent" }), S());
+    expect(provider.requests).toHaveLength(2);
   });
 });

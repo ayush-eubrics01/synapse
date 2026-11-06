@@ -35,26 +35,33 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *  A. prompt at most 100 KiB (UTF-8) and not starting with "-" (it is an argv entry, R33);
  *     boundary non-empty; prompt === assemblePrompt(instructions, promptParts, boundary) (R24)
  *  B. built-in tools: unknown (R23), network in any profile (R22), write built-ins and
- *     Read/Grep/Glob for collector/intelligence (rule 0; engineering fs reads are path-scoped by rule L)
- *  C. engineering may not allow any connector tool (R20)
+ *     Read/Grep/Glob for collector/intelligence (rule 0; engineering and reader fs reads are
+ *     path-scoped by rule L); a reader may use Read/Grep/Glob and no other built-in, so Bash in any
+ *     form, every write built-in and ToolSearch fail too (C1a)
+ *  C. engineering and reader may not allow any connector tool (R20, C1b)
  *  D. untrusted content with a write-capable tool (rule 1)
- *  E. engineering with untrusted content (rule 2)
+ *  E. engineering with untrusted content (rule 2). Not applied to reader (C1c): a reader sees the
+ *     untrusted question, and rules B, C and D leave it no write, shell, network or connector tool
  *  F. a connector write tool must be the only tool besides ToolSearch (R21)
  *  G. ToolSearch required for connector tools (rule 3)
  *  H. denylist covers every unused known server (rule 4)
  *  H2. denylist contains every network built-in, and every write and filesystem-read built-in
- *     (R26, I4); an engineering run must deny each of them it does not allow (final review)
+ *     (R26, I4); an engineering or reader run must deny each of them it does not allow (final
+ *     review, C1e), so a reader's denylist always holds Bash and every write built-in. A reader's
+ *     denylist must also hold ToolSearch, so no deferred connector tool can be loaded
  *  I. send run with untrusted content (rule 5; subsumed by D, kept as defence in depth)
  *  J. untrusted content contains the boundary (rule 6)
  *  K. policy_approved content outside a send run (rule F's single write connector; J1, ADR-033);
  *     alongside untrusted content it already fails rule D. A send run must carry a sendGuard
  *     whose toolName is its write tool (J2), so every send is blocked by the PreToolUse hook
  *     unless its arguments are the approved ones
- *  L. every engineering run's working directory must satisfy isSafeAbsolutePath (no dot or empty
- *     segments, two or more segments), and its Read/Grep/Glob must each be exactly
+ *  L. every engineering and reader run's working directory must satisfy isSafeAbsolutePath (no
+ *     dot or empty segments, two or more segments), and its Read/Grep/Glob must each be exactly
  *     `Tool(/<workingDirectory>/**)`: the CLI's double-slash absolute form `//abs/dir/**`. The
  *     single-slash form `/abs/dir/**` is cwd-relative on the CLI and grants nothing (final review),
- *     so it fails, as does a bare Read (C7). Write tools: `Edit`/`Write`/`MultiEdit` must equal the same
+ *     so it fails, as does a bare Read (C7). A reader may list each fs read tool at most once
+ *     (C1d; engineering is unchanged). Write tools (engineering only: rule B already refused them
+ *     for a reader): `Edit`/`Write`/`MultiEdit` must equal the same
  *     `Tool(/<wd>/**)`, and `Bash` only as exactly `Bash(<cmd>:*)` with `isSafeTestCommand(cmd)`
  *     (E5, E9); a bare Bash or any other specifier fails, and at most one Bash grant is allowed.
  *     Rule 0 admits a Bash specifier with spaces only in the `Bash(<safe chars>:*)` form. Last, so
@@ -90,25 +97,31 @@ export function validateRequest(
     return fail("prompt does not match declared parts");
   }
 
+  const profile = req.workerProfile;
+  const pathScoped = profile === "engineering" || profile === "reader";
+
   // B
   for (const t of allowed) {
     if (t.startsWith("mcp__")) continue;
     const known =
       BUILTIN_READ.includes(t) || BUILTIN_WRITE.includes(t) || BUILTIN_NETWORK.includes(t);
     if (!known) return fail(`unknown built-in tool ${t}`);
-    if (BUILTIN_NETWORK.includes(t)) return fail(`profile ${req.workerProfile} may not use ${t}`);
-    if (
-      req.workerProfile !== "engineering" &&
+    if (BUILTIN_NETWORK.includes(t)) return fail(`profile ${profile} may not use ${t}`);
+    if (profile === "reader") {
+      // Read/Grep/Glob only: no Bash, no write built-in, no ToolSearch (C1a).
+      if (!BUILTIN_FS_READ.includes(t)) return fail(`profile reader may not use ${t}`);
+    } else if (
+      profile !== "engineering" &&
       (BUILTIN_WRITE.includes(t) || BUILTIN_FS_READ.includes(t))
     ) {
-      return fail(`profile ${req.workerProfile} may not use ${t}`);
+      return fail(`profile ${profile} may not use ${t}`);
     }
   }
 
   // C
-  if (req.workerProfile === "engineering") {
+  if (pathScoped) {
     const c = allowed.find((t) => t.startsWith("mcp__"));
-    if (c) return fail(`profile engineering may not use connector tool ${c}`);
+    if (c) return fail(`profile ${profile} may not use connector tool ${c}`);
   }
 
   // D
@@ -120,8 +133,8 @@ export function validateRequest(
     if (bad) return fail(`untrusted content with write-capable tool ${bad}`);
   }
 
-  // E
-  if (hasUntrusted && req.workerProfile === "engineering") {
+  // E (not reader: C1c)
+  if (hasUntrusted && profile === "engineering") {
     return fail("engineering run with untrusted content");
   }
 
@@ -155,9 +168,10 @@ export function validateRequest(
   // H2
   const required = [
     ...BUILTIN_NETWORK,
-    ...(req.workerProfile === "engineering"
+    ...(pathScoped
       ? [...BUILTIN_WRITE, ...BUILTIN_FS_READ].filter((t) => !allowed.includes(t))
       : [...BUILTIN_WRITE, ...BUILTIN_FS_READ]),
+    ...(profile === "reader" ? ["ToolSearch"] : []),
   ];
   for (const t of required) {
     if (!req.disallowedTools.includes(t)) return fail(`denylist missing ${t}`);
@@ -185,15 +199,23 @@ export function validateRequest(
   }
 
   // L
-  if (req.workerProfile === "engineering") {
+  if (pathScoped) {
     if (!isSafeAbsolutePath(req.workingDirectory)) {
       return fail("working directory must be an absolute path of safe characters");
     }
     const dir = req.workingDirectory.replace(/\/+$/, "");
-    for (const t of raw.filter((t) => BUILTIN_FS_READ.includes(normalizeTool(t)))) {
+    const fsReads = raw.filter((t) => BUILTIN_FS_READ.includes(normalizeTool(t)));
+    for (const t of fsReads) {
       // `dir` starts with "/", so this is `Tool(//abs/dir/**)`: the CLI's absolute form.
       if (t !== `${normalizeTool(t)}(/${dir}/**)`) {
         return fail("fs read tools must be scoped to the working directory");
+      }
+    }
+    if (profile === "reader") {
+      const seen = new Set<string>();
+      for (const t of fsReads.map(normalizeTool)) {
+        if (seen.has(t)) return fail(`duplicate fs read tool ${t}`);
+        seen.add(t);
       }
     }
     const writeErr = "write tools must be scoped to the working directory";

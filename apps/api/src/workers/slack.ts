@@ -39,6 +39,7 @@ export interface SlackJobDeps {
     autoReplyText(olderThanDays: number): number;
     outgoingText(olderThanDays: number): number;
     followupDrafts(olderThanDays: number): number;
+    codeAnswerText?(olderThanDays: number): number;
   };
 }
 
@@ -352,6 +353,7 @@ export function registerSlackJobs(deps: SlackJobDeps): {
             autoReplyText: t.autoReplyText(days),
             outgoingText: t.outgoingText(days),
             followupDrafts: t.followupDrafts(days),
+            ...(t.codeAnswerText ? { codeAnswerText: t.codeAnswerText(days) } : {}),
           }
         : {}),
     };

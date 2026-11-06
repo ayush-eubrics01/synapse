@@ -49,6 +49,7 @@ const overview = (on: boolean, n = 0): DashboardOverview =>
     health: { status: "ok", issues: [] },
     pipeline: [],
     engineeringLock: { held: false },
+    claudeActivity: { active: false, sessionsToday: 0, yielding: false },
   }) as unknown as DashboardOverview;
 
 const header = (o: DashboardOverview | null, onToggleAway = () => {}) =>

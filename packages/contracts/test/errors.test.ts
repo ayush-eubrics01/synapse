@@ -18,6 +18,7 @@ test.each([
   ["cancelled_before_spawn", "fail"],
   ["quota_exhausted", "defer"],
   ["auth_paused", "defer"],
+  ["user_active", "defer"],
 ])("%s -> %s", (k, d) => expect(retryDecision(k as ErrorKind)).toBe(d));
 
 test("JobError carries the classified error", () => {
