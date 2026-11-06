@@ -253,7 +253,9 @@ test("engineering settings defaults and bounds", () => {
   const { settings } = setup();
   expect(settings.get("engineering.model")).toBe("sonnet");
   expect(settings.get("engineering.investigate.maxTurns")).toBe(30);
-  expect(settings.get("engineering.develop.maxTurns")).toBe(60);
+  // Default and max equal the request schema's cap (claudeJobRequestSchema maxTurns ≤ 50).
+  expect(settings.get("engineering.develop.maxTurns")).toBe(50);
+  expect(() => settings.set("engineering.develop.maxTurns", 51)).toThrow();
   expect(settings.get("engineering.develop.timeoutMinutes")).toBe(30);
   expect(settings.get("engineering.lock.ttlMinutes")).toBe(10);
   expect(() => settings.set("engineering.model", "gpt" as never)).toThrow();

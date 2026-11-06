@@ -90,7 +90,7 @@ const settingSchemas = {
   "brain.inspect.timeoutMinutes": z.number().int().min(1).max(60).default(10),
   "engineering.model": z.enum(["haiku", "sonnet", "opus"]).default("sonnet"),
   "engineering.investigate.maxTurns": z.number().int().min(1).max(100).default(30),
-  "engineering.develop.maxTurns": z.number().int().min(1).max(200).default(60),
+  "engineering.develop.maxTurns": z.number().int().min(1).max(50).default(50),
   "engineering.develop.timeoutMinutes": z.number().int().min(1).max(120).default(30),
   "engineering.lock.ttlMinutes": z.number().int().min(1).max(120).default(10),
   "brain.upcoming.days": z.number().int().positive().default(30),

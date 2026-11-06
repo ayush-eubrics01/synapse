@@ -5,6 +5,7 @@
  * PATH are kept); tokens are never read.
  */
 import {
+  COMMIT_SHA_RE,
   type CreatePrInput,
   type PrChecks,
   type PrErrorCode,
@@ -151,11 +152,16 @@ export class GitHubCliProvider implements PullRequestProvider {
         "--repo",
         `${input.upstream.owner}/${input.upstream.repo}`,
         "--json",
-        "number,url,state,mergeable,statusCheckRollup",
+        "number,url,state,mergeable,statusCheckRollup,headRefOid",
       ],
       "pr_status_failed",
     );
-    let j: { state?: unknown; mergeable?: unknown; statusCheckRollup?: unknown };
+    let j: {
+      state?: unknown;
+      mergeable?: unknown;
+      statusCheckRollup?: unknown;
+      headRefOid?: unknown;
+    };
     try {
       j = JSON.parse(res.stdout);
     } catch {
@@ -166,13 +172,18 @@ export class GitHubCliProvider implements PullRequestProvider {
       state: j.state,
       mergeable: typeof j.mergeable === "string" ? j.mergeable : "UNKNOWN",
       checks: mapChecks(j.statusCheckRollup),
+      headSha:
+        typeof j.headRefOid === "string" && COMMIT_SHA_RE.test(j.headRefOid) ? j.headRefOid : null,
     };
   }
 
   async mergePr(input: {
     upstream: PrRef;
     number: number;
+    headSha: string;
   }): Promise<{ merged: boolean; sha?: string }> {
+    // gh refuses the merge when the PR head moved past the approved commit.
+    if (!COMMIT_SHA_RE.test(input.headSha)) throw new PullRequestError("pr_merge_failed");
     await this.run(
       [
         "pr",
@@ -181,6 +192,8 @@ export class GitHubCliProvider implements PullRequestProvider {
         "--repo",
         `${input.upstream.owner}/${input.upstream.repo}`,
         "--merge",
+        "--match-head-commit",
+        input.headSha,
       ],
       "pr_merge_failed",
     );

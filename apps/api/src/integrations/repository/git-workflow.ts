@@ -16,6 +16,7 @@ import {
   type GitDiffFile,
   type GitDiffOptions,
   type GitDiffSummary,
+  type GitMergeOptions,
   type GitPreflightResult,
   type GitPushOptions,
   type GitUnsafeReason,
@@ -446,7 +447,7 @@ export class LocalGitWorkflow implements GitWorkflow {
     repo: string,
     parent: string,
     taskBranch: string,
-    opts: GitConfigGuard = {},
+    opts: GitMergeOptions = {},
   ): Promise<{ ok: true; sha: string } | { ok: false; conflict: true }> {
     this.ref(parent);
     this.ref(taskBranch);
@@ -460,10 +461,17 @@ export class LocalGitWorkflow implements GitWorkflow {
     if ((await this.currentBranch(repo)) !== parent) {
       await this.must(repo, ["switch", "--no-guess", "--no-recurse-submodules", parent]);
     }
+    let target = `refs/heads/${taskBranch}`;
+    if (opts.commit !== undefined) {
+      if ((await this.branchTip(repo, taskBranch)) !== opts.commit) {
+        throw new GitWorkflowError("branch_moved");
+      }
+      target = opts.commit;
+    }
     const msg = `Merge branch '${taskBranch}' into ${parent}`;
     // --no-verify-signatures only here: this merges Synapse's own local task branch (its commit
     // is made unsigned-or-not by the user's config), never remote content.
-    const args = ["--no-ff", "--no-verify-signatures", "-m", msg, `refs/heads/${taskBranch}`];
+    const args = ["--no-ff", "--no-verify-signatures", "-m", msg, target];
     if (!(await this.merge(repo, parent, args))) {
       return { ok: false, conflict: true };
     }
@@ -511,6 +519,13 @@ export class LocalGitWorkflow implements GitWorkflow {
     if (!(await this.refExists(repo, `refs/heads/${parent}`))) {
       throw new GitWorkflowError("branch_missing");
     }
+    let source = `refs/heads/${parent}`;
+    if (opts.expectedSha !== undefined) {
+      if ((await this.branchTip(repo, parent)) !== opts.expectedSha) {
+        throw new GitWorkflowError("branch_moved");
+      }
+      source = opts.expectedSha;
+    }
     const r = await this.git(repo, [
       "push",
       "--no-follow-tags",
@@ -518,7 +533,7 @@ export class LocalGitWorkflow implements GitWorkflow {
       "--no-signed",
       "--no-verify",
       "origin",
-      `refs/heads/${parent}:refs/heads/${parent}`,
+      `${source}:refs/heads/${parent}`,
     ]);
     if (r.timedOut) throw new GitWorkflowError("git_timeout");
     if (r.code !== 0) throw new GitWorkflowError("push_failed");
@@ -546,6 +561,19 @@ export class LocalGitWorkflow implements GitWorkflow {
   async branchExists(repo: string, name: string): Promise<boolean> {
     this.ref(name);
     return this.refExists(repo, `refs/heads/${name}`);
+  }
+
+  async branchTip(repo: string, name: string): Promise<string | null> {
+    this.ref(name);
+    const r = await this.git(repo, [
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `refs/heads/${name}^{commit}`,
+    ]);
+    if (r.timedOut) throw new GitWorkflowError("git_timeout");
+    if (r.code !== 0) return null;
+    return r.stdout.trim() || null;
   }
 
   async commitsAhead(repo: string, parent: string): Promise<GitCommitSummary[]> {

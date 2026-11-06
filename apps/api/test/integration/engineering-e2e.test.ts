@@ -42,12 +42,22 @@ beforeAll(() => {
   writeFileSync(
     fakeGh,
     `#!/usr/bin/env bun
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+const d = import.meta.dir;
 const argv = process.argv.slice(2);
-appendFileSync(import.meta.dir + "/argv.log", JSON.stringify(argv) + "\\n");
+appendFileSync(d + "/argv.log", JSON.stringify(argv) + "\\n");
 const sub = argv[0] + " " + argv[1];
-if (sub === "pr create") process.stdout.write("https://github.com/up/app/pull/7\\n");
-if (sub === "pr view") process.stdout.write(JSON.stringify({ number: 7, url: "u", state: "OPEN", mergeable: "MERGEABLE", statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }] }));
+if (sub === "pr create") {
+  writeFileSync(d + "/base.txt", argv[argv.indexOf("--base") + 1]);
+  process.stdout.write("https://github.com/up/app/pull/7\\n");
+}
+if (sub === "pr view") {
+  // The PR head is the fork branch's tip (origin.txt names the bare fork).
+  const origin = readFileSync(d + "/origin.txt", "utf8");
+  const base = readFileSync(d + "/base.txt", "utf8");
+  const headRefOid = Bun.spawnSync(["git", "--git-dir", origin, "rev-parse", "refs/heads/" + base]).stdout.toString().trim();
+  process.stdout.write(JSON.stringify({ number: 7, url: "u", state: "OPEN", mergeable: "MERGEABLE", statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }], headRefOid }));
+}
 process.exit(0);
 `,
   );
@@ -75,6 +85,7 @@ let savedHome: string | undefined;
 beforeEach(async () => {
   const root = scratch();
   fx = remoteRepoFixture(root);
+  writeFileSync(join(ghDir, "origin.txt"), fx.origin);
   outDir = join(root, "fake-out");
   mkdirSync(outDir);
   const credsPath = join(root, "creds.json");

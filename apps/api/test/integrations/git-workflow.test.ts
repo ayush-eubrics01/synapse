@@ -524,6 +524,61 @@ describe("mergeLocal (E12)", () => {
   });
 });
 
+describe("pinned SHAs (review fixes)", () => {
+  test("branchTip returns the local branch sha, or null when it does not exist", async () => {
+    const f = setup();
+    expect(await f.wf.branchTip(f.repo, "main")).toBe(head(f.repo, "main"));
+    expect(await f.wf.branchTip(f.repo, "synapse/none")).toBeNull();
+    expect(await codeOf(f.wf.branchTip(f.repo, "-x"))).toBe("invalid_ref");
+  });
+
+  test("mergeLocal with a pinned commit merges exactly it, and refuses a task branch that moved", async () => {
+    const f = setup();
+    const taskSha = await taskWithCommit(f);
+    await f.wf.updateParent(f.repo, "stage");
+    const r = await f.wf.mergeLocal(f.repo, "stage", "synapse/t", { commit: taskSha });
+    if (!r.ok) throw new Error("expected a merge");
+    expect(git(f.repo, "rev-list", "--parents", "-n", "1", "HEAD").split(" ")[2]).toBe(taskSha);
+
+    const g = setup();
+    const pinned = await taskWithCommit(g);
+    git(g.repo, "switch", "-q", "synapse/t");
+    writeFileSync(join(g.repo, "later.txt"), "later\n");
+    git(g.repo, "add", "-A");
+    git(g.repo, "commit", "-q", "-m", "later");
+    await g.wf.updateParent(g.repo, "stage");
+    const before = head(g.repo, "stage");
+    expect(await codeOf(g.wf.mergeLocal(g.repo, "stage", "synapse/t", { commit: pinned }))).toBe(
+      "branch_moved",
+    );
+    expect(head(g.repo, "stage")).toBe(before);
+  });
+
+  test("pushParent with a pinned sha pushes exactly it, and refuses a parent that moved", async () => {
+    const f = setup();
+    await taskWithCommit(f);
+    await f.wf.updateParent(f.repo, "stage");
+    const m = await f.wf.mergeLocal(f.repo, "stage", "synapse/t");
+    if (!m.ok) throw new Error("expected a merge");
+    const opts = { protectedBranches: [], upstreamUrl: `file://${f.upstream}` };
+    writeFileSync(join(f.repo, "user.txt"), "user\n");
+    git(f.repo, "add", "-A");
+    git(f.repo, "commit", "-q", "-m", "user commit on the parent");
+    const originBefore = head(f.origin, "stage");
+    expect(await codeOf(f.wf.pushParent(f.repo, "stage", { ...opts, expectedSha: m.sha }))).toBe(
+      "branch_moved",
+    );
+    expect(head(f.origin, "stage")).toBe(originBefore);
+    git(f.repo, "reset", "-q", "--hard", m.sha);
+    expect(await f.wf.pushParent(f.repo, "stage", { ...opts, expectedSha: m.sha })).toEqual({
+      ok: true,
+    });
+    expect(head(f.origin, "stage")).toBe(m.sha);
+    const push = f.calls.filter((c) => c.argv.includes("push")).at(-1);
+    expect(push?.argv.at(-1)).toBe(`${m.sha}:refs/heads/stage`);
+  });
+});
+
 describe("pushParent (E13) and commitsAhead", () => {
   const opts = (f: Fixture, protectedBranches: string[] = ["prod"]) => ({
     protectedBranches,

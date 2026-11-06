@@ -523,6 +523,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     audit,
     git: gitWorkflow,
     queue,
+    approvals,
   });
   const engineering = new EngineeringTaskService({
     db,

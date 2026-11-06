@@ -39,6 +39,10 @@ import {
 } from "../../src/modules/engineering-tasks/lock";
 import { EngineeringTaskService } from "../../src/modules/engineering-tasks/service";
 import { EngineeringStepService } from "../../src/modules/engineering-tasks/steps";
+import {
+  EngineeringTaskError,
+  EngineeringTaskStore,
+} from "../../src/modules/engineering-tasks/store";
 import { registerStepJob } from "../../src/workers/engineering/steps";
 import { type RemoteRepoFixture, remoteRepoFixture } from "../fixtures/engineering";
 import { git, tempDir } from "../fixtures/git-repo";
@@ -80,8 +84,18 @@ appendFileSync(d + "/argv.log", JSON.stringify(argv) + "\\n");
 const cfg = existsSync(d + "/cfg.json") ? JSON.parse(readFileSync(d + "/cfg.json", "utf8")) : {};
 const sub = argv[0] + " " + argv[1];
 if (cfg.fail === sub) process.exit(1);
-if (sub === "pr create") process.stdout.write("https://github.com/up/app/pull/7\\n");
-if (sub === "pr view") process.stdout.write(JSON.stringify({ number: 7, url: "u", state: "OPEN", mergeable: "MERGEABLE", statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }] }));
+if (sub === "pr create") {
+  // The PR head is the fork branch: remember which one, so pr view can report its tip.
+  const base = argv[argv.indexOf("--base") + 1];
+  require("node:fs").writeFileSync(d + "/pr.json", JSON.stringify({ base }));
+  process.stdout.write("https://github.com/up/app/pull/7\\n");
+}
+if (sub === "pr view") {
+  const { base } = JSON.parse(readFileSync(d + "/pr.json", "utf8"));
+  const r = Bun.spawnSync(["git", "--git-dir", cfg.origin, "rev-parse", "refs/heads/" + base]);
+  const headRefOid = r.stdout.toString().trim();
+  process.stdout.write(JSON.stringify({ number: 7, url: "u", state: "OPEN", mergeable: "MERGEABLE", statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }], headRefOid }));
+}
 process.exit(0);
 `,
   );
@@ -210,6 +224,35 @@ const approvalRow = (id: string) =>
 const pendingOf = (action: Operation): Approval | undefined =>
   approvals.listPending().find((a) => a.action === action);
 
+/** One-shot callbacks run right after the named git or gh method returns (to interleave events). */
+let hooks: Record<string, () => void> = {};
+function hooked<T extends object>(target: T): T {
+  return new Proxy(target, {
+    get(t, prop, recv) {
+      const v = Reflect.get(t, prop, recv);
+      if (typeof v !== "function") return v;
+      const fire = () => {
+        const hook = hooks[String(prop)];
+        if (hook) {
+          delete hooks[String(prop)];
+          hook();
+        }
+      };
+      return (...args: unknown[]) => {
+        const r = v.apply(t, args);
+        if (r instanceof Promise) {
+          return r.then((x) => {
+            fire();
+            return x;
+          });
+        }
+        fire();
+        return r;
+      };
+    },
+  });
+}
+
 /** Runs queued `engineering.step` jobs in order until none is left. */
 async function drain(): Promise<void> {
   const h = handlers.get(STEP_JOB);
@@ -274,6 +317,30 @@ async function developed(parentBranch = "main"): Promise<string> {
 }
 
 const head = (dir: string, ref: string) => git(dir, "rev-parse", ref);
+const protectMain = () =>
+  db
+    .insert(schema.repositoryEnvironments)
+    .values({
+      id: newId(),
+      repositoryId: repoId,
+      name: "main-env",
+      branch: "main",
+      protected: true,
+      autoDeploysOnMerge: false,
+    })
+    .run();
+const restartLockOf = () =>
+  new EngineeringLock({
+    db,
+    clock,
+    leases,
+    settings,
+    events,
+    audit,
+    git: workflow,
+    queue,
+    approvals,
+  });
 const branches = () => git(repo, "branch", "--format=%(refname:short)").split("\n");
 
 /** Pushes a commit changing README.md to `bare`'s `branch` from a throwaway clone. */
@@ -320,7 +387,17 @@ beforeEach(async () => {
     .where(eq(schema.repositories.id, repoId))
     .run();
   workflow = new LocalGitWorkflow({ home: fx.home, extraEnv: { GIT_CONFIG_NOSYSTEM: "1" } });
-  lock = new EngineeringLock({ db, clock, leases, settings, events, audit, git: workflow, queue });
+  lock = new EngineeringLock({
+    db,
+    clock,
+    leases,
+    settings,
+    events,
+    audit,
+    git: workflow,
+    queue,
+    approvals,
+  });
   service = new EngineeringTaskService({
     db,
     clock,
@@ -332,6 +409,8 @@ beforeEach(async () => {
     lock,
     git: workflow,
   });
+  hooks = {};
+  const gh = new GitHubCliProvider({ binary: fakeGh });
   steps = new EngineeringStepService({
     db,
     clock,
@@ -340,8 +419,8 @@ beforeEach(async () => {
     queue,
     approvals,
     lock,
-    git: workflow,
-    prs: new GitHubCliProvider({ binary: fakeGh }),
+    git: hooked(workflow),
+    prs: hooked(gh),
   });
   steps.register(approvals, dispatcher);
   requests = [];
@@ -359,7 +438,8 @@ beforeEach(async () => {
     },
   });
   rmSync(join(ghDir, "argv.log"), { force: true });
-  rmSync(join(ghDir, "cfg.json"), { force: true });
+  rmSync(join(ghDir, "pr.json"), { force: true });
+  writeFileSync(join(ghDir, "cfg.json"), JSON.stringify({ origin: fx.origin }));
 });
 
 // ---- tests --------------------------------------------------------------------------------------
@@ -470,6 +550,8 @@ describe("happy path (E8–E15)", () => {
     expect(stepRow(id, "update_parent")?.status).toBe("done");
     const ml = pendingOf("engineering.merge_local") as Approval;
     expect(ml.riskLevel).toBe("medium");
+    expect(ml.idempotencyKey).toBe(`engineering:merge_local:${id}:1`);
+    expect((ml.payload as { commitSha: string }).commitSha).toBe(head(repo, taskBranch));
     expect(taskRow(id)?.currentStep).toBe("merge_local");
 
     expect((await approve("engineering.merge_local")).outcome.status).toBe("executed");
@@ -480,12 +562,15 @@ describe("happy path (E8–E15)", () => {
     expect(push.riskLevel).toBe("medium");
     expect(pp.autoDeploys).toBe(false);
     expect((pp.commits as unknown[]).length).toBe(2); // the task commit and the --no-ff merge
+    expect(pp.commitsTotal).toBe(2);
+    expect(pp.mergeSha).toBe(head(repo, "main"));
     expect(pp.prTitle).toBe("Fix redirect");
 
     const upstreamBefore = head(fx.upstream, "main");
     expect((await approve("engineering.push_pr")).outcome.status).toBe("executed");
-    expect(head(fx.origin, "main")).toBe(head(repo, "main"));
+    expect(head(fx.origin, "main")).toBe(pp.mergeSha as string);
     expect(head(fx.upstream, "main")).toBe(upstreamBefore); // never pushed to upstream
+    expect(stepRow(id, "push_pr")?.output).toMatchObject({ pushedSha: pp.mergeSha });
     const create = ghCalls().find((c) => c[1] === "create") as string[];
     expect(create.slice(0, 8)).toEqual([
       "pr",
@@ -504,7 +589,9 @@ describe("happy path (E8–E15)", () => {
       state: "OPEN",
       mergeable: "MERGEABLE",
       checks: "passing",
+      headSha: pp.mergeSha,
     });
+    expect((mp.payload as Record<string, unknown>).pushedSha).toBe(pp.mergeSha);
 
     expect((await approve("engineering.merge_pr")).outcome.status).toBe("executed");
     expect(ghCalls().find((c) => c[1] === "merge")).toEqual([
@@ -514,6 +601,8 @@ describe("happy path (E8–E15)", () => {
       "--repo",
       "up/app",
       "--merge",
+      "--match-head-commit",
+      pp.mergeSha as string,
     ]);
     expect(taskRow(id)?.status).toBe("completed");
     expect(stepRow(id, "cleanup")?.status).toBe("done");
@@ -797,7 +886,10 @@ describe("auto-deploy notice and PR failures (E13, E14)", () => {
   });
 
   test("a failed PR creation after the push needs attention (pr_create_failed)", async () => {
-    writeFileSync(join(ghDir, "cfg.json"), JSON.stringify({ fail: "pr create" }));
+    writeFileSync(
+      join(ghDir, "cfg.json"),
+      JSON.stringify({ origin: fx.origin, fail: "pr create" }),
+    );
     const id = await developed();
     await approve("engineering.commit");
     await approve("engineering.merge_local");
@@ -810,7 +902,17 @@ describe("auto-deploy notice and PR failures (E13, E14)", () => {
 
 describe("restart while an approval waits (E6 refinement)", () => {
   const restartLock = () =>
-    new EngineeringLock({ db, clock, leases, settings, events, audit, git: workflow, queue });
+    new EngineeringLock({
+      db,
+      clock,
+      leases,
+      settings,
+      events,
+      audit,
+      git: workflow,
+      queue,
+      approvals,
+    });
 
   test("commit approval pending, same diff and config: resumed, approval still pending, lock kept", async () => {
     const id = await developed();
@@ -881,5 +983,198 @@ describe("restart while an approval waits (E6 refinement)", () => {
     db.update(schema.jobs).set({ status: "COMPLETED" }).run();
     writeFileSync(join(repo, ".git", "hooks", "post-checkout"), "#!/bin/sh\n");
     expect(await restartLock().recover()).toMatchObject({ reason: "resume_unsafe" });
+  });
+});
+
+describe("pinned SHAs (review fixes)", () => {
+  test("a commit on the task branch after the merge_local request fails revalidation (branch_moved)", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    const taskBranch = taskRow(id)?.taskBranch as string;
+    git(repo, "switch", "-q", taskBranch);
+    writeFileSync(join(repo, "extra.ts"), "x\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "user commit on the task branch");
+    git(repo, "switch", "-q", "main");
+    const mainBefore = head(repo, "main");
+    const { outcome } = await approve("engineering.merge_local");
+    expect(outcome.status).toBe("skipped");
+    expect(taskRow(id)?.failure).toBe("branch_moved");
+    expect(head(repo, "main")).toBe(mainBefore);
+  });
+
+  test("a user commit on the parent after merge_local fails push_pr revalidation (branch_moved); nothing is pushed", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    writeFileSync(join(repo, "user.ts"), "x\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "user commit on the parent");
+    const originBefore = head(fx.origin, "main");
+    const { outcome } = await approve("engineering.push_pr");
+    expect(outcome.status).toBe("skipped");
+    expect(taskRow(id)?.failure).toBe("branch_moved");
+    expect(head(fx.origin, "main")).toBe(originBefore);
+    expect(ghCalls().some((c) => c[1] === "create")).toBe(false);
+  });
+
+  test("the fork branch moving after the push fails merge_pr revalidation (pr_head_moved); gh never merges", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    await approve("engineering.push_pr");
+    pushRemoteCommit(fx.origin, "someone pushed to the fork\n");
+    const { outcome } = await approve("engineering.merge_pr");
+    expect(outcome.status).toBe("skipped");
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("pr_head_moved");
+    expect(ghCalls().some((c) => c[1] === "merge")).toBe(false);
+  });
+
+  test("merge_local re-checks protection at execution time", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    const mainBefore = head(repo, "main");
+    // Revalidate ends with the task-branch tip check; the parent becomes protected right after.
+    hooks.branchTip = () => protectMain();
+    const { outcome } = await approve("engineering.merge_local");
+    expect(outcome.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("protected_branch");
+    expect(head(repo, "main")).toBe(mainBefore);
+  });
+
+  test("merge_pr re-checks protection at execution time", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    await approve("engineering.push_pr");
+    hooks.prStatus = () => protectMain();
+    const { outcome } = await approve("engineering.merge_pr");
+    expect(outcome.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("protected_branch");
+    expect(ghCalls().some((c) => c[1] === "merge")).toBe(false);
+  });
+});
+
+describe("cleanup keeps branches with commits (review fixes)", () => {
+  test("a user commit on the task branch while the task needs attention: cancel keeps the branch", async () => {
+    const id = await developed();
+    writeFileSync(join(repo, "src/index.ts"), "edited after the approval\n");
+    await approve("engineering.commit"); // stale: diff_changed → needs_attention
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "the user's own work");
+    const tip = head(repo, taskRow(id)?.taskBranch as string);
+    service.cancel(id);
+    await drain();
+    expect(taskRow(id)?.status).toBe("cancelled");
+    expect(branches()).toContain(taskRow(id)?.taskBranch as string);
+    expect(head(repo, taskRow(id)?.taskBranch as string)).toBe(tip);
+    expect(stepRow(id, "cleanup")?.output).toMatchObject({ outcome: "branch_kept" });
+    expect(auditDump()).toContain('"branchKept":true');
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("a crash after commitAll but before its bookkeeping, then cancel: the branch is kept", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    const p = a.payload as { message: string; diffHash: string };
+    // The executor claimed the step and committed; the process died before settle.
+    db.update(schema.engineeringTasks)
+      .set({ status: "in_progress" })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+    const { sha } = await workflow.commitAll(repo, p.message, p.diffHash);
+    service.cancel(id);
+    await drain();
+    expect(taskRow(id)?.status).toBe("cancelled");
+    expect(head(repo, taskRow(id)?.taskBranch as string)).toBe(sha);
+    expect(stepRow(id, "cleanup")?.output).toMatchObject({ outcome: "branch_kept" });
+  });
+});
+
+describe("cancel and lock edge cases (review fixes)", () => {
+  test("a cancel while the push runs: pushed, no PR (pushed_not_pr), cleaned up", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    hooks.pushParent = () => {
+      service.cancel(id);
+    };
+    const { outcome } = await approve("engineering.push_pr");
+    expect(outcome.status).toBe("executed");
+    expect(head(fx.origin, "main")).toBe(head(repo, "main"));
+    expect(ghCalls().some((c) => c[1] === "create")).toBe(false);
+    expect(stepRow(id, "push_pr")?.output).toMatchObject({
+      pushed: true,
+      outcome: "pushed_not_pr",
+    });
+    expect(taskRow(id)?.status).toBe("cancelled");
+    expect(taskRow(id)?.prNumber).toBeNull();
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("recovery that sends a task with a pending commit approval to needs_attention expires it", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    writeFileSync(join(repo, "src/index.ts"), "edited while down\n");
+    expect(await restartLockOf().recover()).toMatchObject({ reason: "diff_changed" });
+    expect(approvalRow(a.id)?.status).toBe("expired");
+    dispatcher.dispatchOnce();
+    expect(taskRow(id)?.status).toBe("needs_attention");
+  });
+
+  test("a re-requested step gets a new approval, never the old decided one", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    const first = pendingOf("engineering.merge_local") as Approval;
+    git(repo, "config", "core.pager", "less");
+    await approve("engineering.merge_local"); // config_changed: revoked, needs attention
+    expect(approvalRow(first.id)?.status).toBe("revoked");
+    // Re-drive update_parent (as a future resume would) with the config accepted again.
+    git(repo, "config", "--unset", "core.pager");
+    db.update(schema.engineeringTasks)
+      .set({ status: "in_progress", currentStep: "update_parent" })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+    queue.enqueue(db, {
+      type: STEP_JOB,
+      input: { taskId: id, step: "update_parent" },
+      idempotencyKey: `redrive-${newId()}`,
+      maxAttempts: 1,
+    });
+    await drain();
+    const second = pendingOf("engineering.merge_local") as Approval;
+    expect(second.id).not.toBe(first.id);
+    expect(second.idempotencyKey).toBe(`engineering:merge_local:${id}:2`);
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+  });
+
+  test("a completed task whose cleanup found a dirty tree keeps its prior status and closes as completed after re-cleanup", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    await approve("engineering.push_pr");
+    writeFileSync(join(repo, "wip.ts"), "user wip\n");
+    await approve("engineering.merge_pr");
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(stepRow(id, "cleanup")?.output).toMatchObject({
+      failure: "dirty_tree",
+      priorStatus: "completed",
+    });
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+    // It can never be resumed or re-queued.
+    for (const to of ["in_progress", "queued", "awaiting_approval"] as const) {
+      expect(() =>
+        db.transaction((tx) => new EngineeringTaskStore({ clock, events }).transition(tx, id, to)),
+      ).toThrow(EngineeringTaskError);
+    }
+    // Cancel retries cleanup instead of cancelling; a tidy tree closes it as completed.
+    rmSync(join(repo, "wip.ts"));
+    expect(service.cancel(id).status).toBe("needs_attention");
+    await drain();
+    expect(taskRow(id)?.status).toBe("completed");
+    expect(stepRow(id, "cleanup")?.status).toBe("done");
+    expect(leaseRow()).toBeUndefined();
   });
 });

@@ -27,6 +27,7 @@ import { type EngineeringLock, STEP_JOB } from "./lock";
 import {
   EngineeringTaskError,
   EngineeringTaskStore,
+  priorTerminalStatus,
   type TaskRow,
   TERMINAL_STATUSES,
   toView,
@@ -566,7 +567,8 @@ export class EngineeringTaskService {
    * enqueued: the step runner expires its pending approvals, cleans up the local branch and then
    * releases the lock (E15, E16). A `queued` task was never touched by Synapse, so nothing is
    * cleaned (if pickup holds the lock for it right now, pickup releases it when its transition
-   * fails).
+   * fails). A `needs_attention` task that had completed before its cleanup failed keeps that
+   * status and only gets its cleanup retried (it becomes `completed` again on success).
    */
   cancel(id: string): EngineeringTaskDetail {
     const { db, lock, audit } = this.deps;
@@ -577,7 +579,11 @@ export class EngineeringTaskService {
         if (TERMINAL_STATUSES.includes(task.status))
           throw new EngineeringTaskError("invalid_state");
         const holdsLock = lock.holder()?.taskId === id && task.status !== "queued";
-        this.store.transition(tx, id, "cancelled");
+        // A completed task whose cleanup found a dirty tree is not cancelled: cleanup is retried
+        // and closes it as completed again once the tree is tidy.
+        const retryCompleted =
+          task.status === "needs_attention" && priorTerminalStatus(tx, id) === "completed";
+        if (!retryCompleted) this.store.transition(tx, id, "cancelled");
         if (holdsLock) this.enqueueStep(tx, id, "cleanup");
         audit.record(tx, {
           actor: "user",
@@ -585,7 +591,7 @@ export class EngineeringTaskService {
           action: "engineering.cancelled",
           targetRef: id,
           result: "ok",
-          details: { taskId: id, from: task.status, cleanup: holdsLock },
+          details: { taskId: id, from: task.status, cleanup: holdsLock, retryCompleted },
         });
       },
       { behavior: "immediate" },

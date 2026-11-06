@@ -107,13 +107,28 @@ describe("GitHubCliProvider", () => {
 
   test("mergePr argv", async () => {
     const p = run("");
-    expect(await p.mergePr({ upstream: up, number: 7 })).toEqual({ merged: true });
-    expect(argvs()).toEqual([["pr", "merge", "7", "--repo", "o/r", "--merge"]]);
+    const headSha = "a".repeat(40);
+    expect(await p.mergePr({ upstream: up, number: 7, headSha })).toEqual({ merged: true });
+    expect(argvs()).toEqual([
+      ["pr", "merge", "7", "--repo", "o/r", "--merge", "--match-head-commit", headSha],
+    ]);
+  });
+
+  test("mergePr refuses a malformed head sha without running gh", async () => {
+    const p = run("");
+    for (const headSha of ["", "abc", "--admin", `${"a".repeat(40)} x`]) {
+      await expect(p.mergePr({ upstream: up, number: 7, headSha })).rejects.toMatchObject({
+        code: "pr_merge_failed",
+      });
+    }
+    expect(argvs()).toEqual([]);
   });
 
   test("mergePr failure", async () => {
     const p = run("", 1, "boom");
-    await expect(p.mergePr({ upstream: up, number: 7 })).rejects.toMatchObject({
+    await expect(
+      p.mergePr({ upstream: up, number: 7, headSha: "a".repeat(40) }),
+    ).rejects.toMatchObject({
       code: "pr_merge_failed",
     });
   });
@@ -125,6 +140,7 @@ describe("GitHubCliProvider", () => {
       state: "OPEN",
       mergeable: "MERGEABLE",
       statusCheckRollup: rollup,
+      headRefOid: "b".repeat(40),
     });
 
   test("prStatus argv and mapping", async () => {
@@ -157,7 +173,12 @@ describe("GitHubCliProvider", () => {
     for (const [rollup, want] of cases) {
       const p = run(view(rollup));
       const s = await p.prStatus({ upstream: up, number: 3 });
-      expect(s).toEqual({ state: "OPEN", mergeable: "MERGEABLE", checks: want as never });
+      expect(s).toEqual({
+        state: "OPEN",
+        mergeable: "MERGEABLE",
+        checks: want as never,
+        headSha: "b".repeat(40),
+      });
     }
     expect(argvs()).toEqual([
       [
@@ -167,9 +188,16 @@ describe("GitHubCliProvider", () => {
         "--repo",
         "o/r",
         "--json",
-        "number,url,state,mergeable,statusCheckRollup",
+        "number,url,state,mergeable,statusCheckRollup,headRefOid",
       ],
     ]);
+  });
+
+  test("prStatus without a usable headRefOid gives headSha null", async () => {
+    for (const headRefOid of [undefined, "", "not-a-sha", 42]) {
+      const p = run(JSON.stringify({ state: "OPEN", mergeable: "MERGEABLE", headRefOid }));
+      expect((await p.prStatus({ upstream: up, number: 3 })).headSha).toBeNull();
+    }
   });
 
   test("non-zero exit gives fixed code and never leaks title, body or output", async () => {
@@ -207,12 +235,16 @@ describe("GitHubCliProvider", () => {
 
   test("auth failure maps to gh_auth", async () => {
     const p = run("", 1, "gh auth login required: not logged in");
-    await expect(p.mergePr({ upstream: up, number: 1 })).rejects.toMatchObject({ code: "gh_auth" });
+    await expect(
+      p.mergePr({ upstream: up, number: 1, headSha: "a".repeat(40) }),
+    ).rejects.toMatchObject({ code: "gh_auth" });
   });
 
   test("missing binary maps to gh_not_found", async () => {
     const p = new GitHubCliProvider({ binary: join(dir, "nope") });
-    await expect(p.mergePr({ upstream: up, number: 1 })).rejects.toMatchObject({
+    await expect(
+      p.mergePr({ upstream: up, number: 1, headSha: "a".repeat(40) }),
+    ).rejects.toMatchObject({
       code: "gh_not_found",
     });
   });

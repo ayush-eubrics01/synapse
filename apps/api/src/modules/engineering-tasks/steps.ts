@@ -27,7 +27,13 @@ import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
 import { parseDevelopReply, testResultFrom } from "../../intelligence/engineering/develop-prompt";
 import { type EngineeringLock, STEP_JOB } from "./lock";
-import { ACTIVE_STATUSES, EngineeringTaskStore, type TaskRow, TERMINAL_STATUSES } from "./store";
+import {
+  ACTIVE_STATUSES,
+  EngineeringTaskStore,
+  priorTerminalStatus,
+  type TaskRow,
+  TERMINAL_STATUSES,
+} from "./store";
 
 const { repositories, repositoryEnvironments, approvals: approvalsTable } = schema;
 const MODULE = "engineering-tasks";
@@ -87,6 +93,9 @@ export const pushPrPayloadSchema = z.object({
   taskId: z.string().min(1),
   parentBranch: z.string(),
   commits: z.array(z.object({ sha: z.string(), subject: z.string() })),
+  commitsTotal: z.number().int(),
+  /** The parent tip after merge_local: exactly this commit is pushed. */
+  mergeSha: z.string().min(1),
   prTitle: z.string().min(1).max(256),
   prBody: z.string().max(PR_BODY_MAX + 500),
   configFingerprint: z.string().min(1),
@@ -98,7 +107,16 @@ export const mergePrPayloadSchema = z.object({
   parentBranch: z.string(),
   prNumber: z.number().int().positive(),
   prUrl: z.string(),
-  status: z.object({ state: z.string(), mergeable: z.string(), checks: z.string() }).nullable(),
+  status: z
+    .object({
+      state: z.string(),
+      mergeable: z.string(),
+      checks: z.string(),
+      headSha: z.string().nullable(),
+    })
+    .nullable(),
+  /** The commit pushed to the fork: the PR is merged only while its head is still this. */
+  pushedSha: z.string().min(1),
   ...deployNotice,
 });
 
@@ -466,10 +484,15 @@ export class EngineeringStepService {
     p: z.infer<typeof mergeLocalPayloadSchema>,
   ): Promise<unknown> {
     const { task, path, parent, taskBranch } = ctx;
+    if (this.protectedBranches(task.repositoryId).includes(parent)) {
+      this.attention(task.id, "merge_local", "protected_branch");
+      throw new Error("protected_branch");
+    }
     let merged: Awaited<ReturnType<GitWorkflow["mergeLocal"]>>;
     try {
       merged = await this.deps.git.mergeLocal(path, parent, taskBranch, {
         expectedConfigFingerprint: p.configFingerprint,
+        commit: p.commitSha,
       });
     } catch (e) {
       this.attention(task.id, "merge_local", codeOf(e));
@@ -494,6 +517,8 @@ export class EngineeringStepService {
       taskId: task.id,
       parentBranch: parent,
       commits: commits.slice(0, PAYLOAD_COMMITS_MAX),
+      commitsTotal: commits.length,
+      mergeSha: sha,
       prTitle: clip(task.title, 256),
       prBody: prBody(task, this.stepOutput(task.id, "develop")?.testsPassed === true),
       configFingerprint: configNow,
@@ -535,12 +560,34 @@ export class EngineeringStepService {
         protectedBranches: this.protectedBranches(task.repositoryId),
         upstreamUrl: repo.upstreamUrl,
         expectedConfigFingerprint: p.configFingerprint,
+        expectedSha: p.mergeSha,
       });
     } catch (e) {
       this.attention(task.id, "push_pr", codeOf(e));
       throw new Error(codeOf(e));
     }
-    this.mark(task.id, "push_pr", "running", { output: { pushed: true } });
+    const pushedSha = p.mergeSha;
+    const pushed = { pushed: true, pushedSha, configFingerprint: p.configFingerprint };
+    // Cancelled while the push ran: the push stays (it cannot be undone), no PR is created.
+    const cancelled = this.deps.db.transaction(
+      (tx) => {
+        const t = this.store.get(tx, task.id);
+        if (t && TERMINAL_STATUSES.includes(t.status)) {
+          this.store.upsertStep(tx, task.id, "push_pr", "done", {
+            output: { ...pushed, outcome: "pushed_not_pr" },
+          });
+          this.audit(tx, "engineering.pushed_not_pr", task.id, "cancelled", {});
+          return true;
+        }
+        this.store.upsertStep(tx, task.id, "push_pr", "running", { output: pushed });
+        return false;
+      },
+      { behavior: "immediate" },
+    );
+    if (cancelled) {
+      this.#cleanupWanted.add(task.id);
+      return { pushed: true, pr: false };
+    }
     let pr: { url: string; number: number };
     try {
       pr = await this.deps.prs.createPr({
@@ -551,7 +598,7 @@ export class EngineeringStepService {
         body: p.prBody,
       });
     } catch (e) {
-      this.attention(task.id, "push_pr", codeOf(e), { pushed: true });
+      this.attention(task.id, "push_pr", codeOf(e), pushed);
       throw new Error(codeOf(e));
     }
     let status: PrStatus | null = null;
@@ -562,12 +609,7 @@ export class EngineeringStepService {
     }
     const deploy = this.deployNotice(task);
     // The fingerprint stays on the output: cleanup compares against the latest one checked.
-    const out = {
-      pushed: true,
-      prUrl: pr.url,
-      prNumber: pr.number,
-      configFingerprint: p.configFingerprint,
-    };
+    const out = { ...pushed, prUrl: pr.url, prNumber: pr.number };
     await this.settle(task.id, "push_pr", out, (tx) => {
       this.store.update(tx, task.id, { prUrl: pr.url, prNumber: pr.number });
       this.store.upsertStep(tx, task.id, "push_pr", "done", { output: out });
@@ -584,6 +626,7 @@ export class EngineeringStepService {
           prNumber: pr.number,
           prUrl: pr.url,
           status,
+          pushedSha,
           ...deploy,
         },
         { prNumber: pr.number },
@@ -600,15 +643,24 @@ export class EngineeringStepService {
     ctx: Ctx,
     p: z.infer<typeof mergePrPayloadSchema>,
   ): Promise<unknown> {
-    const { task, repo } = ctx;
+    const { task, repo, parent } = ctx;
+    if (this.protectedBranches(task.repositoryId).includes(parent)) {
+      this.attention(task.id, "merge_pr", "protected_branch");
+      throw new Error("protected_branch");
+    }
     const upstream = this.deps.prs.repoRef(repo.upstreamUrl ?? "");
     if (!upstream) {
       this.attention(task.id, "merge_pr", "unsupported_remote");
       throw new Error("unsupported_remote");
     }
+    const pushedSha = this.stepOutput(task.id, "push_pr")?.pushedSha;
+    if (typeof pushedSha !== "string" || pushedSha !== p.pushedSha) {
+      this.attention(task.id, "merge_pr", "state_changed");
+      throw new Error("state_changed");
+    }
     let merged: { merged: boolean; sha?: string };
     try {
-      merged = await this.deps.prs.mergePr({ upstream, number: p.prNumber });
+      merged = await this.deps.prs.mergePr({ upstream, number: p.prNumber, headSha: pushedSha });
     } catch (e) {
       this.attention(task.id, "merge_pr", codeOf(e));
       throw new Error(codeOf(e));
@@ -732,14 +784,24 @@ export class EngineeringStepService {
         if (d.unsafe) return "unsafe_change";
         return d.hash === p.diffHash ? null : "diff_changed";
       }
-      case "merge_local":
+      case "merge_local": {
+        const p = parsed.data as z.infer<typeof mergeLocalPayloadSchema>;
+        if ((await git.configFingerprint(path)) !== p.configFingerprint) return "config_changed";
+        return (await git.branchTip(path, ctx.taskBranch)) === p.commitSha ? null : "branch_moved";
+      }
       case "push_pr": {
-        const fp = (parsed.data as unknown as { configFingerprint: string }).configFingerprint;
-        return (await git.configFingerprint(path)) === fp ? null : "config_changed";
+        const p = parsed.data as z.infer<typeof pushPrPayloadSchema>;
+        if ((await git.configFingerprint(path)) !== p.configFingerprint) return "config_changed";
+        return (await git.branchTip(path, parent)) === p.mergeSha ? null : "branch_moved";
       }
       case "merge_pr": {
         const p = parsed.data as z.infer<typeof mergePrPayloadSchema>;
-        return task.prNumber === p.prNumber ? null : "state_changed";
+        if (task.prNumber !== p.prNumber) return "state_changed";
+        if (this.stepOutput(task.id, "push_pr")?.pushedSha !== p.pushedSha) return "state_changed";
+        const upstream = this.deps.prs.repoRef(ctx.repo.upstreamUrl ?? "");
+        if (!upstream) return "unsupported_remote";
+        const status = await this.deps.prs.prStatus({ upstream, number: p.prNumber });
+        return status.headSha === p.pushedSha ? null : "pr_head_moved";
       }
     }
   }
@@ -791,16 +853,23 @@ export class EngineeringStepService {
       this.mark(taskId, "cleanup", "skipped", { output: { reason: "lock_held_by_other" } });
       return { status: "skipped", step: "cleanup", reason: "lock_held_by_other" };
     }
-    if (!TERMINAL_STATUSES.includes(task.status)) {
+    // A completed task whose cleanup found a dirty tree is retried from needs_attention and is
+    // closed as completed again only by a successful cleanup.
+    const retry =
+      task.status === "needs_attention" && priorTerminalStatus(db, taskId) === "completed";
+    if (!TERMINAL_STATUSES.includes(task.status) && !retry) {
       return { status: "skipped", step: "cleanup", reason: "not_terminal" };
     }
     if (this.#inFlight.has(taskId)) {
       this.#cleanupWanted.add(taskId);
       return { status: "skipped", step: "cleanup", reason: "step_running" };
     }
+    const prior = retry ? "completed" : null;
     db.transaction((tx) => {
       this.expirePending(tx, taskId);
-      this.store.upsertStep(tx, taskId, "cleanup", "running");
+      this.store.upsertStep(tx, taskId, "cleanup", "running", {
+        output: prior ? { priorStatus: prior } : null,
+      });
     });
     const release = () => {
       if (holder) lock.release(taskId);
@@ -842,15 +911,21 @@ export class EngineeringStepService {
           // Changed since the run (the user's own edits?): left alone; cleanup sees it dirty.
         }
       }
-      const returnTo = out("branch")?.returnTo;
-      const r = await git.cleanup(
-        path,
-        task.taskBranch,
-        typeof returnTo === "string" ? returnTo : task.parentBranch,
-        { force: !committed },
-      );
+      const stored = out("branch")?.returnTo;
+      const returnTo = typeof stored === "string" ? stored : task.parentBranch;
+      // Forced only while the branch holds no commit at all (its tip is still the base). Any
+      // commit (Synapse's, even one whose bookkeeping a crash lost, or the user's) is deleted
+      // only when another local branch contains it; otherwise the branch is kept.
+      const tip = await git.branchTip(path, task.taskBranch);
+      const force = tip !== null && task.baseSha !== null && tip === task.baseSha;
+      const r = await git.cleanup(path, task.taskBranch, returnTo, { force });
       if (!r.ok) return this.cleanupAttention(taskId, "dirty_tree");
-      return this.cleaned(taskId, { git: true, deleted: r.deleted }, release);
+      const kept = !r.deleted && tip !== null && returnTo !== task.taskBranch;
+      return this.cleaned(
+        taskId,
+        { git: true, deleted: r.deleted, ...(kept ? { outcome: "branch_kept" } : {}) },
+        release,
+      );
     } catch (e) {
       return this.cleanupAttention(taskId, codeOf(e));
     }
@@ -861,12 +936,24 @@ export class EngineeringStepService {
     output: Record<string, unknown>,
     release: () => void,
   ): StepResult {
-    this.deps.db.transaction((tx) => {
-      this.store.upsertStep(tx, taskId, "cleanup", "done", { output });
-      this.audit(tx, "engineering.cleaned", taskId, "ok", {
-        deleted: output.deleted === true,
-      });
-    });
+    this.deps.db.transaction(
+      (tx) => {
+        const task = this.store.get(tx, taskId);
+        const prior = task?.status === "needs_attention" ? priorTerminalStatus(tx, taskId) : null;
+        this.store.upsertStep(tx, taskId, "cleanup", "done", {
+          output: { ...output, ...(prior ? { priorStatus: prior } : {}) },
+        });
+        // The re-cleanup of a completed task closes it as completed again.
+        if (prior === "completed") {
+          this.store.transition(tx, taskId, "completed", { failure: null });
+        }
+        this.audit(tx, "engineering.cleaned", taskId, "ok", {
+          deleted: output.deleted === true,
+          branchKept: output.outcome === "branch_kept",
+        });
+      },
+      { behavior: "immediate" },
+    );
     release();
     return { status: "done", step: "cleanup" };
   }
@@ -875,10 +962,17 @@ export class EngineeringStepService {
     this.deps.db.transaction(
       (tx) => {
         const task = this.store.get(tx, taskId);
+        // The terminal outcome it had (or, on a retry, the one recorded before) is kept.
+        const priorStatus =
+          task && TERMINAL_STATUSES.includes(task.status)
+            ? task.status
+            : priorTerminalStatus(tx, taskId);
         if (task && task.status !== "needs_attention") {
           this.store.transition(tx, taskId, "needs_attention", { failure: reason });
         }
-        this.store.upsertStep(tx, taskId, "cleanup", "failed", { output: { failure: reason } });
+        this.store.upsertStep(tx, taskId, "cleanup", "failed", {
+          output: { failure: reason, ...(priorStatus ? { priorStatus } : {}) },
+        });
         this.audit(tx, "engineering.cleanup_failed", taskId, "needs_attention", { reason });
       },
       { behavior: "immediate" },
@@ -1040,13 +1134,26 @@ export class EngineeringStepService {
     payload: unknown,
     stepOutput: Record<string, unknown>,
   ): void {
+    // An attempt counter: a re-requested step never gets an old, already decided approval back.
+    const attempt =
+      tx
+        .select({ id: approvalsTable.id })
+        .from(approvalsTable)
+        .where(
+          and(
+            eq(approvalsTable.targetIntegration, ENGINEERING_INTEGRATION),
+            eq(approvalsTable.targetRef, taskId),
+            eq(approvalsTable.action, action),
+          ),
+        )
+        .all().length + 1;
     const approval = this.deps.approvals.request(tx, {
       action,
       targetIntegration: ENGINEERING_INTEGRATION,
       targetRef: taskId,
       payload,
       riskLevel,
-      idempotencyKey: `engineering:${step}:${taskId}`,
+      idempotencyKey: `engineering:${step}:${taskId}:${attempt}`,
       requestedByModule: MODULE,
       requestedByWorker: WORKER,
     });

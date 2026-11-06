@@ -73,7 +73,14 @@ export const ALLOWED_TRANSITIONS: Readonly<
   queued: ["in_progress", "needs_attention", "cancelled"],
   in_progress: ["awaiting_approval", "completed", "failed", "cancelled", "needs_attention"],
   awaiting_approval: ["in_progress", "completed", "failed", "cancelled", "needs_attention"],
-  needs_attention: ["queued", "in_progress", "awaiting_approval", "failed", "cancelled"],
+  needs_attention: [
+    "queued",
+    "in_progress",
+    "awaiting_approval",
+    "failed",
+    "cancelled",
+    "completed",
+  ],
   completed: ["needs_attention"],
   failed: ["needs_attention"],
   cancelled: ["needs_attention"],
@@ -81,6 +88,25 @@ export const ALLOWED_TRANSITIONS: Readonly<
 
 export function canTransition(from: EngineeringTaskStatus, to: EngineeringTaskStatus): boolean {
   return ALLOWED_TRANSITIONS[from].includes(to);
+}
+
+/** Statuses that would resume work on a task. */
+const RESUMING: readonly EngineeringTaskStatus[] = ["queued", "in_progress", "awaiting_approval"];
+
+/**
+ * The terminal status a `needs_attention` task had before its cleanup found a dirty tree (the
+ * cleanup step's `output.priorStatus`), or null when it was never terminal.
+ */
+export function priorTerminalStatus(tx: DbOrTx, taskId: string): EngineeringTaskStatus | null {
+  const row = tx
+    .select({ output: engineeringTaskSteps.output })
+    .from(engineeringTaskSteps)
+    .where(and(eq(engineeringTaskSteps.taskId, taskId), eq(engineeringTaskSteps.step, "cleanup")))
+    .get();
+  const prior = (row?.output as { priorStatus?: unknown } | null)?.priorStatus;
+  return typeof prior === "string" && TERMINAL_STATUSES.includes(prior as EngineeringTaskStatus)
+    ? (prior as EngineeringTaskStatus)
+    : null;
 }
 
 export function toView(r: TaskRow): EngineeringTaskView {
@@ -175,6 +201,15 @@ export class EngineeringTaskStore {
     if (!current) throw new EngineeringTaskError("not_found");
     if (from && !from.includes(current.status)) throw new EngineeringTaskError("invalid_state");
     if (!canTransition(current.status, to)) throw new EngineeringTaskError("invalid_state");
+    if (current.status === "needs_attention") {
+      // A task that already ended (its cleanup failed) never resumes; it is closed as
+      // `completed` again only if it had completed (after a successful re-cleanup).
+      const prior = priorTerminalStatus(tx, id);
+      if (prior && RESUMING.includes(to)) throw new EngineeringTaskError("invalid_state");
+      if (to === "completed" && prior !== "completed") {
+        throw new EngineeringTaskError("invalid_state");
+      }
+    }
     const row = tx
       .update(engineeringTasks)
       .set({ ...patch, status: to, updatedAt: isoNow(this.deps.clock) })

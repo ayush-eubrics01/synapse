@@ -11,12 +11,14 @@ import {
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
 import { eq } from "drizzle-orm";
+import { ApprovalEngine } from "../../src/core/approvals/approvals";
 import { AuditLogger } from "../../src/core/audit/audit";
 import { SettingsService } from "../../src/core/config/settings";
 import { EventPublisher } from "../../src/core/events/publisher";
 import { JobQueue } from "../../src/core/jobs/queue";
 import type { HandlerRegistration } from "../../src/core/jobs/worker";
 import { LeaseService } from "../../src/core/leases/leases";
+import { PermissionManager } from "../../src/core/permissions/permissions";
 import { LocalGitWorkflow } from "../../src/integrations/repository/git-workflow";
 import { LocalGitProvider } from "../../src/integrations/repository/local-git";
 import {
@@ -186,6 +188,7 @@ beforeEach(async () => {
     audit,
     git: workflow,
     queue,
+    approvals: new ApprovalEngine(db, clock, events, audit, new PermissionManager(db, audit)),
   });
   service = new EngineeringTaskService({
     db,

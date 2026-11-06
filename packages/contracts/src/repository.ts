@@ -140,6 +140,8 @@ export const GIT_WORKFLOW_ERROR_CODES = [
   "no_upstream_reference",
   /** The git config (repo, hooks, attributes, global) differs from the expected fingerprint. */
   "config_changed",
+  /** A branch no longer points at the commit the approval pinned. */
+  "branch_moved",
 ] as const;
 export type GitWorkflowErrorCode = (typeof GIT_WORKFLOW_ERROR_CODES)[number];
 
@@ -226,7 +228,20 @@ export interface GitCommitOptions extends GitConfigGuard {
   gitDirBaseline?: string;
 }
 
+export interface GitMergeOptions extends GitConfigGuard {
+  /**
+   * The approved task-branch tip. When given, the task branch must still point at it
+   * (`branch_moved` otherwise) and exactly this commit is merged.
+   */
+  commit?: string;
+}
+
 export interface GitPushOptions extends GitConfigGuard {
+  /**
+   * The approved parent tip. When given, `refs/heads/<parent>` must still point at it
+   * (`branch_moved` otherwise) and exactly `<expectedSha>:refs/heads/<parent>` is pushed.
+   */
+  expectedSha?: string;
   /** Branches of protected environments: never pushed (ADR-035). */
   protectedBranches: readonly string[];
   /** The registered (credential-stripped) upstream fetch URL. */
@@ -287,7 +302,7 @@ export interface GitWorkflow {
     repo: string,
     parent: string,
     taskBranch: string,
-    opts?: GitConfigGuard,
+    opts?: GitMergeOptions,
   ): Promise<{ ok: true; sha: string } | { ok: false; conflict: true }>;
   /**
    * E13: `git push origin <parent>` (never upstream, never forced). Refused when the parent is
@@ -305,6 +320,8 @@ export interface GitWorkflow {
   discardChanges(repo: string, expectedHash: string, opts?: GitConfigGuard): Promise<{ ok: true }>;
   /** Whether the local branch `refs/heads/<name>` exists. */
   branchExists(repo: string, name: string): Promise<boolean>;
+  /** The commit `refs/heads/<name>` points at, or null when the branch does not exist. */
+  branchTip(repo: string, name: string): Promise<string | null>;
   /** Commits on the local parent that `origin/<parent>` lacks, newest first. */
   commitsAhead(repo: string, parent: string): Promise<GitCommitSummary[]>;
   /**

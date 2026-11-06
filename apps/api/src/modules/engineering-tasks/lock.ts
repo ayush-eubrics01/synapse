@@ -7,7 +7,9 @@ import type {
 import { GitWorkflowError } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import type { ApprovalEngine } from "../../core/approvals/approvals";
+import { APPROVAL_EXECUTE_JOB } from "../../core/approvals/execution";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { SettingsService } from "../../core/config/settings";
 import type { EventPublisher } from "../../core/events/publisher";
@@ -15,7 +17,9 @@ import type { JobQueue } from "../../core/jobs/queue";
 import type { LeaseService } from "../../core/leases/leases";
 import { ACTIVE_STATUSES, EngineeringTaskStore, TERMINAL_STATUSES } from "./store";
 
-const { engineeringTasks, engineeringTaskSteps, repositories, jobs } = schema;
+const { engineeringTasks, engineeringTaskSteps, repositories, jobs, approvals } = schema;
+/** `targetIntegration` of engineering approvals (see steps.ts ENGINEERING_INTEGRATION). */
+const ENGINEERING_INTEGRATION = "engineering";
 const MODULE = "engineering-tasks";
 
 /** ADR-030: the one global engineering lease. Startup recovery never releases it (core). */
@@ -67,6 +71,8 @@ export interface EngineeringLockDeps {
   >;
   /** Re-drives an idempotent step after a restart (E6 "resumed"). */
   queue: Pick<JobQueue, "enqueue">;
+  /** Expires the open approvals of a task that recovery sends to needs_attention. */
+  approvals: Pick<ApprovalEngine, "expireAsSystem">;
 }
 
 /**
@@ -124,7 +130,9 @@ export class EngineeringLock {
     if (!h?.taskId) return false;
     const task = this.store.get(this.deps.db, h.taskId);
     if (task && TERMINAL_STATUSES.includes(task.status)) {
-      if (h.expired && !this.liveStepJob(task.id)) this.release(task.id);
+      if (h.expired && !this.liveStepJob(task.id) && !this.executingApproval(task.id)) {
+        this.release(task.id);
+      }
       return false;
     }
     if (!task || !ACTIVE_STATUSES.includes(task.status)) return false;
@@ -213,6 +221,20 @@ export class EngineeringLock {
           "in_progress",
           "awaiting_approval",
         ]);
+        // A pending step approval (e.g. the commit) no longer shows what is on disk.
+        const open = tx
+          .select({ id: approvals.id })
+          .from(approvals)
+          .where(
+            and(
+              eq(approvals.targetIntegration, ENGINEERING_INTEGRATION),
+              eq(approvals.targetRef, taskId),
+              inArray(approvals.status, ["pending", "approved"]),
+              isNull(approvals.executionStartedAt),
+            ),
+          )
+          .all();
+        for (const a of open) this.deps.approvals.expireAsSystem(tx, a.id, reason);
         this.deps.audit.record(tx, {
           actor: "system",
           module: MODULE,
@@ -348,6 +370,26 @@ export class EngineeringLock {
             inArray(jobs.status, [...WAITING_JOB_STATUSES]),
             sql`json_extract(${jobs.input}, '$.taskId') = ${taskId}`,
             sql`json_extract(${jobs.input}, '$.step') = ${step}`,
+          ),
+        )
+        .limit(1)
+        .get() !== undefined
+    );
+  }
+
+  /** An `approval.execute` job is running an engineering approval of this task right now. */
+  private executingApproval(taskId: string): boolean {
+    return (
+      this.deps.db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .innerJoin(approvals, sql`${approvals.id} = json_extract(${jobs.input}, '$.approvalId')`)
+        .where(
+          and(
+            eq(jobs.type, APPROVAL_EXECUTE_JOB),
+            eq(jobs.status, "RUNNING"),
+            eq(approvals.targetIntegration, ENGINEERING_INTEGRATION),
+            eq(approvals.targetRef, taskId),
           ),
         )
         .limit(1)

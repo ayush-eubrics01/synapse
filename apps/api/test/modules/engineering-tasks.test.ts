@@ -5,12 +5,14 @@ import type { GitWorkflow, PlanApprovalInput } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
 import { eq } from "drizzle-orm";
+import { ApprovalEngine } from "../../src/core/approvals/approvals";
 import { AuditLogger } from "../../src/core/audit/audit";
 import { SettingsService } from "../../src/core/config/settings";
 import { EventPublisher } from "../../src/core/events/publisher";
 import { JobQueue } from "../../src/core/jobs/queue";
 import type { HandlerRegistration } from "../../src/core/jobs/worker";
 import { LeaseService } from "../../src/core/leases/leases";
+import { PermissionManager } from "../../src/core/permissions/permissions";
 import { SchedulerService } from "../../src/core/scheduler/scheduler";
 import { LocalGitWorkflow } from "../../src/integrations/repository/git-workflow";
 import { LocalGitProvider } from "../../src/integrations/repository/local-git";
@@ -61,6 +63,7 @@ let handlers: Map<string, HandlerRegistration>;
 let registry: RepositoryRegistry;
 let workflow: GitWorkflow;
 let lock: EngineeringLock;
+let approvals: ApprovalEngine;
 let service: EngineeringTaskService;
 let repo: string;
 let repoId: string;
@@ -156,7 +159,18 @@ beforeEach(async () => {
   prodEnvId = view.environments.find((e) => e.name === "prod")?.id as string;
   stageEnvId = view.environments.find((e) => e.name === "stage")?.id as string;
   workflow = new LocalGitWorkflow({ home: fx.home, extraEnv: { GIT_CONFIG_NOSYSTEM: "1" } });
-  lock = new EngineeringLock({ db, clock, leases, settings, events, audit, git: workflow, queue });
+  approvals = new ApprovalEngine(db, clock, events, audit, new PermissionManager(db, audit));
+  lock = new EngineeringLock({
+    db,
+    clock,
+    leases,
+    settings,
+    events,
+    audit,
+    git: workflow,
+    queue,
+    approvals,
+  });
   service = new EngineeringTaskService({
     db,
     clock,
@@ -579,6 +593,37 @@ describe("lock and pickup (E6, E7)", () => {
     expect(leaseRow()).toBeUndefined();
     const next = await queuedTask("next");
     expect(await handler(PICKUP_JOB)).toEqual({ pickedUp: next });
+  });
+
+  test("renew never releases while an approval executor for the holder task is running", async () => {
+    const id = await queuedTask();
+    await handler(PICKUP_JOB);
+    db.update(schema.engineeringTasks)
+      .set({ status: "cancelled" })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+    db.update(schema.jobs).set({ status: "COMPLETED" }).where(eq(schema.jobs.type, STEP_JOB)).run();
+    const a = approvals.request(db, {
+      action: "engineering.push_pr",
+      targetIntegration: "engineering",
+      targetRef: id,
+      payload: { taskId: id },
+      riskLevel: "medium",
+      idempotencyKey: `k-${id}`,
+      requestedByModule: "engineering-tasks",
+    });
+    const job = queue.enqueue(db, {
+      type: "approval.execute",
+      input: { approvalId: a.id },
+      idempotencyKey: `approval.execute:${a.id}`,
+    });
+    db.update(schema.jobs).set({ status: "RUNNING" }).where(eq(schema.jobs.id, job.id)).run();
+    clock.advance(30 * 60_000);
+    expect(lock.renew()).toBe(false);
+    expect(leaseRow()?.holder).toBe(`task:${id}`);
+    db.update(schema.jobs).set({ status: "COMPLETED" }).where(eq(schema.jobs.id, job.id)).run();
+    lock.renew();
+    expect(leaseRow()).toBeUndefined();
   });
 
   test("the TTL comes from the setting", async () => {
