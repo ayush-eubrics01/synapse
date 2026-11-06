@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { JobError, retryDecision } from "@synapse/contracts";
 import { type Db, openDatabase, runMigrations } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
 import { AuditLogger } from "../../src/core/audit/audit";
@@ -107,6 +108,30 @@ test("a failed backup still records the date (no retry every tick)", () => {
     backup: { ok: false, failure: "insufficient_space" },
   });
   expect(settings.get("ops.backup.lastRunDate")).toBe("2026-11-07");
+});
+
+test("a failed backup ends the job as a fixed-code non-retryable error", async () => {
+  free = 1;
+  const d = deps();
+  registerOpsJobs(d);
+  const h = d.handlers.get(OPS_BACKUP_JOB)?.handler;
+  const caught = async (input: unknown) => {
+    try {
+      await h?.({ input } as never, {} as never);
+    } catch (e) {
+      return e;
+    }
+    return null;
+  };
+  const manual = (await caught({ manual: true })) as JobError;
+  expect(manual).toBeInstanceOf(JobError);
+  expect(manual.classified.message).toBe("backup_failed:insufficient_space");
+  expect(retryDecision(manual.classified.kind)).toBe("fail");
+  at = { date: "2026-11-07", hour: 4 };
+  const sched = (await caught(null)) as JobError;
+  expect(sched).toBeInstanceOf(JobError);
+  expect(settings.get("ops.backup.lastRunDate")).toBe("2026-11-07");
+  expect(await caught(null)).toBeNull(); // done_today: no retry loop
 });
 
 test("registerOpsJobs registers handler and schedule; manual runs even when disabled", async () => {

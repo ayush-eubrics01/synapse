@@ -10,7 +10,7 @@ export type BackupFailureCode =
   | "insufficient_space"
   | "vacuum_failed"
   | "integrity_failed"
-  | "target_exists"
+  | "name_conflict"
   | "dir_unavailable"
   | "unexpected";
 

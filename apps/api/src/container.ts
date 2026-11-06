@@ -655,14 +655,13 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   registerPickupJobs({ service: engineering, lock: engineeringLock, scheduler, handlers });
 
   const dataDir = config.dbPath === ":memory:" ? scratchDir : dirname(config.dbPath);
+  const explicitBackupDir = deps.backupDir ?? config.backupDir ?? settings.get("ops.backup.dir");
   const backupDir =
-    deps.backupDir ??
-    config.backupDir ??
-    settings.get("ops.backup.dir") ??
+    explicitBackupDir ??
     (config.dbPath === ":memory:"
       ? join(scratchDir, "backups")
       : join(dirname(config.dbPath), "backups"));
-  if (checkBackupDir(backupDir) !== "ok") {
+  if (explicitBackupDir !== null && checkBackupDir(explicitBackupDir) !== "ok") {
     throw new Error("ops.backup.dir must be an absolute path outside the repository");
   }
   const diskFree = deps.diskFree ?? defaultDiskFree;
@@ -673,6 +672,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     clock,
     audit,
     dir: backupDir,
+    checkDir: explicitBackupDir !== null,
     dbPath: config.dbPath,
     diskFree,
   });

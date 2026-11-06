@@ -1,3 +1,4 @@
+import { JobError } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import type { Clock } from "@synapse/shared";
 import { and, eq, inArray } from "drizzle-orm";
@@ -60,7 +61,20 @@ export function registerOpsJobs(deps: OpsJobDeps): void {
     handler: async (job) => {
       const manual = (job.input as { manual?: unknown } | null)?.manual === true;
       // A manual run goes ahead even when daily backups are disabled: the user asked.
-      return manual ? deps.backup.run(deps.settings.get("ops.backup.keep")) : runBackupTick(deps);
+      const out = manual
+        ? deps.backup.run(deps.settings.get("ops.backup.keep"))
+        : runBackupTick(deps);
+      const failed =
+        "ok" in out ? out : "backup" in out && typeof out.backup === "object" ? out.backup : null;
+      if (failed && !failed.ok) {
+        // Fixed code only; non-retryable (the date is already recorded, so no 15-minute loop).
+        throw new JobError({
+          kind: "invalid_input",
+          message: `backup_failed:${failed.failure}`,
+          details: { code: failed.failure },
+        });
+      }
+      return out;
     },
     timeoutMs: BACKUP_TIMEOUT_MS,
   });

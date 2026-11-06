@@ -1,10 +1,10 @@
 import { Database } from "bun:sqlite";
 import {
   chmodSync,
-  existsSync,
+  linkSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
-  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -40,16 +40,29 @@ export interface BackupServiceDeps {
   diskFree: (path: string) => number | null;
   vacuumInto?: (target: string) => void;
   fileName?: (now: Date) => string;
+  /** Apply the "outside the repository" check to `dir` (true for an explicitly configured dir). */
+  checkDir?: boolean;
+  /** Test seam for the repository root used by that check. */
+  repoRoot?: string;
 }
 
 export type BackupResult =
   | { ok: true; name: string; bytes: number; pruned: number }
-  | { ok: false; failure: BackupFailureCode };
+  | { ok: false; failure: BackupFailureCode; cause?: string };
 
 class Failure extends Error {
-  constructor(readonly code: BackupFailureCode) {
+  constructor(
+    readonly code: BackupFailureCode,
+    readonly cause?: string,
+  ) {
     super(code);
   }
+}
+
+/** A fixed error code such as EACCES or SQLITE_FULL; anything else (messages, paths) is dropped. */
+function causeOf(e: unknown): string | undefined {
+  const code = (e as { code?: unknown } | null)?.code;
+  return typeof code === "string" && /^[A-Z_]{2,32}$/.test(code) ? code : undefined;
 }
 
 function rmQuiet(p: string): void {
@@ -73,7 +86,9 @@ export class BackupService {
     try {
       result = this.attempt(keep);
     } catch (e) {
-      result = { ok: false, failure: e instanceof Failure ? e.code : "unexpected" };
+      const failure = e instanceof Failure ? e.code : "unexpected";
+      const cause = e instanceof Failure ? e.cause : causeOf(e);
+      result = cause ? { ok: false, failure, cause } : { ok: false, failure };
     }
     try {
       this.d.audit.record(this.d.db, {
@@ -83,7 +98,9 @@ export class BackupService {
         result: result.ok ? "ok" : "failed",
         details: result.ok
           ? { name: result.name, bytes: result.bytes, pruned: result.pruned }
-          : { code: result.failure },
+          : result.cause
+            ? { code: result.failure, cause: result.cause }
+            : { code: result.failure },
       });
     } catch {
       // the audit write must not turn a finished backup into a throw
@@ -101,7 +118,7 @@ export class BackupService {
     const out: { entry: BackupEntry; ms: number }[] = [];
     for (const name of names) {
       try {
-        const s = statSync(join(this.dir, name));
+        const s = lstatSync(join(this.dir, name));
         if (!s.isFile()) continue;
         out.push({
           entry: { name, bytes: s.size, createdAt: new Date(s.mtimeMs).toISOString() },
@@ -144,22 +161,28 @@ export class BackupService {
       writeFileSync(tmp, "", { mode: 0o600, flag: "wx" });
       try {
         (this.d.vacuumInto ?? ((t) => void this.d.sqlite.run("VACUUM INTO ?", [t])))(tmp);
-      } catch {
-        throw new Failure("vacuum_failed");
+      } catch (e) {
+        throw new Failure("vacuum_failed", causeOf(e));
       }
       if (!this.integrityOk(tmp)) throw new Failure("integrity_failed");
       chmodSync(tmp, 0o600);
-      if (existsSync(target)) throw new Failure("target_exists");
-      renameSync(tmp, target);
+      // A hard link never replaces an existing file, even one that appeared since the check.
+      try {
+        linkSync(tmp, target);
+      } catch (e) {
+        throw (e as { code?: string }).code === "EEXIST" ? new Failure("name_conflict") : e;
+      }
+      unlinkSync(tmp);
     } catch (e) {
       rmQuiet(tmp);
       throw e;
     }
-    return { ok: true, name, bytes: statSync(target).size, pruned: this.prune(keep) };
+    return { ok: true, name, bytes: lstatSync(target).size, pruned: this.prune(keep, name) };
   }
 
   private prepareDir(): void {
-    if (checkBackupDir(this.dir) !== "ok") throw new Failure("dir_unavailable");
+    if (this.d.checkDir !== false && checkBackupDir(this.dir, this.d.repoRoot) !== "ok")
+      throw new Failure("dir_unavailable");
     try {
       mkdirSync(this.dir, { recursive: true, mode: 0o700 });
       const s = statSync(this.dir);
@@ -203,9 +226,10 @@ export class BackupService {
   }
 
   /** Deletes only `BACKUP_NAME_RE` files beyond the newest `keep`. */
-  private prune(keep: number): number {
+  private prune(keep: number, justWritten: string): number {
     let pruned = 0;
-    for (const e of this.list().slice(keep)) {
+    const others = this.list().filter((e) => e.name !== justWritten);
+    for (const e of others.slice(Math.max(0, keep - 1))) {
       try {
         unlinkSync(join(this.dir, e.name));
         pruned++;

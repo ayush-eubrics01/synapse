@@ -9,6 +9,7 @@ import { type Clock, isoNow } from "@synapse/shared";
 import { and, asc, eq, gte, isNull } from "drizzle-orm";
 import type { SettingsService } from "../../core/config/settings";
 import type { NotificationService } from "../../core/notifications/notifications";
+import { localDateString } from "../../core/ops/daily";
 
 export const REMINDER_KIND = "claude_activity.reminder";
 export const REMINDERS_JOB = "claude_activity.reminders";
@@ -39,9 +40,8 @@ export interface WipRemindersDeps {
   localTime?: (now: Date) => { date: string; minutes: number };
 }
 
-const p2 = (n: number) => String(n).padStart(2, "0");
 const processLocalTime = (now: Date) => ({
-  date: `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())}`,
+  date: localDateString(now),
   minutes: now.getHours() * 60 + now.getMinutes(),
 });
 
