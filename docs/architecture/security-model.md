@@ -74,10 +74,13 @@ Messages sent through the connector appear as the user's own Slack account. Appr
 
 Auto-send happens only if away mode is on, the recipient is a priority person, the kind is allowed, and these deterministic checks pass:
 
+- An acknowledgement answers only a message addressed to the user (a DM or group DM, a mention of the user, or a thread the user posted in before it).
+- The message being answered arrived after away mode was switched on, and the user hasn't already replied to it.
 - The incoming message doesn't carry the tag (no bot-to-bot loops).
+- No open `warning` or `high` flag touches the incoming message, the drafting run or any message fed into the drafting prompt, and the drafting run did not report suspected injection.
 - Per-person daily cap and per-thread spacing are respected.
-- Confidence is at or above the threshold. Otherwise an acknowledgement is sent and the draft is queued.
-- Content checks: no secrets, tokens, keys or `.env` values; no promises of dates, decisions or commitments on the user's behalf.
+- Confidence is at or above the threshold. Otherwise a follow-up question gets an acknowledgement instead (if that passes its own checks) and the draft stays for the user's approval; a stalled reminder is only held.
+- Content checks: no secrets, tokens, keys or `.env` values; no internal URLs, and no links at all; no mentions of people or groups (`<@U…>`, `<!here>`, `<!channel>`, `@name`); no promises of dates, decisions or commitments on the user's behalf.
 - The reply goes into the same conversation and thread only.
 
 The drafting run has no send tool. The send run's only tool is `slack_send_message`, with arguments fixed by the policy (ADR-032). Its approved part carries the `policy_approved` provenance, which the validator allows only in a send run (rule K), and the send guard (J2) blocks any call whose arguments differ from the policy-approved ones.
@@ -86,11 +89,13 @@ The drafting run has no send tool. The send run's only tool is `slack_send_messa
 
 1. `AutoReplyService.evaluate` decides deterministically (`decideAutoReply`) and records an `auto_replies` row.
 2. `OutgoingService.requestAutoSend` inserts the outgoing row and calls `ApprovalEngine.recordPolicyApproval`, which accepts only action `slack.auto_reply` and only while its effective permission is `policy_gated`. The approval is `approved` with `decided_by = 'policy'`, audited as actor `system`, action `approval.policy_approved`. The user can tighten the permission (auto-replies then hold as `policy_disabled`) but not loosen it.
-3. The normal executor runs the send: revalidate, claim, then a `beforeSpawn` check. If away was switched off before the run spawned, the send is cancelled (`cancelled_before_spawn`) and the auto-reply is held. A spawned send finishes.
+3. The normal executor runs the send: revalidate, claim, then a `beforeSpawn` check. If away was switched off, the permission tightened, or more than `autoReply.maxSendDelayMinutes` (default 15) passed since the decision before the run spawned, the send is cancelled and the auto-reply is held (`away_off`, `policy_disabled` or `stale`). A spawned send finishes.
 4. **Send guard (J2).** `ClaudeCliProvider` writes a per-run `--settings` override with one PreToolUse hook on the send tool. The hook hashes the canonical `tool_input` (keys sorted, `unfurl_app_links: false` dropped, `message` `trimEnd`ed), checks `tool_name`, and exits 2 on any difference. The command ends `|| exit 2` so a hook that cannot start blocks rather than allows, and the override forces `disableAllHooks: false`. Proven on the real CLI on 2026-11-06 (`scripts/dev/hook-smoke.ts`: wrong hash blocked, `--allow` allowed).
 5. **Residual risk.** If the hook times out (10 s) the CLI may let the call proceed. The after-the-fact argument check on the raw tool result (`argument_mismatch`, high flag, needs attention) is the backstop.
 
 Away mode is the only exception to approval for external writes, and it is bounded by the checks above. Audit rows, events and logs never contain reply text.
+
+**Kill switch.** There is no UI or route yet to tighten the `slack.auto_reply` permission or to change the `autoReply.*` settings. Today the kill switch is switching away mode off, which also cancels any auto-send not yet spawned. A settings surface is a recorded follow-up (`docs/superpowers/plans/2026-11-06-phase-6b-followups.md`).
 
 ## 7. Audit
 

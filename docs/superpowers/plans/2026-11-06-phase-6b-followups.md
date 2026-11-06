@@ -23,7 +23,18 @@ Phase 6b (away-mode auto-replies, ADR-033) is built. This file records the proof
 - In a DM the recipient must be the DM partner; an unknown partner holds (`recipient_mismatch`).
 - Acknowledgements replace low-confidence follow-up questions only. They depend on `message.urgent_detected`, which is published only for levels in `urgency.notify.levels`; removing `high` there disables high acknowledgements.
 - The tag is the `AUTO_REPLY_TAG` constant; ADR-033's `autoReply.tag` setting was not built.
-- Dismissing an already dismissed digest returns 204 (404 only for an unknown or still-open session).
+- Dismissing an already dismissed digest returns 204 (404 only for an unknown or still-open session). The web client treats 204 as no body (`dismissAwayDigest` resolves `void`).
+
+## Final-review rulings (2026-11-06)
+
+- Acknowledgements only for messages addressed to the user: an `im` or `mpim`, a `<@SELF>` mention (labelled or escaped forms too), or the user posted earlier in the same thread. Otherwise `not_addressed`.
+- `before_session` (the source or origin message predates the open session) and `already_answered` (the user posted at or after it in its thread; anywhere in an `im` or `mpim`) for acknowledgements and follow-up questions. Stalled reminders are exempt (no source message). A follow-up question without an origin message holds as `missing_context`. An unknown self id holds.
+- Migration 0014: `followups.suspected_injection` and `followups.context_message_ids`, written by the stalled and spec-clarity drafting workers. `injection_suspected` when set; `flagged` also covers an open warning+ flag on any context message. Null context ids (pre-0014 rows) are not checkable and keep the other checks. Index on `auto_replies.outgoing_id`.
+- Content checks: `content_link` and `content_mention`; order secret, internal URL, link, mention, promise. They run on every candidate; the fixed acknowledgement passes by construction.
+- Staleness (M8): `autoReply.maxSendDelayMinutes` (default 15). Revalidate, claim and `beforeSpawn` cancel an older auto-send exactly like `away_off`, reason `stale`, outgoing `cancelled_stale`.
+- Retention: the Slack retention job also nulls `auto_replies.text` older than the cutoff, blanks the text of `sent`/`failed` outgoing messages (to `''`; the column is NOT NULL) and nulls the draft of `sent`/`discarded`/`failed` follow-ups older than the cutoff (all by `created_at`). Non-terminal rows are untouched.
+- Cancellation endings: on the revalidate path the approval ends `revoked`; on the claim and `beforeSpawn` paths it ends `failed`.
+- A failed check publishes `autoreply.held` and leaves the follow-up a plain draft (no `autoreply.skipped`, no extra approval-queue entry), recorded in ADR-033 Deviations.
 
 ## Deferred or parked
 
@@ -38,6 +49,10 @@ Phase 6b (away-mode auto-replies, ADR-033) is built. This file records the proof
 - A bad-payload revalidate strands the approval and row until expiry.
 - `revokeReason` is not filtered on the actor.
 - No test covers `recipient_mismatch` for the acknowledgement trigger.
+- No UI or route to tighten `slack.auto_reply` or change the `autoReply.*` settings (M3). Today's kill switch is away off. Add a settings surface.
+- The inbox reads `auto_replies` with raw SQL (M5, a module-boundary leak). Move it behind an auto-reply query.
+- After a user resends a message from needs attention, the digest still shows the original outgoing status (M7), not the resend's.
+- `outgoing_messages.text` is NOT NULL, so retention blanks it to `''` rather than nulling it. A later migration could make it nullable.
 
 ## Small fixes in the docs task
 
