@@ -22,6 +22,7 @@ import type {
 import {
   type DashboardLayout,
   type DashboardLayoutSummary,
+  type DashboardLayoutsResponse,
   type DashboardSectionId,
   DEFAULT_DASHBOARD_LAYOUT,
 } from "@synapse/contracts";
@@ -113,6 +114,7 @@ import { engineeringErrorText, isTerminal, lockText } from "../lib/engineering";
 import { conversationTitle, filterConversations, type InboxFilter } from "../lib/inbox";
 import { jiraPaletteItems, jiraRowId } from "../lib/jira";
 import {
+  focusSelector,
   hiddenSections,
   type LayoutRow,
   layoutErrorText,
@@ -123,7 +125,7 @@ import {
   setVisible,
   setWidth,
 } from "../lib/layout";
-import { createLayoutSaver } from "../lib/layout-saver";
+import { createLayoutGate, createLayoutSaver } from "../lib/layout-saver";
 import { LIVE_EVENT_TYPES } from "../lib/live-events";
 import { SECTION_IDS, type SectionId, sidebarItems } from "../lib/nav";
 import {
@@ -259,7 +261,17 @@ export default function Dashboard() {
   const [customising, setCustomising] = useState(false);
   // Sections the user expanded outside customise mode; never saved.
   const [localExpanded, setLocalExpanded] = useState<ReadonlySet<string>>(new Set());
-  const rows = layoutRows(layout);
+  // Sections revealed by navigation (hidden ones shown, never saved); cleared on the next layout change.
+  const [localShown, setLocalShown] = useState<ReadonlySet<string>>(new Set());
+  const shownLayout: DashboardLayout = customising
+    ? layout
+    : {
+        ...layout,
+        sections: layout.sections.map((x) =>
+          !x.visible && localShown.has(x.id) ? { ...x, visible: true } : x,
+        ),
+      };
+  const rows = layoutRows(shownLayout);
   const [active, setActive] = useActiveSection("overview", JSON.stringify(rows));
   const [approvals, setApprovals] = useState<ApprovalView[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -334,6 +346,7 @@ export default function Dashboard() {
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
   // Debounced layout saves. While one is pending, refresh() leaves the local layout alone.
+  const [gate] = useState(createLayoutGate);
   const [saver] = useState(() =>
     createLayoutSaver({
       put: (l) => {
@@ -342,8 +355,14 @@ export default function Dashboard() {
           ? Promise.reject(new Error("no active layout"))
           : updateLayout(id, { layout: l });
       },
-      onSaved: (v) => setLayout(v.layout),
-      onError: (text) => toastRef.current.show(text),
+      onSaved: (v) => {
+        gate.bump();
+        setLayout(v.layout);
+      },
+      onError: (text) => {
+        gate.bump();
+        toastRef.current.show(text);
+      },
       reload: () => void refreshRef.current(),
     }),
   );
@@ -354,9 +373,17 @@ export default function Dashboard() {
     : (visibleConversations[0]?.id ?? null);
   threadIdRef.current = effectiveConversationId;
 
+  const applyLayouts = useCallback((r: DashboardLayoutsResponse) => {
+    setLayout(r.active.layout);
+    setLayoutList(r.layouts);
+    activeLayoutIdRef.current = r.active.id;
+    setActiveLayoutId(r.active.id);
+  }, []);
+
   const refresh = useCallback(async () => {
     const openUser = personRef.current;
     const threadId = threadIdRef.current;
+    const layoutToken = gate.begin();
     const [
       a,
       j,
@@ -441,12 +468,9 @@ export default function Dashboard() {
     if (ca.status === "fulfilled") setClaudeActivity(ca.value);
     if (st.status === "fulfilled") setClaudeSettings(st.value);
     // A refresh that lands while an edit is debounced or in flight must not undo that edit.
-    if (lo.status === "fulfilled" && !saver.isBusy()) {
-      setLayout(lo.value.active.layout);
-      setLayoutList(lo.value.layouts);
-      activeLayoutIdRef.current = lo.value.active.id;
-      setActiveLayoutId(lo.value.active.id);
-    }
+    // A fetch that began before a save settled is older than that save and is dropped.
+    if (lo.status === "fulfilled" && !saver.isBusy() && gate.isCurrent(layoutToken))
+      applyLayouts(lo.value);
     // The open thread is refetched with everything else; stale answers for another conversation are dropped.
     if (td.status === "fulfilled" && td.value && threadIdRef.current === threadId)
       setThread(td.value);
@@ -532,7 +556,7 @@ export default function Dashboard() {
           : null;
     setLoadError(message);
     return message;
-  }, [saver]);
+  }, [saver, gate, applyLayouts]);
   refreshRef.current = refresh;
 
   useEffect(() => {
@@ -695,18 +719,38 @@ export default function Dashboard() {
     // A conversation outside the current filter needs the full list to be visible.
     if (!visibleConversations.some((c) => c.id === id)) setInboxFilter("all");
     setSelectedId(id);
-    scrollToSection("inbox");
+    navigateTo("inbox");
   };
+
+  // Navigating to a hidden or collapsed section reveals it locally (not saved), then scrolls.
+  const [scrollTick, setScrollTick] = useState(0);
+  const pendingScrollRef = useRef<string | null>(null);
+  const navigateTo = (sectionId: string, targetId: string = sectionId) => {
+    const sec = layoutRef.current.sections.find((x) => x.id === sectionId);
+    if (sec && !customising) {
+      if (!sec.visible) setLocalShown((set) => new Set(set).add(sectionId));
+      if (sec.collapsed) setLocalExpanded((set) => new Set(set).add(sectionId));
+    }
+    pendingScrollRef.current = targetId;
+    setScrollTick((n) => n + 1);
+  };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scrollTick is the trigger, after the reveal renders
+  useEffect(() => {
+    const id = pendingScrollRef.current;
+    if (id === null) return;
+    pendingScrollRef.current = null;
+    scrollToSection(id);
+  }, [scrollTick]);
 
   const goTo = (id: SectionId) => {
     setActive(id);
-    scrollToSection(id);
+    navigateTo(id);
   };
 
   const openRegister = () => {
     setActive("projects");
     setRegisterSignal((n) => n + 1);
-    scrollToSection("projects");
+    navigateTo("projects");
   };
 
   const feed = useNeedsYouActions({
@@ -720,7 +764,7 @@ export default function Dashboard() {
     registerRepository: () => openRegister(),
     seeAllEngineering: (taskId) => {
       setActive("engineering");
-      scrollToSection(taskId ? engineeringRowId(taskId) : "engineering");
+      navigateTo("engineering", taskId ? engineeringRowId(taskId) : "engineering");
     },
     onEvaluationQueued: (id) => evalQueue.markQueued([id]),
   });
@@ -767,7 +811,7 @@ export default function Dashboard() {
   const openBackfill = () => {
     setActive("triage");
     setBackfillSignal((n) => n + 1);
-    scrollToSection(BACKFILL_CARD_ID);
+    navigateTo("triage", BACKFILL_CARD_ID);
   };
 
   const copy = (text: string) =>
@@ -776,9 +820,27 @@ export default function Dashboard() {
       (e: unknown) => setActionError(String(e)),
     );
 
-  const editLayout = (fn: (l: DashboardLayout) => DashboardLayout) => {
+  // After a toolbar action the clicked button may be disabled or gone: focus moves to a stable spot.
+  const focusRef = useRef<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs after each layout change
+  useEffect(() => {
+    const sel = focusRef.current;
+    if (sel === null) return;
+    focusRef.current = null;
+    document.querySelector<HTMLElement>(sel)?.focus();
+  }, [layout]);
+
+  const editLayout = (
+    fn: (l: DashboardLayout) => DashboardLayout,
+    focus?: { id: DashboardSectionId; action: "move" | "hide" | "collapse" | "width" },
+  ) => {
+    // A picker call (switch, create, reset) is changing the active layout; edits wait for it.
+    if (gate.isLocked()) return;
     const next = fn(layoutRef.current);
     if (next === layoutRef.current) return;
+    setLocalShown(new Set());
+    setLocalExpanded(new Set());
+    if (focus) focusRef.current = focusSelector(focus.action, focus.id);
     layoutRef.current = next;
     setLayout(next);
     saver.change(next);
@@ -787,10 +849,25 @@ export default function Dashboard() {
   // Picker actions: pending edits are sent first, then the change, then a refresh shows the result.
   const layoutCall = async (fn: () => Promise<unknown>, flushFirst: boolean) => {
     if (flushFirst) await saver.flush();
+    // Edits are refused until the new active layout (and its id) is applied.
+    gate.lock();
     try {
-      await fn();
-    } catch (e) {
-      toast.show(layoutErrorText(e instanceof ApiError ? e.code : undefined));
+      try {
+        await fn();
+      } catch (e) {
+        toast.show(layoutErrorText(e instanceof ApiError ? e.code : undefined));
+      }
+      try {
+        const r = await getLayouts();
+        gate.bump();
+        applyLayouts(r);
+        setLocalShown(new Set());
+        setLocalExpanded(new Set());
+      } catch {
+        // the next refresh shows the stored layout
+      }
+    } finally {
+      gate.unlock();
     }
     await refresh();
   };
@@ -809,7 +886,7 @@ export default function Dashboard() {
     conversations.filter((c) => c.theyWroteLast).length,
     hiddenIds,
   );
-  const visibleOrder = layout.sections.filter((x) => x.visible).map((x) => x.id);
+  const visibleOrder = shownLayout.sections.filter((x) => x.visible).map((x) => x.id);
 
   const renderSection = (id: DashboardSectionId) => {
     const sec = layout.sections.find((x) => x.id === id);
@@ -829,13 +906,13 @@ export default function Dashboard() {
         isFirst={visibleOrder[0] === id}
         isLast={visibleOrder[visibleOrder.length - 1] === id}
         canHide={id !== "triage"}
-        onMove={(delta) => editLayout((l) => moveVisible(l, id, delta))}
-        onHide={() => editLayout((l) => setVisible(l, id, false))}
+        onMove={(delta) => editLayout((l) => moveVisible(l, id, delta), { id, action: "move" })}
+        onHide={() => editLayout((l) => setVisible(l, id, false), { id, action: "hide" })}
         onCollapse={(want) => {
-          if (customising) editLayout((l) => setCollapsed(l, id, want));
+          if (customising) editLayout((l) => setCollapsed(l, id, want), { id, action: "collapse" });
           else if (!want) setLocalExpanded((set) => new Set(set).add(id));
         }}
-        onWidth={(w) => editLayout((l) => setWidth(l, id, w))}
+        onWidth={(w) => editLayout((l) => setWidth(l, id, w), { id, action: "width" })}
       >
         {sectionBodies[id]}
       </DashboardSection>
@@ -901,19 +978,19 @@ export default function Dashboard() {
       sync: feed.handlers.syncJira,
       open: (key) => {
         setActive("jira");
-        scrollToSection(jiraRowId(key));
+        navigateTo("jira", jiraRowId(key));
       },
     }),
     ...brainPaletteItems(projectDetails, {
       register: openRegister,
       open: (id) => {
         setActive("projects");
-        scrollToSection(projectRowId(id));
+        navigateTo("projects", projectRowId(id));
       },
     }),
     {
       id: "act-customise",
-      label: "Customise dashboard",
+      label: customising ? "Done customising" : "Customise dashboard",
       group: "action",
       run: toggleCustomise,
     },
@@ -1120,7 +1197,7 @@ export default function Dashboard() {
           const section = SECTION_IDS.find((s) => s === id);
           if (!section) return;
           setActive(section);
-          scrollToSection(section);
+          navigateTo(section);
         }}
         footer={{ ...FOOTER, lock: lockText(overview?.engineeringLock) }}
       />

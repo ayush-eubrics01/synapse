@@ -45,7 +45,12 @@ export function DashboardSection({
   return (
     <section id={id} className={cls} data-width={width}>
       {customising && (
-        <div className="syn-section-toolbar" role="toolbar" aria-label={`${label} layout`}>
+        <div
+          className="syn-section-toolbar"
+          role="toolbar"
+          tabIndex={-1}
+          aria-label={`${label} layout`}
+        >
           <span className="syn-section-toolbar-label">{label}</span>
           <button
             type="button"
@@ -91,14 +96,13 @@ export function DashboardSection({
           type="button"
           className="syn-section-collapsed-head"
           aria-expanded="false"
-          aria-controls={`${id}-body`}
           onClick={() => onCollapse(false)}
         >
           <span>{label}</span>
           {count ? <span className={`syn-badge${hot ? " is-hot" : ""}`}>{count}</span> : null}
         </button>
       ) : (
-        <div id={`${id}-body`}>{children}</div>
+        <div>{children}</div>
       )}
     </section>
   );

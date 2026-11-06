@@ -15,7 +15,7 @@ export function HiddenTray({ hidden, onShow }: HiddenTrayProps) {
       <h2 className="syn-hidden-tray-title">Hidden sections</h2>
       <ul>
         {hidden.map((id) => (
-          <li key={id}>
+          <li key={id} id={`hidden-tray-${id}`}>
             <span>{SECTION_LABELS[id]}</span>
             <button
               type="button"

@@ -114,3 +114,11 @@ const LAYOUT_ERRORS: Record<string, string> = {
 export function layoutErrorText(code: string | undefined): string {
   return (code && LAYOUT_ERRORS[code]) || "Couldn't update the layouts";
 }
+
+/** Where keyboard focus goes after a toolbar action (the clicked button may be gone or disabled). */
+export function focusSelector(
+  action: "move" | "hide" | "collapse" | "width",
+  id: DashboardSectionId,
+): string {
+  return action === "hide" ? `#hidden-tray-${id} button` : `#${id} .syn-section-toolbar`;
+}

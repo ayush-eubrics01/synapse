@@ -67,3 +67,24 @@ export function createLayoutSaver(deps: LayoutSaverDeps) {
     },
   };
 }
+
+/**
+ * Guards layout application: a fetch that began before `bump()` is stale (`isCurrent`), and
+ * while locked (a picker call is changing the active layout) edits are refused.
+ */
+export function createLayoutGate() {
+  let generation = 0;
+  let locked = false;
+  return {
+    begin: () => generation,
+    bump: () => void generation++,
+    isCurrent: (token: number) => token === generation,
+    lock: () => {
+      locked = true;
+    },
+    unlock: () => {
+      locked = false;
+    },
+    isLocked: () => locked,
+  };
+}

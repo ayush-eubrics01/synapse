@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { type DashboardLayout, DEFAULT_DASHBOARD_LAYOUT } from "@synapse/contracts";
 import {
+  focusSelector,
   hiddenSections,
   layoutErrorText,
   layoutRows,
@@ -100,4 +101,9 @@ test("layout error codes map to the spec's toast text", () => {
   );
   expect(layoutErrorText("last_layout")).toBe("You can't delete the only layout");
   expect(layoutErrorText(undefined)).toBe("Couldn't update the layouts");
+});
+
+test("focus goes to the section toolbar after a move, and to the tray entry after Hide", () => {
+  expect(focusSelector("move", "jira")).toBe("#jira .syn-section-toolbar");
+  expect(focusSelector("hide", "jira")).toBe("#hidden-tray-jira button");
 });

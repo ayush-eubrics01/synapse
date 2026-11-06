@@ -63,7 +63,7 @@ test("the palette and header offer Customise dashboard", () => {
 });
 
 test("refresh applies the stored layout only when no save is pending (a live event must not undo an edit)", () => {
-  expect(PAGE).toMatch(/if \(lo\.status === "fulfilled" && !saver\.isBusy\(\)\)/);
+  expect(PAGE).toMatch(/if \(lo\.status === "fulfilled" && !saver\.isBusy\(\) && gate\.isCurrent/);
   expect(PAGE).toContain("saver.flush()");
 });
 
@@ -98,4 +98,26 @@ test("the profile drawer's opener is captured at click time and handed to the dr
   const body = openPerson.slice(0, openPerson.indexOf("};"));
   expect(body).toContain("document.activeElement");
   expect(PAGE).toContain("opener={personOpenerRef.current}");
+});
+
+test("navigation reveals hidden or collapsed targets locally before scrolling", () => {
+  expect(PAGE).toContain("const navigateTo = ");
+  expect(PAGE).toMatch(/if \(!sec\.visible\) setLocalShown/);
+  expect(PAGE).toMatch(/if \(sec\.collapsed\) setLocalExpanded/);
+  const outside = PAGE.replace(/const navigateTo = [\s\S]*?\n {2}\};/, "").replace(
+    /useEffect\(\(\) => \{\n {4}const id = pendingScrollRef[\s\S]*?\}, \[scrollTick\]\);/,
+    "",
+  );
+  expect(outside.match(/scrollToSection\(/g)?.length).toBe(1); // only the function definition
+  expect(PAGE).toMatch(/const rows = layoutRows\(shownLayout\)/);
+});
+
+test("a stale layout fetch is dropped and edits wait for a layout switch", () => {
+  expect(PAGE).toMatch(/gate\.isCurrent\(layoutToken\)/);
+  expect(PAGE).toMatch(/if \(gate\.isLocked\(\)\) return;/);
+  expect(PAGE).toContain("gate.lock();");
+});
+
+test("the palette entry reflects the customise state", () => {
+  expect(PAGE).toContain('customising ? "Done customising" : "Customise dashboard"');
 });

@@ -7,7 +7,7 @@ import {
 } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
-import { asc, desc, eq, sql } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { EventPublisher } from "../../core/events/publisher";
 import { defaultLayout, LayoutError, normaliseLayout } from "./layout";

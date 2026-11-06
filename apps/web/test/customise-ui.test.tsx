@@ -112,3 +112,11 @@ test("header toggle shows Done and aria-pressed while customising", () => {
   expect(render(false)).toContain("Customise");
   expect(render(false)).toContain('aria-pressed="false"');
 });
+
+test("a collapsed header has no dangling aria-controls; toolbar and tray entries are focus targets", () => {
+  expect(section({ collapsed: true, customising: false })).not.toContain("aria-controls");
+  expect(section()).toContain('tabindex="-1"');
+  expect(renderToString(<HiddenTray hidden={["jira"]} onShow={noop} />)).toContain(
+    'id="hidden-tray-jira"',
+  );
+});

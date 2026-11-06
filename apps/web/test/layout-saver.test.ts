@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { type DashboardLayoutView, DEFAULT_DASHBOARD_LAYOUT } from "@synapse/contracts";
 import type { TimerApi } from "../lib/debounce";
 import { setVisible } from "../lib/layout";
-import { createLayoutSaver, LAYOUT_SAVE_FAILED } from "../lib/layout-saver";
+import { createLayoutGate, createLayoutSaver, LAYOUT_SAVE_FAILED } from "../lib/layout-saver";
 
 function fakeTimers() {
   const q = new Map<number, () => void>();
@@ -168,4 +168,18 @@ test("cancel drops a pending change", async () => {
   await saver.flush();
   expect(calls).toBe(0);
   expect(saver.isBusy()).toBe(false);
+});
+
+test("the gate drops a fetch begun before a save settled and refuses edits while locked", () => {
+  const g = createLayoutGate();
+  const token = g.begin();
+  expect(g.isCurrent(token)).toBe(true);
+  g.bump();
+  expect(g.isCurrent(token)).toBe(false);
+  expect(g.isCurrent(g.begin())).toBe(true);
+  expect(g.isLocked()).toBe(false);
+  g.lock();
+  expect(g.isLocked()).toBe(true);
+  g.unlock();
+  expect(g.isLocked()).toBe(false);
 });
