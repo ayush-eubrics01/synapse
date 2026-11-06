@@ -1,4 +1,4 @@
-import { expect, isAllowMode, smokeExitCode, test } from "bun:test";
+import { expect, test } from "bun:test";
 import type { RawToolResult } from "@synapse/contracts";
 import { classifyHookSmoke, isAllowMode, smokeExitCode } from "../hook-smoke";
 
