@@ -73,6 +73,8 @@ const LINK_PATTERNS: RegExp[] = [
   /\b[a-z][a-z0-9+.-]*:\/\//i,
   /(?<![\w.-])www\.[a-z0-9-]/i,
   /(?:<|&lt;)(?:https?|mailto):/i,
+  // Bare `mailto:` / `tel:` / `sms:` links (Slack autolinks them without `//`).
+  /(?<![\w.-])(?:mailto|tel|sms):\S/i,
 ];
 
 // Slack special mentions (raw or entity-escaped, with or without a `|label`), any user mention, and

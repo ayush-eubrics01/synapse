@@ -58,7 +58,7 @@ Run on the candidate text before the tag is added, for every kind (the fixed ack
 
 - **secret:** `xox[abprs]-`, `sk-` + 16 alphanumerics, `AKIA...`, `gh[pousr]_...`, private-key headers, `password|passwd|secret|token|api_key` followed by `:` or `=`, uppercase env assignments (`NAME=value`), and any 40+ character token-like run (plain URLs without query or fragment are exempt from the run check).
 - **internal URL:** `localhost`, `127.*`, `10.*`, `192.168.*`, `172.16-31.*`, `[::1]`, `*.local`, `*.internal`, a URL with a non-default port, or `host.tld:port`.
-- **link** (after internal URL, so an internal one keeps `content_internal_url`): any `scheme://` (http, https, ftp, ws, mailto, ...), a bare `www.` host, or a Slack `<http…>` / `<mailto:…>` link, raw or entity-escaped.
+- **link** (after internal URL, so an internal one keeps `content_internal_url`): any `scheme://` (http, https, ftp, ws, mailto, ...), a bare `www.` host, or a Slack `<http…>` / `<mailto:…>` link, raw or entity-escaped, or a bare `mailto:` / `tel:` / `sms:` link.
 - **mention:** `<!channel>`, `<!here>`, `<!everyone>`, `<!subteam^…>` (raw or escaped, with or without a label), any `<@U…>` / `<@W…>` user mention, and any bare `@name` (covers `@here`, `@channel`, `@everyone`; broader on purpose; an email address is not a mention).
 - **promise:** `I will`, `I'll`, `we will`, `we'll`, `I promise`, `guarantee`, `by today|tonight|tomorrow|eod|eow|<weekday>|next week`, `deadline`, `I've/I have approved|decided`, `approved`, `go ahead and`, and dates such as `5 Dec` or `Dec 5`.
 
@@ -84,7 +84,7 @@ A cancelled send ends as outgoing `failed` with `cancelled_away_off`, `cancelled
 
 **Retention.** The daily `slack.retention_cleanup` job, with `retention.slackContentDays` (default 180), also runs `AutoReplyService.expireText` (sets `auto_replies.text` to null where `created_at` is older than the cutoff), `OutgoingService.expireText` (sets `outgoing_messages.text` to `''`, since the column is NOT NULL, on `sent` and `failed` rows older than the cutoff by `created_at`) and `FollowupService.expireDrafts` (sets `followups.draft_text` to null on `sent`, `discarded` and `failed` rows older than the cutoff by `created_at`). Rows in any other status are never touched. The job returns counts only.
 
-`decision = 'sent'` is the policy verdict. Delivery is the outgoing status: a user revoke or expiry leaves `sent`, and caps count it. `autoreply.sent {autoReplyId}` is published when the outgoing message first reaches `sent_unverified` or `sent`, not at decision time.
+`decision = 'sent'` is the policy verdict and delivery is the outgoing status. A user revoke, or an expiry, of a send that is still within `autoReply.maxSendDelayMinutes` and whose gates are open leaves `sent`, and caps count it. Past that window the revoke consumer's `autoSendBlock` check holds it as `stale`: nothing was sent, so it no longer counts towards the daily cap or the thread gap. A 7-day approval expiry therefore always ends `held` / `stale`. `autoreply.sent {autoReplyId}` is published when the outgoing message first reaches `sent_unverified` or `sent`, not at decision time.
 
 `GET /api/away/digest` returns the most recently ended, undismissed session as `{ session, sent, held }`, or `null`. Views carry recipient name, kind, conversation label, thread, time, reason and `outgoingStatus` (delivery is derived from it); never reply text. `POST /api/away/digest/:sessionId/dismiss` returns 204; 404 for an unknown or still-open session. Dismissing an already dismissed session also returns 204.
 

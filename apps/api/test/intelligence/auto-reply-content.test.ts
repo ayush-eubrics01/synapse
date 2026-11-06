@@ -54,6 +54,8 @@ test.each([
   "HTTP://EXAMPLE.COM",
   "ftp://example.com/file",
   "mail <mailto:ada@example.com|Ada>",
+  "write to mailto:ada@example.com",
+  "call tel:+15555550100",
 ])("link: %s", (t) => expect(contentCheck(t)).toBe("content_link"));
 
 test.each([

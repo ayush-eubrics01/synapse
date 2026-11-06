@@ -336,7 +336,6 @@ export class FollowupService {
     }
   }
 
-  /** The Slack user a follow-up is addressed to (null when it has none); for `people.post_send`. */
   /**
    * Retention (final review, item 6): clears `draft_text` on `sent`, `discarded` and `failed`
    * follow-ups created more than `olderThanDays` ago. A live follow-up keeps its draft. Returns the
@@ -359,6 +358,7 @@ export class FollowupService {
       .all().length;
   }
 
+  /** The Slack user a follow-up is addressed to (null when it has none); for `people.post_send`. */
   recipientOf(tx: DbOrTx, followupId: string): string | null {
     return (
       tx

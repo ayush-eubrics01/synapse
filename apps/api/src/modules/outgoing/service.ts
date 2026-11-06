@@ -976,9 +976,10 @@ export class OutgoingService {
         this.holdAutoSend(tx, row, ar, block);
         return;
       }
-      // Gate still open (a user revoke, or expiry): the message fails below and the auto-reply
-      // keeps `decision='sent'`. Intended: decision is the policy's verdict, delivery is the
-      // outgoing status (the digest shows both).
+      // Gates still open and within the staleness window (a prompt user revoke): the message fails
+      // below and the auto-reply keeps `decision='sent'` (decision is the policy's verdict, delivery
+      // is the outgoing status). Past the window `autoSendBlock` returned `stale` above, so an
+      // expiry or late revoke is held and stops counting towards caps.
     }
     tx.update(outgoingMessages)
       .set({ status: "failed", failure: reason, updatedAt: isoNow(this.deps.clock) })
