@@ -82,7 +82,8 @@ export function defaultRunScratchRoot(env: Record<string, string | undefined>): 
 }
 
 /**
- * One API instance's run root: `<base>/<first 16 hex of sha256(realpath of dataDir)>`. Instances
+ * One API instance's run root: `<base>/<first 8 hex of sha256(realpath of dataDir)>` (short:
+ * the sandbox's unix sockets live under the run's TMPDIR, ADR-040). Instances
  * with different data dirs (the service, a smoke, a second dev API) never share it, so one's
  * startup sweep never removes another's in-progress run. A missing data dir hashes its resolved
  * path.
@@ -94,7 +95,7 @@ export function instanceRunRoot(base: string, dataDir: string): string {
   } catch {
     real = resolve(dataDir);
   }
-  return join(base, createHash("sha256").update(real).digest("hex").slice(0, 16));
+  return join(base, createHash("sha256").update(real).digest("hex").slice(0, 8));
 }
 
 function homePath(

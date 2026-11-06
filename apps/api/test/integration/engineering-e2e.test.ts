@@ -265,8 +265,8 @@ describe("engineering end to end (real provider, fake claude and gh)", () => {
     expect(devSettings.sandbox.enabled).toBe(true);
     expect(devSettings.sandbox.failIfUnavailable).toBe(true);
     expect(devSettings.sandbox.filesystem.allowRead).toEqual([dev.tmpdir]);
-    expect(dev.tmpdir).toEndWith("/tmp");
-    expect(dev.tmpdir).toContain("/runs/");
+    expect(dev.tmpdir).toEndWith("/t");
+    expect(dev.tmpdir).toContain("/r/");
     // Task 4b: the run scratch is never under a request deny entry (the data dir is one).
     const requestMasks = (devSettings.sandbox.filesystem.denyRead as string[]).filter(
       (e) => !["/tmp", "/run", "/var/run"].includes(e),

@@ -1,21 +1,14 @@
-import { SANDBOX_MASKED_ROOTS, type SandboxSpec } from "@synapse/contracts";
+import { SANDBOX_FAILURE_RE, SANDBOX_MASKED_ROOTS, type SandboxSpec } from "@synapse/contracts";
 
 /** The paths every sandboxed run masks after the request's `denyRead` (F1.2). */
 export const SANDBOX_MASKS = SANDBOX_MASKED_ROOTS;
 
 /**
- * Matches the startup refusal of a sandboxed run (`failIfUnavailable`), tested against the stderr
- * head and an error result's text; only the match is used. Phrases are taken from the strings in
- * the Claude Code 2.1.319 binary, not from a run with bubblewrap removed:
- * - stderr: "sandbox.failIfUnavailable is set — refusing to start without a working sandbox."
- * - message: "Sandbox required but unavailable[: <detail>]. Set sandbox.failIfUnavailable=false …"
- * plus a generic "sandbox … unavailable / not available / failed to start|initialise" on one line.
- * A bare mention of the sandbox (a `<sandbox_violations>` notice, "denied by sandbox") does not
- * match. Wording may change between CLI versions: a miss is reported as an ordinary failure, and
- * the CLI's `startup_failure_reason` code is checked as well (SANDBOX_STARTUP_FAILURE_REASON).
+ * The sandbox-could-not-start matcher (shared in contracts, ADR-040), re-exported for the
+ * provider. The CLI's `startup_failure_reason` code is checked as well
+ * (SANDBOX_STARTUP_FAILURE_REASON).
  */
-export const SANDBOX_FAILURE_RE =
-  /sandbox\.failIfUnavailable|without a working sandbox|sandbox[^\n]{0,80}?\b(unavailable|not available|failed to (start|initiali[sz]e))/i;
+export { SANDBOX_FAILURE_RE };
 
 /** The CLI's `startup_failure_reason` on the result event when the sandbox cannot start. */
 export const SANDBOX_STARTUP_FAILURE_REASON = "sandbox_required_unavailable";

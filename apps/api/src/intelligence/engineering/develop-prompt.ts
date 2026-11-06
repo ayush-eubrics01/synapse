@@ -109,6 +109,15 @@ export function repoInDenyMask(
 export const REPO_IN_MASKED_PATH = "repo_in_masked_path";
 
 /**
+ * ADR-040, fix round 2: the fixed develop failure (and `JobError` message) when the run's tmpDir
+ * is longer than RUN_TMP_MAX_BYTES. The sandbox puts its unix bridge sockets under TMPDIR, and a
+ * long TMPDIR overflows the AF_UNIX path limit ("Failed to create bridge sockets").
+ */
+export const SANDBOX_PATH_TOO_LONG = "sandbox_path_too_long";
+export const SANDBOX_PATH_TOO_LONG_HINT =
+  "The develop run's temp path is too long for the sandbox's sockets; set XDG_CACHE_HOME to a shorter path and restart the API";
+
+/**
  * True when the repository is at or under one of `roots` (default: the paths the sandbox always
  * masks). Such a repository would be hidden from its own sandboxed run, so develop refuses it
  * (`repo_in_masked_path`). `repoRoot` is the registered realpath.

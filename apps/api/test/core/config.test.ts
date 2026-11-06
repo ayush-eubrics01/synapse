@@ -92,7 +92,7 @@ test("defaultRunScratchRoot: an absolute XDG_CACHE_HOME, else <home>/.cache; nev
   );
 });
 
-test("instanceRunRoot: <base>/<16 hex of sha256(realpath dataDir)>, distinct per data dir (Task 4b fix)", () => {
+test("instanceRunRoot: <base>/<8 hex of sha256(realpath dataDir)>, distinct per data dir (Task 4b fix)", () => {
   const root = mkdtempSync(join(tmpdir(), "synapse-cfg-"));
   try {
     const a = join(root, "a");
@@ -101,13 +101,13 @@ test("instanceRunRoot: <base>/<16 hex of sha256(realpath dataDir)>, distinct per
     mkdirSync(b);
     symlinkSync(a, join(root, "a-link"));
     const ra = instanceRunRoot("/c/synapse", a);
-    expect(ra).toMatch(/^\/c\/synapse\/[0-9a-f]{16}$/);
+    expect(ra).toMatch(/^\/c\/synapse\/[0-9a-f]{8}$/);
     expect(instanceRunRoot("/c/synapse", b)).not.toBe(ra);
     // The realpath decides: a symlink to the same data dir is the same instance.
     expect(instanceRunRoot("/c/synapse", join(root, "a-link"))).toBe(ra);
     expect(instanceRunRoot("/c/synapse", `${a}/`)).toBe(ra);
     // A missing data dir still hashes (its resolved path).
-    expect(instanceRunRoot("/c/synapse", join(root, "missing"))).toMatch(/[0-9a-f]{16}$/);
+    expect(instanceRunRoot("/c/synapse", join(root, "missing"))).toMatch(/\/[0-9a-f]{8}$/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

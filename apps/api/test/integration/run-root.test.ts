@@ -47,22 +47,22 @@ test("two containers with different data dirs never sweep each other's runs", ()
   const aRoot = instanceRunRoot(cache, join(root, "a"));
   expect(a.runRoot).toBe(aRoot);
   // A develop run of instance A is in progress.
-  mkdirSync(join(aRoot, "runs", "job-a", "tmp"), { recursive: true });
-  writeFileSync(join(aRoot, "runs", "job-a", "tmp", "f"), "x");
+  mkdirSync(join(aRoot, "r", "a1b2c3d4", "tmp"), { recursive: true });
+  writeFileSync(join(aRoot, "r", "a1b2c3d4", "tmp", "f"), "x");
 
   // Instance B starts (a smoke, a second dev API): A's run stays.
   const b = container(root, "b", cache);
   expect(b.runRoot).not.toBe(aRoot);
   expect(b.runRoot.startsWith(`${cache}/`)).toBe(true);
-  expect(existsSync(join(aRoot, "runs", "job-a", "tmp", "f"))).toBe(true);
-  mkdirSync(join(b.runRoot, "runs", "job-b"), { recursive: true });
+  expect(existsSync(join(aRoot, "r", "a1b2c3d4", "tmp", "f"))).toBe(true);
+  mkdirSync(join(b.runRoot, "r", "e5f6a7b8"), { recursive: true });
 
   // A restarts: only its own leftovers go.
   a.sqlite.close();
   const a2 = container(root, "a", cache);
   expect(a2.runRoot).toBe(aRoot);
-  expect(readdirSync(join(aRoot, "runs"))).toEqual([]);
-  expect(existsSync(join(b.runRoot, "runs", "job-b"))).toBe(true);
+  expect(readdirSync(join(aRoot, "r"))).toEqual([]);
+  expect(existsSync(join(b.runRoot, "r", "e5f6a7b8"))).toBe(true);
   // Nothing is created at startup beyond what a run needs.
   expect(readdirSync(cache).sort()).toEqual(
     [aRoot, b.runRoot].map((p) => p.slice(cache.length + 1)).sort(),

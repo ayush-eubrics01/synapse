@@ -5,8 +5,9 @@
 // pending and the task is cancelled. gh is never invoked and nothing is pushed beyond the local
 // bare repos. Spends a little Claude quota (two haiku runs). Temp DB and repo under
 // ~/.cache/synapse-develop-smoke-*, plus this instance's own develop-run root
-// ~/.cache/synapse/<hash of its data dir> (the run's private TMPDIR lives there, ADR-040); both
-// are deleted afterwards, also on SIGINT/SIGTERM. Only the shared, empty ~/.cache/synapse base
+// ~/.cache/synapse/<8 hex of its data dir>; the run's private TMPDIR is <that>/r/<8 hex>/t, kept
+// short for the sandbox's unix sockets (ADR-040; over 64 bytes the step fails
+// sandbox_path_too_long). Both are deleted afterwards, also on SIGINT/SIGTERM. Only the shared, empty ~/.cache/synapse base
 // may remain. Prints statuses and counts only (never task text, diff text, test output, paths or
 // branch names).
 //

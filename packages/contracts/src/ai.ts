@@ -45,6 +45,21 @@ export interface SandboxSpec {
  */
 export const SANDBOX_MASKED_ROOTS = ["/run", "/var/run", "/tmp"] as const;
 
+/**
+ * ADR-040: matches a sandbox that could not start, tested against the CLI's stderr head, an error
+ * result's text and (fix round 2) a develop run's Bash tool_result content; only the match is
+ * used. Phrases from Claude Code 2.1.319:
+ * - stderr: "sandbox.failIfUnavailable is set — refusing to start without a working sandbox."
+ * - message: "Sandbox required but unavailable[: <detail>]. Set sandbox.failIfUnavailable=false …"
+ * - Bash tool_result (observed on the real CLI): "Sandbox is required but failed to initialize:
+ *   Failed to create bridge sockets after 5 attempts. Restart to retry. …"
+ * plus a generic "sandbox … unavailable / not available / failed to start|initialise" on one line.
+ * A bare mention of the sandbox (a `<sandbox_violations>` notice, "denied by sandbox") does not
+ * match. Wording may change between CLI versions: a miss is reported as an ordinary failure.
+ */
+export const SANDBOX_FAILURE_RE =
+  /sandbox\.failIfUnavailable|without a working sandbox|sandbox is required but failed to initiali[sz]e|sandbox[^\n]{0,80}?\b(unavailable|not available|failed to (start|initiali[sz]e))/i;
+
 /** What modules submit; the orchestrator fills the rest. */
 export interface ClaudeJobRequest {
   jobId?: string;

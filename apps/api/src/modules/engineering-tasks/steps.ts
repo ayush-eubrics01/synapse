@@ -18,6 +18,7 @@ import {
   type PullRequestProvider,
   type RiskLevel,
   retryDecision,
+  SANDBOX_FAILURE_RE,
   type TestRun,
   testResultLabel,
   testRunSchema,
@@ -36,6 +37,8 @@ import { SANDBOX_REQUIRED_REASON } from "../../core/orchestrator/validator";
 import {
   parseDevelopReply,
   REPO_IN_MASKED_PATH,
+  SANDBOX_PATH_TOO_LONG,
+  SANDBOX_PATH_TOO_LONG_HINT,
   testResultFrom,
 } from "../../intelligence/engineering/develop-prompt";
 import { type EngineeringLock, STEP_JOB } from "./lock";
@@ -535,6 +538,16 @@ export class EngineeringStepService {
           err instanceof JobError &&
           err.classified.kind === "invalid_input" &&
           err.classified.message === REPO_IN_MASKED_PATH;
+        // The run's tmpDir would overflow the sandbox's unix socket paths (ADR-040, fix round 2).
+        const tooLong =
+          err instanceof JobError &&
+          err.classified.kind === "invalid_input" &&
+          err.classified.message === SANDBOX_PATH_TOO_LONG;
+        if (tooLong) {
+          return this.developFailed(ctx, SANDBOX_PATH_TOO_LONG, fp, runner.runId(), {
+            hint: SANDBOX_PATH_TOO_LONG_HINT,
+          });
+        }
         const kind = masked
           ? REPO_IN_MASKED_PATH
           : sandboxOff
@@ -569,6 +582,20 @@ export class EngineeringStepService {
   ): Promise<StepResult> {
     const { task, path } = ctx;
     const taskId = task.id;
+    // ADR-040, fix round 2: the sandbox can fail inside the run, after startup; the CLI then
+    // reports it in the Bash tool_result. That is sandbox_unavailable (needs the user), never a
+    // failed test run.
+    if (
+      result.toolResults.some((r) => r.toolName === "Bash" && SANDBOX_FAILURE_RE.test(r.content))
+    ) {
+      return this.attention(
+        taskId,
+        "develop",
+        "sandbox_unavailable",
+        { ...fp, failure: "sandbox_unavailable" },
+        claudeRunId,
+      );
+    }
     let diff: Awaited<ReturnType<GitWorkflow["diffSummary"]>>;
     try {
       diff = await this.deps.git.diffSummary(path, { gitDirBaseline: fp.gitDirBaseline });
@@ -639,6 +666,7 @@ export class EngineeringStepService {
     code: string,
     fp: DevelopFingerprints,
     claudeRunId: string | null,
+    extra: Record<string, unknown> = {},
   ): Promise<StepResult> {
     let clean = false;
     try {
@@ -647,7 +675,7 @@ export class EngineeringStepService {
     } catch {
       clean = false;
     }
-    const output = { ...fp, failure: code };
+    const output = { ...fp, failure: code, ...extra };
     if (clean) return this.terminalFailure(ctx.task.id, "develop", code, output, claudeRunId);
     return this.attention(ctx.task.id, "develop", code, output, claudeRunId);
   }

@@ -95,6 +95,8 @@ test("SANDBOX_FAILURE_RE matches startup refusals only, never a bare sandbox men
     "Sandbox required but unavailable: bubblewrap not found. Set sandbox.failIfUnavailable=false to allow unsandboxed execution.",
     "sandbox failed to start",
     "Sandbox failed to initialize",
+    // Observed on the real CLI inside a Bash tool_result (fix round 2).
+    "Sandbox is required but failed to initialize: Failed to create bridge sockets after 5 attempts. Restart to retry. Running it outside the sandbox (dangerouslyDisableSandbox) is not allowed either.",
   ]) {
     expect(SANDBOX_FAILURE_RE.test(text)).toBe(true);
   }

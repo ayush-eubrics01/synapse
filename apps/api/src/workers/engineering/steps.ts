@@ -1,4 +1,5 @@
-import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { type Job, JobError, SANDBOX_MASKED_ROOTS } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
@@ -11,6 +12,7 @@ import {
   REPO_IN_MASKED_PATH,
   repoInDenyMask,
   repoInMaskedPath,
+  SANDBOX_PATH_TOO_LONG,
 } from "../../intelligence/engineering/develop-prompt";
 import { STEP_JOB } from "../../modules/engineering-tasks/lock";
 import {
@@ -32,10 +34,10 @@ export interface StepJobDeps {
   steps: Pick<EngineeringStepService, "runBranch" | "runDevelop" | "runUpdateParent" | "cleanup">;
   handlers: Map<string, HandlerRegistration>;
   /**
-   * ADR-040. Each develop run gets `<runRoot>/runs/<jobId>`, removed when the run ends, with the
-   * sandbox `tmpDir` inside it. `runRoot` (default `~/.cache/synapse`, Task 4b) must be outside
+   * ADR-040. Each develop run gets `<runRoot>/r/<hex>` (runScratchDir), removed when the run ends,
+   * with the sandbox `tmpDir` `<that>/t` inside it (at most RUN_TMP_MAX_BYTES). `runRoot` (default `~/.cache/synapse`, Task 4b) must be outside
    * the data and backup dirs: a TMPDIR under a sandbox mask breaks every Bash call, and rule M
-   * refuses it. `runRoot` and `runs` are kept 0700. `home` and `protectedDirs` (the data and
+   * refuses it. `runRoot` and `r` are kept 0700. `home` and `protectedDirs` (the data and
    * backup dirs) feed the deny list. `maskedRoots` defaults to SANDBOX_MASKED_ROOTS: a repository
    * at or under one is refused (`repo_in_masked_path`). Tests, whose repositories live under the
    * OS temp dir, pass [].
@@ -49,12 +51,37 @@ export interface StepJobDeps {
 }
 
 /**
- * Removes leftover `<runRoot>/runs/*` entries (develop runs whose process was killed before its
+ * ADR-040, fix round 2: the longest tmpDir a develop run may use, in bytes. The sandbox creates
+ * its unix bridge sockets under TMPDIR, and AF_UNIX paths are limited to 108 bytes (with the NUL);
+ * a ~89-byte TMPDIR failed on the real CLI ("Failed to create bridge sockets after 5 attempts").
+ */
+export const RUN_TMP_MAX_BYTES = 64;
+
+/**
+ * A develop run's scratch dir: `<runRoot>/r/<first 8 hex of sha256(jobId)>`, short on purpose
+ * (RUN_TMP_MAX_BYTES). If that name is taken (a leftover), 12 then 16 hex; null when all three are
+ * taken, and the run is refused rather than sharing a dir.
+ */
+export function runScratchDir(
+  runRoot: string,
+  jobId: string,
+  exists: (path: string) => boolean = existsSync,
+): string | null {
+  const hex = createHash("sha256").update(jobId).digest("hex");
+  for (const n of [8, 12, 16]) {
+    const dir = join(runRoot, "r", hex.slice(0, n));
+    if (!exists(dir)) return dir;
+  }
+  return null;
+}
+
+/**
+ * Removes leftover `<runRoot>/r/*` entries (develop runs whose process was killed before its
  * `finally` ran). Called once at API start, when no engineering step runs in this process. Best
  * effort: an entry that cannot be removed logs one fixed line and the others still go.
  */
 export function sweepRunScratch(runRoot: string): void {
-  const runs = join(runRoot, "runs");
+  const runs = join(runRoot, "r");
   let entries: string[];
   try {
     entries = readdirSync(runs);
@@ -71,12 +98,12 @@ export function sweepRunScratch(runRoot: string): void {
 }
 
 /**
- * Creates `<runRoot>/runs` (every level it creates 0700) and keeps `runRoot` and `runs` at 0700
+ * Creates `<runRoot>/r` (every level it creates 0700) and keeps `runRoot` and `r` at 0700
  * (Task 4b). Each must be a real directory owned by this user, not a symlink that chmod would
  * follow or a dir another user planted. Throws on any failure (the run never starts).
  */
 function prepareRunsDir(runRoot: string): void {
-  const runs = join(runRoot, "runs");
+  const runs = join(runRoot, "r");
   mkdirSync(runs, { recursive: true, mode: 0o700 });
   const uid = process.getuid?.();
   for (const d of [runRoot, runs]) {
@@ -134,7 +161,20 @@ export function registerStepJob(deps: StepJobDeps): void {
               // unmasking it would expose a credential dir, synapse.db or the backups.
               throw new JobError({ kind: "invalid_input", message: REPO_IN_MASKED_PATH });
             }
-            const runScratch = join(sandbox.runRoot, "runs", job.id);
+            // Off: no sandbox and no scratch; rule M refuses the run.
+            const runScratch = sandboxed ? runScratchDir(sandbox.runRoot, job.id) : null;
+            const tmpDir = runScratch === null ? null : join(runScratch, "t");
+            if (sandboxed && tmpDir === null) {
+              // Three leftover dirs with this job's prefixes: never share one (the sweep clears them).
+              throw new JobError({
+                kind: "provider_error",
+                message: "run scratch dir unavailable",
+              });
+            }
+            if (tmpDir !== null && Buffer.byteLength(tmpDir) > RUN_TMP_MAX_BYTES) {
+              // Refused before anything is created: the sandbox's sockets would not fit.
+              throw new JobError({ kind: "invalid_input", message: SANDBOX_PATH_TOO_LONG });
+            }
             try {
               if (sandboxed) prepareRunsDir(sandbox.runRoot);
               return await orchestrator.run(
@@ -146,9 +186,9 @@ export function registerStepJob(deps: StepJobDeps): void {
                     maxTurns: settings.get("engineering.develop.maxTurns"),
                     timeoutMinutes: settings.get("engineering.develop.timeoutMinutes"),
                     // Off: no sandbox, so validator rule M refuses the run (never unsandboxed).
-                    sandbox: sandboxed
+                    sandbox: tmpDir
                       ? {
-                          tmpDir: join(runScratch, "tmp"),
+                          tmpDir,
                           home: sandbox.home,
                           protectedDirs: sandbox.protectedDirs,
                         }
@@ -162,7 +202,7 @@ export function registerStepJob(deps: StepJobDeps): void {
               // Also after a throw, timeout or abort: stale run dirs must not pile up in the cache.
               // A failure never replaces the run's result or error; the startup sweep retries.
               try {
-                rmSync(runScratch, { recursive: true, force: true });
+                if (runScratch !== null) rmSync(runScratch, { recursive: true, force: true });
               } catch {
                 console.error("engineering.step: run scratch cleanup failed");
               }

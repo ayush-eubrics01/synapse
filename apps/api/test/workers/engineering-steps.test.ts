@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -42,6 +43,7 @@ import { LocalGitWorkflow } from "../../src/integrations/repository/git-workflow
 import { LocalGitProvider } from "../../src/integrations/repository/local-git";
 import {
   buildDevelopRequest,
+  SANDBOX_PATH_TOO_LONG_HINT,
   testResultFrom,
 } from "../../src/intelligence/engineering/develop-prompt";
 import { RepositoryRegistry } from "../../src/modules/engineering-brain/registry";
@@ -57,7 +59,12 @@ import {
   EngineeringTaskStore,
 } from "../../src/modules/engineering-tasks/store";
 import { engineeringRoutes } from "../../src/routes/engineering";
-import { registerStepJob, sweepRunScratch } from "../../src/workers/engineering/steps";
+import {
+  RUN_TMP_MAX_BYTES,
+  registerStepJob,
+  runScratchDir,
+  sweepRunScratch,
+} from "../../src/workers/engineering/steps";
 import { type RemoteRepoFixture, remoteRepoFixture } from "../fixtures/engineering";
 import { git, tempDir } from "../fixtures/git-repo";
 
@@ -216,7 +223,7 @@ let repo: string;
 let repoId: string;
 let requests: ClaudeJobRequest[];
 let reply: (req: ClaudeJobRequest) => AIExecutionResult;
-/** The step worker's run root: develop runs get `<it>/runs/<jobId>/tmp` (ADR-040). */
+/** The step worker's run root: develop runs get `<it>/r/<8 hex of sha256(jobId)>/t` (ADR-040). */
 let sandboxScratch: string;
 
 const taskRow = (id: string) =>
@@ -518,7 +525,7 @@ describe("develop request (E9)", () => {
         maxTurns: 60,
         timeoutMinutes: 30,
         sandbox: {
-          tmpDir: "/home/demo/.cache/synapse/runs/j1/tmp",
+          tmpDir: "/home/demo/.cache/synapse/0123abcd/r/89abcdef/t",
           home: "/home/demo",
           protectedDirs: ["/home/demo/.local/share/synapse"],
         },
@@ -550,19 +557,20 @@ describe("develop request (E9)", () => {
 });
 
 describe("develop sandbox (ADR-040)", () => {
-  const runDir = (jobId: string) => join(sandboxScratch, "runs", jobId);
+  const hex = (jobId: string) => createHash("sha256").update(jobId).digest("hex");
+  const runDir = (jobId: string) => join(sandboxScratch, "r", hex(jobId).slice(0, 8));
 
   test("the develop request carries the per-run tmpDir and the deny list", async () => {
     await developed();
     const req = requests[0] as ClaudeJobRequest;
     const jobId = req.jobId as string;
     expect(jobId).toBeTruthy();
-    expect(req.sandbox?.tmpDir).toBe(join(runDir(jobId), "tmp"));
+    expect(req.sandbox?.tmpDir).toBe(join(runDir(jobId), "t"));
     expect(req.sandbox?.denyRead).toContain(join(fx.home, ".ssh"));
     expect(req.sandbox?.denyRead).toContain(join(sandboxScratch, "data"));
   });
 
-  test("the run root and runs dir are created 0700, outside every deny entry (Task 4b)", async () => {
+  test("the run root and r dir are created 0700, outside every deny entry (Task 4b)", async () => {
     const root = join(scratch(), "cache", "synapse");
     handlers.delete(STEP_JOB);
     registerStepJob({
@@ -586,9 +594,9 @@ describe("develop sandbox (ADR-040)", () => {
     const id = await developed();
     expect(taskRow(id)?.status).toBe("awaiting_approval");
     const req = requests[0] as ClaudeJobRequest;
-    expect(req.sandbox?.tmpDir).toBe(join(root, "runs", req.jobId as string, "tmp"));
+    expect(req.sandbox?.tmpDir).toBe(join(root, "r", hex(req.jobId as string).slice(0, 8), "t"));
     expect(statSync(root).mode & 0o777).toBe(0o700);
-    expect(statSync(join(root, "runs")).mode & 0o777).toBe(0o700);
+    expect(statSync(join(root, "r")).mode & 0o777).toBe(0o700);
     const tmp = req.sandbox?.tmpDir as string;
     for (const e of req.sandbox?.denyRead ?? []) {
       expect(tmp === e || tmp.startsWith(`${e}/`)).toBe(false);
@@ -657,6 +665,79 @@ describe("develop sandbox (ADR-040)", () => {
     const out = stepRow(id, "develop")?.output as Record<string, unknown>;
     expect(out.sandboxPlaceholdersRemoved).toBe(2);
     expect(existsSync(join(repo, ".git", "branches"))).toBe(false);
+  });
+
+  test("run dir names: 8 hex of sha256(jobId), longer on a collision, null when all are taken (fix round 2)", () => {
+    const h = hex("job-1");
+    const taken = new Set<string>();
+    const exists = (p: string) => taken.has(p);
+    expect(runScratchDir("/c/s/0123abcd", "job-1", exists)).toBe(
+      `/c/s/0123abcd/r/${h.slice(0, 8)}`,
+    );
+    taken.add(`/c/s/0123abcd/r/${h.slice(0, 8)}`);
+    expect(runScratchDir("/c/s/0123abcd", "job-1", exists)).toBe(
+      `/c/s/0123abcd/r/${h.slice(0, 12)}`,
+    );
+    taken.add(`/c/s/0123abcd/r/${h.slice(0, 12)}`);
+    taken.add(`/c/s/0123abcd/r/${h.slice(0, 16)}`);
+    expect(runScratchDir("/c/s/0123abcd", "job-1", exists)).toBeNull();
+    // The path the observed real-CLI layout needs: well under the 64-byte limit.
+    const t = `${runScratchDir("/home/ayush/.cache/synapse/0123abcd", "job-1", () => false)}/t`;
+    expect(Buffer.byteLength(t)).toBeLessThanOrEqual(RUN_TMP_MAX_BYTES);
+    expect(RUN_TMP_MAX_BYTES).toBe(64);
+  });
+
+  test("a tmpDir over 64 bytes refuses the run: sandbox_path_too_long, nothing created (fix round 2)", async () => {
+    const root = join(scratch(), "x".repeat(70));
+    handlers.delete(STEP_JOB);
+    registerStepJob({
+      db,
+      settings,
+      steps,
+      handlers,
+      orchestrator: {
+        run: async (req: ClaudeJobRequest) => {
+          requests.push(req);
+          return reply(req);
+        },
+      },
+      sandbox: { runRoot: root, home: fx.home, protectedDirs: [], maskedRoots: [] },
+    });
+    const id = await developed();
+    expect(requests).toHaveLength(0);
+    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("sandbox_path_too_long");
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.hint).toBe(SANDBOX_PATH_TOO_LONG_HINT);
+    expect(SANDBOX_PATH_TOO_LONG_HINT).toContain("XDG_CACHE_HOME");
+    expect(existsSync(root)).toBe(false);
+    expect(leaseRow()).toBeUndefined();
+  });
+
+  test("a sandbox init failure inside the Bash tool_result is sandbox_unavailable, not failed tests (fix round 2)", async () => {
+    const msg =
+      "Sandbox is required but failed to initialize: Failed to create bridge sockets after 5 attempts. Restart to retry. Running it outside the sandbox (dangerouslyDisableSandbox) is not allowed either.";
+    reply = editingRun(undefined, [tool("Bash", { command: "bun test" }, msg, true)], false);
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("sandbox_unavailable");
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.failure).toBe("sandbox_unavailable");
+    expect(out.testsPassed).toBeUndefined();
+    expect(pendingOf("engineering.commit")).toBeUndefined();
+    expect(leaseRow()).toBeDefined();
+  });
+
+  test("a failing test run that merely mentions a sandbox stays an ordinary result (fix round 2)", async () => {
+    reply = editingRun(
+      undefined,
+      [tool("Bash", { command: "bun test" }, "1 fail\nexpected sandbox to be ready", true)],
+      false,
+    );
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.testsPassed).toBe(false);
   });
 
   test("with the setting off the request has no sandbox", async () => {
@@ -1725,34 +1806,34 @@ describe("final review fixes", () => {
 });
 
 describe("startup sweep of run scratch (fix round 1)", () => {
-  test("leftover run dirs are removed; the runs dir stays", () => {
+  test("leftover run dirs are removed; the r dir stays", () => {
     const dir = scratch();
-    mkdirSync(join(dir, "runs", "a", "tmp"), { recursive: true });
-    writeFileSync(join(dir, "runs", "a", "tmp", "f"), "x");
-    mkdirSync(join(dir, "runs", "b"));
-    writeFileSync(join(dir, "runs", "stray-file"), "x");
+    mkdirSync(join(dir, "r", "a", "tmp"), { recursive: true });
+    writeFileSync(join(dir, "r", "a", "tmp", "f"), "x");
+    mkdirSync(join(dir, "r", "b"));
+    writeFileSync(join(dir, "r", "stray-file"), "x");
     writeFileSync(join(dir, "keep.txt"), "x");
     sweepRunScratch(dir);
-    expect(readdirSync(join(dir, "runs"))).toEqual([]);
+    expect(readdirSync(join(dir, "r"))).toEqual([]);
     expect(existsSync(join(dir, "keep.txt"))).toBe(true);
   });
 
-  test("a missing runs dir is a no-op", () => {
+  test("a missing r dir is a no-op", () => {
     const dir = scratch();
     expect(() => sweepRunScratch(dir)).not.toThrow();
-    expect(existsSync(join(dir, "runs"))).toBe(false);
+    expect(existsSync(join(dir, "r"))).toBe(false);
   });
 
   test("best effort: one undeletable entry logs a fixed line and the rest go", () => {
     const errors = spyOn(console, "error").mockImplementation(() => {});
     const dir = scratch();
-    const locked = join(dir, "runs", "a", "locked");
+    const locked = join(dir, "r", "a", "locked");
     mkdirSync(join(locked, "inner"), { recursive: true });
-    mkdirSync(join(dir, "runs", "b"));
+    mkdirSync(join(dir, "r", "b"));
     chmodSync(locked, 0o000);
     try {
       expect(() => sweepRunScratch(dir)).not.toThrow();
-      expect(readdirSync(join(dir, "runs"))).toEqual(["a"]);
+      expect(readdirSync(join(dir, "r"))).toEqual(["a"]);
       expect(errors.mock.calls).toEqual([["engineering.step: run scratch sweep failed"]]);
     } finally {
       errors.mockRestore();
