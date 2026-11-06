@@ -16,5 +16,6 @@ export * from "./outgoing";
 export * from "./patterns";
 export * from "./people";
 export * from "./permissions";
+export * from "./pull-requests";
 export * from "./repository";
 export * from "./urgency";
