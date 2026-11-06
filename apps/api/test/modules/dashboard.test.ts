@@ -126,7 +126,7 @@ describe("health hints", () => {
     expect(HEALTH_LABELS.sandbox).toBe("Test sandbox");
     expect(HEALTH_LABELS.claude_settings).toBe("Claude Code settings");
     expect(HEALTH_HINTS.sandbox).toBe(
-      "Install bubblewrap and socat (sudo apt install bubblewrap socat), then retry",
+      "Install bubblewrap and socat (sudo apt install bubblewrap socat), then cancel this task and propose it again.",
     );
     expect(HEALTH_HINTS.claude_settings).toContain("sandbox options");
     expect(HEALTH_HINTS.claude_settings).toContain("allow entries");

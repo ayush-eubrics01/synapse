@@ -9,6 +9,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -16,6 +17,8 @@ import {
   type AIExecutionResult,
   type Approval,
   type ClaudeJobRequest,
+  COMMIT_SUBJECT_MAX,
+  isValidApprovalText,
   JobError,
   type Operation,
   type RawToolResult,
@@ -23,7 +26,6 @@ import {
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock, newId } from "@synapse/shared";
 import { and, eq, sql } from "drizzle-orm";
-import { Hono } from "hono";
 import type { Container } from "../../src/container";
 import { ApprovalEngine } from "../../src/core/approvals/approvals";
 import { AuditLogger } from "../../src/core/audit/audit";
@@ -53,7 +55,7 @@ import {
   STEP_JOB,
 } from "../../src/modules/engineering-tasks/lock";
 import { EngineeringTaskService } from "../../src/modules/engineering-tasks/service";
-import { EngineeringStepService } from "../../src/modules/engineering-tasks/steps";
+import { commitMessage, EngineeringStepService } from "../../src/modules/engineering-tasks/steps";
 import {
   EngineeringTaskError,
   EngineeringTaskStore,
@@ -738,6 +740,48 @@ describe("develop sandbox (ADR-040)", () => {
     expect(taskRow(id)?.status).toBe("awaiting_approval");
     const out = stepRow(id, "develop")?.output as Record<string, unknown>;
     expect(out.testsPassed).toBe(false);
+  });
+
+  test("passing test output that mentions an unavailable sandbox stays an ordinary result (final review)", async () => {
+    reply = editingRun(
+      undefined,
+      [
+        tool(
+          "Bash",
+          { command: "bun test" },
+          "(pass) api > returns 503 when the sandbox is unavailable\n1 pass\n0 fail",
+          false,
+        ),
+      ],
+      true,
+    );
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+    expect(taskRow(id)?.failure).toBeNull();
+  });
+
+  test("the CLI sandbox message after an Exit code line is still sandbox_unavailable (final review)", async () => {
+    reply = editingRun(
+      undefined,
+      [
+        tool(
+          "Bash",
+          { command: "bun test" },
+          "Exit code 1\nSandbox is required but failed to initialize: x",
+          true,
+        ),
+      ],
+      false,
+    );
+    const id = await developed();
+    expect(taskRow(id)?.failure).toBe("sandbox_unavailable");
+  });
+
+  test("generated commit subject and PR title are capped at the edit limits (final review)", () => {
+    const title = "t".repeat(300);
+    const msg = commitMessage({ id: "tk", title, approvedDescription: null });
+    expect((msg.split("\n")[0] ?? "").length).toBe(COMMIT_SUBJECT_MAX);
+    expect(isValidApprovalText("commitMessage", msg.split("\n")[0] ?? "")).toBe(true);
   });
 
   test("with the setting off the request has no sandbox", async () => {
@@ -1816,6 +1860,20 @@ describe("startup sweep of run scratch (fix round 1)", () => {
     sweepRunScratch(dir);
     expect(readdirSync(join(dir, "r"))).toEqual([]);
     expect(existsSync(join(dir, "keep.txt"))).toBe(true);
+  });
+
+  test("a symlinked r dir is not followed (final review)", () => {
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    const dir = scratch();
+    const target = scratch();
+    writeFileSync(join(target, "victim"), "x");
+    symlinkSync(target, join(dir, "r"));
+    try {
+      sweepRunScratch(dir);
+      expect(existsSync(join(target, "victim"))).toBe(true);
+    } finally {
+      errors.mockRestore();
+    }
   });
 
   test("a missing r dir is a no-op", () => {

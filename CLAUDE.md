@@ -91,7 +91,7 @@ claude -p "<prompt naming exact tools and arguments>" \
 - Never use `--tools`; it hides MCP connector tools. Use `--allowedTools`/`--disallowedTools`.
 - Always allow `ToolSearch`; connector tools are deferred.
 - Every run's env sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` and `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` (hermetic: never the user's memory or any CLAUDE.md); path scopes use the absolute `//` form, e.g. `Read(//abs/repo/**)`.
-- Develop runs (the only engineering runs that grant Bash) merge a `sandbox` block into `$OVERRIDE` (no network, `/run`, `/var/run`, `/tmp` and credential directories masked, writes only in the repository) and set `TMPDIR` to a private per-run directory under `~/.cache/synapse` (validator rule M, ADR-040). `engineering.sandbox.enabled` off means no develop runs, never an unsandboxed one. A user `sandbox` key in `~/.claude/settings.json` is treated as widening and refuses engineering runs.
+- Develop runs (the only engineering runs that grant Bash) merge a `sandbox` block into `$OVERRIDE` (no network, `/run`, `/var/run`, `/tmp` and credential directories masked, writes only in the repository) and set `TMPDIR` to a private per-run directory under `~/.cache/synapse` (validator rule M, ADR-040). `engineering.sandbox.enabled` off means no develop runs, never an unsandboxed one. A user `sandbox` key in `~/.claude/settings.json` is treated as widening and refuses engineering and code-answer (reader) runs.
 - Read quota from the `rate_limit_event` (five-hour and seven-day utilization) and gate jobs on it. (ADR-029)
 
 ## Before implementing a feature

@@ -37,7 +37,7 @@
 - **Exact home deny list** (F1.3), relative to `$HOME`: `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, `.config`, `.claude`, `.netrc`, `.git-credentials`, `.npmrc`, `.pypirc`, `.cargo/credentials`, `.cargo/credentials.toml`. The Synapse data dir and the backup dir are added to it. An entry is kept only when it is not the repository and does not contain it.
 - **Exact copy:**
   - rule M reason: `engineering Bash requires the sandbox`;
-  - sandbox hint (task reason `sandbox_unavailable` and health hint `sandbox`): "Install bubblewrap and socat (sudo apt install bubblewrap socat), then retry";
+  - sandbox hint (task reason `sandbox_unavailable` and health hint `sandbox`): "Install bubblewrap and socat (sudo apt install bubblewrap socat), then cancel this task and propose it again.";
   - plan card when on: "Tests run in a sandbox: no network, writes only inside the repository";
   - plan card when off and task reason `sandbox_disabled`: "Develop runs are disabled: the test sandbox is turned off";
   - `claude_settings` hint: "Your ~/.claude/settings.json allows tools Synapse must control; engineering and code-answer runs are refused until those allow entries are removed and the API is restarted";

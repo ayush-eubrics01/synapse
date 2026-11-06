@@ -118,7 +118,7 @@ const REASONS: Record<string, string> = {
   checks_failing:
     "The pull request's checks are failing, so it was not merged. Fix the checks, then use Check again, or cancel the task.",
   sandbox_unavailable:
-    "The test sandbox could not start. Install bubblewrap and socat (sudo apt install bubblewrap socat), then restart Synapse.",
+    "The test sandbox could not start. Install bubblewrap and socat (sudo apt install bubblewrap socat), then cancel this task and propose it again.",
   sandbox_path_too_long:
     "The sandbox temp path is too long. Set XDG_CACHE_HOME to a shorter path and restart Synapse.",
   repo_in_masked_path:

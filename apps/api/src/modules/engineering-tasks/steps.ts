@@ -4,6 +4,7 @@ import {
   type Approval,
   type ApprovalTextEdit,
   type ApprovalTextField,
+  COMMIT_SUBJECT_MAX,
   type EngineeringStep,
   type GitWorkflow,
   GitWorkflowError,
@@ -13,12 +14,13 @@ import {
   JobError,
   type Operation,
   PR_BODY_EDIT_MAX,
+  PR_TITLE_MAX,
   type PrStatus,
   PullRequestError,
   type PullRequestProvider,
   type RiskLevel,
   retryDecision,
-  SANDBOX_FAILURE_RE,
+  SANDBOX_TOOL_RESULT_RE,
   type TestRun,
   testResultLabel,
   testRunSchema,
@@ -65,6 +67,12 @@ const PAYLOAD_FILES_MAX = 500;
 const PAYLOAD_COMMITS_MAX = 50;
 
 const clip = (s: string, n: number) => [...s].slice(0, n).join("");
+/** Clips to n code points, then further until the UTF-16 length is within n (zod `max` counts units). */
+const clipUnits = (s: string, n: number) => {
+  let r = clip(s, n);
+  while (r.length > n) r = [...r].slice(0, -1).join("");
+  return r;
+};
 const codeOf = (e: unknown): string =>
   e instanceof GitWorkflowError || e instanceof PullRequestError ? e.code : "git_failed";
 
@@ -586,7 +594,9 @@ export class EngineeringStepService {
     // reports it in the Bash tool_result. That is sandbox_unavailable (needs the user), never a
     // failed test run.
     if (
-      result.toolResults.some((r) => r.toolName === "Bash" && SANDBOX_FAILURE_RE.test(r.content))
+      result.toolResults.some(
+        (r) => r.toolName === "Bash" && SANDBOX_TOOL_RESULT_RE.test(r.content),
+      )
     ) {
       return this.attention(
         taskId,
@@ -793,7 +803,7 @@ export class EngineeringStepService {
       commits: commits.slice(0, PAYLOAD_COMMITS_MAX),
       commitsTotal: commits.length,
       mergeSha: sha,
-      prTitle: clip(task.title, 256),
+      prTitle: clipUnits(task.title, PR_TITLE_MAX),
       prBody: prBody(task, developTestResult(this.stepOutput(task.id, "develop"))),
       configFingerprint: configNow,
       ...deploy,
@@ -1657,9 +1667,10 @@ export class EngineeringStepService {
 /** E10: `<title>`, the approved description (summarised), `Task: <id>`. */
 export function commitMessage(task: Pick<TaskRow, "id" | "title" | "approvedDescription">): string {
   const desc = clip((task.approvedDescription ?? "").trim(), COMMIT_DESCRIPTION_MAX);
+  const subject = clipUnits(task.title, COMMIT_SUBJECT_MAX);
   return desc === ""
-    ? `${task.title}\n\nTask: ${task.id}`
-    : `${task.title}\n\n${desc}\n\nTask: ${task.id}`;
+    ? `${subject}\n\nTask: ${task.id}`
+    : `${subject}\n\n${desc}\n\nTask: ${task.id}`;
 }
 
 /** M1: the develop step's test result; output from before the final review has no `testRun`. */

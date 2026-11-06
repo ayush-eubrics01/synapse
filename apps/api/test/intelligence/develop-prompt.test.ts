@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildDevelopRequest,
   repoInDenyMask,
@@ -147,5 +150,32 @@ describe("buildDevelopRequest sandbox", () => {
     );
     expect(req.sandbox?.tmpDir).toBe(SANDBOX.tmpDir);
     expect(req.sandbox?.denyRead).toEqual([...HOME_ENTRIES, DATA]);
+  });
+});
+
+describe("symlinked home and data dirs (final review)", () => {
+  test("the mask uses realpaths, and a repo under the real .config is refused", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "synapse-symhome-")));
+    try {
+      const realHome = join(base, "real-home");
+      const realData = join(base, "real-data");
+      mkdirSync(join(realHome, ".config", "app"), { recursive: true });
+      mkdirSync(realData, { recursive: true });
+      const linkHome = join(base, "link-home");
+      const linkData = join(base, "link-data");
+      symlinkSync(realHome, linkHome);
+      symlinkSync(realData, linkData);
+
+      const deny = sandboxDenyRead(linkHome, [linkData]);
+      expect(deny).toContain(join(realHome, ".config"));
+      expect(deny).toContain(realData);
+      expect(deny.some((d) => d.startsWith(linkHome) || d === linkData)).toBe(false);
+      // The repo realpath is under the real .config; the symlinked home must not hide that.
+      expect(repoInDenyMask(linkHome, [linkData], join(realHome, ".config", "app"))).toBe(true);
+      expect(repoInDenyMask(linkHome, [linkData], join(realData, "x"))).toBe(true);
+      expect(repoInDenyMask(linkHome, [linkData], join(base, "elsewhere"))).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });

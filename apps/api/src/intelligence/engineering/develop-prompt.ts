@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import {
   type ClaudeJobRequest,
@@ -77,7 +78,19 @@ export const SANDBOX_HOME_DENY: readonly string[] = [
 const stripSlashes = (p: string) => p.replace(/\/+$/, "");
 const atOrUnder = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
 
-const homeEntries = (home: string) => SANDBOX_HOME_DENY.map((rel) => stripSlashes(join(home, rel)));
+/** The realpath of `p` when it exists, else `p` (a symlinked home or data dir must compare and mask by its target). */
+const real = (p: string): string => {
+  try {
+    return stripSlashes(realpathSync(p));
+  } catch {
+    return stripSlashes(p);
+  }
+};
+
+const homeEntries = (home: string) => {
+  const h = real(home);
+  return SANDBOX_HOME_DENY.map((rel) => real(join(h, rel)));
+};
 
 /**
  * The sandbox `denyRead` list (F1.3): each SANDBOX_HOME_DENY entry under `home`, then
@@ -87,7 +100,7 @@ const homeEntries = (home: string) => SANDBOX_HOME_DENY.map((rel) => stripSlashe
  * first-seen order. Pure.
  */
 export function sandboxDenyRead(home: string, protectedDirs: readonly string[]): string[] {
-  return [...new Set([...homeEntries(home), ...protectedDirs.map(stripSlashes)])];
+  return [...new Set([...homeEntries(home), ...protectedDirs.map(real)])];
 }
 
 /**
@@ -130,7 +143,7 @@ export function repoInMaskedPath(
   return roots.some((r) => atOrUnder(repo, stripSlashes(r)));
 }
 
-/** The develop run's sandbox inputs (ADR-040); `tmpDir` is the per-run `<run scratch>/tmp`. */
+/** The develop run's sandbox inputs (ADR-040); `tmpDir` is the per-run `<instance>/r/<8hex>/t`. */
 export interface DevelopSandbox {
   tmpDir: string;
   home: string;

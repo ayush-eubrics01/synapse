@@ -60,6 +60,15 @@ export const SANDBOX_MASKED_ROOTS = ["/run", "/var/run", "/tmp"] as const;
 export const SANDBOX_FAILURE_RE =
   /sandbox\.failIfUnavailable|without a working sandbox|sandbox is required but failed to initiali[sz]e|sandbox[^\n]{0,80}?\b(unavailable|not available|failed to (start|initiali[sz]e))/i;
 
+/**
+ * A develop run's Bash tool_result is repository-controlled test output, so only the CLI's own
+ * in-run message counts, anchored at the start of the content (optionally after an
+ * "Exit code N" line): "Sandbox is required but failed to initialize: ...". The generic
+ * SANDBOX_FAILURE_RE is for stderr and the result text only.
+ */
+export const SANDBOX_TOOL_RESULT_RE =
+  /^\s*(?:Exit code \d+\r?\n\s*)?Sandbox is required but failed to initiali[sz]e/i;
+
 /** What modules submit; the orchestrator fills the rest. */
 export interface ClaudeJobRequest {
   jobId?: string;

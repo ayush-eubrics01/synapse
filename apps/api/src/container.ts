@@ -118,7 +118,7 @@ import { registerCodeAnswerJob } from "./workers/code-answer/generate";
 import { registerCommitmentJobs } from "./workers/commitments";
 import { registerInvestigateJob } from "./workers/engineering/investigate";
 import { registerPickupJobs } from "./workers/engineering/pickup";
-import { registerStepJob, sweepRunScratch } from "./workers/engineering/steps";
+import { registerStepJob } from "./workers/engineering/steps";
 import { createRunHelpers } from "./workers/intelligence-shared";
 import { registerJiraJobs } from "./workers/jira";
 import { registerOpsJobs } from "./workers/ops";
@@ -236,7 +236,7 @@ export interface ContainerDeps {
   /**
    * Replaces the develop-run cache base (default `defaultRunScratchRoot(process.env)`, i.e.
    * `~/.cache/synapse`). The instance's run root is `instanceRunRoot(base, dataDir)`, and runs get
-   * `<it>/runs/<jobId>` (ADR-040). Unused for `:memory:`.
+   * `<it>/r/<8hex>/t` (ADR-040). Unused for `:memory:`.
    */
   runCacheBase?: string;
 }
@@ -725,8 +725,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
       ...(deps.sandboxMaskedRoots ? { maskedRoots: deps.sandboxMaskedRoots } : {}),
     },
   });
-  // Startup: no engineering step runs in this process yet, so every run dir is a leftover.
-  sweepRunScratch(runRoot);
+  // The leftover-run sweep is not here: main.ts runs it after the port bind (a second process that
+  // fails to bind must not delete the live process's runs).
   const diskFree = deps.diskFree ?? defaultDiskFree;
   const startedAt = clock.now();
   const backup = new BackupService({

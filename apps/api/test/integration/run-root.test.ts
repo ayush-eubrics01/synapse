@@ -1,9 +1,10 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AIProvider } from "@synapse/contracts";
 import { createContainer } from "../../src/container";
 import { instanceRunRoot, loadConfig } from "../../src/core/config/config";
+import { sweepRunScratch } from "../../src/workers/engineering/steps";
 import { tempDir } from "../fixtures/git-repo";
 
 /**
@@ -57,10 +58,13 @@ test("two containers with different data dirs never sweep each other's runs", ()
   expect(existsSync(join(aRoot, "r", "a1b2c3d4", "tmp", "f"))).toBe(true);
   mkdirSync(join(b.runRoot, "r", "e5f6a7b8"), { recursive: true });
 
-  // A restarts: only its own leftovers go.
+  // A restarts: createContainer never sweeps (a second process that then fails to bind must not
+  // delete the live service's runs); main.ts sweeps after the bind, and only A's own leftovers go.
   a.sqlite.close();
   const a2 = container(root, "a", cache);
   expect(a2.runRoot).toBe(aRoot);
+  expect(readdirSync(join(aRoot, "r"))).toEqual(["a1b2c3d4"]);
+  sweepRunScratch(a2.runRoot);
   expect(readdirSync(join(aRoot, "r"))).toEqual([]);
   expect(existsSync(join(b.runRoot, "r", "e5f6a7b8"))).toBe(true);
   // Nothing is created at startup beyond what a run needs.
@@ -82,4 +86,15 @@ test("an in-memory container creates no run root until a develop run needs one",
   } finally {
     c.sqlite.close();
   }
+});
+
+test("main.ts sweeps the run scratch only after the server binds, next to recoverOnStartup", () => {
+  const src = readFileSync(join(import.meta.dir, "../../src/main.ts"), "utf8");
+  const serve = src.indexOf("Bun.serve(");
+  const sweep = src.indexOf("sweepRunScratch(c.runRoot)");
+  const recover = src.indexOf("recoverOnStartup(");
+  expect(serve).toBeGreaterThan(-1);
+  expect(sweep).toBeGreaterThan(serve);
+  expect(recover).toBeGreaterThan(serve);
+  expect(src.indexOf("createContainer(")).toBeLessThan(serve);
 });

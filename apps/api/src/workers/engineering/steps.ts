@@ -77,13 +77,20 @@ export function runScratchDir(
 
 /**
  * Removes leftover `<runRoot>/r/*` entries (develop runs whose process was killed before its
- * `finally` ran). Called once at API start, when no engineering step runs in this process. Best
+ * `finally` ran). Called once by main.ts after the port bind (never from createContainer), when no engineering step runs in this process. Best
  * effort: an entry that cannot be removed logs one fixed line and the others still go.
  */
 export function sweepRunScratch(runRoot: string): void {
   const runs = join(runRoot, "r");
   let entries: string[];
   try {
+    // Like prepareRunsDir: `r` must be a real directory owned by this user (not a symlink).
+    const st = lstatSync(runs);
+    const uid = process.getuid?.();
+    if (!st.isDirectory() || (uid !== undefined && st.uid !== uid)) {
+      console.error("engineering.step: run scratch sweep skipped, run dir is not private");
+      return;
+    }
     entries = readdirSync(runs);
   } catch {
     return; // no runs dir yet

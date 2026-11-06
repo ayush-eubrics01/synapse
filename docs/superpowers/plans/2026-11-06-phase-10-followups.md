@@ -78,3 +78,7 @@ Network-independent recovery and retryable pickup (I1), cleanup return-branch fa
   - The investigation timeout (20 minutes) is fixed; there is no setting.
 
 - ~~The spec says the commit message and PR title/body can be edited before approval. No route supports editing yet.~~ Done in follow-ups batch 1.
+
+## Follow-ups batch 1: final review notes
+
+- Placeholders left by a killed run count as pre-existing: if the API dies mid-run, the sandbox's empty placeholder files and directories stay in the repository's `.git`, are counted as "before" on the next run, and are never removed. They are harmless to git and keep the fingerprint consistent.
