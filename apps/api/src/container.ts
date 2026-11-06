@@ -21,6 +21,7 @@ import { EventPublisher } from "./core/events/publisher";
 import {
   authCheck,
   bunVersionCheck,
+  claudeActivityCheck,
   claudeCheck,
   databaseCheck,
   desktopNotifierCheck,
@@ -53,6 +54,7 @@ import { LocalGitProvider } from "./integrations/repository/local-git";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
 import { AutoReplyService } from "./modules/auto-reply/service";
+import { ClaudeActivityService } from "./modules/claude-activity/service";
 import { ExtractionQueue } from "./modules/commitments/extraction-queue";
 import { FollowupService } from "./modules/commitments/followups";
 import { CommitmentLifecycle } from "./modules/commitments/lifecycle";
@@ -86,6 +88,7 @@ import { SecurityFlagsService } from "./modules/security-flags/service";
 import { registerAutoReplyJobs } from "./workers/auto-reply/evaluate";
 import { registerDriftCheck } from "./workers/brain/drift";
 import { registerInspectionJobs } from "./workers/brain/inspect";
+import { registerClaudeActivityJobs } from "./workers/claude-activity";
 import { registerCommitmentJobs } from "./workers/commitments";
 import { registerInvestigateJob } from "./workers/engineering/investigate";
 import { registerPickupJobs } from "./workers/engineering/pickup";
@@ -119,6 +122,8 @@ export interface Container {
   auth: AuthMonitor;
   orchestrator: ClaudeOrchestrator;
   health: HealthService;
+  /** Claude Code session observation (Phase 10b, ADR-036). */
+  claudeActivity: ClaudeActivityService;
   inbox: InboxStore;
   conversations: InboxConversations;
   urgent: UrgentInbox;
@@ -175,6 +180,8 @@ export interface ContainerDeps {
   prs?: PullRequestProvider;
   /** Desktop notification adapter. Defaults to a no-op; main.ts injects the real one. */
   notifier?: DesktopNotifier & NotifierHealth;
+  /** Replaces the Claude Code projects dir that the activity scanner reads (tests inject a temp dir). */
+  claudeProjectsDir?: string;
 }
 
 const CORE_MODULES = [
@@ -252,6 +259,20 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
       ? mkdtempSync(join(tmpdir(), "synapse-scratch-"))
       : join(dirname(config.dbPath), "scratch");
   mkdirSync(scratchDir, { recursive: true });
+  const claudeActivity = new ClaudeActivityService({
+    db,
+    clock,
+    settings,
+    events,
+    audit,
+    projectsDir:
+      deps.claudeProjectsDir ??
+      settings.get("claudeActivity.projectsDir") ??
+      (config.dbPath === ":memory:"
+        ? join(scratchDir, "no-claude-projects")
+        : join(home, ".claude", "projects")),
+  });
+  registerClaudeActivityJobs({ handlers, scheduler, settings, service: claudeActivity });
   const orchestrator = new ClaudeOrchestrator({
     db,
     clock,
@@ -564,6 +585,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     "security-rules": securityRulesCheck(securityFlags),
     "screening-rules": screeningRulesCheck(screening),
     "desktop-notifier": desktopNotifierCheck(notifier),
+    claude_activity: claudeActivityCheck(claudeActivity),
   });
 
   const dashboard = new DashboardService({
@@ -604,6 +626,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     auth,
     orchestrator,
     health,
+    claudeActivity,
     inbox,
     conversations,
     urgent,
