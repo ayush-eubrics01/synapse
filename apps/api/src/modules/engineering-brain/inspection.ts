@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import {
   type FactKind,
-  type InspectionOutput,
+  INSPECTION_MAX_FACTS,
   isSafeAbsolutePath,
   type RepositoryProvider,
 } from "@synapse/contracts";
@@ -11,6 +11,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
+import type { RawInspection } from "../../intelligence/brain/inspect-prompt";
 import { type DropReason, normaliseFactContent, verifyFacts } from "./evidence";
 
 const { repositories, projectRepositories, projectFacts, jobs } = schema;
@@ -100,7 +101,10 @@ export class InspectionService {
     );
   }
 
-  /** `repo.registered` consumer: the first inspection, at the head seen on registration. */
+  /**
+   * `repo.registered` consumer: the first inspection, at the head seen on registration, unless an
+   * inspection of the repository is already queued or running.
+   */
   onRegistered(tx: DbOrTx, repoId: string): void {
     const repo = tx
       .select({ headSha: repositories.headSha })
@@ -108,13 +112,15 @@ export class InspectionService {
       .where(eq(repositories.id, repoId))
       .get();
     if (!repo) return; // unregistered before the event was dispatched
+    if (this.liveJob(tx, repoId)) return;
     this.enqueue(tx, repoId, inspectKey(repoId, repo.headSha));
   }
 
   /**
    * Weekly (C6): reads each repository's current HEAD, stores it as `head_sha`, and enqueues an
-   * inspection when it differs from `inspected_head_sha`. A repository whose stored drift says
-   * the path is missing, or whose inspection fails now, is skipped. Never changes the registry
+   * inspection when it differs from `inspected_head_sha` and none is queued or running. A
+   * repository whose stored drift says the path is missing, or whose inspection fails now, is
+   * skipped. Never changes the registry
    * otherwise.
    */
   async weeklyCheck(): Promise<WeeklySummary> {
@@ -147,6 +153,7 @@ export class InspectionService {
               .run();
           }
           if (head === null || head === current.inspected) return false;
+          if (this.liveJob(tx, repo.id)) return false;
           return this.enqueue(tx, repo.id, inspectKey(repo.id, head)).created;
         },
         { behavior: "immediate" },
@@ -192,20 +199,34 @@ export class InspectionService {
   /**
    * Verifies the run's facts against the repository, inserts the survivors as `needs_review`
    * (skipping any whose kind and normalised content match an approved, rejected or pending fact of
-   * the project), sets `inspected_head_sha` and publishes `brain.facts_proposed`. Approved facts
-   * are never touched (C9). One transaction.
+   * the project), at most 40, sets `inspected_head_sha` and publishes `brain.facts_proposed`.
+   * Approved facts are never touched (C9). One transaction, which first re-checks that the
+   * repository is still registered and linked to the project: if not, nothing is written.
    */
   record(input: {
     target: InspectionTarget;
-    output: InspectionOutput;
+    output: RawInspection;
     claudeRunId: string | null;
     permissionDenials: readonly string[];
-  }): InspectionSummary {
+  }): InspectionSummary | { skipped: "unregistered" } {
     const { db, clock, events, audit } = this.deps;
     const { target, output } = input;
     const verified = verifyFacts(target.localPath, output.facts);
+    const kept = verified.kept.slice(0, INSPECTION_MAX_FACTS);
     return db.transaction(
       (tx) => {
+        const linked = tx
+          .select({ id: projectRepositories.repositoryId })
+          .from(projectRepositories)
+          .innerJoin(repositories, eq(repositories.id, projectRepositories.repositoryId))
+          .where(
+            and(
+              eq(projectRepositories.repositoryId, target.repositoryId),
+              eq(projectRepositories.projectId, target.projectId),
+            ),
+          )
+          .get();
+        if (!linked) return { skipped: "unregistered" as const };
         const seen = new Set(
           tx
             .select({ kind: projectFacts.kind, content: projectFacts.content })
@@ -222,7 +243,7 @@ export class InspectionService {
         const now = isoNow(clock);
         let inserted = 0;
         let duplicates = 0;
-        for (const f of verified.kept) {
+        for (const f of kept) {
           const key = dedupeKey(f.kind, f.content);
           if (seen.has(key)) {
             duplicates++;
@@ -288,11 +309,31 @@ export class InspectionService {
     );
   }
 
+  /**
+   * A run that stopped (max turns, timeout) or failed: audited with the repository id and the
+   * kind only.
+   */
+  recordFailure(repositoryId: string, kind: string): void {
+    this.deps.db.transaction((tx) => {
+      this.deps.audit.record(tx, {
+        actor: "system",
+        module: MODULE,
+        action: "brain.inspect_failed",
+        workerProfile: "engineering",
+        targetRef: repositoryId,
+        result: "failed",
+        details: { repositoryId, kind },
+      });
+    });
+  }
+
+  /** One attempt only: an inspection is an expensive run, and a retry rarely fixes it. */
   private enqueue(tx: DbOrTx, repoId: string, key: string) {
     return this.deps.queue.enqueue(tx, {
       type: INSPECT_JOB,
       input: { repositoryId: repoId },
       idempotencyKey: key,
+      maxAttempts: 1,
     });
   }
 

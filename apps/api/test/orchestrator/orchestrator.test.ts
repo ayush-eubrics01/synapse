@@ -906,3 +906,44 @@ describe("beforeSpawn (Phase 6b I2)", () => {
     expect(calls).toBe(0);
   });
 });
+
+describe("user settings that widen engineering scope (Phase 9 guard)", () => {
+  const engineering = () =>
+    req({
+      workerProfile: "engineering",
+      priorityClass: "batch",
+      allowedTools: ["Read(/tmp/demo-repo/**)"],
+      workingDirectory: "/tmp/demo-repo",
+    });
+
+  test("an engineering run is refused before spawn; the provider is never called", async () => {
+    (provider as { userPermissionsWidenScope?: boolean }).userPermissionsWidenScope = true;
+    const e = await fails(run(engineering()));
+    expect(e.classified.kind).toBe("needs_attention");
+    expect(e.message).toBe(
+      "Claude Code user settings widen file or shell permissions; engineering runs are refused until they are removed and the API is restarted",
+    );
+    expect(e.classified.details).toEqual({ notSpawned: true });
+    expect(provider.requests).toHaveLength(0);
+    expect(runs()).toHaveLength(0);
+    const audit = db.select().from(schema.auditEvents).all();
+    expect(audit.map((a) => [a.action, a.details])).toEqual([
+      ["claude.request_rejected", { reason: "unsafe_user_settings" }],
+    ]);
+  });
+
+  test("collector and intelligence runs are unaffected", async () => {
+    (provider as { userPermissionsWidenScope?: boolean }).userPermissionsWidenScope = true;
+    await run(req());
+    await run(
+      req({ workerProfile: "intelligence", priorityClass: "batch", allowedTools: ["ToolSearch"] }),
+    );
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  test("clean settings let the engineering run through", async () => {
+    (provider as { userPermissionsWidenScope?: boolean }).userPermissionsWidenScope = false;
+    await run(engineering());
+    expect(provider.requests).toHaveLength(1);
+  });
+});

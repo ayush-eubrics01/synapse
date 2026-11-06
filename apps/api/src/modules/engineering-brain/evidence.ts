@@ -1,12 +1,29 @@
 import { realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, posix } from "node:path";
-import type { InspectionOutput } from "@synapse/contracts";
+import { isAbsolute, join, posix, relative } from "node:path";
+import { INSPECTION_MAX_CONTENT, type InspectionOutput } from "@synapse/contracts";
 import { contentCheck } from "../../intelligence/auto-reply/content-checks";
+import type { RawFact } from "../../intelligence/brain/inspect-prompt";
+
+export type { RawFact };
 
 type Fact = InspectionOutput["facts"][number];
 
-export type EvidenceDropReason = "unsafe_path" | "outside_repo" | "missing" | "not_file";
-export type DropReason = EvidenceDropReason | "content_secret" | "content_internal_url";
+/** Same limits as `evidenceSchema` and C6: checked here, after parsing, so one fact fails alone. */
+const MAX_EVIDENCE = 5;
+const MAX_PATH = 500;
+
+export type EvidenceDropReason =
+  | "unsafe_path"
+  | "sensitive_path"
+  | "outside_repo"
+  | "missing"
+  | "not_file";
+export type DropReason =
+  | EvidenceDropReason
+  | "too_much_evidence"
+  | "content_secret"
+  | "content_internal_url"
+  | "too_long";
 
 export interface VerifiedFacts {
   kept: Fact[];
@@ -19,6 +36,7 @@ export interface VerifiedFacts {
  * NUL byte or has any `..` segment (rejected before anything is resolved).
  */
 function relativeOrNull(p: string): string | null {
+  if (p.length > MAX_PATH) return null;
   if (p === "" || p.includes("\0") || isAbsolute(p) || p.startsWith("~")) return null;
   if (p.split(/[\\/]/).includes("..")) return null;
   const norm = posix.normalize(p).replace(/\/+$/, "");
@@ -40,14 +58,33 @@ function resolveInside(root: string, rel: string): Resolved {
   return { ok: true, real };
 }
 
+const SENSITIVE_BASENAMES: RegExp[] = [
+  /^\.env(\..*)?$/,
+  /\.(pem|key|p12|pfx)$/i,
+  /^id_(rsa|ed25519|ecdsa)(\.pub)?$/,
+  /^credentials\.json$/,
+  /^\.npmrc$/,
+];
+
+/** Git internals, env files, keys and credential files are never evidence, whatever they say. */
+function isSensitive(rel: string): boolean {
+  const segs = rel.split("/");
+  if (segs.includes(".git")) return true;
+  const base = segs[segs.length - 1] ?? "";
+  return SENSITIVE_BASENAMES.some((re) => re.test(base));
+}
+
 function checkEvidencePath(
   root: string,
   path: string,
 ): { ok: true; rel: string } | { ok: false; reason: EvidenceDropReason } {
   const rel = relativeOrNull(path);
   if (rel === null) return { ok: false, reason: "unsafe_path" };
+  if (isSensitive(rel)) return { ok: false, reason: "sensitive_path" };
   const r = resolveInside(root, rel);
   if (!r.ok) return r;
+  // A harmless name may be a symlink to a sensitive file inside the repo.
+  if (isSensitive(relative(root, r.real))) return { ok: false, reason: "sensitive_path" };
   try {
     if (!statSync(r.real).isFile()) return { ok: false, reason: "not_file" };
   } catch {
@@ -78,12 +115,15 @@ function maskRepoPaths(root: string, text: string): string {
 }
 
 /**
- * C6 evidence verification. A fact is kept only when every evidence path is relative, has no
- * `..`, and resolves (realpath) to an existing regular file strictly inside `repoRoot`. Facts whose
- * content fails the secret or internal-URL content check are dropped too. Kept evidence paths are
- * normalised (`./a//b` becomes `a/b`). Never logs or returns fact text beyond the kept facts.
+ * C6 evidence verification, on the facts as the model wrote them (nothing is clamped first).
+ * A fact is kept only when it cites 1 to 5 evidence entries and every path is relative, at most
+ * 500 characters, has no `..`, is not sensitive (`.git`, env files, keys, credentials), and
+ * resolves (realpath) to an existing regular file strictly inside `repoRoot`. Then its whole
+ * content must pass the secret and internal-URL checks, and only then is it held to 400
+ * characters (`too_long`; never cut). Kept evidence paths are normalised (`./a//b` becomes `a/b`).
+ * Never logs or returns fact text beyond the kept facts.
  */
-export function verifyFacts(repoRoot: string, facts: readonly Fact[]): VerifiedFacts {
+export function verifyFacts(repoRoot: string, facts: readonly RawFact[]): VerifiedFacts {
   const root = realpathSync(repoRoot).replace(/\/+$/, "");
   const kept: Fact[] = [];
   const dropped: Partial<Record<DropReason, number>> = {};
@@ -91,6 +131,10 @@ export function verifyFacts(repoRoot: string, facts: readonly Fact[]): VerifiedF
     dropped[r] = (dropped[r] ?? 0) + 1;
   };
   for (const f of facts) {
+    if (f.evidence.length > MAX_EVIDENCE) {
+      drop("too_much_evidence");
+      continue;
+    }
     const evidence: Fact["evidence"] = [];
     let bad: EvidenceDropReason | null = null;
     for (const e of f.evidence) {
@@ -110,7 +154,11 @@ export function verifyFacts(repoRoot: string, facts: readonly Fact[]): VerifiedF
       drop(issue);
       continue;
     }
-    kept.push({ ...f, evidence });
+    if ([...f.content].length > INSPECTION_MAX_CONTENT) {
+      drop("too_long");
+      continue;
+    }
+    kept.push({ kind: f.kind, content: f.content, evidence });
   }
   return { kept, dropped };
 }

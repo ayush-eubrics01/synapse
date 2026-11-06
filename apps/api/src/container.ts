@@ -40,7 +40,7 @@ import { SchedulerService } from "./core/scheduler/scheduler";
 import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
 import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notifier";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
-import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
+import { loadUserSettings } from "./integrations/claude-code/settings-override";
 import { JiraConnectorSource } from "./integrations/jira/connector-source";
 import { LocalGitProvider } from "./integrations/repository/local-git";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
@@ -214,14 +214,16 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   });
 
   const home = resolveHome(process.env);
+  // Plugin names and the user-permission widening flag, read once at startup (R34, Phase 9).
+  const userSettings = loadUserSettings(home);
   const provider =
     deps.provider ??
     new ClaudeCliProvider({
       binary: config.claudeBinary,
       env: { PATH: `${home}/.bun/bin:${home}/.local/bin:/usr/bin:/bin`, HOME: home },
       clock,
-      // Plugin names only, read once at startup (R34).
-      settingsOverride: loadSettingsOverride(home),
+      settingsOverride: userSettings.override,
+      userPermissionsWidenScope: userSettings.userPermissionsWidenScope,
     });
   const auth = new AuthMonitor(db, clock, settings, events, config.credentialsPath);
   const scratchDir =

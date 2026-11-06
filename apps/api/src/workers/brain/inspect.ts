@@ -25,6 +25,13 @@ const INSPECT_HANDLER_TIMEOUT_MS = 65 * 60_000;
 const WEEKLY_HANDLER_TIMEOUT_MS = 10 * 60_000;
 const REGISTERED_CONSUMER = "brain.inspect_on_register";
 
+/** `max_turns` or `timeout` when the run stopped on its budget; null for any other failure. */
+function stopKind(err: unknown): "max_turns" | "timeout" | null {
+  if (!(err instanceof JobError)) return null;
+  if (err.classified.details?.maxTurns === true) return "max_turns";
+  return err.classified.kind === "timeout" ? "timeout" : null;
+}
+
 export interface InspectionJobDeps extends InspectionServiceDeps {
   db: Db;
   clock: Clock;
@@ -75,7 +82,16 @@ export function registerInspectionJobs(deps: InspectionJobDeps): InspectionServi
         timeoutMinutes: settings.get("brain.inspect.timeoutMinutes"),
       },
     );
-    const result = await orchestrator.run(request, ctx.signal);
+    let result: Awaited<ReturnType<typeof orchestrator.run>>;
+    try {
+      result = await orchestrator.run(request, ctx.signal);
+    } catch (err) {
+      const stop = stopKind(err);
+      if (!stop) throw err;
+      // A run that ran out of turns or time is not retried: the user can "Inspect now".
+      service.recordFailure(repositoryId, stop);
+      throw new JobError({ kind: "needs_attention", message: `inspection run stopped (${stop})` });
+    }
     const parsed = parseInspection(result.finalText);
     // Not retried: a second expensive run is unlikely to fix the shape. Reason is content-free.
     if (!parsed.ok) throw new JobError({ kind: "parse_failed", message: parsed.reason });

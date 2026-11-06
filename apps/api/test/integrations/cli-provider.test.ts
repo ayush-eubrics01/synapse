@@ -416,3 +416,16 @@ describe("ClaudeCliProvider.getHealth", () => {
     expect((await provider({}, "/nonexistent/claude").getHealth()).status).toBe("down");
   });
 });
+
+describe("userPermissionsWidenScope", () => {
+  test("defaults to false and carries the startup flag when given", () => {
+    expect(provider({}).userPermissionsWidenScope).toBe(false);
+    const p = new ClaudeCliProvider({
+      binary: process.execPath,
+      env: { PATH: process.env.PATH ?? "" },
+      clock: new FakeClock("2026-11-05T00:00:00Z"),
+      userPermissionsWidenScope: true,
+    });
+    expect(p.userPermissionsWidenScope).toBe(true);
+  });
+});

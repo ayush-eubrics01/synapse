@@ -1,11 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { InspectionOutput } from "@synapse/contracts";
-import { normaliseFactContent, verifyFacts } from "../../src/modules/engineering-brain/evidence";
+import {
+  normaliseFactContent,
+  type RawFact,
+  verifyFacts,
+} from "../../src/modules/engineering-brain/evidence";
 import { initRepo, tempDir } from "../fixtures/git-repo";
 
-type Fact = InspectionOutput["facts"][number];
+type Fact = RawFact;
 
 let parent: string;
 let repo: string;
@@ -25,6 +28,25 @@ beforeAll(() => {
   // A symlink inside the repo pointing outside it, and one pointing at a file inside it.
   symlinkSync(join(outside, "secret.txt"), join(repo, "src", "leak.ts"));
   symlinkSync(join(repo, "src", "index.ts"), join(repo, "src", "alias.ts"));
+  // Sensitive files: present and regular, but never acceptable evidence.
+  mkdirSync(join(repo, "config"));
+  for (const f of [
+    ".env",
+    ".env.production",
+    "config/server.pem",
+    "config/tls.KEY",
+    "config/store.p12",
+    "config/cert.pfx",
+    "id_rsa",
+    "id_ed25519.pub",
+    "id_ecdsa",
+    "config/credentials.json",
+    ".npmrc",
+  ]) {
+    writeFileSync(join(repo, f), "x\n");
+  }
+  // A harmless-looking name that points at a sensitive file inside the repo.
+  symlinkSync(join(repo, ".env"), join(repo, "src", "settings.ts"));
 });
 afterAll(() => rmSync(parent, { recursive: true, force: true }));
 
@@ -86,6 +108,76 @@ describe("verifyFacts", () => {
     const r = verifyFacts(repo, [fact("Mixed.", "README.md", "src/leak.ts")]);
     expect(r.kept).toEqual([]);
     expect(r.dropped).toEqual({ outside_repo: 1 });
+  });
+
+  test("drops sensitive evidence: .git, env files, keys and credentials", () => {
+    const paths = [
+      ".git/config",
+      ".git/HEAD",
+      ".env",
+      ".env.production",
+      "config/server.pem",
+      "config/tls.KEY",
+      "config/store.p12",
+      "config/cert.pfx",
+      "id_rsa",
+      "id_ed25519.pub",
+      "id_ecdsa",
+      "config/credentials.json",
+      ".npmrc",
+      "src/settings.ts",
+    ];
+    const r = verifyFacts(
+      repo,
+      paths.map((p) => fact("Looks at a file.", "README.md", p)),
+    );
+    expect(r.kept).toEqual([]);
+    expect(r.dropped).toEqual({ sensitive_path: paths.length });
+  });
+
+  test("names that only resemble sensitive ones are kept", () => {
+    writeFileSync(join(repo, "env.example.md"), "x\n");
+    writeFileSync(join(repo, "src", "keys.ts"), "x\n");
+    const r = verifyFacts(repo, [fact("Docs.", "env.example.md", "src/keys.ts")]);
+    expect(r.kept.length).toBe(1);
+  });
+
+  test("drops a fact with more than 5 evidence entries instead of clamping", () => {
+    const r = verifyFacts(repo, [
+      fact("Many.", "README.md", "README.md", "README.md", "README.md", "README.md", "README.md"),
+      // The sixth entry is the bad one: clamping first would have hidden it.
+      fact(
+        "Hidden.",
+        "README.md",
+        "README.md",
+        "README.md",
+        "README.md",
+        "README.md",
+        "/etc/hosts",
+      ),
+    ]);
+    expect(r.kept).toEqual([]);
+    expect(r.dropped).toEqual({ too_much_evidence: 2 });
+  });
+
+  test("drops a fact with an over-long evidence path", () => {
+    const r = verifyFacts(repo, [fact("Long path.", `${"a/".repeat(260)}x.ts`)]);
+    expect(r.kept).toEqual([]);
+    expect(r.dropped).toEqual({ unsafe_path: 1 });
+  });
+
+  test("over-long content is dropped as too_long, not cut", () => {
+    const r = verifyFacts(repo, [fact(`Long ${"word ".repeat(100)}`, "README.md")]);
+    expect(r.kept).toEqual([]);
+    expect(r.dropped).toEqual({ too_long: 1 });
+  });
+
+  test("a secret past the 400th character is still caught", () => {
+    const r = verifyFacts(repo, [
+      fact(`${"word ".repeat(85)} key AKIAABCDEFGHIJKLMNOP`, "README.md"),
+    ]);
+    expect(r.kept).toEqual([]);
+    expect(r.dropped).toEqual({ content_secret: 1 });
   });
 
   test("drops content holding an AWS key or an internal URL", () => {

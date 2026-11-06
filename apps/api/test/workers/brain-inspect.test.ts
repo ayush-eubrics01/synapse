@@ -207,6 +207,8 @@ describe("buildInspectRequest", () => {
     expect(text).toContain(".env");
     expect(text).toContain("relative to the repository root");
     expect(text).toContain("40");
+    expect(text).toContain("You have about 30 tool turns.");
+    expect(text).toContain("reply with the JSON before you run out");
   });
 
   test("maxTurns is capped at the request limit of 50", () => {
@@ -425,16 +427,88 @@ describe("brain.inspect_repository", () => {
     expect(facts()).toHaveLength(0);
   });
 
-  test("too many facts and over-long content are truncated, not rejected", async () => {
+  test("more than 40 kept facts are truncated; over-long content is dropped, not cut", async () => {
     const many = Array.from({ length: 45 }, (_, i) => ({
       kind: "note",
-      content: `Fact number ${i} ${"word ".repeat(100)}`,
+      content: `Fact number ${i}.`,
       evidence: [{ path: "README.md" }],
     }));
-    reply = () => result(fenced({ facts: many, unknowns: [] }));
+    const long = {
+      kind: "note",
+      content: `Long ${"word ".repeat(100)}`,
+      evidence: [{ path: "README.md" }],
+    };
+    reply = () => result(fenced({ facts: [long, ...many], unknowns: [] }));
     const out = await runInspect();
-    expect(out).toMatchObject({ proposed: 40, inserted: 40 });
-    expect(facts().every((f) => [...f.content].length <= 400)).toBe(true);
+    expect(out).toMatchObject({ proposed: 46, inserted: 40, dropped: { too_long: 1 } });
+    expect(facts().some((f) => f.content.startsWith("Long"))).toBe(false);
+  });
+
+  test("a missing unknowns key defaults to none; an over-long evidence path drops only its fact", async () => {
+    reply = () =>
+      result(
+        fenced({
+          facts: [
+            ...FACTS,
+            {
+              kind: "note",
+              content: "Deep file.",
+              evidence: [{ path: `${"a/".repeat(300)}x.ts` }],
+            },
+          ],
+        }),
+      );
+    const out = await runInspect();
+    expect(out).toMatchObject({ inserted: 3, unknowns: 0, dropped: { unsafe_path: 1 } });
+  });
+
+  test("a max-turns stop is not retried and is recorded with its kind only", async () => {
+    reply = () => {
+      throw new JobError({
+        kind: "provider_error",
+        message: "claude run failed (provider_error)",
+        details: { maxTurns: true },
+      });
+    };
+    const err = (await runInspect().catch((e) => e)) as JobError;
+    expect(err).toBeInstanceOf(JobError);
+    expect(err.classified.kind).toBe("needs_attention");
+    expect(err.message).toBe("inspection run stopped (max_turns)");
+    expect(facts()).toHaveLength(0);
+    const audit = db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "brain.inspect_failed"))
+      .get();
+    expect(audit?.details).toEqual({ repositoryId: repoId, kind: "max_turns" });
+  });
+
+  test("a timeout is not retried either", async () => {
+    reply = () => {
+      throw new JobError({ kind: "timeout", message: "claude run failed (timeout)" });
+    };
+    const err = (await runInspect().catch((e) => e)) as JobError;
+    expect(err.classified.kind).toBe("needs_attention");
+    expect(err.message).toBe("inspection run stopped (timeout)");
+  });
+
+  test("a quota deferral passes through unchanged", async () => {
+    reply = () => {
+      throw new JobError({ kind: "quota_exhausted", message: "deferred" });
+    };
+    const err = (await runInspect().catch((e) => e)) as JobError;
+    expect(err.classified.kind).toBe("quota_exhausted");
+  });
+
+  test("unregistered while the run was in flight: nothing is inserted", async () => {
+    reply = () => {
+      registry.unregister(repoId);
+      return result(fenced({ facts: FACTS, unknowns: [] }));
+    };
+    const out = await runInspect();
+    expect(out).toEqual({ skipped: "unregistered" });
+    expect(facts()).toHaveLength(0);
+    expect(proposedEvents()).toHaveLength(0);
   });
 
   test("skips without running Claude when the repository path is gone", async () => {
@@ -472,6 +546,7 @@ describe("enqueueing", () => {
 
   test("weekly: refreshes head_sha and enqueues only when the head moved since inspection", async () => {
     await runInspect(); // inspected at the registered head
+    db.update(schema.jobs).set({ status: "COMPLETED" }).run();
     expect(await runWeekly()).toMatchObject({ checked: 1, enqueued: 0 });
     expect(inspectJobs()).toHaveLength(1); // the test job only
 
@@ -501,6 +576,25 @@ describe("enqueueing", () => {
       .run();
     expect(await runWeekly()).toMatchObject({ checked: 1, enqueued: 0 });
     expect(inspectJobs()).toHaveLength(0);
+  });
+
+  test("inspection jobs are enqueued with a single attempt", () => {
+    dispatcher.dispatchOnce();
+    inspections.requestInspection(repoId);
+    db.update(schema.jobs).set({ status: "COMPLETED" }).run();
+    inspections.requestInspection(repoId);
+    const jobs = inspectJobs();
+    expect(jobs.length).toBe(2);
+    expect(jobs.every((j) => j.maxAttempts === 1)).toBe(true);
+  });
+
+  test("weekly and registration skip the enqueue while an inspection is live", async () => {
+    const live = inspections.requestInspection(repoId);
+    expect(live.status).toBe("enqueued");
+    dispatcher.dispatchOnce(); // repo.registered: a live job exists, so nothing more
+    commitFile("NOTES.md", "notes\n");
+    expect(await runWeekly()).toMatchObject({ checked: 1, enqueued: 0 });
+    expect(inspectJobs()).toHaveLength(1);
   });
 
   test("requestInspection: reports a queued run, and forces a new one once it finished", () => {

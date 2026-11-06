@@ -40,6 +40,8 @@ export interface ClaudeCliProviderOptions {
   killGraceMs?: number;
   /** `--settings` JSON disabling plugins and hooks (R34); defaults to an empty override. */
   settingsOverride?: string;
+  /** From the same startup read: user permissions widen engineering scope (Phase 9 guard). */
+  userPermissionsWidenScope?: boolean;
 }
 
 interface SpawnOutcome {
@@ -75,8 +77,11 @@ const normalize = (s: string): string => s.replace(/[^A-Za-z0-9]/g, "_");
 export class ClaudeCliProvider implements AIProvider {
   private readonly killGraceMs: number;
 
+  readonly userPermissionsWidenScope: boolean;
+
   constructor(private readonly opts: ClaudeCliProviderOptions) {
     this.killGraceMs = opts.killGraceMs ?? 5000;
+    this.userPermissionsWidenScope = opts.userPermissionsWidenScope === true;
   }
 
   private run(o: SpawnOptions): Promise<SpawnOutcome> {
