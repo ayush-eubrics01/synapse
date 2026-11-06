@@ -4,6 +4,7 @@ import {
   buildSandboxSettings,
   SANDBOX_FAILURE_RE,
   SANDBOX_MASKS,
+  SANDBOX_STARTUP_FAILURE_REASON,
   withSandboxSettings,
 } from "../../src/integrations/claude-code/sandbox";
 import { DEFAULT_SETTINGS_OVERRIDE } from "../../src/integrations/claude-code/settings-override";
@@ -85,8 +86,26 @@ describe("withSandboxSettings", () => {
   });
 });
 
-test("SANDBOX_FAILURE_RE matches a sandbox startup error", () => {
-  expect(SANDBOX_FAILURE_RE.test("Error: sandbox required but not available")).toBe(true);
-  expect(SANDBOX_FAILURE_RE.test("Sandbox unavailable")).toBe(true);
-  expect(SANDBOX_FAILURE_RE.test("something else broke")).toBe(false);
+test("SANDBOX_FAILURE_RE matches startup refusals only, never a bare sandbox mention", () => {
+  for (const text of [
+    "Error: sandbox required but not available",
+    "Sandbox unavailable",
+    // The real CLI's stderr line and message (2.1.319 binary strings).
+    "  sandbox.failIfUnavailable is set \u2014 refusing to start without a working sandbox.",
+    "Sandbox required but unavailable: bubblewrap not found. Set sandbox.failIfUnavailable=false to allow unsandboxed execution.",
+    "sandbox failed to start",
+    "Sandbox failed to initialize",
+  ]) {
+    expect(SANDBOX_FAILURE_RE.test(text)).toBe(true);
+  }
+  for (const text of [
+    "something else broke",
+    "<sandbox_violations>\nnetwork: connection to example.test denied by sandbox\n</sandbox_violations>",
+    "filesystem: write to /home/u/out.txt denied by sandbox",
+    "sandbox\nthe service is unavailable",
+    "Running inside the sandbox.",
+  ]) {
+    expect(SANDBOX_FAILURE_RE.test(text)).toBe(false);
+  }
+  expect(SANDBOX_STARTUP_FAILURE_REASON).toBe("sandbox_required_unavailable");
 });

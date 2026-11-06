@@ -22,6 +22,8 @@ export interface ParsedRun {
     usage: AIUsage;
     permissionDenials: string[];
     text: string;
+    /** The CLI's fixed startup-failure code (e.g. `sandbox_required_unavailable`); "" if none. */
+    startupFailureReason: string;
   };
 }
 
@@ -222,6 +224,7 @@ export class StreamParser {
       },
       permissionDenials: denials.filter(isObj).map((d) => str(d.tool_name)),
       text: str(ev.result),
+      startupFailureReason: str(ev.startup_failure_reason),
     };
   }
 }

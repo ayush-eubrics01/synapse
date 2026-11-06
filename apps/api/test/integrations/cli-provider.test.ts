@@ -17,6 +17,7 @@ import { buildClaudeArgs } from "../../src/core/orchestrator/cli-args";
 import { StreamParser } from "../../src/core/orchestrator/stream-parser";
 import {
   ClaudeCliProvider,
+  StderrHead,
   spawnErrorMessage,
 } from "../../src/integrations/claude-code/cli-provider";
 import {
@@ -473,6 +474,48 @@ describe("ADR-040: the develop-run sandbox", () => {
     expect(JSON.stringify(r)).not.toMatch(/required but not available/);
   });
 
+  test("the real CLI's startup refusal is sandboxUnavailable: its stderr line, or its result reason alone", async () => {
+    const dir = mkdtempSync(join(tmp, "sbx-"));
+    for (const mode of ["sandbox_unavailable_cli_stderr", "sandbox_startup_result"]) {
+      const r = await provider({ FAKE_CLAUDE_MODE: mode }).execute(
+        req(sandboxed(join(dir, "tmp"))),
+        sig(),
+      );
+      expect(r.status).toBe("failed");
+      expect(r.error?.message).toBe("sandbox unavailable");
+      expect(r.error?.details?.sandboxUnavailable).toBe(true);
+    }
+  });
+
+  test("sandbox violation notices are not a startup failure", async () => {
+    const dir = mkdtempSync(join(tmp, "sbx-"));
+    const viaStderr = await provider({ FAKE_CLAUDE_MODE: "sandbox_violation_stderr" }).execute(
+      req(sandboxed(join(dir, "tmp"))),
+      sig(),
+    );
+    expect(viaStderr.status).toBe("failed");
+    expect(viaStderr.error?.message).toBe("claude exited abnormally despite a result event");
+    expect(viaStderr.error?.details?.sandboxUnavailable).toBeUndefined();
+    const viaResult = await provider({ FAKE_CLAUDE_MODE: "sandbox_violation_result" }).execute(
+      req(sandboxed(join(dir, "tmp"))),
+      sig(),
+    );
+    expect(viaResult.status).toBe("failed");
+    expect(viaResult.error?.message).toBe("claude reported an error result");
+    expect(viaResult.error?.details?.sandboxUnavailable).toBeUndefined();
+  });
+
+  test("max turns is classified first and keeps its marker", async () => {
+    const dir = mkdtempSync(join(tmp, "sbx-"));
+    const r = await provider({ FAKE_CLAUDE_MODE: "max_turns_sandbox_stderr" }).execute(
+      req(sandboxed(join(dir, "tmp"))),
+      sig(),
+    );
+    expect(r.error?.message).toBe("claude reached max turns");
+    expect(r.error?.details?.maxTurns).toBe(true);
+    expect(r.error?.details?.sandboxUnavailable).toBeUndefined();
+  });
+
   test("an error result naming the sandbox is sandboxUnavailable", async () => {
     const dir = mkdtempSync(join(tmp, "sbx-"));
     const r = await provider({ FAKE_CLAUDE_MODE: "sandbox_error_result" }).execute(
@@ -576,6 +619,32 @@ describe("ADR-040: the develop-run sandbox", () => {
     expect(existsSync(argvFile)).toBe(false);
     // Fails before the dir is created.
     expect(existsSync(tmpDir)).toBe(false);
+  });
+});
+
+describe("StderrHead", () => {
+  test("keeps the first 4096 characters, cut on a character boundary", () => {
+    const h = new StderrHead();
+    h.push(Buffer.from(`${"x".repeat(4095)}\u2014tail`));
+    expect(h.text).toHaveLength(4096);
+    expect(h.text.endsWith("\u2014")).toBe(true);
+    expect(h.text).not.toContain("\uFFFD");
+    h.push(Buffer.from("more"));
+    expect(h.text).toHaveLength(4096);
+  });
+
+  test("a character split across chunks is decoded whole", () => {
+    const h = new StderrHead();
+    const dash = Buffer.from("a\u2014b");
+    h.push(dash.subarray(0, 2));
+    h.push(dash.subarray(2));
+    expect(h.text).toBe("a\u2014b");
+  });
+
+  test("a surrogate pair is never split at the limit", () => {
+    const h = new StderrHead();
+    h.push(Buffer.from(`${"x".repeat(4095)}\u{1F600}`));
+    expect(h.text).toBe("x".repeat(4095));
   });
 });
 

@@ -45,6 +45,23 @@ if (args.includes("--version")) {
   // failIfUnavailable: the CLI refuses to start; nothing on stdout.
   process.stderr.write("Error: sandbox required but not available\n");
   process.exitCode = 1;
+} else if (mode === "sandbox_unavailable_cli_stderr") {
+  // The stderr line the real CLI (2.1.319) prints when failIfUnavailable refuses to start.
+  process.stderr.write(
+    "\n  sandbox.failIfUnavailable is set — refusing to start without a working sandbox.\n",
+  );
+  process.exitCode = 1;
+} else if (mode === "sandbox_violation_stderr") {
+  // A failed run whose stderr carries a sandbox violation notice: not a startup failure.
+  stream("success");
+  process.stderr.write(
+    "<sandbox_violations>\nnetwork: connection to example.test denied by sandbox\n</sandbox_violations>\n",
+  );
+  process.exitCode = 1;
+} else if (mode === "max_turns_sandbox_stderr") {
+  stream("max_turns");
+  process.stderr.write("Sandbox required but unavailable\n");
+  process.exitCode = 1;
 } else if (mode === "success_exit1") {
   stream("success");
   process.exitCode = 1;
