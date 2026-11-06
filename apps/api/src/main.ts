@@ -48,6 +48,8 @@ recoverOnStartup({
   sweeps: c.recoverySweeps,
 });
 recoverOrphanRuns(c.db, c.clock);
+// R4: the result feeds the `database` health check; a failure is reported there, not fatal here.
+c.integrity.check();
 // E6: the engineering lease is never released by core recovery. Settled here, before the worker
 // and the scheduler start, so no step or pickup runs against a tree that a crash left half-changed.
 try {

@@ -5,6 +5,7 @@ import { type Clock, isoNow, systemClock } from "@synapse/shared";
 import { and, count, eq, lte, min } from "drizzle-orm";
 import type { PrivateFilesResult } from "../../infrastructure/private-files";
 import type { SettingsService } from "../config/settings";
+import type { DatabaseIntegrity } from "../ops/integrity";
 import type { AuthMonitor } from "../orchestrator/auth";
 import type { HealthCheck } from "./health";
 
@@ -24,13 +25,19 @@ function guarded(check: HealthCheck): HealthCheck {
   };
 }
 
-export function databaseCheck(sqlite: Database): HealthCheck {
+export function databaseCheck(
+  sqlite: Database,
+  integrity?: Pick<DatabaseIntegrity, "last">,
+): HealthCheck {
   return guarded(async () => {
     sqlite.query("select 1").get();
     const row = sqlite.query("pragma journal_mode").get() as { journal_mode: string } | null;
     const mode = row?.journal_mode;
     if (mode !== "wal") {
       return { status: "degraded", detail: `journal_mode is ${mode}, expected wal` };
+    }
+    if (integrity?.last()?.result === "failed") {
+      return { status: "down", detail: "quick_check failed" };
     }
     return { status: "ok" };
   });

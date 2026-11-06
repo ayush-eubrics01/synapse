@@ -7,10 +7,13 @@ import type { JobQueue } from "../core/jobs/queue";
 import type { HandlerRegistration } from "../core/jobs/worker";
 import type { BackupResult, BackupService } from "../core/ops/backup";
 import { dailyDue, type LocalTime } from "../core/ops/daily";
+import type { RetentionService } from "../core/ops/retention";
 import type { SchedulerService } from "../core/scheduler/scheduler";
 
 export const OPS_BACKUP_JOB = "ops.backup";
+export const OPS_RETENTION_JOB = "ops.retention";
 const BACKUP_TIMEOUT_MS = 600_000;
+const RETENTION_TIMEOUT_MS = 600_000;
 
 export interface OpsJobDeps {
   db: Db;
@@ -20,6 +23,7 @@ export interface OpsJobDeps {
   settings: SettingsService;
   clock: Clock;
   backup: BackupService;
+  retention: RetentionService;
   localTime?: LocalTime;
 }
 
@@ -39,6 +43,12 @@ export function runBackupTick(
     : "disabled";
   // Recorded whether it worked or not, so a failure does not retry on every 15-minute tick.
   settings.set("ops.backup.lastRunDate", due.date, { emit: false });
+  // Retention follows the backup attempt (including a disabled one); the key makes it once a day.
+  deps.queue.enqueue(deps.db, {
+    type: OPS_RETENTION_JOB,
+    input: { date: due.date },
+    idempotencyKey: `ops.retention:${due.date}`,
+  });
   return { date: due.date, backup };
 }
 
@@ -77,6 +87,16 @@ export function registerOpsJobs(deps: OpsJobDeps): void {
       return out;
     },
     timeoutMs: BACKUP_TIMEOUT_MS,
+  });
+  deps.handlers.set(OPS_RETENTION_JOB, {
+    handler: async (job) => {
+      const date = (job.input as { date: string }).date;
+      if (deps.settings.get("ops.retention.lastRun")?.date === date) {
+        return { skipped: "done_today" };
+      }
+      return deps.retention.run(date);
+    },
+    timeoutMs: RETENTION_TIMEOUT_MS,
   });
   // 15 minutes covers "at or after the hour, and once at startup if missed" (cron runs in UTC).
   deps.scheduler.upsert({

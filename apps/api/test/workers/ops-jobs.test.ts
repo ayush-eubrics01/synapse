@@ -4,17 +4,21 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JobError, retryDecision } from "@synapse/contracts";
-import { type Db, openDatabase, runMigrations } from "@synapse/database";
+import { type Db, openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
+import { eq } from "drizzle-orm";
 import { AuditLogger } from "../../src/core/audit/audit";
 import { SettingsService } from "../../src/core/config/settings";
 import { JobQueue } from "../../src/core/jobs/queue";
 import type { HandlerRegistration } from "../../src/core/jobs/worker";
 import { BackupService } from "../../src/core/ops/backup";
+import { DatabaseIntegrity } from "../../src/core/ops/integrity";
+import { RetentionService } from "../../src/core/ops/retention";
 import { SchedulerService } from "../../src/core/scheduler/scheduler";
 import {
   backupJobLive,
   OPS_BACKUP_JOB,
+  OPS_RETENTION_JOB,
   registerOpsJobs,
   runBackupTick,
 } from "../../src/workers/ops";
@@ -47,6 +51,14 @@ const deps = () => {
     settings,
     clock,
     backup,
+    retention: new RetentionService({
+      db,
+      sqlite,
+      clock,
+      settings,
+      audit: new AuditLogger(clock),
+      integrity: new DatabaseIntegrity(sqlite, clock),
+    }),
     localTime: () => at,
   };
 };
@@ -160,4 +172,40 @@ test("backupJobLive sees pending manual jobs only", () => {
   expect(backupJobLive(db)).toBe(false);
   d.queue.enqueue(db, { type: OPS_BACKUP_JOB, input: { manual: true }, idempotencyKey: "m1" });
   expect(backupJobLive(db)).toBe(true);
+});
+
+test("the backup tick enqueues ops.retention for the date, even when backup is disabled", () => {
+  at = { date: "2026-11-07", hour: 3 };
+  const d = deps();
+  runBackupTick(d);
+  const job = (key: string) =>
+    db.select().from(schema.jobs).where(eq(schema.jobs.idempotencyKey, key)).get();
+  expect(job("ops.retention:2026-11-07")?.type).toBe(OPS_RETENTION_JOB);
+  expect(job("ops.retention:2026-11-07")?.input).toEqual({ date: "2026-11-07" });
+
+  settings.set("ops.backup.enabled", false);
+  at = { date: "2026-11-08", hour: 4 };
+  runBackupTick(d);
+  expect(job("ops.retention:2026-11-08")).toBeDefined();
+});
+
+test("the retention handler runs once per date", async () => {
+  const d = deps();
+  const retention = new RetentionService({
+    db,
+    sqlite,
+    clock,
+    settings,
+    audit: new AuditLogger(clock),
+    integrity: new DatabaseIntegrity(sqlite, clock),
+    yieldFn: async () => {},
+  });
+  registerOpsJobs({ ...d, retention });
+  const h = d.handlers.get(OPS_RETENTION_JOB);
+  expect(h?.timeoutMs).toBe(600_000);
+  const first = await h?.handler({ input: { date: "2026-11-07" } } as never, {} as never);
+  expect(first).toMatchObject({ date: "2026-11-07", quickCheck: "ok" });
+  expect(await h?.handler({ input: { date: "2026-11-07" } } as never, {} as never)).toEqual({
+    skipped: "done_today",
+  });
 });

@@ -26,7 +26,8 @@ export const HEALTH_HINTS: Record<string, string> = {
   linger: "Run `loginctl enable-linger $USER` so services keep running after logout.",
   events: "An event consumer exhausted its retries. Check the API logs for the event type.",
   "desktop-notifier": "Install `notify-send` (libnotify) for desktop alerts.",
-  database: "SQLite isn't in WAL mode. Restart the API, which re-applies the pragmas.",
+  database:
+    "SQLite reported a problem (not in WAL mode, or the integrity check failed). Restart the API; if the integrity check still fails, stop the API and restore the latest backup with bun scripts/ops/restore.ts.",
   "security-rules": "A rule file failed to load. Check the API logs.",
   "screening-rules": "A rule file failed to load. Check the API logs.",
   claude_activity:

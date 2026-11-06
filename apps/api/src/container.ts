@@ -42,6 +42,8 @@ import { LeaseService } from "./core/leases/leases";
 import { ModuleRegistry } from "./core/module-registry/registry";
 import { NotificationService } from "./core/notifications/notifications";
 import { BackupService } from "./core/ops/backup";
+import { DatabaseIntegrity } from "./core/ops/integrity";
+import { RetentionService } from "./core/ops/retention";
 import { AuthMonitor } from "./core/orchestrator/auth";
 import { ClaudeOrchestrator } from "./core/orchestrator/orchestrator";
 import { PermissionManager } from "./core/permissions/permissions";
@@ -134,6 +136,8 @@ export interface Container {
   orchestrator: ClaudeOrchestrator;
   health: HealthService;
   backup: BackupService;
+  integrity: DatabaseIntegrity;
+  retention: RetentionService;
   startedAt: Date;
   /** Claude Code session observation (Phase 10b, ADR-036). */
   claudeActivity: ClaudeActivityService;
@@ -676,10 +680,12 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     dbPath: config.dbPath,
     diskFree,
   });
-  registerOpsJobs({ db, handlers, scheduler, queue, settings, clock, backup });
+  const integrity = new DatabaseIntegrity(sqlite, clock);
+  const retention = new RetentionService({ db, sqlite, clock, settings, audit, integrity });
+  registerOpsJobs({ db, handlers, scheduler, queue, settings, clock, backup, retention });
 
   const health = new HealthService({
-    database: databaseCheck(sqlite),
+    database: databaseCheck(sqlite, integrity),
     jobs: jobsCheck(db, clock),
     events: eventsCheck(db),
     heartbeat: heartbeatCheck(settings, clock),
@@ -739,6 +745,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     orchestrator,
     health,
     backup,
+    integrity,
+    retention,
     startedAt,
     claudeActivity,
     inbox,
