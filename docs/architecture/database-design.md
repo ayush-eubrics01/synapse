@@ -143,17 +143,10 @@ Away mode itself is the `autoReply.awayMode` key in `app_settings`, with changes
 | `security_flag_rules` | Versioned rule config: `version` int unique, `rules` JSON, `active`, `created_at` |
 | `message_drafts` | Suggested replies (owned by the urgency engine): `message_id` FK, `kind` (`suggested_response`), `text` (nullable; cleared by retention), `confidence` real, `status` (proposed/discarded), `claude_run_id` nullable FK, `created_at`, `content_expired_at`. Unique(`message_id`,`kind`) |
 
-## Claude activity tables (owned by `claude-activity`, ADR-036)
+## Claude activity and code answer tables (migration 0020, Phase 10b)
 
 | Table | Notes |
 |---|---|
-| `claude_sessions` | `session_id` unique, `repository_id` FK, `cwd`, `git_branch`, `title`, `entrypoint`, `cli_version`, `started_at`, `last_activity_at`, `file_path`, `read_offset` (incremental parsing). Metadata only, never message content |
-| `claude_session_prs` | `session_id` FK, `pr_url` unique, `pr_number`, `pr_repository`, `first_seen_at`, links to `engineering_tasks` / `jira_issues` when matched |
-
-## Dashboard tables (owned by `dashboard`)
-
-`dashboard_layouts`, `dashboard_widgets`, `dashboard_widget_settings`.
-
-## Retention
-
-Slack message content is kept for 180 days (configurable). The cleanup job sets `slack_messages.text = NULL`, deletes local attachments, and sets `content_expired_at`, keeping IDs, `ts` and permalinks. People profiles, commitments, follow-ups, Engineering Brain records, approvals and audit events are never deleted by message retention. The same job also clears text derived from Slack content (Phase 6b): `auto_replies.text`, the text of `sent`/`failed` outgoing messages (blanked to `''`) and the draft of `sent`/`discarded`/`failed` follow-ups, for rows created before the cutoff. Rows in any other status keep their text. Evidence rows keep `source_external_ref`, so the UI can show "original message no longer available locally."
+| `claude_sessions` | Owned by `claude-activity` (ADR-036). `session_id` PK, `repository_id` FK (cascade), `cwd`, `git_branch?`, `title?`, `first_at`, `last_at`, `version?`, `entrypoint?`, `file_path` unique, `file_offset` (bytes fully parsed), `file_size`, `file_mtime_ms`, `updated_at`. Index on (`repository_id`, `last_at`). Metadata only, never message content |
+| `claude_session_prs` | Owned by `claude-activity`. `id`, `session_id` FK (cascade), `repository_id`, `pr_url` unique, `pr_number`, `pr_repository`, `git_branch?`, `first_seen_at`, `reminded_at?`. Index on `repository_id`. Links to engineering tasks and projects are computed on read |
+| `code_answers` | Owned by `code-answers`. `id`, `message_id` FK `slack_messages`, `repository_id?` FK (set null), `trigger` (`user`\|`away`), `status` (`queued`, `running`, `ready`, `not_answerable`, `unverified`, `failed`, `held`, `sent`, `dismissed`), `answer?`, `confidence?`, `evidence` (json, verified repository-relative paths), `dropped_evidence_count`, `suspected_injection?` (json), `not_answerable_reason?`, `claude_run_id?`, `failure?` (fixed code), `auto_reply_id?` FK, `outgoing_id?`, `created_at`, `updated_at`. Partial unique index `code_answers_live_uq` on (`message_id`, `repository_id`, `trigger`) where status not in (`failed`, `dismissed`). `answer` is nulled by Slack retention |

@@ -75,8 +75,9 @@ Events that are purely for live UI updates (SSE) may skip the outbox and are mar
 | `repository.registered` | engineering-brain | engineering-brain (inspection) | ADR-035 |
 | `repository.branch_config_changed` | engineering-brain | audit, dashboard | tracked branch or environments changed by the user |
 | `repository.drift_detected` | engineering-brain | notifications | |
-| `claude_session.activity_changed` | claude-activity | orchestrator (yield), dashboard | User became active or idle (ADR-036) |
-| `claude_session.pr_detected` | claude-activity | engineering-brain, jira-tracking, dashboard | PR opened from an interactive session |
+| `claude_session.activity_changed` | claude-activity | dashboard (live card) | Payload `{ active, lastActiveAt }`. User became active or idle (ADR-036). The orchestrator reads the signal through the `UserActivitySignal` port, not this event |
+| `code_answer.status_changed` | code-answers | dashboard, inbox (live thread view) | Payload `{ codeAnswerId, messageId, status }`. Any status change of a code answer (Phase 10b) |
+| `claude_session.pr_detected` | claude-activity | engineering-brain, jira-tracking, dashboard | **Not emitted** as of Phase 10b: session PRs are stored in `claude_session_prs` and read on demand. Kept in the catalog for a later phase |
 | `approval.requested` | approvals | notifications, dashboard | |
 | `approval.approved` | approvals | requesting module | Execution happens after revalidation |
 | `approval.rejected` | approvals | requesting module | |

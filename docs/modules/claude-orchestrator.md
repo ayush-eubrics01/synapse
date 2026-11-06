@@ -35,6 +35,15 @@ Non-responsibilities:
 | `collector` | Slack/Jira collection; approved or ADR-033 single sends/writes as separate narrow runs | collection: `ToolSearch` + read-only connector tools; send/write runs: exactly one tool with arguments fixed by code and no untrusted text | haiku | collection yields it (doesn't interpret it); send runs: none |
 | `intelligence` | screening follow-up, urgency, commitments, profiles, knowledge, drafting, Jira analysis | `ToolSearch` + read-only connector tools if needed; no write/send tools; no Bash/Edit/Write | haiku (sonnet for heavier analysis) | yes |
 | `engineering` | repository investigation, bug analysis, plans, approved code changes, tests, Git steps | read-only by default; Edit/Write/Bash only in an approved step, scoped to the registered repo; **no Slack/Jira/other connector tools** | sonnet/opus (configurable) | no: only approved task descriptions (ADR-032) |
+| `reader` | code answers (Phase 10b, `code_answer.generate`): one question about one registered repository | `Read`, `Grep`, `Glob`, each exactly once and scoped to the repository realpath (`Tool(//<repo>/**)`); no connector, no `ToolSearch`, no Bash, no write, no network | sonnet (`codeAnswer.model`, `orchestrator.models.reader`) | yes: the question is untrusted data inside the `untrusted` boundary; rules B, C and D leave the run nothing that can act |
+
+**Reader profile (Phase 10b, C1).** A `reader` run is the only profile that combines untrusted text with filesystem reads, so it is the narrowest one:
+
+- Rule B lets it use `Read`, `Grep` and `Glob` and no other built-in. Rule C refuses any connector tool. Rule E (untrusted content refused) does not apply to it, because B, C and D already leave no write, shell, network or connector tool.
+- Rule L applies as for engineering: the working directory is a safe absolute path (the repository realpath) and each fs read tool is exactly `Tool(//<wd>/**)`, listed at most once (a duplicate fails).
+- Rule H2: the denylist holds every write, network and filesystem built-in the run does not allow, plus Bash, plus **`ToolSearch`**. A reader never loads deferred tools, so no connector tool can reach the run even if a user-level allow entry names one. `Read`, `Grep` and `Glob` are not deferred tools, so they work with `ToolSearch` denied (confirmed on the real CLI by `scripts/dev/code-answer-smoke.ts`, which prints `reads_ok`).
+- User-permission guard: a reader run is refused (`unsafe_user_settings`, fixed message, no spawn) when `~/.claude/settings.json` widens file scope, as for engineering, and also while a user-level `permissions.allow` entry names a connector server (`mcp__<server>`) that is not in `orchestrator.knownServers`. The reader denylist covers only known servers, so an unknown server's tools would stay allowed. The settings are read once at startup; only server names are kept.
+- Settings: `orchestrator.timeouts.reader` (300 s) and `orchestrator.models.reader` (`sonnet`); the code-answer worker passes `codeAnswer.model`, `codeAnswer.maxTurns` and `codeAnswer.timeoutMinutes` on the request.
 
 ## Invocation profile (concept §10.2.1, validated in Phase 0)
 
@@ -161,20 +170,20 @@ Provenance is never mislabelled: a send authorised by the auto-reply policy carr
 
 The engineering worker receives only the user-approved task description and repository context. Untrusted parts are wrapped in delimited blocks with a per-run random boundary and labeled as data. After every run that contained untrusted content, `permission_denials` and unexpected tool calls are passed to `security-flags` (ADR-034). The tool catalog classifies each known tool as read or write; unknown tools are treated as write.
 
-## Interactive session observation (ADR-036)
+## Interactive session observation (ADR-036), as built in Phase 10b
 
-Owned by the `claude-activity` module; the orchestrator consumes its "user active" signal.
+Owned by the `claude-activity` module (`docs/modules/claude-activity.md`); the orchestrator consumes its "user active" signal through the optional `UserActivitySignal` port in `packages/contracts` (`isUserActive(now) -> { active, until }`). Core never imports the module.
 
-- Every 120 s, parse `~/.claude/projects/*/<sessionId>.jsonl` incrementally (by file offset), only for sessions whose `cwd` is inside a registered repository.
-- Read only: `sessionId`, `cwd`, `gitBranch`, timestamps, `ai-title`, `pr-link` (`prUrl`, `prNumber`, `prRepository`), `version`, `entrypoint`. Never message content, tool data, thinking or attachments.
-- **Yield:** if any session was active within 10 min, the quota gate behaves as if at the `soft` level: only urgent assessment, incremental collection and approved/auto-reply sends run. Heavy analysis and engineering steps wait.
-- **Activity widget:** sessions per repo (title, branch, last active, active now), plus PRs opened from sessions, linked to projects, engineering tasks and Jira where branch or PR matches.
-- **Work-in-progress reminders (to the user only):** a branch with session activity but no PR after 3 days; a session PR still open after 3 days.
-- Never resumes, writes to, or injects into a user session. The format is undocumented: unknown line types are skipped; if nothing parses, observation is disabled with a health warning.
+- **Yield gate** (`core/orchestrator/yield-gate.ts`, `shouldYield`). When the user is active and `claudeActivity.yieldWhenActive` is true, `batch` and `backfill` requests are not spawned. `engineering` yields only when `claudeActivity.yieldEngineering` is true (default `false`, see the ADR-036 amendment). `urgent`, `send` and `collection` never yield.
+- **Failure `user_active`.** A yielded request fails before spawn with kind `user_active`, retry decision `defer` (like `quota_exhausted`): no run row, no job attempt consumed, `details.notSpawned`, `retryAfter = max(until, now + 2 min)` so a stale `until` can never cause a spawn loop.
+- **Fail open.** A throwing or broken signal never blocks work: the orchestrator treats it as "not active". Classes that never yield skip the signal entirely.
+- **Never resumes, writes to, or injects into a user session.** Only whitelisted metadata is read (see the module doc); the format is undocumented, so unknown line types are skipped and an unrecognised format degrades health, not Synapse.
 
 ## Events
 
 Emitted: `claude.job_created`, `claude.job_started`, `claude.job_completed`, `claude.job_failed`, `quota.threshold_reached`, `auth.expiry_warning` (via health), `engineering.task_started`, `engineering.task_awaiting_approval`, `engineering.task_completed`, `engineering.task_failed`.
+
+Phase 10b: `claude_session.activity_changed` is emitted by `claude-activity`, not by the orchestrator; `code_answer.status_changed` by `code-answers`.
 
 Consumed: `approval.approved` / `rejected` / `expired` (engineering steps), `settings.changed`.
 
@@ -186,6 +195,7 @@ Consumed: `approval.approved` / `rejected` / `expired` (engineering steps), `set
 | `connector_not_ready`, `rate_limited` | retry after delay |
 | `quota_exhausted` | defer to `resetsAt`; doesn't consume an attempt |
 | `auth_failed`, `permission_denied`, `parse_failed` | `NEEDS_ATTENTION`, no retry |
+| `user_active` | defer to `retryAfter` (activity end or 2 min, whichever is later); not spawned, no run row, doesn't consume an attempt (ADR-036) |
 | `invalid_input` | fail, no retry |
 
 Claude process crash → attempt recorded with error, retried per policy. Restart → interrupted `RUNNING` jobs with expired leases are recovered from checkpoints.
@@ -198,7 +208,9 @@ Claude process crash → attempt recorded with error, retried per policy. Restar
 | `orchestrator.quota.fiveHour.soft/hard/stop` | `0.60 / 0.85 / 0.95` |
 | `orchestrator.quota.sevenDay.soft/hard` | `0.70 / 0.90` |
 | `orchestrator.timeouts.collector/intelligence/engineering` | `180s / 300s / 1800s` |
+| `orchestrator.timeouts.reader` | `300s` |
 | `orchestrator.models.collector/intelligence/engineering` | `haiku / haiku / sonnet` |
+| `orchestrator.models.reader` | `sonnet` |
 | `orchestrator.claudeBinary` | `~/.local/bin/claude` |
 | `orchestrator.pinnedClaudeVersion` | `2.1.318` (contract-tested) |
 
