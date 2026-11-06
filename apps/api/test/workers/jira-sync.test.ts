@@ -177,7 +177,7 @@ describe("sync", () => {
       {
         cloudId: CLOUD,
         jql: `(${SCOPE}) AND project not in (SKIP) AND updated >= -86400m ORDER BY updated ASC`,
-        maxResults: 50,
+        maxResults: 20,
       },
     ]);
     expect(out).toMatchObject({ pages: 1, complete: true });
@@ -312,7 +312,7 @@ describe("reconcile", () => {
     expect(searches[0]).toEqual({
       cloudId: CLOUD,
       jql: `(${SCOPE}) ORDER BY updated ASC`,
-      maxResults: 50,
+      maxResults: 20,
     });
     // Mid-run: no flags changed yet.
     expect(row("DEMO-2")?.inScope).toBe(true);

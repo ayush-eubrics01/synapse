@@ -11,7 +11,7 @@ import { withExclusions } from "../../apps/api/src/modules/jira-tracking/jql";
 export const USAGE = `Usage: bun scripts/dev/jira-smoke.ts [--cloud-id ID] [--jql JQL]
 
 Runs the real Jira read path through Claude on a temporary database: one cloudId lookup, then ONE
-page (50 issues at most) of the configured scope, and prints counts only. Spends a little Claude
+page (20 issues at most) of the configured scope, and prints counts only. Spends a little Claude
 quota and reads real Jira; run deliberately. Never prints issue keys, summaries, site names,
 cloud ids or JQL. The temporary database is deleted afterwards.
 
@@ -110,7 +110,7 @@ async function main(): Promise<number> {
       const jql =
         args.jql ??
         `${withExclusions(c.settings.get("jira.scope.jql"), c.settings.get("jira.excludedProjects"))} ORDER BY updated ASC`;
-      const page = await source.searchPage({ cloudId, jql, maxResults: 50 }, signal);
+      const page = await source.searchPage({ cloudId, jql, maxResults: 20 }, signal);
       for (const line of summarize(page.issues, {
         sites: sites.length,
         hasNextPage: page.nextPageToken !== null,

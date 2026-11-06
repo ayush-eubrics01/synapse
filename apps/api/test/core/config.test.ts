@@ -223,8 +223,9 @@ test("jira settings defaults", () => {
   expect(settings.get("jira.stale.days")).toBe(5);
   expect(settings.get("jira.dueSoon.days")).toBe(2);
   expect(settings.get("jira.blockedStatuses")).toEqual([]);
-  expect(settings.get("jira.pageSize")).toBe(50);
-  expect(settings.get("jira.maxPagesPerRun")).toBe(4);
+  expect(settings.get("jira.pageSize")).toBe(20);
+  expect(settings.get("jira.maxPagesPerRun")).toBe(6);
+  expect(() => settings.set("jira.pageSize", 31)).toThrow();
 });
 
 test("jira settings validation", () => {

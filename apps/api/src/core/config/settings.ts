@@ -79,8 +79,10 @@ const settingSchemas = {
   "jira.stale.days": z.number().int().positive().default(5),
   "jira.dueSoon.days": z.number().int().nonnegative().default(2),
   "jira.blockedStatuses": z.array(z.string().min(1)).default([]),
-  "jira.pageSize": z.number().int().min(1).max(100).default(50),
-  "jira.maxPagesPerRun": z.number().int().positive().default(4),
+  // Claude Code replaces an MCP result over ~25k tokens / ~100 KB with a "saved to file" notice, so
+  // a page must stay small: 20 issues with the fixed field list is ~49 KB (measured 2026-11-06).
+  "jira.pageSize": z.number().int().min(1).max(30).default(20),
+  "jira.maxPagesPerRun": z.number().int().positive().default(6),
   "system.lastHeartbeatAt": z.string().nullable().default(null),
   "orchestrator.quota.fiveHour.soft": z.number().min(0).max(1).default(0.6),
   "orchestrator.quota.fiveHour.hard": z.number().min(0).max(1).default(0.85),

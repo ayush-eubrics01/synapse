@@ -15,4 +15,11 @@ Phase 8 delivered read-only Jira tracking (`docs/modules/jira.md`, spec `docs/su
 
 ## Real-connector smoke
 
-TBD (the controller runs `bun scripts/dev/jira-smoke.ts` and records the counts here).
+Run by the controller on 2026-11-06 against the real connector, with the user's scope passed via `--jql`. Only counts were recorded, and the temp DB was deleted.
+
+- **First run: `parse_failed`.** A page of 50 issues comes back as about 119 KB of tool output, so Claude Code replaced it with an "exceeds maximum allowed tokens / saved to file" notice.
+  - Setting `MAX_MCP_OUTPUT_TOKENS` only moves the failure to a second limit: a `<persisted-output>` notice at roughly 100 KB.
+  - Fix: `jira.pageSize` now defaults to 20 (about 49 KB, measured) with a maximum of 30, and `jira.maxPagesPerRun` defaults to 6.
+- **After the fix:** `sites: 1`, `issues: 20`, `hasNextPage: true`, `statusCategory: new=6 indeterminate=7 done=7`, `projects: 1`.
+  - The argument check and the parser passed on real data.
+- **Follow-up:** detect the CLI's oversized-output notice and report it as its own error kind with a "lower jira.pageSize" hint, so it isn't shown as a generic `parse_failed`.
