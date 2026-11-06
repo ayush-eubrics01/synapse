@@ -684,7 +684,7 @@ describe("develop sandbox (ADR-040)", () => {
     taken.add(`/c/s/0123abcd/r/${h.slice(0, 16)}`);
     expect(runScratchDir("/c/s/0123abcd", "job-1", exists)).toBeNull();
     // The path the observed real-CLI layout needs: well under the 64-byte limit.
-    const t = `${runScratchDir("/home/ayush/.cache/synapse/0123abcd", "job-1", () => false)}/t`;
+    const t = `${runScratchDir("/home/demo1/.cache/synapse/0123abcd", "job-1", () => false)}/t`;
     expect(Buffer.byteLength(t)).toBeLessThanOrEqual(RUN_TMP_MAX_BYTES);
     expect(RUN_TMP_MAX_BYTES).toBe(64);
   });
