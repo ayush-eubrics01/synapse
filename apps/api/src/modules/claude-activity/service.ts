@@ -7,11 +7,12 @@ import { realpathSync } from "node:fs";
 import {
   CLAUDE_ACTIVITY_FORMAT_MESSAGE,
   type ClaudeActivityHealth,
+  type ClaudeActivityView,
   type UserActivitySignal,
 } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
-import { eq, max } from "drizzle-orm";
+import { and, desc, eq, gte, max, sql } from "drizzle-orm";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { SettingsService } from "../../core/config/settings";
 import type { EventPublisher } from "../../core/events/publisher";
@@ -26,10 +27,12 @@ import {
 } from "./scanner";
 import { foldMeta, MAX_CHUNK_BYTES, type SessionAccum } from "./session-meta";
 
-const { claudeSessions, claudeSessionPrs, repositories } = schema;
+const { claudeSessions, claudeSessionPrs, repositories, engineeringTasks } = schema;
 
 export const SCAN_BUDGET_MS = 20_000;
 const MODULE = "claude-activity";
+const VIEW_DAYS = 14;
+const VIEW_LIMIT = 10;
 const UNREADABLE_DETAIL = "projects dir unreadable";
 
 export interface ScanSummary {
@@ -64,7 +67,14 @@ export interface ClaudeActivityServiceDeps {
   fs?: FsOps;
   monotonicMs?: () => number;
   realpath?: (p: string) => string | null;
+  /** Local wall-clock date and minutes since local midnight (injectable for tests). */
+  localTime?: (now: Date) => { date: string; minutes: number };
 }
+
+const processLocalTime = (now: Date) => ({
+  date: now.toDateString(),
+  minutes: now.getHours() * 60 + now.getMinutes(),
+});
 
 function defaultRealpath(p: string): string | null {
   try {
@@ -97,6 +107,7 @@ export class ClaudeActivityService implements UserActivitySignal {
   private readonly fs: FsOps;
   private readonly monotonicMs: () => number;
   private readonly realpath: (p: string) => string | null;
+  private readonly localTime: (now: Date) => { date: string; minutes: number };
   private readonly ignored = new Map<string, { size: number; mtimeMs: number }>();
   private reposKey = "";
   private scanning = false;
@@ -107,6 +118,7 @@ export class ClaudeActivityService implements UserActivitySignal {
     this.fs = deps.fs ?? defaultFsOps;
     this.monotonicMs = deps.monotonicMs ?? (() => performance.now());
     this.realpath = deps.realpath ?? defaultRealpath;
+    this.localTime = deps.localTime ?? processLocalTime;
   }
 
   private get enabled(): boolean {
@@ -340,6 +352,88 @@ export class ClaudeActivityService implements UserActivitySignal {
       active: this.enabled && untilMs >= now.getTime(),
       until: new Date(untilMs).toISOString(),
     };
+  }
+
+  private isYielding(active: boolean): boolean {
+    return this.enabled && this.deps.settings.get("claudeActivity.yieldWhenActive") && active;
+  }
+
+  /** A11: recent sessions and session PRs per repository. Links to engineering tasks are computed here (A9). */
+  view(): ClaudeActivityView {
+    const { db, clock, settings } = this.deps;
+    const now = clock.now();
+    const { active } = this.isUserActive(now);
+    const since = new Date(now.getTime() - VIEW_DAYS * 86_400_000).toISOString();
+    const windowMs = settings.get("claudeActivity.activeWindowMinutes") * 60_000;
+    const repos = db
+      .select({ id: repositories.id, name: repositories.name })
+      .from(repositories)
+      .orderBy(repositories.name)
+      .all();
+    const out: ClaudeActivityView["repositories"] = [];
+    for (const r of repos) {
+      const sessions = db
+        .select()
+        .from(claudeSessions)
+        .where(and(eq(claudeSessions.repositoryId, r.id), gte(claudeSessions.lastAt, since)))
+        .orderBy(desc(claudeSessions.lastAt))
+        .limit(VIEW_LIMIT)
+        .all();
+      const prs = db
+        .select({ pr: claudeSessionPrs, taskId: engineeringTasks.id })
+        .from(claudeSessionPrs)
+        .leftJoin(engineeringTasks, eq(engineeringTasks.prUrl, claudeSessionPrs.prUrl))
+        .where(
+          and(eq(claudeSessionPrs.repositoryId, r.id), gte(claudeSessionPrs.firstSeenAt, since)),
+        )
+        .orderBy(desc(claudeSessionPrs.firstSeenAt))
+        .limit(VIEW_LIMIT)
+        .all();
+      if (sessions.length === 0 && prs.length === 0) continue;
+      out.push({
+        repositoryId: r.id,
+        name: r.name,
+        sessions: sessions.map((x) => ({
+          sessionId: x.sessionId,
+          title: x.title,
+          branch: x.gitBranch,
+          firstAt: x.firstAt,
+          lastAt: x.lastAt,
+          activeNow: this.enabled && Date.parse(x.lastAt) + windowMs >= now.getTime(),
+          entrypoint: x.entrypoint,
+        })),
+        prs: prs.map(({ pr, taskId }) => ({
+          url: pr.prUrl,
+          number: pr.prNumber,
+          repository: pr.prRepository,
+          branch: pr.gitBranch,
+          firstSeenAt: pr.firstSeenAt,
+          ...(taskId !== null ? { engineeringTaskId: taskId } : {}),
+        })),
+      });
+    }
+    return {
+      enabled: this.enabled,
+      active,
+      lastActiveAt: this.lastActiveAt(),
+      yielding: this.isYielding(active),
+      health: this.healthState(),
+      repositories: out,
+    };
+  }
+
+  /** The Overview DTO's `claudeActivity`: counts and flags only. */
+  overview(): { active: boolean; sessionsToday: number; yielding: boolean } {
+    const now = this.deps.clock.now();
+    const { active } = this.isUserActive(now);
+    const midnightMs =
+      Math.floor(now.getTime() / 60_000) * 60_000 - this.localTime(now).minutes * 60_000;
+    const row = this.deps.db
+      .select({ n: sql<number>`count(*)` })
+      .from(claudeSessions)
+      .where(gte(claudeSessions.lastAt, new Date(midnightMs).toISOString()))
+      .get();
+    return { active, sessionsToday: row?.n ?? 0, yielding: this.isYielding(active) };
   }
 
   healthState(): ClaudeActivityHealth {

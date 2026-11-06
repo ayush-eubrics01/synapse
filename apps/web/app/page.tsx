@@ -4,6 +4,7 @@ import type {
   ApprovalView,
   AwayDigest,
   CandidatesResponse,
+  ClaudeActivityView,
   CommitmentFilter,
   ConversationSummary,
   ConversationThread,
@@ -26,6 +27,7 @@ import {
   approveTaskDescription,
   approveTaskPlan,
   type ClaudeRun,
+  type ClaudeSettingsDto,
   type ClaudeStatus,
   type CommitmentStatusDto,
   type CommitmentViewDto,
@@ -41,6 +43,7 @@ import {
   getApprovals,
   getAwayDigest,
   getCandidates,
+  getClaudeActivity,
   getClaudeRuns,
   getClaudeStatus,
   getCommitments,
@@ -60,6 +63,7 @@ import {
   getRecommendations,
   getRepositories,
   getSecurityFlags,
+  getSettings,
   getSlackIdentity,
   getSlackStatus,
   getThread,
@@ -70,6 +74,7 @@ import {
   type OverviewFailure,
   type PersonDto,
   type PersonPriorityDto,
+  putSettings,
   registerRepository,
   type SecurityFlagDto,
   type SlackIdentityDto,
@@ -111,6 +116,8 @@ import { People } from "./components/people/People";
 import { ProfileDrawer } from "./components/people/ProfileDrawer";
 import { useQueuedEvaluations } from "./components/people/useQueuedEvaluations";
 import { Sidebar } from "./components/shell/Sidebar";
+import { ClaudeCodeCard } from "./components/system/ClaudeCodeCard";
+import { ClaudeSettings } from "./components/system/ClaudeSettings";
 import { Running } from "./components/system/Running";
 import { SystemDetails } from "./components/system/SystemDetails";
 import { NeedsYou } from "./components/triage/NeedsYou";
@@ -238,6 +245,8 @@ export default function Dashboard() {
   const [jiraAttention, setJiraAttention] = useState<JiraIssueView[]>([]);
   const [repos, setRepos] = useState<RepositoryView[] | null>(null);
   const [projectDetails, setProjectDetails] = useState<ProjectDetail[]>([]);
+  const [claudeActivity, setClaudeActivity] = useState<ClaudeActivityView | null>(null);
+  const [claudeSettings, setClaudeSettings] = useState<ClaudeSettingsDto | null>(null);
   const [engineeringTasks, setEngineeringTasks] = useState<EngineeringTaskView[]>([]);
   const [engineeringDetails, setEngineeringDetails] = useState<
     Record<string, EngineeringTaskDetail>
@@ -295,6 +304,8 @@ export default function Dashboard() {
       rp,
       pr,
       et,
+      ca,
+      st,
     ] = await Promise.allSettled([
       getApprovals(),
       getJobs(20),
@@ -321,6 +332,8 @@ export default function Dashboard() {
       getRepositories(),
       getProjects(),
       getEngineeringTasks(),
+      getClaudeActivity(),
+      getSettings(),
     ]);
     if (a.status === "fulfilled") setApprovals(a.value);
     if (j.status === "fulfilled") setJobs(j.value);
@@ -344,6 +357,8 @@ export default function Dashboard() {
     if (ji.status === "fulfilled") setJiraIssues(ji.value);
     if (ja.status === "fulfilled") setJiraAttention(ja.value);
     if (rp.status === "fulfilled") setRepos(rp.value);
+    if (ca.status === "fulfilled") setClaudeActivity(ca.value);
+    if (st.status === "fulfilled") setClaudeSettings(st.value);
     // The open thread is refetched with everything else; stale answers for another conversation are dropped.
     if (td.status === "fulfilled" && td.value && threadIdRef.current === threadId)
       setThread(td.value);
@@ -796,7 +811,9 @@ export default function Dashboard() {
                 now={now}
                 upcoming={overview?.upcoming}
                 engineeringLock={overview?.engineeringLock}
+                claudeActivity={overview?.claudeActivity}
               />
+              <ClaudeCodeCard activity={claudeActivity} now={now} />
             </section>
           </div>
           <section id="inbox" className="syn-section">
@@ -924,6 +941,14 @@ export default function Dashboard() {
               runs={claudeRuns}
               onSkip={() => void skipPage()}
               now={now}
+            />
+            <ClaudeSettings
+              values={claudeSettings}
+              onChange={(key, value) => {
+                void putSettings({ [key]: value })
+                  .then(setClaudeSettings)
+                  .catch(() => void refresh());
+              }}
             />
           </section>
         </div>

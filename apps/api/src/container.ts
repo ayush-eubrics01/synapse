@@ -611,6 +611,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     health,
     brain,
     engineeringLock,
+    claudeActivity,
   });
 
   return {

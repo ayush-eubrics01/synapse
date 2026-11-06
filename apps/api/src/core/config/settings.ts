@@ -170,6 +170,15 @@ export const USER_EDITABLE_SETTINGS = [
 ] as const satisfies readonly SettingKey[];
 export type UserEditableKey = (typeof USER_EDITABLE_SETTINGS)[number];
 
+/** Validates `value` against the setting's schema; `ok: false` on a bad value (never throws). */
+export function checkSettingValue(
+  key: SettingKey,
+  value: unknown,
+): { ok: true; value: unknown } | { ok: false } {
+  const r = settingSchemas[key].safeParse(value);
+  return r.success ? { ok: true, value: r.data } : { ok: false };
+}
+
 export type SettingValue<K extends SettingKey> = z.output<(typeof settingSchemas)[K]>;
 
 export type PublishSettingsChanged = (tx: DbOrTx, e: NewDomainEvent<"settings.changed">) => string;

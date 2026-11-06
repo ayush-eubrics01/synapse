@@ -3,6 +3,7 @@ import type {
   ApprovalView,
   AwayDigest,
   CandidatesResponse,
+  ClaudeActivityView,
   CommitmentFilter,
   CommitmentStatus,
   CommitmentView,
@@ -169,6 +170,46 @@ export interface ClaudeStatus {
 
 export function getClaudeRuns(limit = 10, fetchImpl: typeof fetch = fetch): Promise<ClaudeRun[]> {
   return request(`/api/claude/runs?limit=${limit}`, undefined, fetchImpl);
+}
+
+export function getClaudeActivity(fetchImpl: typeof fetch = fetch): Promise<ClaudeActivityView> {
+  return request("/api/claude/activity", undefined, fetchImpl);
+}
+
+/** The keys `GET/PUT /api/settings` expose (Phase 10b). */
+export interface ClaudeSettingsDto {
+  "claudeActivity.enabled": boolean;
+  "claudeActivity.activeWindowMinutes": number;
+  "claudeActivity.yieldWhenActive": boolean;
+  "claudeActivity.yieldEngineering": boolean;
+  "claudeActivity.staleBranchDays": number;
+  "claudeActivity.openPrReminderDays": number;
+  "codeAnswer.model": "haiku" | "sonnet" | "opus";
+  "codeAnswer.maxTurns": number;
+  "codeAnswer.timeoutMinutes": number;
+  "codeAnswer.away.enabled": boolean;
+  "codeAnswer.away.autoSend": boolean;
+  "codeAnswer.away.maxRunsPerDay": number;
+}
+export type ClaudeSettingsKey = keyof ClaudeSettingsDto;
+
+export function getSettings(fetchImpl: typeof fetch = fetch): Promise<ClaudeSettingsDto> {
+  return request("/api/settings", undefined, fetchImpl);
+}
+
+export function putSettings(
+  changes: Partial<ClaudeSettingsDto>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ClaudeSettingsDto> {
+  return request(
+    "/api/settings",
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(changes),
+    },
+    fetchImpl,
+  );
 }
 
 export function getClaudeStatus(fetchImpl: typeof fetch = fetch): Promise<ClaudeStatus> {
