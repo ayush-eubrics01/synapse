@@ -79,6 +79,7 @@ export function ClaudeSettings({
                 {n.label}
               </label>
               <input
+                key={String(values[n.key])}
                 id={`syn-set-${n.key}`}
                 type="number"
                 min={n.min}

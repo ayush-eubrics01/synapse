@@ -383,9 +383,7 @@ export class ClaudeActivityService implements UserActivitySignal {
         .select({ pr: claudeSessionPrs, taskId: engineeringTasks.id })
         .from(claudeSessionPrs)
         .leftJoin(engineeringTasks, eq(engineeringTasks.prUrl, claudeSessionPrs.prUrl))
-        .where(
-          and(eq(claudeSessionPrs.repositoryId, r.id), gte(claudeSessionPrs.firstSeenAt, since)),
-        )
+        .where(eq(claudeSessionPrs.repositoryId, r.id))
         .orderBy(desc(claudeSessionPrs.firstSeenAt))
         .limit(VIEW_LIMIT)
         .all();

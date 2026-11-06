@@ -117,9 +117,8 @@ describe("GET /api/claude/activity", () => {
     for (let i = 0; i < 12; i++) addSession(a, 30 + i);
     const live = addSession(a, 3);
     addSession(a, 15 * DAY);
-    const old = addSession(b, 20 * DAY);
+    addSession(b, 20 * DAY);
     const url = addPr(a, live, 7, 10);
-    addPr(b, old, 8, 20 * DAY);
     c.db
       .insert(schema.engineeringTasks)
       .values({
@@ -140,7 +139,7 @@ describe("GET /api/claude/activity", () => {
     const v = (await r.json()) as ClaudeActivityView;
     expect(v).toMatchObject({ enabled: true, active: true, yielding: true, lastActiveAt: ago(3) });
     expect(v.health).toEqual({ state: "ok", message: null });
-    // demo-api has only a 20-day-old session and PR: no entry.
+    // demo-api has only a 20-day-old session: no entry.
     expect(v.repositories.map((x) => x.name)).toEqual(["demo-app"]);
     const repo = v.repositories[0] as ClaudeActivityView["repositories"][number];
     expect(repo.sessions).toHaveLength(10);
@@ -164,6 +163,16 @@ describe("GET /api/claude/activity", () => {
         engineeringTaskId: "task-1",
       },
     ]);
+  });
+
+  test("PRs are not window-limited: an old PR still shows, capped at 10 per repository", async () => {
+    const a = addRepo("demo-app");
+    const s = addSession(a, 5);
+    for (let i = 1; i <= 12; i++) addPr(a, s, 100 + i, 20 * DAY + i);
+    const v = (await (await get("/api/claude/activity")).json()) as ClaudeActivityView;
+    const prs = v.repositories[0]?.prs ?? [];
+    expect(prs).toHaveLength(10);
+    expect(prs[0]?.number).toBe(101);
   });
 
   test("a PR with no matching task carries no engineeringTaskId", async () => {

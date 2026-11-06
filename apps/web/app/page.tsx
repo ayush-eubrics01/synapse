@@ -947,7 +947,10 @@ export default function Dashboard() {
               onChange={(key, value) => {
                 void putSettings({ [key]: value })
                   .then(setClaudeSettings)
-                  .catch(() => void refresh());
+                  .catch(() => {
+                    toast.show("Could not save that setting");
+                    void refresh();
+                  });
               }}
             />
           </section>
