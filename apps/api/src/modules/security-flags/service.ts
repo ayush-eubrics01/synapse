@@ -234,11 +234,11 @@ export class SecurityFlagsService {
     });
   }
 
-  /** `reason` is system-generated and must not contain message text. */
+  /** `reason` is system-generated and must not contain message text. `runId` is null when unknown. */
   recordRuntimeFlag(
     tx: DbOrTx,
     messageIds: string[],
-    runId: string,
+    runId: string | null,
     reason: string,
     severity: "warning" | "high",
   ): void {

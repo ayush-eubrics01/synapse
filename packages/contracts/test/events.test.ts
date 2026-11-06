@@ -36,6 +36,15 @@ test("catalog covers the Phase 1 and 2 events", () => {
       "person.profile_recommendation_created",
       "person.profile_approved",
       "person.recommendation_decided",
+      "commitment.detected",
+      "commitment.reviewed",
+      "commitment.status_changed",
+      "commitment.stalled",
+      "commitment.overdue",
+      "followup.draft_created",
+      "followup.status_changed",
+      "followup.sent",
+      "outgoing.status_changed",
     ].sort(),
   );
   expect(parseEventPayload("settings.changed", { key: "k" })).toEqual({ key: "k" });

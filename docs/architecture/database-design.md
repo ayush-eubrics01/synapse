@@ -68,11 +68,23 @@ SQLite with Drizzle ORM. This is the logical schema. The Drizzle schema in `pack
 
 | Table | Notes |
 |---|---|
-| `commitments` | `description`, `owner_person_id`, `owed_to_person_id`, `status` (open/in_progress/blocked/completed/cancelled), `priority`, `due_at`, `next_action`, `completion_evidence`, `closed_at`, `approval_status`, `dedup_key` unique |
-| `commitment_sources` | Multiple per commitment: `source_type` (slack_message/jira_issue), `source_external_ref`, `message_id` nullable |
-| `commitment_updates` | Status history with actor and reason |
-| `followups` | Scheduled reminders/follow-ups: `commitment_id`, `kind` (reminder_to_user/followup_to_other), `due_at`, `status`, `draft_text`, `approval_id` |
-| `followup_history` | What happened to each follow-up, including sent message ref |
+| `commitments` | `description` (≤ 500), `owner_slack_user_id`, `counterparty_slack_user_id` nullable, `direction` (mine/theirs; mine when the owner is self), `status` (open/in_progress/blocked/completed/cancelled), `review_status` (pending_review/accepted/rejected), `due_at`, `next_action`, `completion_evidence`, `stalled_at`, `last_followup_at`, `closed_at`, `dedup_key` unique, timestamps. Index (`review_status`,`status`). Kept (not deleted by message retention) |
+| `commitment_sources` | Multiple per commitment: `message_id` nullable (ON DELETE SET NULL), `source_external_ref` (always kept), `conversation_id`, `claude_run_id` nullable. Unique(`commitment_id`,`source_external_ref`) |
+| `commitment_updates` | Change history: `actor` (user/system/ai), `field`, `from_value`, `to_value`, `reason` |
+| `followups` | Drafted follow-ups: `commitment_id` nullable, `origin` (stalled/spec_clarity/urgent_reply/manual), `origin_message_id` nullable, `conversation_id`, `thread_ts`, `recipient_slack_user_id`, `draft_text`, `confidence`, `status` (draft/awaiting_approval/sending/sent/needs_attention/discarded/failed; `failed` is never written, a failed send returns the follow-up to draft), `approval_id`, `outgoing_id`, `claude_run_id`. Index (`status`) |
+| `followup_history` | What happened to each follow-up: `event`, `detail` (content-free) |
+| `outgoing_messages` | One approved Slack send: `approval_id` unique, `followup_id` nullable, `conversation_external_id`, `thread_ts`, `text` (exactly what the user approved), `status` (pending/sending/sent_unverified/sent/failed/needs_attention), `claude_run_id`, `sending_at` (set when the executor marks it `sending`; verify searches from 5 s before it, and the recovery sweep hands a message still `sending` 10 min later to the user unless its executor is still running in this process), `sent_at`, `verified_at`, `verify_attempts` (default 0), `failure` (content-free). Index (`status`); partial unique (`followup_id`) WHERE status in (pending, sending, sent_unverified, needs_attention), migration 0011: one live send per follow-up |
+
+`slack_messages.commitments_extracted_at` (nullable) marks messages already processed by commitment extraction.
+
+Phase 6 migrations:
+
+| Migration | Change |
+|---|---|
+| `0009_commitments_outgoing` | The five commitments tables (`commitments`, `commitment_sources`, `commitment_updates`, `followups`, `followup_history`), `outgoing_messages`, and `slack_messages.commitments_extracted_at` |
+| `0010_outgoing_sending_at` | `outgoing_messages.sending_at` |
+| `0011_outgoing_followup_live_uq` | Partial unique index `outgoing_messages_followup_live_uq` on (`followup_id`) for live statuses |
+| `0012_followups_conversation_internal` | Data fix, no schema change: `followups.conversation_id` is the internal `slack_conversations.id`; rewrites older `urgent_reply` rows that stored the external id. Reads still accept either form |
 
 ## Engineering Brain tables (owned by `engineering-brain`)
 

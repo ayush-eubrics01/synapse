@@ -234,6 +234,7 @@ test("bookkeeping failure parks the job in NEEDS_ATTENTION, content-free, one lo
   }
   const job = db.select().from(schema.jobs).get();
   expect(job?.status).toBe("NEEDS_ATTENTION");
+  expect((job?.lastError as { kind?: string } | null)?.kind).toBe("needs_attention");
   expect(JSON.stringify(job?.lastError)).not.toContain("SECRET");
   expect(logs.filter((l) => l.includes("approval=A1"))).toHaveLength(1);
   expect(logs.join("")).not.toContain("SECRET");

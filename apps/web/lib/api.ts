@@ -1,17 +1,45 @@
 import type {
   Approval,
+  ApprovalView,
   CandidatesResponse,
+  CommitmentFilter,
+  CommitmentStatus,
+  CommitmentView,
+  ConversationSummary,
+  ConversationThread,
+  DashboardOverview,
   EvaluateResult,
   FlagStatus,
+  FollowupView,
   GroupedFlags,
   HealthReport,
   Job,
+  OutgoingResolveAction,
   PersonDetail,
   PersonFlag,
   RecommendationView,
   UrgencyStatus,
   UrgentItem,
 } from "@synapse/contracts";
+
+/** A non-2xx answer from the API. The message keeps the "<METHOD> <url> failed with <status>" form. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+/** Why the overview failed: the API could not be reached, or it answered with an HTTP error. */
+export type OverviewFailure = { kind: "network" } | { kind: "http"; status: number };
+
+/** An ApiError is an HTTP error; anything else (fetch throws a TypeError) means unreachable. */
+export function classifyOverviewFailure(reason: unknown): OverviewFailure {
+  return reason instanceof ApiError ? { kind: "http", status: reason.status } : { kind: "network" };
+}
 
 async function request<T>(
   url: string,
@@ -28,7 +56,10 @@ async function request<T>(
     } catch {
       // body was not JSON; the status alone is reported
     }
-    throw new Error(`${init?.method ?? "GET"} ${url} failed with ${res.status}${detail}`);
+    throw new ApiError(
+      `${init?.method ?? "GET"} ${url} failed with ${res.status}${detail}`,
+      res.status,
+    );
   }
   return (await res.json()) as T;
 }
@@ -38,7 +69,7 @@ export function getHealth(fetchImpl: typeof fetch = fetch): Promise<HealthReport
   return request("/health/ready", undefined, fetchImpl, [503]);
 }
 
-export function getApprovals(fetchImpl: typeof fetch = fetch): Promise<Approval[]> {
+export function getApprovals(fetchImpl: typeof fetch = fetch): Promise<ApprovalView[]> {
   return request("/api/approvals?status=pending", undefined, fetchImpl);
 }
 
@@ -90,6 +121,12 @@ export interface ClaudeQuotaWindow {
   resetsAt?: string;
 }
 
+/** Utilization fractions (0–1, like `utilization`) at which the orchestrator gates jobs (ADR-029). */
+export interface ClaudeQuotaThresholds {
+  fiveHour: { soft: number; hard: number; stop: number };
+  sevenDay: { soft: number; hard: number };
+}
+
 export interface ClaudeStatus {
   quota: {
     level: "ok" | "soft" | "hard" | "stop";
@@ -98,6 +135,7 @@ export interface ClaudeStatus {
     fiveHour?: ClaudeQuotaWindow;
     sevenDay?: ClaudeQuotaWindow;
   } | null;
+  thresholds: ClaudeQuotaThresholds;
   auth: { refreshExpiresAt: string | null; slides: boolean | null };
 }
 
@@ -145,6 +183,30 @@ export function getInboxMessages(
   return request(`/api/inbox/messages?limit=${limit}`, undefined, fetchImpl);
 }
 
+export function getOverview(fetchImpl: typeof fetch = fetch): Promise<DashboardOverview> {
+  return request("/api/dashboard/overview", undefined, fetchImpl);
+}
+
+export function getConversations(
+  limit = 50,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ConversationSummary[]> {
+  return request(`/api/inbox/conversations?limit=${limit}`, undefined, fetchImpl);
+}
+
+/** Messages oldest first; 404 (thrown) when the conversation is unknown. */
+export function getThread(
+  id: string,
+  limit = 200,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ConversationThread> {
+  return request(
+    `/api/inbox/conversations/${encodeURIComponent(id)}/thread?limit=${limit}`,
+    undefined,
+    fetchImpl,
+  );
+}
+
 export function getSlackStatus(fetchImpl: typeof fetch = fetch): Promise<SlackStatusDto> {
   return request("/api/slack/status", undefined, fetchImpl);
 }
@@ -183,6 +245,41 @@ export function setUrgentStatus(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ status }),
+    },
+    fetchImpl,
+  );
+}
+
+export type ResolveDecisionDto = OutgoingResolveAction;
+
+/** Requests approval to send the (edited) reply in the message's thread. */
+export function requestUrgentReply(
+  messageId: string,
+  text: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ followupId: string; approvalId: string }> {
+  return request(
+    `/api/urgent/${encodeURIComponent(messageId)}/reply`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    },
+    fetchImpl,
+  );
+}
+
+export function resolveOutgoing(
+  outgoingId: string,
+  decision: ResolveDecisionDto,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ outgoingId: string; status: string }> {
+  return request(
+    `/api/outgoing/${encodeURIComponent(outgoingId)}/resolve`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision }),
     },
     fetchImpl,
   );
@@ -357,4 +454,93 @@ export function retryApply(
     { method: "POST" },
     fetchImpl,
   );
+}
+
+export type CommitmentViewDto = CommitmentView;
+export type CommitmentFilterDto = CommitmentFilter;
+export type CommitmentStatusDto = CommitmentStatus;
+export type FollowupViewDto = FollowupView;
+
+export interface CommitmentEditsDto {
+  description?: string;
+  dueAt?: string | null;
+}
+
+function postJson<T>(url: string, body: unknown, fetchImpl: typeof fetch): Promise<T> {
+  return request(
+    url,
+    { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+    fetchImpl,
+  );
+}
+
+export function getCommitments(
+  filter: CommitmentFilterDto = "all",
+  fetchImpl: typeof fetch = fetch,
+): Promise<CommitmentViewDto[]> {
+  return request(`/api/commitments?filter=${filter}`, undefined, fetchImpl);
+}
+
+export function reviewCommitment(
+  id: string,
+  decision: "accept" | "reject",
+  edits?: CommitmentEditsDto,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true }> {
+  return postJson(
+    `/api/commitments/${encodeURIComponent(id)}/review`,
+    edits ? { decision, edits } : { decision },
+    fetchImpl,
+  );
+}
+
+export function setCommitmentStatus(
+  id: string,
+  status: CommitmentStatusDto,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true }> {
+  return postJson(`/api/commitments/${encodeURIComponent(id)}/status`, { status }, fetchImpl);
+}
+
+export function decideProposal(
+  updateId: string,
+  accept: boolean,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true }> {
+  return postJson(
+    `/api/commitments/proposals/${encodeURIComponent(updateId)}`,
+    { accept },
+    fetchImpl,
+  );
+}
+
+export function draftFollowup(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ queued: boolean }> {
+  return request(
+    `/api/commitments/${encodeURIComponent(id)}/draft-followup`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export function getFollowups(fetchImpl: typeof fetch = fetch): Promise<FollowupViewDto[]> {
+  return request("/api/followups", undefined, fetchImpl);
+}
+
+/** Requests approval to send the (edited) draft; nothing is sent until the user approves. */
+export function sendFollowup(
+  id: string,
+  text: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ followupId: string; approvalId: string }> {
+  return postJson(`/api/followups/${encodeURIComponent(id)}/send`, { text }, fetchImpl);
+}
+
+export function discardFollowup(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true }> {
+  return request(`/api/followups/${encodeURIComponent(id)}/discard`, { method: "POST" }, fetchImpl);
 }

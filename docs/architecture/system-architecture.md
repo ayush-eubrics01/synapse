@@ -32,7 +32,7 @@ The API service keeps running without the web service. All background work lives
 
 | Layer | Responsibility | Location |
 |---|---|---|
-| Presentation | Dashboard, inboxes, approvals, settings. No business logic | `apps/web` |
+| Presentation | Dashboard, inboxes, approvals, settings. No business logic (layout: `docs/modules/web-dashboard.md`) | `apps/web` |
 | Application / orchestration | Scheduling, jobs, events, approvals, permissions, notifications, recovery, Claude orchestration | `apps/api/src/core`, `workers` |
 | Domain | Inbox, people, commitments, Jira tracking, Engineering Brain, engineering tasks, dashboard config | `apps/api/src/modules` |
 | Intelligence | Prompt builders and output schemas for AI tasks | `apps/api/src/intelligence` |

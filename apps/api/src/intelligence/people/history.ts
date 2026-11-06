@@ -5,6 +5,8 @@ export interface HistoryItem {
   messageId: string;
   sentAt: string;
   author: "them" | "self" | "other";
+  /** Slack user id of the author, for callers that put it in the block source (commitments). */
+  authorRef?: string;
   conversationLabel: string;
   text: string;
   /** `<conversation external id>:<ts>`; survives message expiry as evidence provenance. */

@@ -1,0 +1,99 @@
+/* Colour tokens copied from the design (spec D3). Dark is the default; the boot script in
+   <head> sets data-theme before paint. Fonts come from next/font (spec D4). */
+:root {
+  --bg: #131210;
+  --surface: #1b1a17;
+  --surface2: #171614;
+  --subtle: #211f1c;
+  --subtle2: #272521;
+  --chip: #2a2824;
+  --navActive: #2f2c27;
+  --line: #2b2925;
+  --line2: #242220;
+  --btnLine: #39362f;
+  --lineHover: #4d4940;
+  --toggleOff: #3e3a33;
+  --ink: #ede8de;
+  --onInk: #161513;
+  --inkHover: #d5cfc3;
+  --ink2: #c6bfb2;
+  --muted: #a69e90;
+  --muted2: #8f8779;
+  --faint: #7a7365;
+  --faint2: #5c574d;
+  --hover: #211f1c;
+  --panel: #1f1d1a;
+  --panelInk: #f3efe6;
+  --panelBorder: #302d28;
+  --panelLine: #3a362f;
+  --redBg: oklch(0.29 0.06 28);
+  --redFg: oklch(0.8 0.12 28);
+  --redLine: oklch(0.42 0.1 28);
+  --amberBg: oklch(0.29 0.05 80);
+  --amberFg: oklch(0.86 0.11 80);
+  --amberLine: oklch(0.45 0.08 80);
+  --greenBg: oklch(0.29 0.045 155);
+  --greenFg: oklch(0.8 0.11 155);
+  --blueBg: oklch(0.29 0.045 255);
+  --blueFg: oklch(0.8 0.09 255);
+  --blueLine: oklch(0.45 0.07 255);
+  --avBgL: 0.35;
+  --avFgL: 0.87;
+  --dotOk: oklch(0.65 0.14 155);
+  --dotWarn: oklch(0.75 0.15 75);
+  --dotIdle: #4a453c;
+  --high: oklch(0.48 0.11 70);
+  --onHigh: oklch(0.97 0.02 85);
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: #f6f4ef;
+  --surface: #fffefb;
+  --surface2: #fbf9f4;
+  --subtle: #f1eee7;
+  --subtle2: #e9e5dc;
+  --chip: #ece8df;
+  --navActive: #e3ded3;
+  --line: #e7e2d8;
+  --line2: #efebe3;
+  --btnLine: #e1dbcf;
+  --lineHover: #cfc8ba;
+  --toggleOff: #d9d3c7;
+  --ink: #24211c;
+  --onInk: #fbfaf7;
+  --inkHover: #3a362f;
+  --ink2: #4b463d;
+  --muted: #6f685d;
+  --muted2: #8a8273;
+  --faint: #9a9284;
+  --faint2: #b9b1a2;
+  --hover: #f4f1ea;
+  --panel: #1f1d19;
+  --panelInk: #f3efe6;
+  --panelBorder: transparent;
+  --panelLine: #3a362f;
+  --redBg: oklch(0.95 0.03 28);
+  --redFg: oklch(0.5 0.17 28);
+  --redLine: oklch(0.85 0.07 28);
+  --amberBg: oklch(0.95 0.045 85);
+  --amberFg: oklch(0.44 0.1 70);
+  --amberLine: oklch(0.86 0.07 80);
+  --greenBg: oklch(0.95 0.035 155);
+  --greenFg: oklch(0.45 0.1 155);
+  --blueBg: oklch(0.95 0.03 255);
+  --blueFg: oklch(0.45 0.12 255);
+  --blueLine: oklch(0.85 0.04 255);
+  --avBgL: 0.91;
+  --avFgL: 0.38;
+  --high: oklch(0.55 0.13 70);
+  --onHigh: oklch(0.99 0.01 85);
+  color-scheme: light;
+}
+
+:root {
+  --sans: var(--font-sans), "IBM Plex Sans", system-ui, sans-serif;
+  --mono: var(--font-mono), "IBM Plex Mono", ui-monospace, monospace;
+  --r-control: 8px;
+  --r-card: 14px;
+  --r-pill: 999px;
+}

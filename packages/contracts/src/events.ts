@@ -58,6 +58,21 @@ export const eventCatalog = {
   }),
   "person.profile_approved": z.object({ personId: z.string(), version: z.number().int() }),
   "person.recommendation_decided": z.object({ recommendationId: z.string(), status: z.string() }),
+  "commitment.detected": z.object({ commitmentId: z.string() }),
+  "commitment.reviewed": z.object({
+    commitmentId: z.string(),
+    reviewStatus: z.enum(["pending_review", "accepted", "rejected"]),
+  }),
+  "commitment.status_changed": z.object({
+    commitmentId: z.string(),
+    status: z.enum(["open", "in_progress", "blocked", "completed", "cancelled"]),
+  }),
+  "commitment.stalled": z.object({ commitmentId: z.string() }),
+  "commitment.overdue": z.object({ commitmentId: z.string() }),
+  "followup.draft_created": z.object({ followupId: z.string() }),
+  "followup.status_changed": z.object({ followupId: z.string(), status: z.string() }),
+  "followup.sent": z.object({ followupId: z.string(), outgoingId: z.string() }),
+  "outgoing.status_changed": z.object({ outgoingId: z.string(), status: z.string() }),
 };
 
 export type EventType = keyof typeof eventCatalog;

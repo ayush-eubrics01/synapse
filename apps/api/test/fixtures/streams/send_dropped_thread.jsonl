@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","tools":["ToolSearch"],"mcp_servers":[{"name":"claude.ai Slack","status":"connected"}]}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"ToolSearch","input":{"query":"select:mcp__claude_ai_Slack__slack_send_message"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"loaded","is_error":false}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_2","name":"mcp__claude_ai_Slack__slack_send_message","input":{"channel_id":"C0SYNTHCHN1","message":"SYNTH-APPROVED-TEXT: deploy is done"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_2","content":[{"type":"text","text":"synthetic send result"}],"is_error":false}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":3,"duration_ms":4000,"total_cost_usd":0.004,"usage":{"input_tokens":8,"output_tokens":6,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"permission_denials":[],"result":"DONE"}

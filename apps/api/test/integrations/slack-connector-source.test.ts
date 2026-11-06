@@ -215,6 +215,46 @@ describe("SlackConnectorSource.collect", () => {
     expect(seen[0]?.instructions).toContain(JSON.stringify(args));
   });
 
+  test("R19: extra query terms join the query; the 2-page chain is verified with them", async () => {
+    const args = { ...baseArgs, query: `${baseArgs.query} from:<@U0SYNTHSELF>` };
+    const { source, seen } = setup([
+      tr(SEARCH, args, fixture("search-group-dm")),
+      tr(SEARCH, { ...args, cursor: CURSOR1 }, fixture("search-channel")),
+    ]);
+    const r = await source.collect({ ...collectReq, queryTerms: ["from:<@U0SYNTHSELF>"] }, signal);
+    expect(r.pages).toHaveLength(2);
+    expect(r.complete).toBe(true);
+    expect(seen[0]?.instructions).toContain(JSON.stringify(args));
+  });
+
+  test("R19: a first call that drops the extra term is not accepted", async () => {
+    const { source } = setup([tr(SEARCH, baseArgs, fixture("search-channel"))]);
+    const e = await failure(
+      source.collect({ ...collectReq, queryTerms: ["from:<@U0SYNTHSELF>"] }, signal),
+    );
+    expect(e.classified.kind).toBe("incomplete_ai_output");
+  });
+
+  test("R19: a page 2 that drops the extra term ends the chain", async () => {
+    const args = { ...baseArgs, query: `${baseArgs.query} from:<@U0SYNTHSELF>` };
+    const { source } = setup([
+      tr(SEARCH, args, fixture("search-group-dm")),
+      tr(SEARCH, { ...baseArgs, cursor: CURSOR1 }, fixture("search-channel")),
+    ]);
+    const r = await source.collect({ ...collectReq, queryTerms: ["from:<@U0SYNTHSELF>"] }, signal);
+    expect(r.pages).toHaveLength(1);
+    expect(r.complete).toBe(false);
+  });
+
+  test("R19: a query term with whitespace or quotes is refused before any run", async () => {
+    for (const term of ["from:<@U1> in:#x", 'a"b', ""]) {
+      const { source, seen } = setup([]);
+      const e = await failure(source.collect({ ...collectReq, queryTerms: [term] }, signal));
+      expect(e.classified.kind).toBe("invalid_input");
+      expect(seen).toHaveLength(0);
+    }
+  });
+
   test("empty search is an accepted complete page", async () => {
     const { source } = setup([tr(SEARCH, baseArgs, fixture("search-empty"))]);
     const r = await source.collect(collectReq, signal);

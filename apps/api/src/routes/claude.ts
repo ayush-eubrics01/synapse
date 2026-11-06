@@ -52,9 +52,10 @@ export function claudeRoutes(c: Container): Hono {
 
   app.get("/api/claude/status", (ctx) => {
     const snap = c.orchestrator.latestSnapshot();
+    const thresholds = thresholdsFromSettings(c.settings);
     let quota = null;
     if (snap) {
-      const d = quotaLevel(snap, thresholdsFromSettings(c.settings), c.clock.now());
+      const d = quotaLevel(snap, thresholds, c.clock.now());
       quota = {
         level: d.level,
         window: d.window,
@@ -64,7 +65,7 @@ export function claudeRoutes(c: Container): Hono {
       };
     }
     const { refreshExpiresAt, slides } = c.auth.status();
-    return ctx.json({ quota, auth: { refreshExpiresAt, slides } });
+    return ctx.json({ quota, thresholds, auth: { refreshExpiresAt, slides } });
   });
   return app;
 }

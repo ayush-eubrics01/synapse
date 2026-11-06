@@ -51,10 +51,14 @@ export function buildHistoryRequest(
     instructions: string;
     /** Whole parts (e.g. the approved profile) placed before the history; they count in the budget. */
     leadParts?: PromptPart[];
+    /** Replaces the default block source (`slack message <id> by <who> in <label> at <time>`). */
+    source?: (m: HistoryItem) => string;
+    /** Priority class of the request; `batch` unless given. */
+    priorityClass?: ClaudeJobRequest["priorityClass"];
   },
 ): { request: ClaudeJobRequest; used: HistoryItem[] } {
   const lead = opts.leadParts ?? [];
-  const all = items.map((m) => ({ m, source: sourceOf(m) }));
+  const all = items.map((m) => ({ m, source: (opts.source ?? sourceOf)(m) }));
   let start = 0;
   let fixed =
     lead.reduce(
@@ -77,7 +81,7 @@ export function buildHistoryRequest(
   const request: ClaudeJobRequest = {
     jobId: opts.jobId,
     workerProfile: "intelligence",
-    priorityClass: "batch",
+    priorityClass: opts.priorityClass ?? "batch",
     ...(opts.model ? { model: opts.model } : {}),
     allowedTools: ["ToolSearch"],
     maxTurns: 3,
