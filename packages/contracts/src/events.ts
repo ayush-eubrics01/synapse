@@ -111,6 +111,7 @@ export const eventCatalog = {
     status: engineeringStepStatusSchema,
   }),
   "engineering.lock_changed": z.object({ held: z.boolean() }),
+  "dashboard.layout_changed": z.object({ layoutId: z.string() }),
 };
 
 export type EventType = keyof typeof eventCatalog;

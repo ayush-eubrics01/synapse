@@ -51,6 +51,7 @@ const DOMAIN_EVENTS = [
   "engineering.task_status_changed",
   "engineering.step_changed",
   "engineering.lock_changed",
+  "dashboard.layout_changed",
 ] as const satisfies readonly EventType[];
 
 // LiveBus-only messages: job settles (worker) and notifications (NotificationService).

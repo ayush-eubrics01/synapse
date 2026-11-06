@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
-import { homedir } from "node:os";
+import { mkdtempSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import type { NewDomainEvent } from "@synapse/contracts";
 import { type DbOrTx, openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock, isoNow, newId } from "@synapse/shared";
 import { eq } from "drizzle-orm";
-import { loadConfig, resolveHome } from "../../src/core/config/config";
+import { checkBackupDir, loadConfig, REPO_ROOT, resolveHome } from "../../src/core/config/config";
 import { SettingsService, USER_EDITABLE_SETTINGS } from "../../src/core/config/settings";
 
 function setup() {
@@ -285,4 +287,45 @@ test("phase 10b settings: defaults and bounds", () => {
   expect(USER_EDITABLE_SETTINGS).not.toContain("claudeActivity.projectsDir");
   expect(USER_EDITABLE_SETTINGS).not.toContain("claudeActivity.scanIntervalSeconds");
   expect(USER_EDITABLE_SETTINGS).toContain("codeAnswer.away.autoSend");
+});
+
+test("phase 11 ops settings have the R7 defaults and bounds", () => {
+  const { settings } = setup();
+  expect(settings.get("ops.backup.enabled")).toBe(true);
+  expect(settings.get("ops.backup.hour")).toBe(3);
+  expect(settings.get("ops.backup.keep")).toBe(7);
+  expect(settings.get("ops.disk.warnFreeGiB")).toBe(5);
+  expect(settings.get("retention.jobsDays")).toBe(30);
+  expect(settings.get("retention.notificationsDays")).toBe(30);
+  expect(settings.get("retention.claudeRunsDays")).toBe(90);
+  expect(settings.get("retention.auditDays")).toBe(365);
+  expect(settings.get("ops.backup.dir")).toBeNull();
+  expect(settings.get("ops.backup.lastRunDate")).toBeNull();
+  expect(settings.get("ops.retention.lastRun")).toBeNull();
+  expect(() => settings.set("ops.backup.hour", 24)).toThrow();
+  expect(() => settings.set("ops.backup.keep", 0)).toThrow();
+  expect(() => settings.set("retention.auditDays", 89)).toThrow();
+  expect(() => settings.set("retention.jobsDays", 6)).toThrow();
+  expect(() => settings.set("retention.claudeRunsDays", 13)).toThrow();
+  expect(() => settings.set("ops.disk.warnFreeGiB", 101)).toThrow();
+  expect(() => settings.set("ops.backup.dir", "rel")).toThrow();
+});
+
+test("SYNAPSE_BACKUP_DIR is validated", () => {
+  expect(loadConfig({ HOME: "/h" }).backupDir).toBeNull();
+  expect(() => loadConfig({ HOME: "/h", SYNAPSE_BACKUP_DIR: "rel/dir" })).toThrow(
+    "SYNAPSE_BACKUP_DIR must be an absolute path outside the repository",
+  );
+  expect(() => loadConfig({ HOME: "/h", SYNAPSE_BACKUP_DIR: `${REPO_ROOT}/backups` })).toThrow(
+    /outside the repository/,
+  );
+  expect(() => loadConfig({ HOME: "/h", SYNAPSE_BACKUP_DIR: REPO_ROOT })).toThrow(
+    /outside the repository/,
+  );
+  const dir = mkdtempSync(join(tmpdir(), "syn-"));
+  expect(loadConfig({ HOME: "/h", SYNAPSE_BACKUP_DIR: dir }).backupDir).toBe(dir);
+  expect(checkBackupDir(dir)).toBe("ok");
+  expect(checkBackupDir("rel")).toBe("not_absolute");
+  expect(checkBackupDir(`${dir}/sub`, dir)).toBe("inside_repo");
+  expect(checkBackupDir(`${dir}-other`, dir)).toBe("ok");
 });

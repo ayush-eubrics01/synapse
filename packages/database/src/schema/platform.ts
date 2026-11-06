@@ -1026,3 +1026,20 @@ export const codeAnswers = sqliteTable(
       .where(sql`${t.status} not in ('failed','dismissed')`),
   ],
 );
+
+/** Named dashboard layouts (D1): at most one active, names unique ignoring case. */
+export const dashboardLayouts = sqliteTable(
+  "dashboard_layouts",
+  {
+    id: id(),
+    name: text("name").notNull(),
+    isActive: bool("is_active").notNull().default(false),
+    layout: json("layout").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("dashboard_layouts_name_uq").on(sql`lower(${t.name})`),
+    uniqueIndex("dashboard_layouts_active_uq").on(sql`(1)`).where(sql`${t.isActive} = 1`),
+  ],
+);

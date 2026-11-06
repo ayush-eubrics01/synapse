@@ -194,14 +194,27 @@ export interface ClaudeSettingsDto {
 }
 export type ClaudeSettingsKey = keyof ClaudeSettingsDto;
 
-export function getSettings(fetchImpl: typeof fetch = fetch): Promise<ClaudeSettingsDto> {
+/** Phase 11 operations keys exposed by `GET/PUT /api/settings`. */
+export interface OpsSettingsDto {
+  "ops.backup.enabled": boolean;
+  "ops.backup.hour": number;
+  "ops.backup.keep": number;
+  "ops.disk.warnFreeGiB": number;
+  "retention.jobsDays": number;
+  "retention.notificationsDays": number;
+  "retention.claudeRunsDays": number;
+  "retention.auditDays": number;
+}
+export type SettingsDto = ClaudeSettingsDto & OpsSettingsDto;
+
+export function getSettings(fetchImpl: typeof fetch = fetch): Promise<SettingsDto> {
   return request("/api/settings", undefined, fetchImpl);
 }
 
 export function putSettings(
-  changes: Partial<ClaudeSettingsDto>,
+  changes: Partial<SettingsDto>,
   fetchImpl: typeof fetch = fetch,
-): Promise<ClaudeSettingsDto> {
+): Promise<SettingsDto> {
   return request(
     "/api/settings",
     {

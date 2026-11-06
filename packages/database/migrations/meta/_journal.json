@@ -148,6 +148,13 @@
       "when": 1793980284701,
       "tag": "0020_claude_activity_code_answers",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1793991615846,
+      "tag": "0021_dashboard_layouts",
+      "breakpoints": true
     }
   ]
 }

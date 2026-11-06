@@ -1,4 +1,6 @@
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
+import { isAbsolute, relative, resolve } from "node:path";
 
 export interface AppConfig {
   dbPath: string;
@@ -7,6 +9,28 @@ export interface AppConfig {
   workerConcurrency: number;
   claudeBinary: string;
   credentialsPath: string;
+  /** null: resolved at startup to `<data dir>/backups`. */
+  backupDir: string | null;
+}
+
+export const REPO_ROOT = resolve(import.meta.dir, "../../../../..");
+
+function realIfExists(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/** A backup dir must be absolute and not the repository or inside it (backups hold real data). */
+export function checkBackupDir(
+  dir: string,
+  repoRoot = REPO_ROOT,
+): "ok" | "not_absolute" | "inside_repo" {
+  if (!isAbsolute(dir)) return "not_absolute";
+  const rel = relative(realIfExists(repoRoot), realIfExists(resolve(dir)));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel)) ? "inside_repo" : "ok";
 }
 
 const LOOPBACK_HOSTS = ["127.0.0.1", "::1", "localhost"];
@@ -47,6 +71,10 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
       `SYNAPSE_API_HOST must be a loopback address (127.0.0.1, ::1 or localhost), got "${apiHost}"`,
     );
   }
+  const backupDir = env.SYNAPSE_BACKUP_DIR || null;
+  if (backupDir !== null && checkBackupDir(backupDir) !== "ok") {
+    throw new Error("SYNAPSE_BACKUP_DIR must be an absolute path outside the repository");
+  }
   return {
     dbPath: env.SYNAPSE_DB_PATH || defaultDbPath(env),
     api: { host: apiHost, port: parsePort("SYNAPSE_API_PORT", env.SYNAPSE_API_PORT, 7400) },
@@ -54,5 +82,6 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     workerConcurrency: 2,
     claudeBinary: homePath(env, env.SYNAPSE_CLAUDE_BIN, ".local/bin/claude"),
     credentialsPath: homePath(env, env.SYNAPSE_CLAUDE_CREDENTIALS, ".claude/.credentials.json"),
+    backupDir,
   };
 }

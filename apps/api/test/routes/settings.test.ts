@@ -46,6 +46,9 @@ describe("settings routes", () => {
     expect(Object.keys(body).sort()).toEqual([...USER_EDITABLE_SETTINGS].sort());
     expect(body["codeAnswer.away.autoSend"]).toBe(false);
     expect(body).not.toHaveProperty("claudeActivity.lastActiveState");
+    expect(body["ops.backup.enabled"]).toBe(true);
+    expect(body["retention.auditDays"]).toBe(365);
+    expect(body).not.toHaveProperty("ops.backup.dir");
   });
 
   test("PUT stores the value, audits the keys and returns the new values", async () => {
@@ -65,6 +68,10 @@ describe("settings routes", () => {
     [{ "claudeActivity.lastActiveState": true }],
     [{ "codeAnswer.maxTurns": 99 }],
     [{ "codeAnswer.model": "gpt" }],
+    [{ "ops.backup.keep": 0 }],
+    [{ "ops.backup.dir": "/tmp/x" }],
+    [{ "ops.backup.lastRunDate": "2026-11-07" }],
+    [{ "ops.retention.lastRun": null }],
     [["codeAnswer.maxTurns"]],
     [null],
   ])("PUT %j is 400 invalid_setting and changes nothing", async (body) => {
