@@ -5,6 +5,7 @@ import type {
   CandidatesResponse,
   CommitmentFilter,
   ConversationSummary,
+  ConversationThread,
   DashboardOverview,
   Job,
   PersonDetail,
@@ -29,7 +30,6 @@ import {
   getCommitments,
   getConversations,
   getFollowups,
-  getInboxMessages,
   getJobs,
   getOverview,
   getPeople,
@@ -39,8 +39,8 @@ import {
   getSecurityFlags,
   getSlackIdentity,
   getSlackStatus,
+  getThread,
   getUrgent,
-  type InboxMessageDto,
   type PersonDto,
   type PersonPriorityDto,
   reviewCommitment,
@@ -53,6 +53,7 @@ import {
   type UrgentItemDto,
 } from "../lib/api";
 import { trailingDebounce } from "../lib/debounce";
+import { filterConversations, type InboxFilter } from "../lib/inbox";
 import { LIVE_EVENT_TYPES } from "../lib/live-events";
 import { SECTION_IDS, type SectionId, sidebarItems } from "../lib/nav";
 import {
@@ -67,7 +68,7 @@ import { writeTheme } from "../lib/theme";
 import { CommitmentsPanel } from "./components/CommitmentsPanel";
 import { CommandPalette } from "./components/header/CommandPalette";
 import { Header } from "./components/header/Header";
-import { InboxPanel } from "./components/InboxPanel";
+import { Inbox } from "./components/inbox/Inbox";
 import { PeopleCandidates } from "./components/PeopleCandidates";
 import { PersonProfile } from "./components/PersonProfile";
 import { PriorityPeople } from "./components/PriorityPeople";
@@ -168,7 +169,10 @@ export default function Dashboard() {
   const [claudeStatus, setClaudeStatus] = useState<ClaudeStatus | null>(null);
   const [claudeRuns, setClaudeRuns] = useState<ClaudeRun[]>([]);
   const [slackStatus, setSlackStatus] = useState<SlackStatusDto | null>(null);
-  const [messages, setMessages] = useState<InboxMessageDto[]>([]);
+  const [inboxFilter, setInboxFilter] = useState<InboxFilter>("all");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [thread, setThread] = useState<ConversationThread | null>(null);
+  const threadIdRef = useRef<string | null>(null);
   const [urgent, setUrgent] = useState<UrgentItemDto[]>([]);
   const [flags, setFlags] = useState<GroupedFlagsDto[]>([]);
   const [people, setPeople] = useState<PersonDto[]>([]);
@@ -189,17 +193,23 @@ export default function Dashboard() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [backfillSignal, setBackfillSignal] = useState(0);
   const toast = useToast();
+  // The selected conversation falls back to the first one in the current filter (spec D10).
+  const visibleConversations = filterConversations(conversations, inboxFilter);
+  const effectiveConversationId = visibleConversations.some((c) => c.id === selectedId)
+    ? selectedId
+    : (visibleConversations[0]?.id ?? null);
+  threadIdRef.current = effectiveConversationId;
 
   const refresh = useCallback(async () => {
     const openUser = personRef.current;
-    const [a, j, cs, cr, ss, im, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv, pd] =
+    const threadId = threadIdRef.current;
+    const [a, j, cs, cr, ss, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv, pd, td] =
       await Promise.allSettled([
         getApprovals(),
         getJobs(20),
         getClaudeStatus(),
         getClaudeRuns(10),
         getSlackStatus(),
-        getInboxMessages(50),
         getUrgent("open"),
         getSecurityFlags(false),
         getPeople(),
@@ -212,13 +222,13 @@ export default function Dashboard() {
         getOverview(),
         getConversations(50),
         openUser ? getPersonProfile(openUser) : Promise.resolve(null),
+        threadId ? getThread(threadId) : Promise.resolve(null),
       ]);
     if (a.status === "fulfilled") setApprovals(a.value);
     if (j.status === "fulfilled") setJobs(j.value);
     if (cs.status === "fulfilled") setClaudeStatus(cs.value);
     if (cr.status === "fulfilled") setClaudeRuns(cr.value);
     if (ss.status === "fulfilled") setSlackStatus(ss.value);
-    if (im.status === "fulfilled") setMessages(im.value);
     if (ug.status === "fulfilled") setUrgent(ug.value);
     if (sf.status === "fulfilled") setFlags(sf.value);
     if (pp.status === "fulfilled") setPeople(pp.value);
@@ -231,6 +241,9 @@ export default function Dashboard() {
     if (ov.status === "fulfilled") setOverview(ov.value);
     setOverviewFailed(ov.status === "rejected");
     if (cv.status === "fulfilled") setConversations(cv.value);
+    // The open thread is refetched with everything else; stale answers for another conversation are dropped.
+    if (td.status === "fulfilled" && td.value && threadIdRef.current === threadId)
+      setThread(td.value);
     // The open profile is refetched with everything else; if that fails, the stale profile closes.
     if (openUser && personRef.current === openUser) {
       if (pd.status === "fulfilled") setPerson(pd.value);
@@ -249,7 +262,7 @@ export default function Dashboard() {
       });
       return next;
     });
-    const failed = [a, j, cs, cr, ss, im, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv].find(
+    const failed = [a, j, cs, cr, ss, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv].find(
       (r) => r.status === "rejected",
     );
     const message = failed?.status === "rejected" ? String(failed.reason) : null;
@@ -270,6 +283,23 @@ export default function Dashboard() {
       source.close();
     };
   }, [refresh]);
+
+  // Fetches the thread when the shown conversation changes; refresh() keeps it current after that.
+  useEffect(() => {
+    if (effectiveConversationId === null) {
+      setThread(null);
+      return;
+    }
+    const id = effectiveConversationId;
+    getThread(id).then(
+      (t) => {
+        if (threadIdRef.current === id) setThread(t);
+      },
+      (e: unknown) => {
+        if (threadIdRef.current === id) setActionError(String(e));
+      },
+    );
+  }, [effectiveConversationId]);
 
   const skipPage = async () => {
     setActionError(null);
@@ -313,8 +343,10 @@ export default function Dashboard() {
     await refresh();
   };
 
-  // Task 7 replaces the body with the conversation view; for now it brings the inbox into view.
-  const openConversation = (_id: string) => {
+  const openConversation = (id: string) => {
+    // A conversation outside the current filter needs the full list to be visible.
+    if (!visibleConversations.some((c) => c.id === id)) setInboxFilter("all");
+    setSelectedId(id);
     scrollToSection("inbox");
   };
 
@@ -422,7 +454,11 @@ export default function Dashboard() {
   return (
     <div className="syn-app">
       <Sidebar
-        items={sidebarItems(overview?.counts ?? null, needsYouCount(cards))}
+        items={sidebarItems(
+          overview?.counts ?? null,
+          needsYouCount(cards),
+          conversations.filter((c) => c.theyWroteLast).length,
+        )}
         active={active}
         onGo={(id) => {
           const section = SECTION_IDS.find((s) => s === id);
@@ -478,8 +514,18 @@ export default function Dashboard() {
             </section>
           )}
           <section id="inbox" className="syn-section">
-            <h2>Inbox</h2>
-            <InboxPanel messages={messages} />
+            <Inbox
+              conversations={conversations}
+              filter={inboxFilter}
+              onFilter={setInboxFilter}
+              selectedId={effectiveConversationId}
+              onSelect={setSelectedId}
+              thread={thread}
+              urgentById={new Map(urgent.map((u) => [u.messageId, u]))}
+              now={now}
+              hidden={feed.hidden}
+              handlers={feed.handlers}
+            />
           </section>
           <section id="commitments" className="syn-section">
             <h2>Commitments</h2>

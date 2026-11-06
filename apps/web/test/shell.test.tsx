@@ -155,6 +155,9 @@ test("sidebarItems shows the Needs-you card count and marks it hot", () => {
   expect(items.find((i) => i.id === "commitments")?.count).toBe(3);
   expect(items.find((i) => i.id === "people")?.count).toBe(5);
   expect(sidebarItems(null, 0).every((i) => !i.count)).toBe(true);
+  // The Inbox badge counts conversations where they wrote last, not all conversations.
+  expect(sidebarItems(counts, 8, 4).find((i) => i.id === "inbox")?.count).toBe(4);
+  expect(sidebarItems(counts, 8).find((i) => i.id === "inbox")?.count).toBe(0);
   // The badge is the feed's card count, not a sum of overview counts.
   const two = sidebarItems(counts, 2).find((i) => i.id === "triage");
   expect(two?.count).toBe(2);

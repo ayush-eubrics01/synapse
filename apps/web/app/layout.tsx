@@ -8,6 +8,7 @@ import "./styles/shell.css";
 import "./styles/primitives.css";
 import "./styles/cards.css";
 import "./styles/system.css";
+import "./styles/inbox.css";
 
 // Self-hosted at build time: the browser never requests Google (spec D4).
 const sans = IBM_Plex_Sans({
