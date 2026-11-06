@@ -9,10 +9,14 @@ function setup() {
   runMigrations(db);
   return sqlite;
 }
+const LAYOUT = JSON.stringify({
+  version: 1,
+  sections: [{ id: "triage", visible: true, collapsed: false, width: "half" }],
+});
 const ins = (sqlite: ReturnType<typeof setup>, id: string, name: string, active: number) =>
   sqlite.run(
     "insert into dashboard_layouts (id, name, is_active, layout, created_at, updated_at) values (?,?,?,?,?,?)",
-    [id, name, active, "{}", "t", "t"],
+    [id, name, active, LAYOUT, "t", "t"],
   );
 
 test("0021 applies on a fresh database", () => {
@@ -35,4 +39,13 @@ test("layout names are unique case-insensitively", () => {
   const sqlite = setup();
   ins(sqlite, "l1", "Focus", 0);
   expect(() => ins(sqlite, "l2", "focus", 0)).toThrow();
+});
+
+test("the layout json column round-trips", () => {
+  const sqlite = setup();
+  ins(sqlite, "l1", "Default", 1);
+  const row = sqlite.query("select layout from dashboard_layouts where id = 'l1'").get() as {
+    layout: string;
+  };
+  expect(JSON.parse(row.layout).sections[0].id).toBe("triage");
 });

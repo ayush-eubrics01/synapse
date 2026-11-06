@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { NewDomainEvent } from "@synapse/contracts";
@@ -328,4 +328,14 @@ test("SYNAPSE_BACKUP_DIR is validated", () => {
   expect(checkBackupDir("rel")).toBe("not_absolute");
   expect(checkBackupDir(`${dir}/sub`, dir)).toBe("inside_repo");
   expect(checkBackupDir(`${dir}-other`, dir)).toBe("ok");
+});
+
+test("checkBackupDir: dotted names and symlinks into the repo", () => {
+  const repo = mkdtempSync(join(tmpdir(), "syn-"));
+  mkdirSync(join(repo, "..foo"));
+  expect(checkBackupDir(join(repo, "..foo"), repo)).toBe("inside_repo");
+  const other = mkdtempSync(join(tmpdir(), "syn-"));
+  symlinkSync(repo, join(other, "link"));
+  expect(checkBackupDir(join(other, "link", "not-yet", "b"), repo)).toBe("inside_repo");
+  expect(checkBackupDir(join(other, "fresh", "b"), repo)).toBe("ok");
 });

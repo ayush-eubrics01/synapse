@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 export interface AppConfig {
   dbPath: string;
@@ -15,11 +15,19 @@ export interface AppConfig {
 
 export const REPO_ROOT = resolve(import.meta.dir, "../../../../..");
 
+/** realpath of the nearest existing ancestor, with the missing tail re-appended. */
 function realIfExists(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
+  let cur = p;
+  let tail = "";
+  for (;;) {
+    try {
+      return resolve(realpathSync(cur), tail);
+    } catch {
+      const parent = dirname(cur);
+      if (parent === cur) return p;
+      tail = join(basename(cur), tail);
+      cur = parent;
+    }
   }
 }
 
@@ -30,7 +38,9 @@ export function checkBackupDir(
 ): "ok" | "not_absolute" | "inside_repo" {
   if (!isAbsolute(dir)) return "not_absolute";
   const rel = relative(realIfExists(repoRoot), realIfExists(resolve(dir)));
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel)) ? "inside_repo" : "ok";
+  return rel === "" || (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel))
+    ? "inside_repo"
+    : "ok";
 }
 
 const LOOPBACK_HOSTS = ["127.0.0.1", "::1", "localhost"];
