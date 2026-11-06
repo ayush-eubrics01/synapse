@@ -1,6 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, isAllowMode, smokeExitCode, test } from "bun:test";
 import type { RawToolResult } from "@synapse/contracts";
-import { classifyHookSmoke } from "../hook-smoke";
+import { classifyHookSmoke, isAllowMode, smokeExitCode } from "../hook-smoke";
 
 const TOOL = "mcp__claude_ai_Slack__slack_search_users";
 const tr = (over: Partial<RawToolResult>): RawToolResult => ({
@@ -46,4 +46,14 @@ test("a successful result for a different tool does not count as NOT blocked", (
   expect(
     classifyHookSmoke({ toolResults: [tr({ toolName: "ToolSearch" })], permissionDenials: [TOOL] }),
   ).toBe("blocked");
+});
+
+test("--allow mode passes only when the guarded call went through", () => {
+  expect(isAllowMode(["--allow"])).toBe(true);
+  expect(isAllowMode([])).toBe(false);
+  expect(smokeExitCode("not_blocked", true)).toBe(0);
+  expect(smokeExitCode("blocked", true)).toBe(1);
+  expect(smokeExitCode("inconclusive", true)).toBe(1);
+  expect(smokeExitCode("blocked", false)).toBe(0);
+  expect(smokeExitCode("not_blocked", false)).toBe(1);
 });
