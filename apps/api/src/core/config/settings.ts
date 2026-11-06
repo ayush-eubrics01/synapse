@@ -69,6 +69,8 @@ const settingSchemas = {
     .min(1)
     .max(500)
     .refine((v) => !/[\r\n]/.test(v), "no newlines")
+    // The code wraps the scope in parentheses and appends its own ordering.
+    .refine((v) => !/\border\s+by\b/i.test(v), "no ORDER BY")
     .default("assignee = currentUser() AND updated >= -60d"),
   "jira.excludedProjects": z.array(jiraProjectKeySchema).default([]),
   "jira.sync.intervalMinutes": z.number().int().positive().default(15),

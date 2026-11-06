@@ -86,6 +86,8 @@ export interface DashboardOverview {
     profileRecommendations: number;
     peopleToEvaluate: number;
     conversations: number;
+    /** In-scope Jira issues with a non-null attention (Phase 8). */
+    jiraAttention: number;
   };
   /** Away mode (ADR-033): the switch and how many people (high or critical, not self) it can reply to. */
   away: { on: boolean; highPriorityCount: number };

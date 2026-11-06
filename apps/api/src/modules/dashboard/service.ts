@@ -1,7 +1,7 @@
 import type { DashboardOverview, HealthReport } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import type { Clock } from "@synapse/shared";
-import { and, count, countDistinct, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, count, countDistinct, eq, gte, inArray, isNotNull, lte, ne, sql } from "drizzle-orm";
 import type { ApprovalEngine } from "../../core/approvals/approvals";
 import type { SettingsService } from "../../core/config/settings";
 import type { FollowupService } from "../commitments/followups";
@@ -96,6 +96,12 @@ export class DashboardService {
           db
             .select({ n: countDistinct(schema.slackMessages.conversationId) })
             .from(schema.slackMessages)
+            .get()?.n ?? 0,
+        jiraAttention:
+          db
+            .select({ n: count() })
+            .from(schema.jiraIssues)
+            .where(and(eq(schema.jiraIssues.inScope, true), isNotNull(schema.jiraIssues.attention)))
             .get()?.n ?? 0,
       },
       away: {
