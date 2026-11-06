@@ -2,9 +2,13 @@
 // `upstream.git` (file://, upstream push DISABLED), a one-line bug and a `bun test` test. It runs
 // the REAL investigate and develop runs (haiku) through the step runner, approves the commit and
 // merge_local approvals programmatically, and stops before push_pr: the push approval stays
-// pending and the task is cancelled. gh is never invoked and nothing leaves the temp dir.
-// Spends a little Claude quota (two haiku runs). Temp DB and repo, deleted afterwards; prints
-// statuses and counts only (never task text, diff text, test output, paths or branch names).
+// pending and the task is cancelled. gh is never invoked and nothing is pushed beyond the local
+// bare repos. Spends a little Claude quota (two haiku runs). Temp DB and repo under
+// ~/.cache/synapse-develop-smoke-*, plus this instance's own develop-run root
+// ~/.cache/synapse/<hash of its data dir> (the run's private TMPDIR lives there, ADR-040); both
+// are deleted afterwards, also on SIGINT/SIGTERM. Only the shared, empty ~/.cache/synapse base
+// may remain. Prints statuses and counts only (never task text, diff text, test output, paths or
+// branch names).
 //
 // The develop run's tests execute in the sandbox (ADR-040). The repo also carries a probe test that
 // tries to write outside the repo, read a planted placeholder secret and fetch a URL; the last line
@@ -22,7 +26,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Approval, EngineeringTaskDetail } from "@synapse/contracts";
 import { createContainer } from "../../apps/api/src/container";
-import { loadConfig } from "../../apps/api/src/core/config/config";
+import {
+  defaultRunScratchRoot,
+  instanceRunRoot,
+  loadConfig,
+} from "../../apps/api/src/core/config/config";
 import { NoopDesktopNotifier } from "../../apps/api/src/infrastructure/notifier";
 import { STEP_JOB } from "../../apps/api/src/modules/engineering-tasks/lock";
 import { INVESTIGATE_JOB, PICKUP_JOB } from "../../apps/api/src/modules/engineering-tasks/service";
@@ -177,7 +185,13 @@ async function main(): Promise<void> {
   const cache = join(homedir(), ".cache");
   mkdirSync(cache, { recursive: true });
   const dir = mkdtempSync(join(cache, "synapse-develop-smoke-"));
-  const cleanup = () => rmSync(dir, { recursive: true, force: true });
+  mkdirSync(join(dir, "data"), { recursive: true });
+  // This instance's run root (hashed from its own data dir): never the live service's.
+  const runRoot = instanceRunRoot(defaultRunScratchRoot(process.env), join(dir, "data"));
+  const cleanup = () => {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(runRoot, { recursive: true, force: true });
+  };
   for (const sig of ["SIGINT", "SIGTERM"] as const) {
     process.on(sig, () => {
       cleanup();
@@ -185,13 +199,13 @@ async function main(): Promise<void> {
     });
   }
   try {
-    process.exitCode = await run(dir);
+    process.exitCode = await run(dir, runRoot);
   } finally {
     cleanup();
   }
 }
 
-async function run(dir: string): Promise<0 | 1> {
+async function run(dir: string, runRoot: string): Promise<0 | 1> {
   mkdirSync(join(dir, "data"), { recursive: true });
   const probe: ProbePaths = {
     outsideFile: join(dir, "outside-probe.txt"),
@@ -202,6 +216,8 @@ async function run(dir: string): Promise<0 | 1> {
   const repo = buildRepo(dir, probe);
   const config = { ...loadConfig(process.env), dbPath: join(dir, "data", "t.db") };
   const c = createContainer(config, { notifier: new NoopDesktopNotifier() });
+  // The cleanup deletes exactly this dir; it must be the one the container uses.
+  if (c.runRoot !== runRoot) throw new Error("develop-smoke: unexpected run root");
   c.settings.set("engineering.model", "haiku");
 
   const signal = () => AbortSignal.timeout(35 * 60_000);

@@ -145,6 +145,8 @@ beforeEach(async () => {
 });
 afterEach(() => {
   c.sqlite.close();
+  // The in-memory run root (`<scratchDir>-runs`) exists only once a develop run created it.
+  rmSync(c.runRoot, { recursive: true, force: true });
   if (savedHome === undefined) delete process.env.HOME;
   else process.env.HOME = savedHome;
 });

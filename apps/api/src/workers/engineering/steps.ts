@@ -71,15 +71,19 @@ export function sweepRunScratch(runRoot: string): void {
 }
 
 /**
- * Creates `<runRoot>/runs` and keeps `runRoot` and `runs` at 0700 (Task 4b). Each must be a real
- * directory, not a symlink that chmod would follow. Throws on any failure (the run never starts).
+ * Creates `<runRoot>/runs` (every level it creates 0700) and keeps `runRoot` and `runs` at 0700
+ * (Task 4b). Each must be a real directory owned by this user, not a symlink that chmod would
+ * follow or a dir another user planted. Throws on any failure (the run never starts).
  */
 function prepareRunsDir(runRoot: string): void {
   const runs = join(runRoot, "runs");
   mkdirSync(runs, { recursive: true, mode: 0o700 });
+  const uid = process.getuid?.();
   for (const d of [runRoot, runs]) {
-    if (!lstatSync(d).isDirectory())
-      throw new Error("engineering.step: run root is not a directory");
+    const st = lstatSync(d);
+    if (!st.isDirectory() || (uid !== undefined && st.uid !== uid)) {
+      throw new Error("engineering.step: run root is not a private directory");
+    }
     chmodSync(d, 0o700);
   }
 }

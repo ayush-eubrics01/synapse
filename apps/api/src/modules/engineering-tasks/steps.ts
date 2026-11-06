@@ -197,6 +197,17 @@ interface Ctx {
   repo: typeof repositories.$inferSelect;
 }
 
+/** A develop run's outcome: its result, or what it threw. */
+type RunOutcome = { ok: true; result: AIExecutionResult } | { ok: false; error: unknown };
+
+async function attemptRun(run: () => Promise<AIExecutionResult>): Promise<RunOutcome> {
+  try {
+    return { ok: true, result: await run() };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
 /** `max_turns` or `timeout` when the run stopped on its budget; null for any other failure. */
 function stopKind(err: unknown): "max_turns" | "timeout" | null {
   if (!(err instanceof JobError)) return null;
@@ -462,6 +473,7 @@ export class EngineeringStepService {
       if (!task.approvedDescription || !task.plan) {
         return this.attention(taskId, "develop", "invalid_state");
       }
+      const approvedDescription: string = task.approvedDescription;
       let gitDirBaseline: string;
       let configFingerprint: string;
       let placeholdersBefore: string[];
@@ -482,37 +494,22 @@ export class EngineeringStepService {
       const fingerprints = { gitDirBaseline, configFingerprint };
       this.mark(taskId, "develop", "running", { output: fingerprints, claudeRunId: null });
 
-      let result: AIExecutionResult | undefined;
-      let runError: unknown;
-      let failed = false;
-      try {
-        result = await runner.run({
+      const outcome = await attemptRun(() =>
+        runner.run({
           taskId,
           localPath: path,
           testCommand,
-          approvedDescription: task.approvedDescription,
+          approvedDescription,
           plan: task.plan as InvestigationOutput,
-        });
-      } catch (err) {
-        failed = true;
-        runError = err;
-      }
-      // ADR-040, Task 4b: the sandbox leaves empty mount placeholders in .git and the repository
-      // top. Remove the ones this run created, before any fingerprint, diff or unsafe check;
-      // anything non-empty stays and is flagged as before. Every develop run that started was
-      // sandboxed (rule M), and a refused run created nothing, so this runs after every outcome.
-      let sandboxPlaceholdersRemoved = 0;
-      try {
-        sandboxPlaceholdersRemoved = await this.deps.git.removeSandboxPlaceholders(
-          path,
-          placeholdersBefore,
-        );
-      } catch {
-        sandboxPlaceholdersRemoved = 0;
-      }
-      const fp = { ...fingerprints, sandboxPlaceholdersRemoved };
-      if (failed) {
-        const err = runError;
+        }),
+      );
+      // ADR-040, Task 4b: before any fingerprint, diff or unsafe check, after every outcome.
+      const fp = {
+        ...fingerprints,
+        sandboxPlaceholdersRemoved: await this.removeSandboxPlaceholders(path, placeholdersBefore),
+      };
+      if (!outcome.ok) {
+        const err = outcome.error;
         // Quota or auth pause: the queue runs the job again later; the step waits again.
         if (err instanceof JobError && retryDecision(err.classified.kind) === "defer") {
           this.mark(taskId, "develop", "pending", { claudeRunId: runner.runId() });
@@ -545,8 +542,22 @@ export class EngineeringStepService {
             : (stopKind(err) ?? (err instanceof JobError ? err.classified.kind : "unknown"));
         return this.developFailed(ctx, kind, fp, runner.runId());
       }
-      return this.developDone(ctx, result as AIExecutionResult, testCommand, fp, runner.runId());
+      return this.developDone(ctx, outcome.result, testCommand, fp, runner.runId());
     });
+  }
+
+  /**
+   * ADR-040, Task 4b: the sandbox leaves empty mount placeholders in .git and the repository top.
+   * Removes the ones the run created (absent from `before`) while they are empty; anything
+   * non-empty stays and the fingerprint flags it as before. Every develop run that started was
+   * sandboxed (rule M), and a refused run created nothing. A failure counts as 0 removed.
+   */
+  private async removeSandboxPlaceholders(path: string, before: string[]): Promise<number> {
+    try {
+      return await this.deps.git.removeSandboxPlaceholders(path, before);
+    } catch {
+      return 0;
+    }
   }
 
   private async developDone(

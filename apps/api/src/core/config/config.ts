@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -67,16 +68,33 @@ export function resolveHome(env: Record<string, string | undefined>): string {
 }
 
 /**
- * ADR-040, Task 4b: the root of develop-run scratch dirs, `<XDG_CACHE_HOME>/synapse` when that is
- * absolute (a relative value is invalid per the XDG spec and ignored), else `<home>/.cache/synapse`.
- * Never inside the data dir: the sandbox masks the data dir, and bwrap cannot create Claude
- * Code's files in a TMPDIR under a mask.
+ * ADR-040, Task 4b: the cache base of develop-run scratch dirs, `<XDG_CACHE_HOME>/synapse` when
+ * that is absolute (a relative value is invalid per the XDG spec and ignored), else
+ * `<home>/.cache/synapse`. Never inside the data dir: the sandbox masks the data dir, and bwrap
+ * cannot create Claude Code's files in a TMPDIR under a mask. Each instance uses its own
+ * `instanceRunRoot` below it.
  */
 export function defaultRunScratchRoot(env: Record<string, string | undefined>): string {
   const xdg = env.XDG_CACHE_HOME;
   return xdg && isAbsolute(xdg)
     ? join(xdg, "synapse")
     : join(resolveHome(env), ".cache", "synapse");
+}
+
+/**
+ * One API instance's run root: `<base>/<first 16 hex of sha256(realpath of dataDir)>`. Instances
+ * with different data dirs (the service, a smoke, a second dev API) never share it, so one's
+ * startup sweep never removes another's in-progress run. A missing data dir hashes its resolved
+ * path.
+ */
+export function instanceRunRoot(base: string, dataDir: string): string {
+  let real: string;
+  try {
+    real = realpathSync(dataDir);
+  } catch {
+    real = resolve(dataDir);
+  }
+  return join(base, createHash("sha256").update(real).digest("hex").slice(0, 16));
 }
 
 function homePath(

@@ -17,6 +17,7 @@ import {
   type AppConfig,
   checkBackupDir,
   defaultRunScratchRoot,
+  instanceRunRoot,
   REPO_ROOT,
   resolveHome,
 } from "./core/config/config";
@@ -128,6 +129,8 @@ import { registerUrgencyJobs, responseGuidelinesLookup } from "./workers/urgency
 
 export interface Container {
   config: AppConfig;
+  /** This instance's develop-run root (ADR-040): `<cache>/synapse/<hash of data dir>`. */
+  runRoot: string;
   clock: Clock;
   db: Db;
   sqlite: Database;
@@ -231,10 +234,11 @@ export interface ContainerDeps {
    */
   sandboxMaskedRoots?: readonly string[];
   /**
-   * Replaces the develop-run scratch root (default `defaultRunScratchRoot(process.env)`, i.e.
-   * `~/.cache/synapse`; a temp dir for `:memory:`). Runs get `<it>/runs/<jobId>` (ADR-040).
+   * Replaces the develop-run cache base (default `defaultRunScratchRoot(process.env)`, i.e.
+   * `~/.cache/synapse`). The instance's run root is `instanceRunRoot(base, dataDir)`, and runs get
+   * `<it>/runs/<jobId>` (ADR-040). Unused for `:memory:`.
    */
-  runScratchRoot?: string;
+  runCacheBase?: string;
 }
 
 const CORE_MODULES = [
@@ -699,13 +703,14 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   }
   // ADR-040: develop runs get a per-run scratch under the run root; the data and backup dirs are
   // masked in the sandbox along with the home credential dirs. Task 4b: the run root is never
-  // inside the data dir (a TMPDIR under a mask breaks every Bash call): `~/.cache/synapse`, or a
-  // separate temp dir for an in-memory container (whose data dir is the temp scratchDir).
+  // inside the data dir (a TMPDIR under a mask breaks every Bash call), and it is per instance
+  // (`~/.cache/synapse/<hash of data dir>`), so this instance's sweep never touches another's
+  // runs. An in-memory container (whose data dir is the temp scratchDir) uses the sibling
+  // `<scratchDir>-runs`. Nothing is created here: the step worker creates it (0700) for a run.
   const runRoot =
-    deps.runScratchRoot ??
-    (config.dbPath === ":memory:"
-      ? mkdtempSync(join(tmpdir(), "synapse-runs-"))
-      : defaultRunScratchRoot(process.env));
+    config.dbPath === ":memory:"
+      ? `${scratchDir}-runs`
+      : instanceRunRoot(deps.runCacheBase ?? defaultRunScratchRoot(process.env), dataDir);
   registerStepJob({
     db,
     settings,
@@ -797,6 +802,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
 
   return {
     config,
+    runRoot,
     clock,
     db,
     sqlite,

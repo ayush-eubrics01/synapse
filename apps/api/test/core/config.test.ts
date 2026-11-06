@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { NewDomainEvent } from "@synapse/contracts";
@@ -9,6 +9,7 @@ import { eq } from "drizzle-orm";
 import {
   checkBackupDir,
   defaultRunScratchRoot,
+  instanceRunRoot,
   loadConfig,
   REPO_ROOT,
   resolveHome,
@@ -89,6 +90,27 @@ test("defaultRunScratchRoot: an absolute XDG_CACHE_HOME, else <home>/.cache; nev
   expect(defaultRunScratchRoot({ HOME: "/h", XDG_DATA_HOME: "/h/.cache" })).toBe(
     "/h/.cache/synapse",
   );
+});
+
+test("instanceRunRoot: <base>/<16 hex of sha256(realpath dataDir)>, distinct per data dir (Task 4b fix)", () => {
+  const root = mkdtempSync(join(tmpdir(), "synapse-cfg-"));
+  try {
+    const a = join(root, "a");
+    const b = join(root, "b");
+    mkdirSync(a);
+    mkdirSync(b);
+    symlinkSync(a, join(root, "a-link"));
+    const ra = instanceRunRoot("/c/synapse", a);
+    expect(ra).toMatch(/^\/c\/synapse\/[0-9a-f]{16}$/);
+    expect(instanceRunRoot("/c/synapse", b)).not.toBe(ra);
+    // The realpath decides: a symlink to the same data dir is the same instance.
+    expect(instanceRunRoot("/c/synapse", join(root, "a-link"))).toBe(ra);
+    expect(instanceRunRoot("/c/synapse", `${a}/`)).toBe(ra);
+    // A missing data dir still hashes (its resolved path).
+    expect(instanceRunRoot("/c/synapse", join(root, "missing"))).toMatch(/[0-9a-f]{16}$/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("loadConfig rejects non-loopback host", () => {
