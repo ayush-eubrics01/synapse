@@ -137,6 +137,24 @@ test("quota_exhausted without retryAfter defers 15 minutes", () => {
   expect(q.get(j.id)?.runAfter).toBe("2026-11-05T12:15:00.000Z");
 });
 
+test("user_active defers without consuming an attempt, then resumes when claimed again", () => {
+  q.enqueue(db, { type: "t", idempotencyKey: "k" });
+  const j = must(q.claim("w", 60_000, ["t"]));
+  expect(
+    q.fail(j.id, must(j.leaseOwner), {
+      kind: "user_active",
+      message: "x",
+      retryAfter: "2026-11-05T12:09:00.000Z",
+    }),
+  ).toBe("PENDING");
+  const after = must(q.get(j.id));
+  expect(after.attempts).toBe(0);
+  expect(after.runAfter).toBe("2026-11-05T12:09:00.000Z");
+  expect(q.claim("w", 60_000, ["t"])).toBeNull();
+  clock.set(new Date("2026-11-05T12:10:00.000Z"));
+  expect(q.claim("w", 60_000, ["t"])?.id).toBe(j.id);
+});
+
 test("fail by non-owner returns current status unchanged", () => {
   const { id } = q.enqueue(db, { type: "t", idempotencyKey: "k" });
   claimOwner();

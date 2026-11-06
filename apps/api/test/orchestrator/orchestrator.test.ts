@@ -9,6 +9,7 @@ import {
   type ClaudeJobRequest,
   JobError,
   type QuotaWindow,
+  type UserActivitySignal,
 } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
@@ -945,5 +946,96 @@ describe("user settings that widen engineering scope (Phase 9 guard)", () => {
     (provider as { userPermissionsWidenScope?: boolean }).userPermissionsWidenScope = false;
     await run(engineering());
     expect(provider.requests).toHaveLength(1);
+  });
+});
+
+describe("user activity yield (ADR-036)", () => {
+  const UNTIL = "2026-11-05T12:09:00.000Z";
+  let sig: { active: boolean; until: string | null };
+  let yielding: ClaudeOrchestrator;
+  beforeEach(() => {
+    sig = { active: true, until: UNTIL };
+    const signal: UserActivitySignal = { isUserActive: () => sig };
+    yielding = new ClaudeOrchestrator({
+      db,
+      clock,
+      provider,
+      settings,
+      events: new EventPublisher(clock),
+      audit: new AuditLogger(clock),
+      auth: new AuthMonitor(db, clock, settings, new EventPublisher(clock), credsPath),
+      notifications: new NotificationService(db, clock, new LiveBus()),
+      scratchDir: "/scratch",
+      random: () => "0123456789abcdef",
+      userActivity: signal,
+    });
+  });
+
+  test("a batch request is deferred without spawning or a run row", async () => {
+    const e = await yielding.run(req({ priorityClass: "batch" }), S()).catch((x) => x);
+    expect(e).toBeInstanceOf(JobError);
+    expect(e.classified.kind).toBe("user_active");
+    expect(e.classified.retryAfter).toBe(UNTIL);
+    expect(e.classified.details).toEqual({ notSpawned: true });
+    expect(provider.requests).toHaveLength(0);
+    expect(runs()).toHaveLength(0);
+  });
+
+  test("urgent, send and collection requests run", async () => {
+    await yielding.run(req({ priorityClass: "urgent" }), S());
+    await yielding.run(req({ priorityClass: "collection" }), S());
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  test("engineering runs unless yieldEngineering is set", async () => {
+    const eng = req({
+      workerProfile: "engineering",
+      priorityClass: "engineering",
+      allowedTools: ["Read(//tmp/demo-repo/**)"],
+      workingDirectory: "/tmp/demo-repo",
+    });
+    await yielding.run(eng, S());
+    expect(provider.requests).toHaveLength(1);
+    settings.set("claudeActivity.yieldEngineering", true, { emit: false });
+    const e = await yielding.run(eng, S()).catch((x) => x);
+    expect(e.classified.kind).toBe("user_active");
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("an idle signal lets batch run (resume)", async () => {
+    sig.active = false;
+    await yielding.run(req({ priorityClass: "batch" }), S());
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("yieldWhenActive false disables the yield", async () => {
+    settings.set("claudeActivity.yieldWhenActive", false, { emit: false });
+    await yielding.run(req({ priorityClass: "batch" }), S());
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("no userActivity dependency: batch runs", async () => {
+    await run(req({ priorityClass: "batch" }));
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("the signal turning active while waiting for a slot defers after acquiring and frees the slot", async () => {
+    sig.active = false;
+    settings.set("orchestrator.maxConcurrent", 1, { emit: false });
+    let release: (r: AIExecutionResult) => void = () => {};
+    provider.next = () => new Promise<AIExecutionResult>((r) => (release = r));
+    const first = yielding.run(req({ priorityClass: "urgent" }), S());
+    await new Promise((r) => setTimeout(r, 0));
+    const second = yielding.run(req({ priorityClass: "batch" }), S());
+    await new Promise((r) => setTimeout(r, 0));
+    sig.active = true;
+    release(result());
+    await first;
+    expect(((await second.catch((x) => x)) as JobError).classified.kind).toBe("user_active");
+    expect(provider.requests).toHaveLength(1);
+    expect(runs()).toHaveLength(1);
+    provider.next = () => result();
+    await yielding.run(req({ priorityClass: "urgent" }), S());
+    expect(provider.requests).toHaveLength(2);
   });
 });

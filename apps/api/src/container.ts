@@ -283,6 +283,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     auth,
     notifications,
     scratchDir,
+    userActivity: claudeActivity,
   });
 
   const sync = new SyncStateService(db, clock);

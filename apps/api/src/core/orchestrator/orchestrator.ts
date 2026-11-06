@@ -9,6 +9,7 @@ import {
   type QuotaSnapshot,
   type QuotaWindow,
   type RunOptions,
+  type UserActivitySignal,
   type WorkerProfile,
 } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
@@ -25,6 +26,7 @@ import { clampQuotaRetry, decideQuota, quotaLevel, thresholdsFromSettings } from
 import { parseStructured } from "./structured";
 import { buildDenylist, classifyTool, SERVER_NAME_RE } from "./tool-catalog";
 import { validateRequest } from "./validator";
+import { shouldYield, yieldRetryAfter } from "./yield-gate";
 
 export const DEFAULT_SYSTEM_PROMPTS: Record<WorkerProfile, string> = {
   collector:
@@ -47,6 +49,8 @@ export interface OrchestratorDeps {
   scratchDir: string;
   /** Boundary generator (16 hex chars); injectable for tests. */
   random?: () => string;
+  /** Optional (core never imports the module): background work yields while the user is active. */
+  userActivity?: UserActivitySignal;
 }
 
 // Provider messages for these kinds are generic by design (Task 5); others never echo content.
@@ -259,6 +263,7 @@ export class ClaudeOrchestrator {
     // Quota gate (checked again after the slot is acquired)
     const thresholds = thresholdsFromSettings(settings);
     this.checkQuota(request, thresholds);
+    this.checkYield(request);
 
     // Build the execution request
     const profile = request.workerProfile;
@@ -329,6 +334,7 @@ export class ClaudeOrchestrator {
     try {
       // The quota may have risen while this request waited for a slot.
       this.checkQuota(request, thresholds);
+      this.checkYield(request);
       // Last word for the caller (a policy send whose user came back while it waited). Nothing
       // below awaits before provider.execute, so the answer holds until the spawn.
       this.checkBeforeSpawn(opts);
@@ -480,6 +486,26 @@ export class ClaudeOrchestrator {
         retryAfter: clampQuotaRetry(decision.resetsAt ?? undefined, now),
       });
     }
+  }
+
+  /** ADR-036: defers (never spawns) background work while the user is active in Claude Code. */
+  private checkYield(request: ClaudeJobRequest): void {
+    const signal = this.deps.userActivity;
+    if (!signal) return;
+    const { settings, clock } = this.deps;
+    const cfg = {
+      yieldWhenActive: settings.get("claudeActivity.yieldWhenActive"),
+      yieldEngineering: settings.get("claudeActivity.yieldEngineering"),
+    };
+    const now = clock.now();
+    const a = signal.isUserActive(now);
+    if (!shouldYield(request.priorityClass, cfg, a.active)) return;
+    throw new JobError({
+      kind: "user_active",
+      message: `user active in Claude Code: ${request.priorityClass} work deferred`,
+      retryAfter: yieldRetryAfter(a.until, now),
+      details: { notSpawned: true },
+    });
   }
 
   /** Runs one bookkeeping step; a failure is logged as one content-free line. */
