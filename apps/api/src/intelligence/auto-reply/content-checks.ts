@@ -4,7 +4,12 @@
  * pattern is ambiguous the reading that holds more is used (noted per pattern).
  */
 
-export type ContentIssue = "content_secret" | "content_internal_url" | "content_promise";
+export type ContentIssue =
+  | "content_secret"
+  | "content_internal_url"
+  | "content_link"
+  | "content_mention"
+  | "content_promise";
 
 const SECRET_PATTERNS: RegExp[] = [
   /xox[abprs]-/,
@@ -61,6 +66,24 @@ const PROMISE_PATTERNS: RegExp[] = [
   new RegExp(`\\b${MONTH}\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?\\b`, "i"),
 ];
 
+// Any link: a scheme (http, https, ftp, ws, mailto, ...) anywhere, a bare `www.` host, or a Slack
+// `<http...>` / `<mailto:...>` link (raw or entity-escaped). An internal URL is checked first and
+// keeps its own reason.
+const LINK_PATTERNS: RegExp[] = [
+  /\b[a-z][a-z0-9+.-]*:\/\//i,
+  /(?<![\w.-])www\.[a-z0-9-]/i,
+  /(?:<|&lt;)(?:https?|mailto):/i,
+];
+
+// Slack special mentions (raw or entity-escaped, with or without a `|label`), any user mention, and
+// any bare `@name` (broader than `@here|@channel|@everyone` on purpose: it holds more). An email
+// address (`ada@example.com`) is not a mention: the `@` follows a word character.
+const MENTION_PATTERNS: RegExp[] = [
+  /(?:<|&lt;)!(?:channel|here|everyone|subteam\^)/i,
+  /(?:<|&lt;)@[UW][A-Z0-9]/i,
+  /(?<![\w.@])@[A-Za-z0-9][\w.-]*/,
+];
+
 function hasSecret(text: string): boolean {
   if (SECRET_PATTERNS.some((p) => p.test(text))) return true;
   return LONG_RUN.test(text.replace(PLAIN_URL, " "));
@@ -78,6 +101,8 @@ function hasInternalUrl(text: string): boolean {
 export function contentCheck(text: string): ContentIssue | null {
   if (hasSecret(text)) return "content_secret";
   if (hasInternalUrl(text)) return "content_internal_url";
+  if (LINK_PATTERNS.some((p) => p.test(text))) return "content_link";
+  if (MENTION_PATTERNS.some((p) => p.test(text))) return "content_mention";
   if (PROMISE_PATTERNS.some((p) => p.test(text))) return "content_promise";
   return null;
 }

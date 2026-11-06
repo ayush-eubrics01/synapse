@@ -20,6 +20,13 @@ const HOLD_REASON: Record<HoldReason, string> = {
   missing_context: "Original message no longer available",
   policy_disabled: "Auto-replies turned off in permissions",
   recipient_mismatch: "Recipient didn't match the conversation",
+  not_addressed: "Their message wasn't addressed to you",
+  before_session: "Message arrived before you went away",
+  already_answered: "You had already replied",
+  injection_suspected: "Drafting run suspected a manipulation attempt",
+  content_mention: "Draft mentioned people or a group",
+  content_link: "Draft contained a link",
+  stale: "Too much time passed before it could send",
 };
 
 /** Digest card title: singular/plural of auto-replies sent, then the held count. */

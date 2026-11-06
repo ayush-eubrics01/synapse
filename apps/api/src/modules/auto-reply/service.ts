@@ -7,12 +7,27 @@ import type {
 } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import { AutoReplyDisabledByPermission } from "../../core/approvals/approvals";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { SettingsService } from "../../core/config/settings";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
+import { mentionedIds } from "../../intelligence/commitments/validate";
 import { AutoSendBlocked, type OutgoingService } from "../outgoing/service";
 import type { PeopleService } from "../people/service";
 import type { SecurityFlagsService } from "../security-flags/service";
@@ -92,6 +107,11 @@ type Resolved =
       missing: boolean;
       /** A DM reply whose recipient is not the DM partner. */
       recipientMismatch: boolean;
+      /** Pre-checks (Phase 6b final review), recorded in this order after the two above. */
+      notAddressed: boolean;
+      beforeSession: boolean;
+      alreadyAnswered: boolean;
+      injectionSuspected: boolean;
       conversationType: "im" | "mpim" | "channel" | null;
       incomingText: string | null;
       incomingFlagged: boolean;
@@ -99,6 +119,18 @@ type Resolved =
       confidence: number | null;
       originMessageId: string | null;
     };
+
+interface SourceMessage {
+  id: string;
+  ts: string;
+  threadTs: string | null;
+  text: string | null;
+  sentAt: string;
+  sender: string;
+  conversationId: string;
+  conversationType: "im" | "mpim" | "channel";
+  conversationExternalId: string;
+}
 
 /** Rolls the send transaction back so the hold is recorded in a fresh one (controller ruling 1). */
 class HoldAfterRollback extends Error {
@@ -366,6 +398,10 @@ export class AutoReplyService {
       if (done) return { skip: "already_evaluated" };
       return {
         recipientMismatch: this.notDmPartner(tx, m.conversationType, m.conversationId, m.sender),
+        notAddressed: !this.addressedToSelf(tx, m),
+        beforeSession: m.sentAt < session.startedAt,
+        alreadyAnswered: this.answeredBySelf(tx, m),
+        injectionSuspected: false,
         conversationType: m.conversationType,
         candidate: {
           sessionId: session.id,
@@ -411,14 +447,21 @@ export class AutoReplyService {
       )
       .get();
     const incoming = f.originMessageId === null ? null : this.message(tx, f.originMessageId);
+    // A follow-up question answers its origin message; without one, the before-session and
+    // already-answered checks cannot run, so it holds as missing_context.
     const missing =
       f.recipientSlackUserId === null ||
       conv === undefined ||
       f.draftText === null ||
+      (trigger.kind === "followup_question" && f.originMessageId === null) ||
       (f.originMessageId !== null && (incoming === null || incoming.text === null));
+    // Final review: a stalled reminder has no source message to have arrived early or been answered.
+    const question = trigger.kind === "followup_question" && incoming !== null;
     // A3 extension (Phase 6b review): a model-drafted follow-up is held as `flagged` when any open
     // warning-or-higher flag touches what the draft was built from: the drafting run, the origin
     // message, or (stalled) any source message of its commitment.
+    // Final review: also any message fed into the drafting prompt (`context_message_ids`). Rows
+    // drafted before migration 0014 have none recorded, so only the other checks apply to them.
     const flagged =
       (f.claudeRunId !== null &&
         this.deps.securityFlags.hasOpenRunFlag(f.claudeRunId, "warning")) ||
@@ -428,12 +471,17 @@ export class AutoReplyService {
         f.commitmentId !== null &&
         this.sourceMessageIds(tx, f.commitmentId).some((id) =>
           this.deps.securityFlags.hasOpenFlag(id, "warning"),
-        ));
+        )) ||
+      (f.contextMessageIds ?? []).some((id) => this.deps.securityFlags.hasOpenFlag(id, "warning"));
     return {
       recipientMismatch:
         conv !== undefined &&
         f.recipientSlackUserId !== null &&
         this.notDmPartner(tx, conv.type, conv.id, f.recipientSlackUserId),
+      notAddressed: false,
+      beforeSession: question && incoming.sentAt < session.startedAt,
+      alreadyAnswered: question && this.answeredBySelf(tx, incoming),
+      injectionSuspected: f.suspectedInjection,
       conversationType: conv?.type ?? null,
       candidate: {
         sessionId: session.id,
@@ -452,6 +500,64 @@ export class AutoReplyService {
       confidence: f.confidence,
       originMessageId: incoming ? incoming.id : null,
     };
+  }
+
+  /**
+   * Final review, item 1: an acknowledgement goes only to a message addressed to the user: a DM or
+   * group DM, a message that mentions the user (`<@SELF>`, `<@SELF|name>` or escaped), or a reply in
+   * a thread where the user posted before it. Unknown self id: not addressed (holds).
+   */
+  private addressedToSelf(tx: DbOrTx, m: SourceMessage): boolean {
+    if (m.conversationType === "im" || m.conversationType === "mpim") return true;
+    const self = this.deps.settings.get("slack.selfUserId");
+    if (!self) return false;
+    if (m.text !== null && mentionedIds(m.text).includes(self)) return true;
+    const thread = m.threadTs ?? m.ts;
+    return (
+      this.selfMessage(
+        tx,
+        self,
+        and(
+          eq(slackMessages.conversationId, m.conversationId),
+          or(eq(slackMessages.threadTs, thread), eq(slackMessages.ts, thread)),
+          lt(slackMessages.sentAt, m.sentAt),
+        ),
+      ) !== undefined
+    );
+  }
+
+  /**
+   * Final review, item 2: the user posted after the source message (at the same instant counts:
+   * holds more) in its thread, or anywhere in a DM or group DM. Unknown self id: answered (holds).
+   */
+  private answeredBySelf(tx: DbOrTx, m: SourceMessage): boolean {
+    const self = this.deps.settings.get("slack.selfUserId");
+    if (!self) return true;
+    const thread = m.threadTs ?? m.ts;
+    return (
+      this.selfMessage(
+        tx,
+        self,
+        and(
+          eq(slackMessages.conversationId, m.conversationId),
+          ne(slackMessages.id, m.id),
+          gte(slackMessages.sentAt, m.sentAt),
+          m.conversationType === "channel"
+            ? or(eq(slackMessages.threadTs, thread), eq(slackMessages.ts, thread))
+            : undefined,
+        ),
+      ) !== undefined
+    );
+  }
+
+  private selfMessage(tx: DbOrTx, self: string, where: ReturnType<typeof and>) {
+    return tx
+      .select({ id: slackMessages.id })
+      .from(slackMessages)
+      .innerJoin(slackUsers, eq(slackUsers.id, slackMessages.senderUserId))
+      .where(and(eq(slackUsers.externalId, self), where))
+      .limit(1)
+      .get();
   }
 
   private sourceMessageIds(tx: DbOrTx, commitmentId: string): string[] {
@@ -501,6 +607,10 @@ export class AutoReplyService {
     const c = r.candidate;
     if (r.missing) return this.recordHold(tx, c, "missing_context");
     if (r.recipientMismatch) return this.recordHold(tx, c, "recipient_mismatch");
+    if (r.notAddressed) return this.recordHold(tx, c, "not_addressed");
+    if (r.beforeSession) return this.recordHold(tx, c, "before_session");
+    if (r.alreadyAnswered) return this.recordHold(tx, c, "already_answered");
+    if (r.injectionSuspected) return this.recordHold(tx, c, "injection_suspected");
     const now = isoNow(clock);
     const since = new Date(clock.now().getTime() - DAY_MS).toISOString();
     // A5: rolling 24 h per recipient, and the latest send in this conversation and thread. In a DM
@@ -630,7 +740,7 @@ export class AutoReplyService {
     };
   }
 
-  private message(tx: DbOrTx, messageId: string) {
+  private message(tx: DbOrTx, messageId: string): SourceMessage | null {
     return (
       tx
         .select({
@@ -638,6 +748,7 @@ export class AutoReplyService {
           ts: slackMessages.ts,
           threadTs: slackMessages.threadTs,
           text: slackMessages.text,
+          sentAt: slackMessages.sentAt,
           sender: slackUsers.externalId,
           conversationId: slackConversations.id,
           conversationType: slackConversations.type,

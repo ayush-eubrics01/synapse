@@ -24,7 +24,8 @@ const CHANNEL = "C0CHAN0001";
 const DM = "D0ADA00001";
 const TS = "1793880000.000100";
 const DRAFT = "SECRET-DRAFT-TEXT Hi Ada, is the release checklist still on track?";
-const INCOMING = "SECRET-INCOMING-TEXT the deploy is failing, can you look";
+// Mentions the user, so a channel message is addressed to them (Phase 6b final review).
+const INCOMING = "SECRET-INCOMING-TEXT <@USELF00001> the deploy is failing, can you look";
 const TAGGED_ACK = withAutoReplyTag(ACK_TEXT);
 
 class FakeSink implements MessageSink {
@@ -95,7 +96,13 @@ beforeEach(() => {
 afterEach(() => c.sqlite.close());
 
 function msg(
-  over: { sender?: string; conv?: string; text?: string | null; thread?: string | null } = {},
+  over: {
+    sender?: string;
+    conv?: string;
+    text?: string | null;
+    thread?: string | null;
+    sentAt?: string;
+  } = {},
 ): { id: string; ts: string } {
   seq += 1;
   const id = `m${seq}`;
@@ -109,7 +116,7 @@ function msg(
       threadTs: over.thread ?? null,
       senderUserId: over.sender ?? "u-ada",
       text: over.text === undefined ? INCOMING : over.text,
-      sentAt: NOW,
+      sentAt: over.sentAt ?? NOW,
       collectedAt: NOW,
       contentExpiredAt: over.text === null ? NOW : null,
     })
@@ -129,6 +136,8 @@ function followup(
     status?: "draft" | "discarded";
     commitmentId?: string | null;
     runId?: string | null;
+    suspectedInjection?: boolean;
+    contextMessageIds?: string[] | null;
   } = {},
 ): string {
   const id = newId();
@@ -146,12 +155,16 @@ function followup(
       status: over.status ?? "draft",
       commitmentId: over.commitmentId ?? null,
       claudeRunId: over.runId ?? null,
+      suspectedInjection: over.suspectedInjection ?? false,
+      contextMessageIds: over.contextMessageIds ?? null,
       createdAt: NOW,
       updatedAt: NOW,
     })
     .run();
   return id;
 }
+const ago = (ms: number) => new Date(Date.parse(NOW) - ms).toISOString();
+const later = (ms: number) => new Date(Date.parse(NOW) + ms).toISOString();
 
 const ar = (id: string) =>
   c.db.select().from(schema.autoReplies).where(eq(schema.autoReplies.id, id)).get();
@@ -345,7 +358,7 @@ describe("evaluate: acknowledgements", () => {
   });
 
   test("an incoming message carrying the tag is held: loop_tag", () => {
-    const m = msg({ text: "ok, noted\n\nsent  using   @Claude" });
+    const m = msg({ conv: "c-dm", text: "ok, noted\n\nsent  using   @Claude" });
     expect(c.autoReply.evaluate({ kind: "acknowledgement", messageId: m.id })).toMatchObject({
       status: "held",
       reason: "loop_tag",
@@ -420,6 +433,184 @@ describe("evaluate: acknowledgements", () => {
     expect(eventsOf("autoreply.held")).toEqual([
       { autoReplyId: rows[0]?.id, reason: "policy_disabled" },
     ]);
+  });
+});
+
+describe("evaluate: acknowledgements only for addressed messages", () => {
+  beforeEach(() => {
+    c.autoReply.setAway(true);
+  });
+  const ack = (messageId: string) => c.autoReply.evaluate({ kind: "acknowledgement", messageId });
+
+  test("a channel post with no mention of the user is held: not_addressed", () => {
+    const r = ack(msg({ text: "the deploy is failing, can someone look" }).id);
+    expect(r).toMatchObject({ status: "held", reason: "not_addressed" });
+    expect(c.db.select().from(schema.outgoingMessages).all()).toHaveLength(0);
+    // A mention of someone else is not a mention of the user.
+    expect(ack(msg({ text: "<@UGRACE0001> can you look" }).id)).toMatchObject({
+      status: "held",
+      reason: "not_addressed",
+    });
+  });
+
+  test("a channel post that mentions the user (plain, labelled or escaped) is addressed", () => {
+    expect(ack(msg({ text: "<@USELF00001> can you look" }).id).status).toBe("sent");
+    clock.advance(H);
+    expect(ack(msg({ text: "<@USELF00001|me> can you look", thread: "1.1" }).id).status).toBe(
+      "sent",
+    );
+    clock.advance(H);
+    expect(ack(msg({ text: "&lt;@USELF00001&gt; can you look", thread: "2.2" }).id).status).toBe(
+      "sent",
+    );
+  });
+
+  test("a DM or group DM is addressed without a mention", () => {
+    expect(ack(msg({ conv: "c-dm", text: "can you look" }).id).status).toBe("sent");
+    expect(ack(msg({ conv: "c-mp", text: "can you look" }).id).status).toBe("sent");
+  });
+
+  test("a thread reply is addressed when the user posted in that thread before it", () => {
+    const root = msg({ sender: "u-grace", text: "release thread", sentAt: ago(10 * MIN) });
+    msg({ sender: "u-self", text: "on it", thread: root.ts, sentAt: ago(5 * MIN) });
+    expect(ack(msg({ text: "still failing", thread: root.ts }).id).status).toBe("sent");
+  });
+
+  test("the user posting in another thread, or only after, does not address it", () => {
+    const root = msg({ sender: "u-grace", text: "release thread", sentAt: ago(10 * MIN) });
+    msg({ sender: "u-self", text: "elsewhere", thread: TS, sentAt: ago(5 * MIN) });
+    expect(ack(msg({ text: "still failing", thread: root.ts }).id)).toMatchObject({
+      status: "held",
+      reason: "not_addressed",
+    });
+  });
+});
+
+describe("evaluate: before the session or already answered", () => {
+  beforeEach(() => {
+    c.autoReply.setAway(true);
+  });
+  const ack = (messageId: string) => c.autoReply.evaluate({ kind: "acknowledgement", messageId });
+
+  test("an acknowledgement for a message sent before away started is held: before_session", () => {
+    expect(ack(msg({ sentAt: ago(MIN) }).id)).toMatchObject({
+      status: "held",
+      reason: "before_session",
+    });
+    // At the session start exactly is not before it.
+    expect(ack(msg({ sentAt: NOW }).id).status).toBe("sent");
+  });
+
+  test("an acknowledgement after the user already replied in the thread: already_answered", () => {
+    const m = msg();
+    msg({ sender: "u-self", text: "looking", thread: m.ts, sentAt: later(MIN) });
+    expect(ack(m.id)).toMatchObject({ status: "held", reason: "already_answered" });
+  });
+
+  test("in a channel, a reply by the user in another thread is not an answer", () => {
+    const m = msg();
+    msg({ sender: "u-self", text: "elsewhere", thread: TS, sentAt: later(MIN) });
+    expect(ack(m.id).status).toBe("sent");
+  });
+
+  test("in a DM, any later message by the user is an answer", () => {
+    const m = msg({ conv: "c-dm", text: "can you look" });
+    msg({ sender: "u-self", conv: "c-dm", text: "yes", thread: TS, sentAt: later(MIN) });
+    expect(ack(m.id)).toMatchObject({ status: "held", reason: "already_answered" });
+  });
+
+  test("a follow-up question whose origin predates the session is held: before_session", () => {
+    const m = msg({ sentAt: ago(MIN) });
+    const f = followup({
+      origin: "spec_clarity",
+      originMessageId: m.id,
+      conv: "c-ch",
+      thread: m.ts,
+    });
+    expect(c.autoReply.evaluate({ kind: "followup_question", followupId: f })).toMatchObject({
+      status: "held",
+      reason: "before_session",
+    });
+    expect(fu(f)?.status).toBe("draft");
+  });
+
+  test("a follow-up question the user already answered is held: already_answered", () => {
+    const m = msg();
+    msg({ sender: "u-self", text: "details", thread: m.ts, sentAt: later(MIN) });
+    const f = followup({
+      origin: "spec_clarity",
+      originMessageId: m.id,
+      conv: "c-ch",
+      thread: m.ts,
+    });
+    expect(c.autoReply.evaluate({ kind: "followup_question", followupId: f })).toMatchObject({
+      status: "held",
+      reason: "already_answered",
+    });
+  });
+
+  test("a follow-up question without an origin message is held: missing_context", () => {
+    const f = followup({ origin: "spec_clarity", originMessageId: null });
+    expect(c.autoReply.evaluate({ kind: "followup_question", followupId: f })).toMatchObject({
+      status: "held",
+      reason: "missing_context",
+    });
+  });
+
+  test("a stalled reminder has no source message, so neither check applies", () => {
+    msg({ sender: "u-self", conv: "c-dm", text: "hi", sentAt: later(MIN) });
+    expect(c.autoReply.evaluate({ kind: "stalled_reminder", followupId: followup() }).status).toBe(
+      "sent",
+    );
+  });
+});
+
+describe("evaluate: drafting-context flags", () => {
+  beforeEach(() => {
+    c.autoReply.setAway(true);
+  });
+
+  test("a draft whose run suspected injection is held: injection_suspected (both kinds)", () => {
+    const f = followup({ suspectedInjection: true });
+    expect(c.autoReply.evaluate({ kind: "stalled_reminder", followupId: f })).toMatchObject({
+      status: "held",
+      reason: "injection_suspected",
+    });
+    expect(fu(f)?.status).toBe("draft");
+    const m = msg();
+    const q = followup({
+      origin: "spec_clarity",
+      originMessageId: m.id,
+      conv: "c-ch",
+      thread: m.ts,
+      suspectedInjection: true,
+    });
+    expect(c.autoReply.evaluate({ kind: "followup_question", followupId: q })).toMatchObject({
+      status: "held",
+      reason: "injection_suspected",
+    });
+  });
+
+  test("an open warning flag on any context message holds the draft: flagged", () => {
+    const ctx = msg({ sender: "u-grace", text: "context" });
+    flag({ messageId: ctx.id });
+    const f = followup({ contextMessageIds: ["m-dm0", ctx.id] });
+    expect(c.autoReply.evaluate({ kind: "stalled_reminder", followupId: f })).toMatchObject({
+      status: "held",
+      reason: "flagged",
+    });
+  });
+
+  test("an info flag on a context message, or null context ids, keeps the old checks", () => {
+    const ctx = msg({ sender: "u-grace", text: "context" });
+    flag({ messageId: ctx.id, severity: "info" });
+    const f = followup({ contextMessageIds: [ctx.id] });
+    expect(c.autoReply.evaluate({ kind: "stalled_reminder", followupId: f }).status).toBe("sent");
+    const warned = msg({ sender: "u-grace", text: "context" });
+    flag({ messageId: warned.id });
+    // A row drafted before 0014 has no context ids: not checkable, so only the old checks run.
+    const old = followup({ contextMessageIds: null, conv: "c-ch", thread: TS });
+    expect(c.autoReply.evaluate({ kind: "stalled_reminder", followupId: old }).status).toBe("sent");
   });
 });
 
@@ -506,12 +697,17 @@ describe("evaluate: follow-ups", () => {
   });
 
   test("a null-confidence spec-clarity draft is held: low_confidence", () => {
-    const f = followup({ origin: "spec_clarity", confidence: null });
+    const m = msg();
+    const f = followup({
+      origin: "spec_clarity",
+      confidence: null,
+      originMessageId: m.id,
+      conv: "c-ch",
+      thread: m.ts,
+    });
     const r = c.autoReply.evaluate({ kind: "followup_question", followupId: f });
     expect(r).toMatchObject({ status: "held", reason: "low_confidence" });
-    // No origin message, so no acknowledgement.
     expect(allAr()).toHaveLength(1);
-    expect(ackJobs()).toHaveLength(0);
   });
 
   test("a follow-up without a recipient is held: missing_context", () => {
@@ -670,13 +866,24 @@ describe("evaluate: caps", () => {
     const m = msg();
     expect(c.autoReply.evaluate({ kind: "acknowledgement", messageId: m.id }).status).toBe("sent");
     clock.advance(10 * MIN);
-    const f = followup({ origin: "spec_clarity", conv: "c-ch", thread: m.ts });
+    const f = followup({
+      origin: "spec_clarity",
+      conv: "c-ch",
+      thread: m.ts,
+      originMessageId: m.id,
+    });
     expect(c.autoReply.evaluate({ kind: "followup_question", followupId: f })).toMatchObject({
       status: "held",
       reason: "thread_gap",
     });
     // A different thread is not affected.
-    const other = followup({ origin: "spec_clarity", conv: "c-ch", thread: TS });
+    const o = msg({ thread: TS });
+    const other = followup({
+      origin: "spec_clarity",
+      conv: "c-ch",
+      thread: TS,
+      originMessageId: o.id,
+    });
     expect(c.autoReply.evaluate({ kind: "followup_question", followupId: other }).status).toBe(
       "sent",
     );
@@ -686,7 +893,13 @@ describe("evaluate: caps", () => {
     const m = msg({ conv: "c-dm", thread: TS });
     expect(c.autoReply.evaluate({ kind: "acknowledgement", messageId: m.id }).status).toBe("sent");
     clock.advance(10 * MIN);
-    const f = followup({ origin: "spec_clarity", conv: "c-dm", thread: null });
+    const q = msg({ conv: "c-dm" });
+    const f = followup({
+      origin: "spec_clarity",
+      conv: "c-dm",
+      thread: null,
+      originMessageId: q.id,
+    });
     expect(c.autoReply.evaluate({ kind: "followup_question", followupId: f })).toMatchObject({
       status: "held",
       reason: "thread_gap",

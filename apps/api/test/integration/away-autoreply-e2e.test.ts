@@ -27,7 +27,8 @@ const SELF = "USELF00001";
 const ADA = "UADA000001";
 const CHANNEL = "C0CHAN0001";
 const TS = "1793880000.000100";
-const SECRET_INCOMING = "SECRET-INCOMING the deploy is failing";
+// Mentions the user, so the channel message is addressed to them.
+const SECRET_INCOMING = "SECRET-INCOMING <@USELF00001> the deploy is failing";
 
 let c: Container | undefined;
 afterEach(() => c?.sqlite.close());

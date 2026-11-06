@@ -26,6 +26,15 @@ test("hold reason labels use the briefed copy", () => {
   expect(holdReasonLabel("missing_context")).toBe("Original message no longer available");
   expect(holdReasonLabel("policy_disabled")).toBe("Auto-replies turned off in permissions");
   expect(holdReasonLabel("recipient_mismatch")).toBe("Recipient didn't match the conversation");
+  expect(holdReasonLabel("not_addressed")).toBe("Their message wasn't addressed to you");
+  expect(holdReasonLabel("before_session")).toBe("Message arrived before you went away");
+  expect(holdReasonLabel("already_answered")).toBe("You had already replied");
+  expect(holdReasonLabel("injection_suspected")).toBe(
+    "Drafting run suspected a manipulation attempt",
+  );
+  expect(holdReasonLabel("content_mention")).toBe("Draft mentioned people or a group");
+  expect(holdReasonLabel("content_link")).toBe("Draft contained a link");
+  expect(holdReasonLabel("stale")).toBe("Too much time passed before it could send");
 });
 
 test("a held row without a reason still reads in words", () => {

@@ -203,6 +203,8 @@ describe("commitments.check_spec_clarity handler", () => {
       status: "draft",
       confidence: 0.6,
       commitmentId: null,
+      suspectedInjection: false,
+      contextMessageIds: [id],
     });
     expect(f[0]?.draftText).toBe(
       "A few questions so I can pick this up:\n1. What steps reproduce it?\n2. Which environment is it on?",
@@ -287,6 +289,11 @@ describe("commitments.check_spec_clarity handler", () => {
     expect(rest.every((p) => p.provenance === "untrusted")).toBe(true);
     expect(rest[5]?.content).toBe(REQUEST);
     expect(rest[0]?.source).toContain("slack message m3 ");
+    // Phase 6b final review: the ids fed into the prompt are kept, oldest first, target last.
+    const ids = followups()[0]?.contextMessageIds as string[];
+    expect(ids).toHaveLength(6);
+    expect(ids[0]).toBe("m3");
+    expect(ids[5]).toBe(id);
   });
 
   test("context of a thread request is that thread only", async () => {
@@ -347,6 +354,8 @@ describe("commitments.check_spec_clarity handler", () => {
     const flags = db.select().from(schema.securityFlags).all();
     expect(flags).toHaveLength(1);
     expect(flags[0]?.messageId).toBe(id);
+    // Phase 6b final review: the follow-up remembers it, so an away-mode auto-send holds.
+    expect(followups()[0]?.suspectedInjection).toBe(true);
   });
 
   test("invalid output fails as incomplete_ai_output and stores nothing", async () => {

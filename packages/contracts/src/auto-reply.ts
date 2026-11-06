@@ -12,9 +12,11 @@ export type AutoReplyKind =
   | "acknowledgement";
 
 /**
- * The A4 check list in order, plus `missing_context` (a producer could not build the reply),
- * `policy_disabled` (the user tightened the `slack.auto_reply` permission, so the policy gate is shut)
- * and `recipient_mismatch` (a DM reply whose recipient is not the DM partner).
+ * The A4 check list in order, plus the service's pre-checks (`missing_context`, a producer could
+ * not build the reply; `recipient_mismatch`, a DM reply whose recipient is not the DM partner;
+ * `not_addressed`, `before_session`, `already_answered`, `injection_suspected`), `policy_disabled`
+ * (the user tightened the `slack.auto_reply` permission, so the policy gate is shut) and `stale`
+ * (too long between the decision and the send).
  */
 export const holdReasonSchema = z.enum([
   "away_off",
@@ -27,10 +29,17 @@ export const holdReasonSchema = z.enum([
   "low_confidence",
   "content_secret",
   "content_internal_url",
+  "content_link",
+  "content_mention",
   "content_promise",
   "missing_context",
   "policy_disabled",
   "recipient_mismatch",
+  "not_addressed",
+  "before_session",
+  "already_answered",
+  "injection_suspected",
+  "stale",
 ]);
 export type HoldReason = z.infer<typeof holdReasonSchema>;
 

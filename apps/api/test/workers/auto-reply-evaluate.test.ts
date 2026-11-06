@@ -70,7 +70,7 @@ beforeEach(() => {
       conversationId: "c-ch",
       ts: "1793880000.000100",
       senderUserId: "u-ada",
-      text: "SECRET-INCOMING the deploy is failing",
+      text: "SECRET-INCOMING <@USELF00001> the deploy is failing",
       sentAt: NOW,
       collectedAt: NOW,
     })

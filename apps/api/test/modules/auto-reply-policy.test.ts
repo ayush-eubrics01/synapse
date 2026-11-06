@@ -47,6 +47,8 @@ test.each([
   ["low_confidence", { confidence: 0.5 }],
   ["content_secret", { candidateText: "xoxb-123456-abc" }],
   ["content_internal_url", { candidateText: "http://localhost:3000/x" }],
+  ["content_link", { candidateText: "See https://example.com/doc" }],
+  ["content_mention", { candidateText: "<!here> any update?" }],
   ["content_promise", { candidateText: "I'll have it ready by Friday" }],
 ] as const)("reason %s", (reason, o) => {
   expect(decideAutoReply(base(o as Partial<PolicyInput>))).toEqual({ send: false, reason });
@@ -70,7 +72,7 @@ test("first failure wins in A4 order", () => {
     sentToRecipientLast24h: 9,
     lastSentInThreadAt: minutesAgo(1),
     confidence: null,
-    candidateText: "xoxb-1 I'll http://localhost:1",
+    candidateText: "xoxb-1 I'll http://localhost:1 https://example.com/x <!here>",
   });
   const order = [
     "away_off",
@@ -82,6 +84,10 @@ test("first failure wins in A4 order", () => {
     "thread_gap",
     "low_confidence",
     "content_secret",
+    "content_internal_url",
+    "content_link",
+    "content_mention",
+    "content_promise",
   ];
   let i: PolicyInput = all;
   for (const reason of order) {
@@ -94,7 +100,16 @@ test("first failure wins in A4 order", () => {
     if (reason === "daily_cap") i = { ...i, sentToRecipientLast24h: 0 };
     if (reason === "thread_gap") i = { ...i, lastSentInThreadAt: null };
     if (reason === "low_confidence") i = { ...i, confidence: 1 };
+    if (reason === "content_secret") {
+      i = { ...i, candidateText: "I'll http://localhost:1 https://example.com/x <!here>" };
+    }
+    if (reason === "content_internal_url") {
+      i = { ...i, candidateText: "I'll https://example.com/x <!here>" };
+    }
+    if (reason === "content_link") i = { ...i, candidateText: "I'll <!here>" };
+    if (reason === "content_mention") i = { ...i, candidateText: "I'll" };
   }
+  expect(decideAutoReply({ ...i, candidateText: "Any update?" })).toEqual({ send: true });
 });
 
 test("priority high and critical both pass", () => {

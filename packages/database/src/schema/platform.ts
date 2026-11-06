@@ -654,6 +654,10 @@ export const followups = sqliteTable(
     approvalId: text("approval_id").references(() => approvals.id),
     outgoingId: text("outgoing_id"),
     claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
+    /** The drafting run reported `suspectedInjection.detected` (Phase 6b: holds an auto-send). */
+    suspectedInjection: bool("suspected_injection").notNull().default(false),
+    /** Ids of the messages fed into the drafting prompt; null on rows drafted before 0014. */
+    contextMessageIds: json("context_message_ids").$type<string[]>(),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -709,5 +713,6 @@ export const autoReplies = sqliteTable(
   (t) => [
     index("auto_replies_recipient_created_idx").on(t.recipientSlackUserId, t.createdAt),
     index("auto_replies_thread_created_idx").on(t.conversationExternalId, t.threadTs, t.createdAt),
+    index("auto_replies_outgoing_idx").on(t.outgoingId),
   ],
 );

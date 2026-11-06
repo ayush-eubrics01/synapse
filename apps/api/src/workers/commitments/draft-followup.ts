@@ -260,6 +260,9 @@ export function registerDraftFollowup(deps: CommitmentJobDeps, c: CommitmentCont
               confidence: value.confidence,
               status: "draft",
               claudeRunId: runId,
+              // Phase 6b final review: an away-mode auto-send holds on either of these.
+              suspectedInjection: value.suspectedInjection.detected,
+              contextMessageIds: used.map((i) => i.messageId),
               createdAt: now,
               updatedAt: now,
             })
