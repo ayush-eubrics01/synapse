@@ -180,6 +180,7 @@ export const approvals = sqliteTable(
     requestedByModule: text("requested_by_module"),
     requestedByWorker: text("requested_by_worker"),
     idempotencyKey: text("idempotency_key").notNull(),
+    decidedBy: text("decided_by", { enum: ["user", "policy"] }),
     createdAt: text("created_at").notNull(),
   },
   (t) => [uniqueIndex("approvals_idempotency_key_uq").on(t.idempotencyKey)],
@@ -668,3 +669,45 @@ export const followupHistory = sqliteTable("followup_history", {
   detail: text("detail").notNull(),
   createdAt: text("created_at").notNull(),
 });
+
+export const awaySessions = sqliteTable(
+  "away_sessions",
+  {
+    id: id(),
+    startedAt: text("started_at").notNull(),
+    endedAt: text("ended_at"),
+    dismissedAt: text("dismissed_at"),
+  },
+  (t) => [
+    // A2: only one session can be open.
+    uniqueIndex("away_sessions_open_uq").on(sql`(1)`).where(sql`${t.endedAt} is null`),
+  ],
+);
+
+export const autoReplies = sqliteTable(
+  "auto_replies",
+  {
+    id: id(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => awaySessions.id),
+    kind: text("kind", {
+      enum: ["code_answer", "stalled_reminder", "followup_question", "acknowledgement"],
+    }).notNull(),
+    recipientSlackUserId: text("recipient_slack_user_id").notNull(),
+    conversationExternalId: text("conversation_external_id").notNull(),
+    threadTs: text("thread_ts"),
+    sourceMessageId: text("source_message_id"),
+    followupId: text("followup_id"),
+    decision: text("decision", { enum: ["sent", "held"] }).notNull(),
+    reason: text("reason"),
+    text: text("text"),
+    outgoingId: text("outgoing_id"),
+    approvalId: text("approval_id"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    index("auto_replies_recipient_created_idx").on(t.recipientSlackUserId, t.createdAt),
+    index("auto_replies_thread_created_idx").on(t.conversationExternalId, t.threadTs, t.createdAt),
+  ],
+);

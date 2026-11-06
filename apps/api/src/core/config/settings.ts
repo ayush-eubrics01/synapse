@@ -48,6 +48,12 @@ const settingSchemas = {
   "orchestrator.maxConcurrent": z.number().int().positive().default(2),
   "health.authExpiryWarningHours": z.number().positive().default(48),
   "autoReply.awayMode": z.boolean().default(false),
+  "autoReply.allowedKinds": z
+    .array(z.enum(["code_answer", "stalled_reminder", "followup_question", "acknowledgement"]))
+    .default(["code_answer", "stalled_reminder", "followup_question", "acknowledgement"]),
+  "autoReply.maxPerPersonPerDay": z.number().int().positive().default(3),
+  "autoReply.minMinutesBetweenInThread": z.number().int().nonnegative().default(30),
+  "autoReply.minConfidence": z.number().min(0).max(1).default(0.75),
   "system.lastHeartbeatAt": z.string().nullable().default(null),
   "orchestrator.quota.fiveHour.soft": z.number().min(0).max(1).default(0.6),
   "orchestrator.quota.fiveHour.hard": z.number().min(0).max(1).default(0.85),

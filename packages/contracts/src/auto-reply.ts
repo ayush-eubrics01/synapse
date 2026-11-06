@@ -1,0 +1,40 @@
+/** Phase 6b away-mode auto-replies (ADR-033). */
+
+export type AutoReplyKind =
+  | "code_answer"
+  | "stalled_reminder"
+  | "followup_question"
+  | "acknowledgement";
+
+/** The A4 check list in order, plus `missing_context` (a producer could not build the reply). */
+export type HoldReason =
+  | "away_off"
+  | "kind_not_allowed"
+  | "not_priority"
+  | "loop_tag"
+  | "flagged"
+  | "daily_cap"
+  | "thread_gap"
+  | "low_confidence"
+  | "content_secret"
+  | "content_internal_url"
+  | "content_promise"
+  | "missing_context";
+
+export interface AutoReplyView {
+  id: string;
+  kind: AutoReplyKind;
+  decision: "sent" | "held";
+  reason: HoldReason | null;
+  recipient: { slackUserId: string; name: string | null };
+  conversationLabel: string | null;
+  threadTs: string | null;
+  createdAt: string;
+  outgoingStatus: string | null;
+}
+
+export interface AwayDigest {
+  session: { id: string; startedAt: string; endedAt: string };
+  sent: AutoReplyView[];
+  held: AutoReplyView[];
+}

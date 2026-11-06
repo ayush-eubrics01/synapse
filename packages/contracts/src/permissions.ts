@@ -6,6 +6,7 @@ export type Operation =
   | "recommend"
   | "records.update"
   | "slack.send"
+  | "slack.auto_reply"
   | "jira.write"
   | "code.modify"
   | "git.commit"
@@ -17,6 +18,8 @@ export type Operation =
 
 export type Policy =
   | "allowed"
+  /** Runs without a user decision, but only through a deterministic policy (ADR-033). */
+  | "policy_gated"
   | "approval_required"
   | "explicit_approval_required"
   | "denied"
@@ -30,6 +33,7 @@ export const DEFAULT_POLICIES: Record<Operation, Policy> = {
   recommend: "allowed",
   "records.update": "approval_required",
   "slack.send": "approval_required",
+  "slack.auto_reply": "policy_gated",
   "jira.write": "approval_required",
   "code.modify": "approval_required",
   "git.commit": "approval_required",
@@ -40,7 +44,14 @@ export const DEFAULT_POLICIES: Record<Operation, Policy> = {
   "person.priority.set": "user_only",
 };
 
-const STRICTNESS = ["allowed", "approval_required", "explicit_approval_required", "denied"];
+// policy_gated sits between allowed and approval_required, so an override can never loosen it.
+const STRICTNESS = [
+  "allowed",
+  "policy_gated",
+  "approval_required",
+  "explicit_approval_required",
+  "denied",
+];
 
 /** The stricter of two policies. `user_only` is never changed by an override. */
 export function stricterOf(a: Policy, b: Policy): Policy {
