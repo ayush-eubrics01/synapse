@@ -137,6 +137,19 @@ const MERGE_STATE = [
 
 /** Directories never hashed into the git-dir fingerprint (at any depth): object stores, reflogs. */
 const FINGERPRINT_SKIP_DIRS = new Set(["objects", "logs"]);
+/**
+ * Top-level `.git` files that git and tools rewrite routinely and that never run code: the index
+ * (Claude Code and test runners refresh its stat cache), transient heads, lock files and the
+ * editor scratch file. Config, hooks, info/, HEAD and refs stay fingerprinted.
+ */
+const FINGERPRINT_SKIP_TOP_FILES = new Set([
+  "index",
+  "FETCH_HEAD",
+  "ORIG_HEAD",
+  "COMMIT_EDITMSG",
+  "AUTO_MERGE",
+  "gc.log",
+]);
 
 interface StatusEntry {
   xy: string;
@@ -786,6 +799,7 @@ export class LocalGitWorkflow implements GitWorkflow {
           h.update(`D\0${r}\0`);
           this.walk(h, root, r, null);
         } else if (st.isFile()) {
+          if (!rel && (FINGERPRINT_SKIP_TOP_FILES.has(name) || name.endsWith(".lock"))) continue;
           h.update(`F\0${r}\0${st.mode}\0${fileMarker(full)}\0`);
         } else {
           h.update(`O\0${r}\0`);

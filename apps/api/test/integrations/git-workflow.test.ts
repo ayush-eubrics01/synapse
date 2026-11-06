@@ -360,6 +360,22 @@ describe("diffSummary", () => {
     expect((await f.wf.diffSummary(f.repo, { gitDirBaseline: base })).unsafe).toBe(true);
   });
 
+  test("an index refresh, lock files and transient heads do not change the fingerprint", async () => {
+    const f = setup();
+    const base = await f.wf.gitDirFingerprint(f.repo);
+    // A plain `git status` (no optional-locks env) refreshes the index stat cache.
+    writeFileSync(join(f.repo, "a.txt"), readFileSync(join(f.repo, "a.txt"), "utf8"));
+    git(f.repo, "status");
+    git(f.repo, "update-index", "--refresh");
+    writeFileSync(join(f.repo, ".git", "index.lock"), "");
+    writeFileSync(join(f.repo, ".git", "FETCH_HEAD"), "x\n");
+    writeFileSync(join(f.repo, ".git", "COMMIT_EDITMSG"), "x\n");
+    expect(await f.wf.gitDirFingerprint(f.repo)).toBe(base);
+    // HEAD and refs still count.
+    writeFileSync(join(f.repo, ".git", "HEAD"), "ref: refs/heads/stage\n");
+    expect(await f.wf.gitDirFingerprint(f.repo)).not.toBe(base);
+  });
+
   test("unsafe for a new hook under .git/hooks", async () => {
     const f = setup();
     const base = await f.wf.gitDirFingerprint(f.repo);
