@@ -304,8 +304,7 @@ describe("code_answer.generate", () => {
         .run();
     fact("f1", "approved", "Uses Bun.");
     fact("f2", "needs_review", "Unreviewed claim.");
-    const root = addMessage({ text: "thread root", ts: "500.000000" });
-    void root;
+    addMessage({ text: "thread root", ts: "500.000000" });
     const q = addMessage({ text: "thread question", thread: "500.000000", ts: "501.000000" });
     messageId = q;
     const id = create();
@@ -416,10 +415,6 @@ describe("code_answer.generate", () => {
   test("quota_exhausted goes back to queued and rethrows", async () => {
     const id = create();
     attempt = () => {
-      throw new JobError({ kind: "rate_limited", message: "quota", details: {} } as never);
-    };
-    // rate_limited retries; use a deferring kind instead
-    attempt = () => {
       throw new JobError({ kind: "quota_exhausted", message: "quota" } as never);
     };
     await expect(run(id)).rejects.toBeInstanceOf(JobError);
@@ -469,8 +464,9 @@ describe("code_answer.generate", () => {
   });
 
   test("a registered path that is a symlink (not its own realpath) is refused", async () => {
-    const link = join(tempDir(), "link");
-    roots.push(link);
+    const linkParent = tempDir();
+    roots.push(linkParent);
+    const link = join(linkParent, "link");
     symlinkSync(repo, link);
     db.update(schema.repositories)
       .set({ localPath: link })
@@ -489,6 +485,123 @@ describe("code_answer.generate", () => {
       .run();
     expect(await run(id)).toEqual({ skipped: "content_expired" });
     expect(requests).toHaveLength(0);
+  });
+
+  test("max_turns is stored as max_turns", async () => {
+    const id = create();
+    attempt = () => {
+      throw new JobError({
+        kind: "needs_attention",
+        message: "turns",
+        details: { maxTurns: true },
+      });
+    };
+    await expect(run(id)).rejects.toBeInstanceOf(JobError);
+    expect(rowOf(id)).toMatchObject({ status: "failed", failure: "max_turns" });
+  });
+
+  test("a repository deleted between the run and verification fails the row with a path-free error", async () => {
+    const id = create();
+    attempt = () => {
+      rmSync(repo, { recursive: true, force: true });
+    };
+    let err: unknown;
+    await run(id).catch((e) => {
+      err = e;
+    });
+    expect(err).toBeInstanceOf(JobError);
+    expect((err as Error).message).not.toContain(repo);
+    expect(rowOf(id)).toMatchObject({ status: "failed", failure: "repository_unavailable" });
+    expect(create()).not.toBe(id);
+  });
+
+  test("an orphaned running row is reclaimed when its own job re-enters", async () => {
+    const id = create();
+    db.update(schema.codeAnswers)
+      .set({ status: "running" })
+      .where(eq(schema.codeAnswers.id, id))
+      .run();
+    await run(id);
+    expect(rowOf(id)?.status).toBe("ready");
+  });
+
+  test("the recovery sweep fails running rows with no live job and keeps those with one", async () => {
+    const orphan = create();
+    db.update(schema.codeAnswers)
+      .set({ status: "running" })
+      .where(eq(schema.codeAnswers.id, orphan))
+      .run();
+    db.update(schema.jobs)
+      .set({ status: "NEEDS_ATTENTION" })
+      .where(eq(schema.jobs.type, CODE_ANSWER_JOB))
+      .run();
+    messageId = addMessage({ text: "second" });
+    const live = create();
+    db.update(schema.codeAnswers)
+      .set({ status: "running" })
+      .where(eq(schema.codeAnswers.id, live))
+      .run();
+    db.transaction((tx) => service.recoverySweep(tx));
+    expect(rowOf(orphan)).toMatchObject({ status: "failed", failure: "interrupted" });
+    expect(rowOf(live)?.status).toBe("running");
+    messageId = (
+      db.select().from(schema.codeAnswers).where(eq(schema.codeAnswers.id, orphan)).get() as {
+        messageId: string;
+      }
+    ).messageId;
+    expect(create()).not.toBe(orphan);
+  });
+
+  test("onFinished for a prepare-time failure runs in the settling transaction", async () => {
+    const seen: string[] = [];
+    handlers.clear();
+    let boom = false;
+    registerCodeAnswerJob({
+      db,
+      settings,
+      orchestrator: { run: async () => result(answerOf()) },
+      service,
+      handlers,
+      onFinished: (_tx, row) => {
+        seen.push(`${row.trigger}:${row.status}`);
+        if (boom) throw new Error("rollback");
+      },
+    });
+    const id = create("away");
+    rmSync(repo, { recursive: true, force: true });
+    boom = true;
+    await expect(run(id)).rejects.toThrow("rollback");
+    expect(rowOf(id)?.status).toBe("queued");
+    boom = false;
+    await run(id);
+    expect(seen).toEqual(["away:failed", "away:failed"]);
+    expect(rowOf(id)?.status).toBe("failed");
+  });
+
+  test("prepare sends the newest 5 earlier thread messages oldest first, from this thread only", async () => {
+    const at = (n: number) => new Date(Date.parse(NOW) - 3_600_000 + n * 1000).toISOString();
+    addMessage({ text: "root", ts: "700.000000", sentAt: at(0) });
+    for (let i = 1; i <= 6; i++) {
+      addMessage({ text: `reply-${i}`, thread: "700.000000", ts: `700.00000${i}`, sentAt: at(i) });
+    }
+    addMessage({ text: "other-thread", thread: "800.000000", ts: "800.000001", sentAt: at(3) });
+    addMessage({ text: "later", thread: "700.000000", ts: "700.000009", sentAt: at(20) });
+    messageId = addMessage({
+      text: "the question",
+      thread: "700.000000",
+      ts: "700.000008",
+      sentAt: at(10),
+    });
+    await run(create());
+    const body = (requests[0] as ClaudeJobRequest).parts?.at(-1)?.content ?? "";
+    const order = ["reply-2", "reply-3", "reply-4", "reply-5", "reply-6"].map((m) =>
+      body.indexOf(m),
+    );
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    for (const absent of ["reply-1", "root", "other-thread", "later"]) {
+      expect(body).not.toContain(absent);
+    }
   });
 
   test("onFinished runs in the settling transaction", async () => {
@@ -542,5 +655,30 @@ describe("retention", () => {
     expect(rowOf(old)?.answer).toBeNull();
     expect(rowOf(fresh)?.answer).toBe(ANSWER);
     expect(service.get(old)).toMatchObject({ status: "ready", repositoryName: "demo-app" });
+  });
+
+  test("expireAnswers also blanks the injection quote and keeps detected, severity and reason", async () => {
+    const id = create();
+    reply = () =>
+      result(
+        answerOf({
+          suspectedInjection: {
+            detected: true,
+            severity: "high",
+            quote: "SECRET-QUOTE",
+            reason: "tries",
+          },
+        }),
+      );
+    await run(id);
+    clock.advance(200 * 86_400_000);
+    expect(service.expireAnswers(180)).toBe(1);
+    expect(rowOf(id)?.suspectedInjection).toMatchObject({
+      detected: true,
+      severity: "high",
+      quote: "",
+      reason: "tries",
+    });
+    expect(service.expireAnswers(180)).toBe(0);
   });
 });

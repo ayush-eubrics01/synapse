@@ -11,7 +11,7 @@ import {
 } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema, type Tx } from "@synapse/database";
 import { type Clock, newId } from "@synapse/shared";
-import { and, desc, eq, inArray, isNotNull, lt, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, like, lt, or, sql } from "drizzle-orm";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { SettingsService } from "../../core/config/settings";
 import type { EventPublisher } from "../../core/events/publisher";
@@ -219,16 +219,20 @@ export class CodeAnswerService {
    * needs. The working directory is the registered `local_path`, re-checked as an existing
    * directory that is its own realpath; nothing else ever names it.
    */
-  prepare(id: string): PrepareCodeAnswerResult {
+  prepare(id: string, after?: AfterFinish): PrepareCodeAnswerResult {
     const { db } = this.deps;
     const row = this.row(db, id);
     if (!row) return { ok: false, reason: "not_found" };
-    if (row.status !== "queued") return { ok: false, reason: "not_queued" };
+    // `running` is a row whose own job re-entered: the single attempt before it died (restart,
+    // reaper), so the row is reclaimed instead of staying orphaned.
+    if (row.status !== "queued" && row.status !== "running") {
+      return { ok: false, reason: "not_queued" };
+    }
     const repo = row.repositoryId
       ? db.select().from(repositories).where(eq(repositories.id, row.repositoryId)).get()
       : undefined;
     if (!repo) {
-      this.recordFailure(id, "repository_unavailable", null);
+      this.recordFailure(id, "repository_unavailable", null, after);
       return { ok: false, reason: "repository_unavailable" };
     }
     if (
@@ -236,12 +240,12 @@ export class CodeAnswerService {
       realpathOrNull(repo.localPath) !== repo.localPath ||
       !isDirectory(repo.localPath)
     ) {
-      this.recordFailure(id, "path_unavailable", null);
+      this.recordFailure(id, "path_unavailable", null, after);
       return { ok: false, reason: "path_unavailable" };
     }
     const msg = db.select().from(slackMessages).where(eq(slackMessages.id, row.messageId)).get();
     if (!msg || msg.text === null || msg.text === "" || msg.contentExpiredAt !== null) {
-      this.recordFailure(id, "content_expired", null);
+      this.recordFailure(id, "content_expired", null, after);
       return { ok: false, reason: "content_expired" };
     }
     const root = msg.threadTs ?? msg.ts;
@@ -285,7 +289,8 @@ export class CodeAnswerService {
     const running = db.transaction(
       (tx) => {
         const fresh = this.row(tx, id);
-        if (fresh?.status !== "queued") return false;
+        if (fresh?.status !== "queued" && fresh?.status !== "running") return false;
+        if (fresh.status === "running") return true;
         tx.update(codeAnswers)
           .set({ status: "running", failure: null, updatedAt: this.now() })
           .where(eq(codeAnswers.id, id))
@@ -494,14 +499,64 @@ export class CodeAnswerService {
     const cutoff = new Date(this.deps.clock.now().getTime() - olderThanDays * DAY_MS).toISOString();
     return this.deps.db
       .update(codeAnswers)
-      .set({ answer: null, notAnswerableReason: null })
+      .set({
+        answer: null,
+        notAnswerableReason: null,
+        suspectedInjection: sql`case when ${codeAnswers.suspectedInjection} is null then null else json_set(${codeAnswers.suspectedInjection}, '$.quote', '') end`,
+      })
       .where(
         and(
           lt(codeAnswers.createdAt, cutoff),
-          or(isNotNull(codeAnswers.answer), isNotNull(codeAnswers.notAnswerableReason)),
+          or(
+            isNotNull(codeAnswers.answer),
+            isNotNull(codeAnswers.notAnswerableReason),
+            sql`coalesce(json_extract(${codeAnswers.suspectedInjection}, '$.quote'), '') <> ''`,
+          ),
         ),
       )
       .returning({ id: codeAnswers.id })
       .all().length;
+  }
+
+  /**
+   * Recovery sweep (startup and reaper): a `running` row whose job is no longer pending, retrying
+   * or running lost its run (restart, crash). It is failed `interrupted` so it can be asked again.
+   */
+  recoverySweep(tx: Tx): void {
+    const running = tx
+      .select({ id: codeAnswers.id })
+      .from(codeAnswers)
+      .where(eq(codeAnswers.status, "running"))
+      .all();
+    for (const { id } of running) {
+      const live = tx
+        .select({ id: schema.jobs.id })
+        .from(schema.jobs)
+        .where(
+          and(
+            eq(schema.jobs.type, CODE_ANSWER_JOB),
+            like(schema.jobs.idempotencyKey, `%:${id}`),
+            inArray(schema.jobs.status, ["PENDING", "RETRY", "RUNNING"]),
+          ),
+        )
+        .get();
+      if (live) continue;
+      const row = this.row(tx, id);
+      if (row?.status !== "running") continue;
+      tx.update(codeAnswers)
+        .set({ status: "failed", failure: "interrupted", updatedAt: this.now() })
+        .where(eq(codeAnswers.id, id))
+        .run();
+      this.publishStatus(tx, row, "failed");
+      this.deps.audit.record(tx, {
+        actor: "system",
+        module: MODULE,
+        action: "code_answer.failed",
+        workerProfile: "reader",
+        targetRef: id,
+        result: "failed",
+        details: { codeAnswerId: id, kind: "interrupted" },
+      });
+    }
   }
 }

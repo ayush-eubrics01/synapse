@@ -683,6 +683,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     recoverySweeps: [
       { name: "urgency.assess", run: urgency.recoverySweep },
       { name: "outgoing.sending", run: (tx) => outgoing.recoverySweep(tx) },
+      { name: "code_answer.running", run: (tx) => codeAnswers.recoverySweep(tx) },
     ],
     slack: { startBackfill: slack.startBackfill, backfillResumable: slack.backfillResumable },
   };

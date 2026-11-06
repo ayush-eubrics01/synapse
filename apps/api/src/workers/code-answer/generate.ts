@@ -58,16 +58,8 @@ export function registerCodeAnswerJob(deps: CodeAnswerJobDeps): void {
     const input = job.input as { codeAnswerId?: unknown } | null;
     const id = typeof input?.codeAnswerId === "string" ? input.codeAnswerId : null;
     if (!id) throw new JobError({ kind: "invalid_input", message: "codeAnswerId is required" });
-    const prepared = service.prepare(id);
-    if (!prepared.ok) {
-      // prepare already settled the row as failed; let the trigger react to it.
-      if (after && prepared.reason !== "not_found" && prepared.reason !== "not_queued") {
-        const row = service.get(id);
-        if (row)
-          db.transaction((tx) => after(tx, { id, trigger: row.trigger, status: row.status }));
-      }
-      return { skipped: prepared.reason };
-    }
+    const prepared = service.prepare(id, after);
+    if (!prepared.ok) return { skipped: prepared.reason };
     const { target } = prepared;
 
     const request = buildCodeAnswerRequest(
@@ -119,31 +111,43 @@ export function registerCodeAnswerJob(deps: CodeAnswerJobDeps): void {
     }
     // ADR-026: a run that read nothing is not evidence, whatever it says.
     if (!hasInspectionToolResult(result.toolResults)) readNothing();
-    const parsed = parseCodeAnswer(result.finalText);
-    if (!parsed.ok) {
-      fail("parse_failed", new JobError({ kind: "parse_failed", message: parsed.reason }));
-      return;
+    try {
+      const parsed = parseCodeAnswer(result.finalText);
+      if (!parsed.ok) {
+        fail("parse_failed", new JobError({ kind: "parse_failed", message: parsed.reason }));
+        return;
+      }
+      const output = parsed.value;
+      const verified = output.answerable
+        ? verifyCitations(
+            target.repository.root,
+            output.evidence,
+            observedPaths(target.repository.root, result.toolResults),
+          )
+        : { kept: [], dropped: 0 };
+      const status = service.recordResult(
+        id,
+        {
+          output,
+          kept: verified.kept,
+          dropped: verified.dropped,
+          claudeRunId: latestRunId(job.id),
+          permissionDenials: result.permissionDenials,
+        },
+        after,
+      );
+      return { status, kept: verified.kept.length, dropped: verified.dropped };
+    } catch (err) {
+      // Anything unexpected after the run (a repository moved or deleted meanwhile, a database
+      // error) settles the row with a fixed code; the thrown message never carries a path.
+      if (err instanceof JobError) throw err;
+      const code =
+        (err as { code?: unknown } | null)?.code === "ENOENT"
+          ? "repository_unavailable"
+          : "internal_error";
+      service.recordFailure(id, code, latestRunId(job.id), after);
+      throw new JobError({ kind: "unknown", message: `code answer failed (${code})` });
     }
-    const output = parsed.value;
-    const verified = output.answerable
-      ? verifyCitations(
-          target.repository.root,
-          output.evidence,
-          observedPaths(target.repository.root, result.toolResults),
-        )
-      : { kept: [], dropped: 0 };
-    const status = service.recordResult(
-      id,
-      {
-        output,
-        kept: verified.kept,
-        dropped: verified.dropped,
-        claudeRunId: latestRunId(job.id),
-        permissionDenials: result.permissionDenials,
-      },
-      after,
-    );
-    return { status, kept: verified.kept.length, dropped: verified.dropped };
   };
 
   deps.handlers.set(CODE_ANSWER_JOB, {
