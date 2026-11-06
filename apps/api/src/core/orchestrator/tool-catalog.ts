@@ -159,8 +159,8 @@ export function connectorServerOf(tool: string): string | null {
 export function buildDenylist(
   allowed: string[],
   knownServers: string[],
-  /** Kept for callers; every profile now denies the write and fs-read built-ins it does not allow. */
-  _profile: WorkerProfile,
+  /** Every profile denies the write and fs-read built-ins it does not allow; a reader also denies ToolSearch. */
+  profile: WorkerProfile,
 ): string[] {
   const allowedSet = new Set(allowed.map(normalizeTool));
   const deny = new Set<string>(BUILTIN_NETWORK);
@@ -170,6 +170,9 @@ export function buildDenylist(
   // always denied. Collector and intelligence runs may not allow either, so they deny all of them.
   for (const t of BUILTIN_WRITE) deny.add(t);
   for (const t of BUILTIN_FS_READ) deny.add(t);
+  // A reader may use no connector (C1), so it also denies ToolSearch: no deferred connector tool,
+  // even one a user-level allow names, can be loaded into the run.
+  if (profile === "reader") deny.add("ToolSearch");
   const used = new Set<string>();
   for (const t of allowed.map(normalizeTool)) {
     const s = connectorServerOf(t);

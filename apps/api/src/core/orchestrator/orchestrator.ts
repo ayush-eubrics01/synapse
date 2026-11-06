@@ -69,7 +69,7 @@ const AUTH_PAUSE_RETRY_MS = 15 * 60_000;
 
 /** Fixed, content-free: the user must edit `~/.claude/settings.json` (read once at startup). */
 export const UNSAFE_USER_SETTINGS_MESSAGE =
-  "Claude Code user settings widen file or shell permissions; engineering runs are refused until they are removed and the API is restarted";
+  "Claude Code user settings widen file or shell permissions; engineering and code-answer runs are refused until they are removed and the API is restarted";
 const AUTH_PROBE_AFTER_MS = 30 * 60_000;
 
 const defaultBoundary = () => crypto.randomUUID().replace(/-/g, "").slice(0, 16);
@@ -272,7 +272,13 @@ export class ClaudeOrchestrator {
     const parts = request.parts ?? [];
     const boundary = this.random();
     const allowedTools = [...request.allowedTools];
-    if (allowedTools.some((t) => t.startsWith("mcp__")) && !allowedTools.includes("ToolSearch")) {
+    // Never for a reader (C1): it may use no connector, so rule C refuses one, and its denylist
+    // holds ToolSearch so no deferred connector tool can be loaded.
+    if (
+      profile !== "reader" &&
+      allowedTools.some((t) => t.startsWith("mcp__")) &&
+      !allowedTools.includes("ToolSearch")
+    ) {
       allowedTools.push("ToolSearch");
     }
     const knownServers = settings.get("orchestrator.knownServers");
@@ -314,11 +320,13 @@ export class ClaudeOrchestrator {
     // Phase 9: user-level permissions merge into the run (`--setting-sources user`) and the
     // override cannot remove them, so a widening user setting would defeat rule L's path scoping.
     // Both path-scoped profiles are refused: engineering, and reader (C1), which reads files next
-    // to untrusted text.
-    if (
-      (profile === "engineering" || profile === "reader") &&
-      provider.userPermissionsWidenScope === true
-    ) {
+    // to untrusted text. A reader is also refused while a user-level `mcp__` allow names a server
+    // outside knownServers: its denylist denies every known server, but not that one.
+    const widens =
+      provider.userPermissionsWidenScope === true ||
+      (profile === "reader" &&
+        (provider.userAllowedConnectorServers ?? []).some((s) => !knownServers.includes(s)));
+    if ((profile === "engineering" || profile === "reader") && widens) {
       db.transaction((tx) => {
         audit.record(tx, {
           actor: "system",

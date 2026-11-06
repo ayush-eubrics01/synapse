@@ -927,7 +927,7 @@ describe("user settings that widen engineering scope (Phase 9 guard)", () => {
     const e = await fails(run(engineering()));
     expect(e.classified.kind).toBe("needs_attention");
     expect(e.message).toBe(
-      "Claude Code user settings widen file or shell permissions; engineering runs are refused until they are removed and the API is restarted",
+      "Claude Code user settings widen file or shell permissions; engineering and code-answer runs are refused until they are removed and the API is restarted",
     );
     expect(e.classified.details).toEqual({ notSpawned: true });
     expect(provider.requests).toHaveLength(0);
@@ -979,7 +979,16 @@ describe("reader profile (C1)", () => {
     expect(r.timeoutMs).toBe(300_000);
     expect(r.workingDirectory).toBe(WD);
     expect(r.allowedTools).toEqual([`Read(/${WD}/**)`, `Grep(/${WD}/**)`, `Glob(/${WD}/**)`]);
-    for (const t of ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "Agent"]) {
+    for (const t of [
+      "Bash",
+      "Edit",
+      "Write",
+      "MultiEdit",
+      "NotebookEdit",
+      "WebFetch",
+      "Agent",
+      "ToolSearch",
+    ]) {
       expect(r.disallowedTools).toContain(t);
     }
     expect(r.disallowedTools).toContain("mcp__claude_ai_Slack");
@@ -997,8 +1006,59 @@ describe("reader profile (C1)", () => {
 
   test("a reader request with a connector is rejected; ToolSearch is not added for it", async () => {
     const e = await fails(run({ ...reader(), allowedTools: [`Read(/${WD}/**)`, SEARCH] }));
-    expect(e.message).toBe("profile reader may not use ToolSearch");
+    expect(e.message).toBe(`profile reader may not use connector tool ${SEARCH}`);
     expect(provider.requests).toHaveLength(0);
+    const audit = db.select().from(schema.auditEvents).all();
+    expect(audit.map((a) => a.details)).toEqual([
+      { reason: `profile reader may not use connector tool ${SEARCH}` },
+    ]);
+  });
+
+  test("other profiles still get ToolSearch added for a connector", async () => {
+    await run(req());
+    expect(provider.requests[0]?.allowedTools).toEqual([SEARCH, "ToolSearch"]);
+    expect(provider.requests[0]?.disallowedTools).not.toContain("ToolSearch");
+  });
+
+  test("a user-level allow for an unknown connector server refuses a reader run", async () => {
+    const p = provider as { userAllowedConnectorServers?: readonly string[] };
+    p.userAllowedConnectorServers = ["mcp__claude_ai_Slack", "mcp__demo_unknown"];
+    const e = await fails(run(reader()));
+    expect(e.classified.kind).toBe("needs_attention");
+    expect(e.message).toBe(UNSAFE_USER_SETTINGS_MESSAGE);
+    expect(e.classified.details).toEqual({ notSpawned: true });
+    expect(provider.requests).toHaveLength(0);
+    expect(runs()).toHaveLength(0);
+    const audit = db.select().from(schema.auditEvents).all();
+    expect(audit.map((a) => [a.action, a.workerProfile, a.details])).toEqual([
+      ["claude.request_rejected", "reader", { reason: "unsafe_user_settings" }],
+    ]);
+  });
+
+  test("a user-level allow for a known server lets a reader run, with that server denied", async () => {
+    const p = provider as { userAllowedConnectorServers?: readonly string[] };
+    p.userAllowedConnectorServers = ["mcp__claude_ai_Slack"];
+    await run(reader());
+    expect(provider.requests).toHaveLength(1);
+    expect(provider.requests[0]?.disallowedTools).toContain("mcp__claude_ai_Slack");
+  });
+
+  test("an unknown user-allowed connector server does not affect other profiles", async () => {
+    const p = provider as { userAllowedConnectorServers?: readonly string[] };
+    p.userAllowedConnectorServers = ["mcp__demo_unknown"];
+    await run(req());
+    await run(
+      req({ workerProfile: "intelligence", priorityClass: "batch", allowedTools: ["ToolSearch"] }),
+    );
+    await run(
+      req({
+        workerProfile: "engineering",
+        priorityClass: "batch",
+        allowedTools: [`Read(/${WD}/**)`],
+        workingDirectory: WD,
+      }),
+    );
+    expect(provider.requests).toHaveLength(3);
   });
 
   test("user settings that widen scope refuse a reader run before spawn", async () => {

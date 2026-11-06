@@ -133,6 +133,12 @@ export interface AIProvider {
    * with path-scoped filesystem tools) while it is true.
    */
   readonly userPermissionsWidenScope?: boolean;
+  /**
+   * Connector server names (`mcp__<server>`) of the user's `permissions.allow` entries, read at
+   * the same startup. The orchestrator refuses reader runs while any is not a known server (a
+   * reader denies every known server; an unknown one would stay allowed). Names only.
+   */
+  readonly userAllowedConnectorServers?: readonly string[];
 }
 
 export const workerProfileSchema = z.enum(["collector", "intelligence", "engineering", "reader"]);

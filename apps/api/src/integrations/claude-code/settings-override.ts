@@ -46,28 +46,58 @@ export function userPermissionsWidenScope(settings: unknown): boolean {
   return typeof p.defaultMode === "string" && WIDENING_MODES.has(p.defaultMode);
 }
 
+/**
+ * Connector server names (`mcp__<server>`) of the user's `permissions.allow` entries that start
+ * with `mcp__`, sorted and deduplicated. Only the server part is kept, never the tool or a
+ * specifier. An entry with no recognisable server part is returned whole (after stripping a
+ * specifier), so it can never match a known server name and errs on the refusing side. The
+ * orchestrator refuses reader runs while any of them is outside `orchestrator.knownServers`, whose
+ * servers every reader run denies (C1).
+ */
+export function userAllowedConnectorServers(settings: unknown): string[] {
+  if (!isRecord(settings)) return [];
+  const p = settings.permissions;
+  if (!isRecord(p) || !Array.isArray(p.allow)) return [];
+  const out = new Set<string>();
+  for (const entry of p.allow) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.trim();
+    if (!trimmed.startsWith("mcp__")) continue;
+    const i = trimmed.indexOf("(");
+    const name = (i === -1 ? trimmed : trimmed.slice(0, i)).trim();
+    const rest = name.slice("mcp__".length);
+    const j = rest.indexOf("__");
+    out.add(j > 0 ? `mcp__${rest.slice(0, j)}` : name);
+  }
+  return [...out].sort();
+}
+
 export interface UserSettingsSummary {
   /** Plugin NAMES (the keys of `enabledPlugins`). */
   pluginNames: string[];
   userPermissionsWidenScope: boolean;
+  /** Server names only (see `userAllowedConnectorServers`). */
+  userAllowedConnectorServers: string[];
 }
 
 /**
- * Plugin names and the widening flag from a Claude Code settings file. Nothing else in the file
- * is kept, returned or logged. Missing, unreadable or malformed files give no plugins and no
- * widening (the same fallback as before), silently.
+ * Plugin names, the widening flag and the connector server names of user-level allow entries from
+ * a Claude Code settings file. Nothing else in the file is kept, returned or logged. Missing,
+ * unreadable or malformed files give no plugins, no widening and no servers (the same fallback as
+ * before), silently.
  */
 export function readUserSettings(settingsPath: string): UserSettingsSummary {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(settingsPath, "utf8"));
   } catch {
-    return { pluginNames: [], userPermissionsWidenScope: false };
+    return { pluginNames: [], userPermissionsWidenScope: false, userAllowedConnectorServers: [] };
   }
   const plugins = isRecord(parsed) ? parsed.enabledPlugins : undefined;
   return {
     pluginNames: isRecord(plugins) ? Object.keys(plugins) : [],
     userPermissionsWidenScope: userPermissionsWidenScope(parsed),
+    userAllowedConnectorServers: userAllowedConnectorServers(parsed),
   };
 }
 
@@ -84,15 +114,20 @@ export function buildSettingsOverride(pluginNames: string[]): string {
   });
 }
 
-/** Reads `<home>/.claude/settings.json` once: the override plus the widening flag. */
+/**
+ * Reads `<home>/.claude/settings.json` once: the override, the widening flag and the user-allowed
+ * connector server names.
+ */
 export function loadUserSettings(home: string): {
   override: string;
   userPermissionsWidenScope: boolean;
+  userAllowedConnectorServers: string[];
 } {
   const s = readUserSettings(join(home, ".claude", "settings.json"));
   return {
     override: buildSettingsOverride(s.pluginNames),
     userPermissionsWidenScope: s.userPermissionsWidenScope,
+    userAllowedConnectorServers: s.userAllowedConnectorServers,
   };
 }
 

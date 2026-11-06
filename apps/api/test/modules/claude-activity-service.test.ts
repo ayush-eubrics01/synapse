@@ -572,7 +572,13 @@ describe("fix round 1", () => {
     const gate = new Promise<void>((r) => {
       release = r;
     });
-    const slow: FsOps = { ...fs, readdir: async (p) => (await gate, fs.readdir(p)) };
+    const slow: FsOps = {
+      ...fs,
+      readdir: async (p) => {
+        await gate;
+        return fs.readdir(p);
+      },
+    };
     const svc = service({ fs: slow });
     const first = svc.scan();
     const second = await svc.scan();

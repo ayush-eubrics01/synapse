@@ -712,7 +712,7 @@ describe("reader profile (C1): read-only, scoped to one repository", () => {
     };
     expect(reason(v(r))).toBe("denylist missing mcp__claude_ai_Slack");
   });
-  test("buildDenylist for a reader denies everything but its fs reads", () => {
+  test("buildDenylist for a reader denies everything but its fs reads, ToolSearch included", () => {
     const d = buildDenylist([`Read(/${WD}/**)`], DEFAULT_KNOWN_SERVERS, "reader");
     for (const t of ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Monitor", "Grep"]) {
       expect(d).toContain(t);
@@ -720,7 +720,18 @@ describe("reader profile (C1): read-only, scoped to one repository", () => {
     for (const t of ["WebFetch", "WebSearch", "Agent", "Task", ...DEFAULT_KNOWN_SERVERS]) {
       expect(d).toContain(t);
     }
+    expect(d).toContain("ToolSearch");
     expect(d).not.toContain("Read");
+  });
+  test("a reader denylist without ToolSearch fails H2; other profiles need not deny it", () => {
+    const base = rd(SCOPED);
+    const r = { ...base, disallowedTools: base.disallowedTools.filter((d) => d !== "ToolSearch") };
+    expect(reason(v(r))).toBe("denylist missing ToolSearch");
+    for (const p of ["collector", "intelligence", "engineering"] as const) {
+      expect(buildDenylist([`Read(/${WD}/**)`], DEFAULT_KNOWN_SERVERS, p)).not.toContain(
+        "ToolSearch",
+      );
+    }
   });
 
   test("policy_approved content is still refused outside a send run (rule K)", () => {

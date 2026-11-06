@@ -253,6 +253,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
       clock,
       settingsOverride: userSettings.override,
       userPermissionsWidenScope: userSettings.userPermissionsWidenScope,
+      userAllowedConnectorServers: userSettings.userAllowedConnectorServers,
     });
   const auth = new AuthMonitor(db, clock, settings, events, config.credentialsPath);
   const scratchDir =

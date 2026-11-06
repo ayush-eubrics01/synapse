@@ -47,7 +47,8 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *  H. denylist covers every unused known server (rule 4)
  *  H2. denylist contains every network built-in, and every write and filesystem-read built-in
  *     (R26, I4); an engineering or reader run must deny each of them it does not allow (final
- *     review, C1e), so a reader's denylist always holds Bash and every write built-in
+ *     review, C1e), so a reader's denylist always holds Bash and every write built-in. A reader's
+ *     denylist must also hold ToolSearch, so no deferred connector tool can be loaded
  *  I. send run with untrusted content (rule 5; subsumed by D, kept as defence in depth)
  *  J. untrusted content contains the boundary (rule 6)
  *  K. policy_approved content outside a send run (rule F's single write connector; J1, ADR-033);
@@ -170,6 +171,7 @@ export function validateRequest(
     ...(pathScoped
       ? [...BUILTIN_WRITE, ...BUILTIN_FS_READ].filter((t) => !allowed.includes(t))
       : [...BUILTIN_WRITE, ...BUILTIN_FS_READ]),
+    ...(profile === "reader" ? ["ToolSearch"] : []),
   ];
   for (const t of required) {
     if (!req.disallowedTools.includes(t)) return fail(`denylist missing ${t}`);
