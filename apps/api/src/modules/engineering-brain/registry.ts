@@ -67,6 +67,13 @@ function basename(p: string): string {
   return p.split("/").filter(Boolean).pop() ?? "";
 }
 
+/** One path is the other, or lies under it (C2's nesting rule, on stored realpaths). */
+function nestedPaths(a: string, b: string): boolean {
+  const x = a.replace(/\/+$/, "");
+  const y = b.replace(/\/+$/, "");
+  return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+}
+
 function unique<T>(xs: readonly T[]): T[] {
   return [...new Set(xs)];
 }
@@ -136,6 +143,15 @@ export class RepositoryRegistry {
           tx.select().from(repositories).where(eq(repositories.localPath, check.realpath)).get()
         ) {
           throw new RegistryError("already_registered");
+        }
+        // checkPath judged nesting before git ran; another registration may have landed since.
+        const others = tx
+          .select({ p: repositories.localPath })
+          .from(repositories)
+          .all()
+          .map((r) => r.p);
+        if (others.some((o) => nestedPaths(o, check.realpath))) {
+          throw new RegistryError("nested");
         }
         tx.insert(repositories)
           .values({

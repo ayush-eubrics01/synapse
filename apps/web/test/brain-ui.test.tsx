@@ -48,6 +48,15 @@ test("the proposal prefills name, tracked branch and environment rows with toggl
   expect(html).toContain("Register repository");
 });
 
+test("the register form checks Jira keys with the shared contracts rule (M8)", () => {
+  const src = readFileSync(
+    join(import.meta.dir, "../app/components/brain/RegisterRepository.tsx"),
+    "utf8",
+  );
+  expect(src).toContain("JIRA_PROJECT_KEY_RE");
+  expect(src).not.toMatch(/\/\^\[A-Z\]\[A-Z0-9_\]\+\$\//);
+});
+
 test("a bad path shows its reason label inline", () => {
   const html = registerHtml({ initialPath: "/nope", initialError: "not_found" });
   expect(html).toContain('role="alert"');
@@ -90,6 +99,44 @@ test("the project card groups approved facts and lists pending facts with Accept
   expect(html).toContain("In 4 days");
   expect(html).toContain("Add milestone");
   expect(html).toContain("1 overdue");
+});
+
+const card = (o: Partial<Parameters<typeof ProjectCard>[0]> = {}) =>
+  text(
+    renderToString(
+      <ProjectCard
+        project={detail()}
+        now={NOW}
+        hidden={new Set()}
+        onAcceptFact={noop}
+        onRejectFact={noop}
+        onAddFact={noop}
+        onSaveMilestone={noop}
+        onDeleteMilestone={noop}
+        {...o}
+      />,
+    ),
+  );
+
+test("deleting a milestone asks for an inline confirmation first (M8)", () => {
+  const idle = card();
+  expect(idle).toContain(">Delete</button>");
+  expect(idle).not.toContain("Delete this milestone?");
+  const asking = card({ initialConfirmDelete: "m1" });
+  expect(asking).toContain("Delete this milestone?");
+  expect(asking).toContain(">Confirm delete</button>");
+  expect(asking).toContain(">Keep</button>");
+});
+
+test("the milestone edit form can set planned, done, slipped or cancelled (M8)", () => {
+  const html = card({ initialEditingMilestone: "m1" });
+  expect(html).toContain('aria-label="Milestone status"');
+  for (const s of ["planned", "done", "slipped", "cancelled"]) {
+    expect(html).toContain(`<option value="${s}"`);
+  }
+  expect(html).toMatch(/<option value="planned" selected="">/);
+  // A new milestone is always planned: no status choice.
+  expect(card({ initialEditingMilestone: "new" })).not.toContain('aria-label="Milestone status"');
 });
 
 test("fact text renders as plain text", () => {

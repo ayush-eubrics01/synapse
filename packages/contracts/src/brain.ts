@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { jiraAttentionSchema } from "./jira";
+import { JIRA_PROJECT_KEY_RE } from "./patterns";
 
 /** C2: embedded in tool permission specifiers, so no spaces, commas, parentheses or quotes. */
 export const REPO_PATH_RE = /^\/[A-Za-z0-9._/-]+$/;
@@ -41,7 +42,7 @@ export type FactSource = z.infer<typeof factSourceSchema>;
 export const milestoneStatusSchema = z.enum(["planned", "done", "slipped", "cancelled"]);
 export type MilestoneStatus = z.infer<typeof milestoneStatusSchema>;
 
-const jiraKeySchema = z.string().regex(/^[A-Z][A-Z0-9_]+$/);
+const jiraKeySchema = z.string().regex(JIRA_PROJECT_KEY_RE);
 const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 export const evidenceSchema = z.object({

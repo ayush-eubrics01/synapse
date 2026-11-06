@@ -4,7 +4,7 @@ import { schema } from "@synapse/database";
 import { eq } from "drizzle-orm";
 import { type Container, createContainer } from "../../src/container";
 import { loadConfig } from "../../src/core/config/config";
-import { BrainError } from "../../src/modules/engineering-brain/service";
+import { BrainError, BrainService } from "../../src/modules/engineering-brain/service";
 
 const fakeProvider: AIProvider = {
   execute: async () => {
@@ -310,6 +310,41 @@ describe("milestones (C10)", () => {
     expect(up[1]).toMatchObject({ overdue: false, environmentName: "prod" });
     c.settings.set("brain.upcoming.days", 7);
     expect(c.brain.upcoming().map((m) => m.name)).toEqual(["late", "soon"]);
+  });
+
+  test("today and the horizon are local calendar dates, not UTC ones", () => {
+    const { projectId } = seedProject("app");
+    // 20:00 UTC on the 6th is already 01:30 on the 7th in Kolkata.
+    const late = new Date("2026-11-06T20:00:00.000Z");
+    const inZone = (timeZone: string) =>
+      new BrainService({
+        db: c.db,
+        clock: { now: () => late },
+        settings: c.settings,
+        audit: c.audit,
+        events: c.events,
+        registry: { get: () => null },
+        inspections: { requestInspection: () => ({ status: "not_found" }) },
+        timeZone,
+      });
+    c.brain.createMilestone(projectId, {
+      name: "due6",
+      targetDate: "2026-11-06",
+      status: "planned",
+    });
+    c.brain.createMilestone(projectId, {
+      name: "due8",
+      targetDate: "2026-11-08",
+      status: "planned",
+    });
+    c.settings.set("brain.upcoming.days", 1);
+    const utc = inZone("UTC").upcoming();
+    expect(utc.map((m) => [m.name, m.overdue])).toEqual([["due6", false]]);
+    const ist = inZone("Asia/Kolkata").upcoming();
+    expect(ist.map((m) => [m.name, m.overdue])).toEqual([
+      ["due6", true],
+      ["due8", false],
+    ]);
   });
 
   test("a done milestone is never overdue", () => {

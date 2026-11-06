@@ -51,11 +51,15 @@ export function computeDrift(
   return Object.keys(d).length > 0 ? d : null;
 }
 
-/** A drift's identity: everything except `detectedAt`, in a fixed key order. */
+/**
+ * A drift's identity: everything except `detectedAt`, in a fixed key order. Being off the tracked
+ * branch counts as a boolean: the current branch name is kept for display only, so moving between
+ * feature branches is the same drift and does not notify again (M4, final review).
+ */
 export function driftIdentity(d: DriftFindings | RepositoryDrift | null | undefined): string {
   if (!d) return "null";
   return JSON.stringify([
-    d.offTrackedBranch ?? null,
+    d.offTrackedBranch !== undefined,
     d.missingEnvironmentBranches ?? null,
     d.remotesChanged ?? null,
     d.pathMissing ?? null,
@@ -128,6 +132,17 @@ export class DriftCheck {
         if (!current) return { drifted: false, notified: false }; // unregistered while git ran
         const drifted = findings !== null;
         if (driftIdentity(findings) === driftIdentity(current.drift)) {
+          // Same drift: quiet. Only the displayed branch name follows the checkout.
+          if (
+            findings &&
+            current.drift &&
+            findings.offTrackedBranch !== current.drift.offTrackedBranch
+          ) {
+            tx.update(repositories)
+              .set({ drift: { ...current.drift, offTrackedBranch: findings.offTrackedBranch } })
+              .where(eq(repositories.id, repo.id))
+              .run();
+          }
           return { drifted, notified: false };
         }
         const drift: RepositoryDrift | null = findings

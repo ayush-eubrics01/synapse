@@ -12,6 +12,7 @@ export * from "./jobs";
 export * from "./messages";
 export * from "./notifier";
 export * from "./outgoing";
+export * from "./patterns";
 export * from "./people";
 export * from "./permissions";
 export * from "./repository";

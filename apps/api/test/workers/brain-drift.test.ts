@@ -139,6 +139,21 @@ describe("brain.drift_check", () => {
     expect(row()?.drift?.detectedAt).toBe(NOW);
   });
 
+  test("switching between off-track branches does not notify again; the name stays current", async () => {
+    git(repo, "checkout", "-q", "stage");
+    await run();
+    git(repo, "checkout", "-q", "-b", "feature-a");
+    clock.advance(DAY);
+    expect(await run()).toEqual({ checked: 1, drifted: 1, notified: 0, failed: 0 });
+    git(repo, "checkout", "-q", "-b", "feature-b");
+    clock.advance(DAY);
+    expect(await run()).toEqual({ checked: 1, drifted: 1, notified: 0, failed: 0 });
+    expect(notes()).toHaveLength(1);
+    expect(driftEvents()).toHaveLength(1);
+    // The branch name is for display only: it follows the checkout, detectedAt does not move.
+    expect(row()?.drift).toEqual({ offTrackedBranch: "feature-b", detectedAt: NOW });
+  });
+
   test("fixing the problem clears the drift; a later drift notifies again", async () => {
     git(repo, "checkout", "-q", "stage");
     await run();

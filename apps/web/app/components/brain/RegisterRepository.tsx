@@ -1,6 +1,7 @@
 "use client";
 
 import type { RepositoryProposal, RepositoryRegisterInput } from "@synapse/contracts";
+import { JIRA_PROJECT_KEY_RE } from "@synapse/contracts/patterns";
 import { useEffect, useState } from "react";
 import { REGISTER_ANCHOR, registryErrorLabel } from "../../../lib/brain";
 import { Button } from "../ui/Button";
@@ -18,8 +19,6 @@ interface EnvRow {
   protected: boolean;
   autoDeploysOnMerge: boolean;
 }
-
-const JIRA_KEY = /^[A-Z][A-Z0-9_]+$/;
 
 /**
  * The proposal-then-confirm flow (spec C13): a path is inspected first (nothing is saved), then
@@ -116,7 +115,7 @@ export function RegisterRepository({
           .filter((k) => k !== ""),
       ),
     ];
-    const bad = keys.filter((k) => !JIRA_KEY.test(k));
+    const bad = keys.filter((k) => !JIRA_PROJECT_KEY_RE.test(k));
     if (bad.length > 0) {
       setError(`bad_jira_keys:${bad.join(", ")}`);
       return;

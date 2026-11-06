@@ -430,6 +430,44 @@ describe("update and unregister", () => {
     expect(r.ok).toBe(true);
   });
 
+  test("nesting is re-checked inside the register transaction (M6)", async () => {
+    // Another registration of an enclosing repository lands while this one awaits git.
+    const inner = initRepo(join(repo, "vendor", "lib"));
+    const git_ = new LocalGitProvider({ home: scratch() });
+    let raced = false;
+    const racing = new RepositoryRegistry({
+      db,
+      clock,
+      audit: new AuditLogger(clock),
+      events,
+      provider: {
+        checkPath: git_.checkPath.bind(git_),
+        inspect: async (p: string) => {
+          if (!raced) {
+            raced = true;
+            await registry.register(input());
+          }
+          return git_.inspect(p);
+        },
+      },
+    });
+    const before = counts();
+    await expectCode(
+      racing.register(input({ path: inner, name: "lib", environments: [] })),
+      "nested",
+    );
+    expect(raced).toBe(true);
+    const after = counts();
+    expect(after.repos).toBe(before.repos + 1); // only the enclosing repository
+    expect(
+      db
+        .select()
+        .from(schema.repositories)
+        .all()
+        .map((r) => r.name),
+    ).toEqual(["app"]);
+  });
+
   test("a second repo nested in a registered one is refused", async () => {
     await registry.register(input());
     const inner = initRepo(join(repo, "vendor", "lib"));

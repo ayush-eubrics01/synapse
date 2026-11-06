@@ -18,7 +18,7 @@ import {
   type UpcomingMilestone,
 } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
-import { type Clock, isoNow, newId } from "@synapse/shared";
+import { addDays, type Clock, isoNow, localDate, newId } from "@synapse/shared";
 import { and, asc, count, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { AuditLogger } from "../../core/audit/audit";
 import type { SettingsService } from "../../core/config/settings";
@@ -36,7 +36,6 @@ const {
   jiraIssues,
 } = schema;
 const MODULE = "engineering-brain";
-const DAY_MS = 86_400_000;
 /** Most urgent first. */
 const ATTENTION_ORDER: readonly JiraAttention[] = ["overdue", "blocked", "due_soon", "stale"];
 const JIRA_TOP = 5;
@@ -64,6 +63,8 @@ export interface BrainServiceDeps {
   events: Pick<EventPublisher, "publish">;
   registry: Pick<RepositoryRegistry, "get">;
   inspections: Pick<InspectionService, "requestInspection">;
+  /** IANA zone for "today" and the upcoming horizon; undefined means the process zone. */
+  timeZone?: string;
 }
 
 type FactRow = typeof projectFacts.$inferSelect;
@@ -364,11 +365,9 @@ export class BrainService {
    * name. Done, slipped and cancelled milestones never appear.
    */
   upcoming(): UpcomingMilestone[] {
-    const { db, clock, settings } = this.deps;
+    const { db, settings } = this.deps;
     const today = this.today();
-    const horizon = new Date(clock.now().getTime() + settings.get("brain.upcoming.days") * DAY_MS)
-      .toISOString()
-      .slice(0, 10);
+    const horizon = addDays(today, settings.get("brain.upcoming.days"));
     const rows = db
       .select()
       .from(projectMilestones)
@@ -395,8 +394,9 @@ export class BrainService {
 
   // ---- internals ----
 
+  /** The local calendar date (M3, final review): milestone dates are calendar dates too. */
   private today(): string {
-    return this.deps.clock.now().toISOString().slice(0, 10);
+    return localDate(this.deps.clock.now(), this.deps.timeZone);
   }
 
   /**

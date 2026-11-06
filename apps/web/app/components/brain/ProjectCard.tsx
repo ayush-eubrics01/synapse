@@ -30,7 +30,17 @@ export interface ProjectCardProps {
   /** `milestoneId` null creates one. */
   onSaveMilestone: (projectId: string, milestoneId: string | null, draft: MilestoneDraft) => void;
   onDeleteMilestone: (projectId: string, milestoneId: string) => void;
+  /** Tests only: the starting state (a milestone id or "new" being edited; a delete being confirmed). */
+  initialEditingMilestone?: string | "new" | null;
+  initialConfirmDelete?: string | null;
 }
+
+const MILESTONE_STATUSES: readonly MilestoneView["status"][] = [
+  "planned",
+  "done",
+  "slipped",
+  "cancelled",
+];
 
 const ATTENTION_LABEL: Record<string, string> = {
   overdue: "overdue",
@@ -107,6 +117,8 @@ function MilestoneForm({
   const [name, setName] = useState(initial.name);
   const [date, setDate] = useState(initial.targetDate);
   const [env, setEnv] = useState(initial.environmentId ?? "");
+  // Only an existing milestone's form offers a status; a new one is always planned.
+  const [status, setStatus] = useState(initial.status);
   const valid = name.trim() !== "" && /^\d{4}-\d{2}-\d{2}$/.test(date);
   return (
     <div className="syn-brain-milestone-form">
@@ -137,12 +149,31 @@ function MilestoneForm({
           </option>
         ))}
       </select>
+      {status !== undefined && (
+        <select
+          className="syn-ncard-input"
+          aria-label="Milestone status"
+          value={status}
+          onChange={(e) => setStatus(e.target.value as MilestoneView["status"])}
+        >
+          {MILESTONE_STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+      )}
       <Button
         variant="primary"
         size="sm"
         disabled={!valid}
         onClick={() =>
-          onSubmit({ name: name.trim(), targetDate: date, environmentId: env === "" ? null : env })
+          onSubmit({
+            name: name.trim(),
+            targetDate: date,
+            environmentId: env === "" ? null : env,
+            ...(status !== undefined ? { status } : {}),
+          })
         }
       >
         {submitLabel}
@@ -164,8 +195,13 @@ export function ProjectCard({
   onAddFact,
   onSaveMilestone,
   onDeleteMilestone,
+  initialEditingMilestone = null,
+  initialConfirmDelete = null,
 }: ProjectCardProps) {
-  const [editingMilestone, setEditingMilestone] = useState<string | "new" | null>(null);
+  const [editingMilestone, setEditingMilestone] = useState<string | "new" | null>(
+    initialEditingMilestone,
+  );
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(initialConfirmDelete);
   const [adding, setAdding] = useState(false);
   const [newKind, setNewKind] = useState<FactKind>("note");
   const [newText, setNewText] = useState("");
@@ -281,6 +317,7 @@ export function ProjectCard({
                     name: m.name,
                     targetDate: m.targetDate,
                     environmentId: m.environmentId,
+                    status: m.status,
                   }}
                   environments={environments}
                   submitLabel="Save milestone"
@@ -320,13 +357,30 @@ export function ProjectCard({
                   <Button variant="ghost" size="sm" onClick={() => setEditingMilestone(m.id)}>
                     Edit milestone
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onDeleteMilestone(project.id, m.id)}
-                  >
-                    Delete
-                  </Button>
+                  {confirmDelete === m.id ? (
+                    <>
+                      <span className="syn-ncard-faint" role="status">
+                        Delete this milestone?
+                      </span>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => {
+                          setConfirmDelete(null);
+                          onDeleteMilestone(project.id, m.id);
+                        }}
+                      >
+                        Confirm delete
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(null)}>
+                        Keep
+                      </Button>
+                    </>
+                  ) : (
+                    <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(m.id)}>
+                      Delete
+                    </Button>
+                  )}
                 </span>
               </li>
             ),

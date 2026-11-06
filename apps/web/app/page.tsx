@@ -19,7 +19,6 @@ import { type ComponentProps, useCallback, useEffect, useRef, useState } from "r
 import { type ActionErrors, actionErrorText, NO_ACTION_ERRORS } from "../lib/action-errors";
 import {
   ApiError,
-  acceptBrainFact,
   acceptCurrentRemotes,
   addProjectFact,
   type ClaudeRun,
