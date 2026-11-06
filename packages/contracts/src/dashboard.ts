@@ -107,3 +107,48 @@ export interface DashboardOverview {
   }>;
   engineeringLock: null;
 }
+
+/** One row of the inbox conversation list (`GET /api/inbox/conversations`). */
+export interface ConversationSummary {
+  id: string;
+  type: ConversationType;
+  name: string | null;
+  isSelfDm: boolean;
+  partner: { id: string; name: string | null } | null;
+  lastMessageAt: string;
+  lastSender: { id: string; name: string | null; isSelf: boolean };
+  /** Latest text, first 140 chars; null when expired. */
+  preview: string | null;
+  messageCount: number;
+  theyWroteLast: boolean;
+  awaitingApproval: boolean;
+  openUrgent: Array<{ messageId: string; level: string }>;
+}
+
+/** One message of an annotated thread (`GET /api/inbox/conversations/:id/thread`). */
+export interface ThreadMessage {
+  id: string;
+  conversation: { id: string; name: string | null; type: ConversationType };
+  sender: { id: string; name: string | null };
+  sentAt: string;
+  text: string | null;
+  permalink: string | null;
+  threadTs: string | null;
+  replyCount: number;
+  isSelf: boolean;
+  flag: { severity: FlagSeverity; reason: string } | null;
+  commitment: {
+    id: string;
+    description: string;
+    direction: "mine" | "theirs";
+    reviewStatus: string;
+    status: string;
+  } | null;
+  sentViaSynapse: { status: "sent" | "sent_unverified" } | null;
+}
+
+/** Messages are oldest first. */
+export interface ConversationThread {
+  conversation: ConversationSummary;
+  messages: ThreadMessage[];
+}

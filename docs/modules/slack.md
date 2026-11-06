@@ -177,6 +177,13 @@ Slack sends are the only Slack writes. The adapter is `SlackSender` (`integratio
 - **Self id.** Verification needs `slack.selfUserId`; without it `findSent` returns "cannot tell" and the user resolves the message by hand.
 - **Dev smoke for sends:** none. No script sends. `commitments-smoke.ts` injects a sink that throws.
 
+### Inbox views
+
+Read-only views for the dashboard (`modules/inbox/conversations.ts`):
+
+- `GET /api/inbox/conversations?limit=1..100` (default 50): `ConversationSummary[]`, newest `lastMessageAt` first. Carries the DM partner, whether they wrote last, a pending send approval and open urgent items.
+- `GET /api/inbox/conversations/:id/thread?limit=1..500` (default 200): `ConversationThread`, the newest `limit` messages oldest first, each annotated with its highest-severity security flag, its latest non-rejected commitment and whether it was sent via Synapse (a sent or sent_unverified outgoing row with the same normalised text, at or up to 1 h after `sendingAt`). Unknown id: 404; id not matching `[CDG][A-Z0-9]+`: 400. Message text is never logged.
+
 ## Events
 
 Emitted: `message.received`, `message.thread_updated` (no consumer yet; screening listens to `message.received` only), `message.screened`, `message.urgent_detected` (after the urgency result is stored), `collection.completed`, `collection.failed`.

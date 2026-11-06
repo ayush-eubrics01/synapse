@@ -119,7 +119,7 @@ export function decodeSlackText(s: string): string {
     .replace(/&amp;/g, "&");
 }
 
-const normalise = (s: string) => decodeSlackText(s).replace(/\s+/g, " ").trim();
+export const normaliseSentText = (s: string) => decodeSlackText(s).replace(/\s+/g, " ").trim();
 
 /**
  * The only code path that posts to Slack. Success is never read from the tool's result text (its
@@ -202,7 +202,7 @@ export class SlackSender implements MessageSink {
       if (e instanceof JobError && DEFERRAL_KINDS.has(e.classified.kind)) throw e;
       return null;
     }
-    const want = normalise(cmd.text);
+    const want = normaliseSentText(cmd.text);
     const hit = found.pages.some((p) =>
       p.messages.some(
         (m) =>
@@ -210,7 +210,7 @@ export class SlackSender implements MessageSink {
           m.senderId === self &&
           m.threadTs === cmd.threadTs &&
           Number(m.ts) >= since &&
-          normalise(m.text) === want,
+          normaliseSentText(m.text) === want,
       ),
     );
     if (hit) return true;
