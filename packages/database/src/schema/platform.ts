@@ -757,7 +757,13 @@ export const repositories = sqliteTable("repositories", {
   notes: text("notes"),
   headSha: text("head_sha"),
   inspectedHeadSha: text("inspected_head_sha"),
-  drift: json("drift").$type<{ detectedAt: string; reasons: string[] }>(),
+  drift: json("drift").$type<{
+    offTrackedBranch?: string;
+    missingEnvironmentBranches?: string[];
+    remotesChanged?: true;
+    pathMissing?: true;
+    detectedAt: string;
+  }>(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });

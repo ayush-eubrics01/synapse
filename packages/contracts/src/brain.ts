@@ -50,8 +50,11 @@ export const evidenceSchema = z.object({
 });
 export type Evidence = z.infer<typeof evidenceSchema>;
 
+/** Repository and environment names: shown in notification titles and chips, so plain only. */
+export const REPO_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
 export const environmentInputSchema = z.object({
-  name: z.string().min(1).max(60),
+  name: z.string().regex(REPO_NAME_RE),
   branch: z.string().min(1).max(200),
   protected: z.boolean(),
   autoDeploysOnMerge: z.boolean(),
@@ -62,16 +65,27 @@ export type EnvironmentInput = z.infer<typeof environmentInputSchema>;
 export const environmentViewSchema = environmentInputSchema.extend({ id: z.string() });
 export type EnvironmentView = z.infer<typeof environmentViewSchema>;
 
+/**
+ * C5: what the daily drift check found, stored as `repositories.drift` (null when none). The
+ * identity of a drift is everything except `detectedAt`; only an identity change notifies.
+ */
 export const repositoryDriftSchema = z.object({
+  /** The checkout's current branch (`HEAD` when detached) when it is not `trackedBranch`. */
+  offTrackedBranch: z.string().optional(),
+  /** Environment branches gone from both local and remote branches, sorted. */
+  missingEnvironmentBranches: z.array(z.string()).optional(),
+  /** The origin or upstream fetch URL, or the upstream push-disabled state, changed. */
+  remotesChanged: z.literal(true).optional(),
+  /** The registered path is gone or is no longer a git work tree. */
+  pathMissing: z.literal(true).optional(),
   detectedAt: z.string(),
-  reasons: z.array(z.string()),
 });
 export type RepositoryDrift = z.infer<typeof repositoryDriftSchema>;
 
 /** `POST /api/repos`: re-inspected and saved in one transaction. */
 export const repositoryRegisterInputSchema = z.object({
   path: safePathSchema,
-  name: z.string().min(1).max(80),
+  name: z.string().regex(REPO_NAME_RE),
   trackedBranch: z.string().min(1).max(200),
   environments: z.array(environmentInputSchema).max(10).default([]),
   jiraProjectKeys: z.array(jiraKeySchema).max(20).default([]),
@@ -79,18 +93,34 @@ export const repositoryRegisterInputSchema = z.object({
 });
 export type RepositoryRegisterInput = z.infer<typeof repositoryRegisterInputSchema>;
 
-/** `POST /api/repos/inspect`: saves nothing. */
+/**
+ * `PUT /api/repos/:id`: every field optional. `environments` replaces the set (matched by name,
+ * so kept environments keep their id). Changed branches are re-checked against git.
+ */
+export const repositoryUpdateInputSchema = z
+  .object({
+    name: z.string().regex(REPO_NAME_RE),
+    trackedBranch: z.string().min(1).max(200),
+    environments: z.array(environmentInputSchema).max(10),
+    jiraProjectKeys: z.array(jiraKeySchema).max(20),
+    notes: z.string().max(1000).nullable(),
+  })
+  .partial()
+  .strict();
+export type RepositoryUpdateInput = z.infer<typeof repositoryUpdateInputSchema>;
+
+/** `POST /api/repos/inspect`: saves nothing. Remote URLs are credential-stripped. */
 export const repositoryProposalSchema = z.object({
-  path: z.string(),
+  realpath: z.string(),
   suggestedName: z.string(),
   currentBranch: z.string().nullable(),
+  /** The current branch (C4). */
   suggestedTrackedBranch: z.string().nullable(),
   headSha: z.string().nullable(),
-  remotes: z.object({
-    origin: z.object({ fetch: z.string(), push: z.string() }).optional(),
-    upstream: z.object({ fetch: z.string(), push: z.string() }).optional(),
-  }),
+  originUrl: z.string().nullable(),
+  upstreamUrl: z.string().nullable(),
   upstreamPushDisabled: z.boolean(),
+  /** Sorted unique union of local branches and remote branch names without the remote prefix. */
   branches: z.array(z.string()),
   environmentCandidates: z.array(z.object({ name: z.string(), branch: z.string() })),
 });

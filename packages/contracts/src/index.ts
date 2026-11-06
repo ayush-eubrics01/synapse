@@ -14,4 +14,5 @@ export * from "./notifier";
 export * from "./outgoing";
 export * from "./people";
 export * from "./permissions";
+export * from "./repository";
 export * from "./urgency";

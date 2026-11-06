@@ -42,6 +42,7 @@ import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notif
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadSettingsOverride } from "./integrations/claude-code/settings-override";
 import { JiraConnectorSource } from "./integrations/jira/connector-source";
+import { LocalGitProvider } from "./integrations/repository/local-git";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
 import { AutoReplyService } from "./modules/auto-reply/service";
@@ -51,6 +52,7 @@ import { CommitmentLifecycle } from "./modules/commitments/lifecycle";
 import { StallService } from "./modules/commitments/stall";
 import { CommitmentStore } from "./modules/commitments/store";
 import { DashboardService } from "./modules/dashboard/service";
+import { RepositoryRegistry } from "./modules/engineering-brain/registry";
 import { InboxConversations } from "./modules/inbox/conversations";
 import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
@@ -70,6 +72,7 @@ import { TemporaryContacts } from "./modules/people/temporary";
 import { PeopleViews } from "./modules/people/views";
 import { SecurityFlagsService } from "./modules/security-flags/service";
 import { registerAutoReplyJobs } from "./workers/auto-reply/evaluate";
+import { registerDriftCheck } from "./workers/brain/drift";
 import { registerCommitmentJobs } from "./workers/commitments";
 import { createRunHelpers } from "./workers/intelligence-shared";
 import { registerJiraJobs } from "./workers/jira";
@@ -128,6 +131,8 @@ export interface Container {
   dashboard: DashboardService;
   /** Read-only Jira tracking (Phase 8): status, issue views, manual sync and scope settings. */
   jira: JiraService;
+  /** Repository registry (Phase 9, ADR-035): propose, register, edit and unregister. */
+  repositories: RepositoryRegistry;
   slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
@@ -434,6 +439,25 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     source: new JiraConnectorSource({ orchestrator, clock }),
   });
 
+  // Phase 9: read-only local git, the registry (DB only, ADR-035) and the daily drift check.
+  const repositoryProvider = new LocalGitProvider({ home });
+  const repositories = new RepositoryRegistry({
+    db,
+    clock,
+    audit,
+    events,
+    provider: repositoryProvider,
+  });
+  registerDriftCheck({
+    db,
+    clock,
+    events,
+    notifications,
+    provider: repositoryProvider,
+    scheduler,
+    handlers,
+  });
+
   const health = new HealthService({
     database: databaseCheck(sqlite),
     jobs: jobsCheck(db, clock),
@@ -502,6 +526,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     followups: followupService,
     dashboard,
     jira,
+    repositories,
     handlers,
     recoverySweeps: [
       { name: "urgency.assess", run: urgency.recoverySweep },
