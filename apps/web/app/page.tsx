@@ -4,8 +4,8 @@ import type {
   ApprovalView,
   CandidatesResponse,
   CommitmentFilter,
+  ConversationSummary,
   DashboardOverview,
-  HealthReport,
   Job,
   PersonDetail,
   RecommendationView,
@@ -34,8 +34,8 @@ import {
   getClaudeRuns,
   getClaudeStatus,
   getCommitments,
+  getConversations,
   getFollowups,
-  getHealth,
   getInboxMessages,
   getJobs,
   getOverview,
@@ -72,12 +72,15 @@ import { trailingDebounce } from "../lib/debounce";
 import { decideThenRefresh } from "../lib/decide";
 import { LIVE_EVENT_TYPES } from "../lib/live-events";
 import { SECTION_IDS, type SectionId, sidebarItems } from "../lib/nav";
+import type { PaletteItem } from "../lib/palette";
 import type { Decision } from "../lib/people-decision";
+import { writeTheme } from "../lib/theme";
 import { ApprovalsList } from "./components/ApprovalsList";
 import { ClaudePanel } from "./components/ClaudePanel";
 import { CommitmentsPanel } from "./components/CommitmentsPanel";
 import { FollowupDrafts } from "./components/FollowupDrafts";
-import { HealthBadge } from "./components/HealthBadge";
+import { CommandPalette } from "./components/header/CommandPalette";
+import { Header } from "./components/header/Header";
 import { IdentitySetup } from "./components/IdentitySetup";
 import { InboxPanel } from "./components/InboxPanel";
 import { JobsTable } from "./components/JobsTable";
@@ -125,10 +128,54 @@ function scrollToSection(id: SectionId) {
   el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
 }
 
+/** Browser clock, null on the server and first render; ticks each minute (hydration-safe). */
+function useClock(): Date | null {
+  const [now, setNow] = useState<Date | null>(null);
+  useEffect(() => {
+    setNow(new Date());
+    const t = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  return now;
+}
+
+/**
+ * The 90-day backfill counts as started once it has run, paused, failed or finished, or has a
+ * checkpoint or a success time. Unknown status (not loaded yet) counts as started, so a slow load
+ * never shows a false setup step.
+ */
+function backfillStarted(s: SlackStatusDto | null): boolean {
+  if (s === null) return true;
+  const b = s.backfill;
+  return b.status !== "idle" || b.checkpoint !== null || b.lastSuccessAt !== null;
+}
+
+const GO_TO: Array<{ id: SectionId; label: string }> = [
+  { id: "overview", label: "Overview" },
+  { id: "triage", label: "Needs you" },
+  { id: "inbox", label: "Inbox" },
+  { id: "commitments", label: "Commitments" },
+  { id: "people", label: "People" },
+  { id: "system", label: "System" },
+];
+
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  try {
+    writeTheme(window.localStorage, next);
+  } catch {
+    writeTheme(null, next);
+  }
+  document.documentElement.dataset.theme = next;
+}
+
 export default function Dashboard() {
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const now = useClock();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [openHealthSignal, setOpenHealthSignal] = useState(0);
   const [active, setActive] = useActiveSection("overview");
-  const [health, setHealth] = useState<HealthReport | null>(null);
   const [approvals, setApprovals] = useState<ApprovalView[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [claudeStatus, setClaudeStatus] = useState<ClaudeStatus | null>(null);
@@ -156,9 +203,8 @@ export default function Dashboard() {
 
   const refresh = useCallback(async () => {
     const openUser = personRef.current;
-    const [h, a, j, cs, cr, ss, im, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, pd] =
+    const [a, j, cs, cr, ss, im, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv, pd] =
       await Promise.allSettled([
-        getHealth(),
         getApprovals(),
         getJobs(20),
         getClaudeStatus(),
@@ -175,10 +221,9 @@ export default function Dashboard() {
         getCommitments("review"),
         getFollowups(),
         getOverview(),
+        getConversations(50),
         openUser ? getPersonProfile(openUser) : Promise.resolve(null),
       ]);
-    if (h.status === "fulfilled") setHealth(h.value);
-    else setHealth(null);
     if (a.status === "fulfilled") setApprovals(a.value);
     if (j.status === "fulfilled") setJobs(j.value);
     if (cs.status === "fulfilled") setClaudeStatus(cs.value);
@@ -195,6 +240,7 @@ export default function Dashboard() {
     if (rq.status === "fulfilled") setReviewQueue(rq.value);
     if (fu.status === "fulfilled") setFollowups(fu.value);
     if (ov.status === "fulfilled") setOverview(ov.value);
+    if (cv.status === "fulfilled") setConversations(cv.value);
     // The open profile is refetched with everything else; if that fails, the stale profile closes.
     if (openUser && personRef.current === openUser) {
       if (pd.status === "fulfilled") setPerson(pd.value);
@@ -213,7 +259,7 @@ export default function Dashboard() {
       });
       return next;
     });
-    const failed = [h, a, j, cs, cr, ss, im, ug, sf, pp, id, cd, rc, cm, rq, fu, ov].find(
+    const failed = [a, j, cs, cr, ss, im, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv].find(
       (r) => r.status === "rejected",
     );
     const message = failed?.status === "rejected" ? String(failed.reason) : null;
@@ -293,6 +339,71 @@ export default function Dashboard() {
     await refresh();
   };
 
+  // Task 7 replaces the body with the conversation view; for now it brings the inbox into view.
+  const openConversation = (_id: string) => {
+    scrollToSection("inbox");
+  };
+
+  const goTo = (id: SectionId) => {
+    setActive(id);
+    scrollToSection(id);
+  };
+
+  const paletteItems: PaletteItem[] = [
+    ...GO_TO.map(
+      (g): PaletteItem => ({
+        id: `go-${g.id}`,
+        label: g.label,
+        group: "go to",
+        run: () => goTo(g.id),
+      }),
+    ),
+    ...conversations.map(
+      (c): PaletteItem => ({
+        id: `conv-${c.id}`,
+        label: c.isSelfDm ? "Notes to self" : (c.partner?.name ?? c.name ?? c.id),
+        group: "conversation",
+        run: () => openConversation(c.id),
+      }),
+    ),
+    ...people.map(
+      (p): PaletteItem => ({
+        id: `person-${p.slackUserId}`,
+        label: p.name ?? p.slackUserId,
+        group: "person",
+        run: () => openPerson(p.slackUserId),
+      }),
+    ),
+    // Scrolls to the Slack card, where the backfill is started and confirmed.
+    {
+      id: "act-backfill",
+      label: "Start 90-day Slack backfill",
+      group: "action",
+      run: () => goTo("system"),
+    },
+    {
+      id: "act-health",
+      label: "Show system health",
+      group: "action",
+      run: () => {
+        goTo("overview");
+        setOpenHealthSignal((n) => n + 1);
+      },
+    },
+    { id: "act-theme", label: "Toggle theme", group: "action", run: toggleTheme },
+  ];
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     <div className="syn-app">
       <Sidebar
@@ -309,9 +420,13 @@ export default function Dashboard() {
       <main className="syn-main">
         <div className="syn-main-inner">
           <section id="overview" className="syn-section">
-            <h1>
-              Synapse <HealthBadge health={health} />
-            </h1>
+            <Header
+              overview={overview}
+              now={now}
+              onOpenPalette={() => setPaletteOpen(true)}
+              backfillStarted={backfillStarted(slackStatus)}
+              openHealthSignal={openHealthSignal}
+            />
             {loadError && <p style={{ color: "var(--redFg)" }}>{loadError}</p>}
             {actionError && (
               <p style={{ color: "var(--redFg)" }}>
@@ -449,6 +564,11 @@ export default function Dashboard() {
           </section>
         </div>
       </main>
+      <CommandPalette
+        open={paletteOpen}
+        items={paletteItems}
+        onClose={() => setPaletteOpen(false)}
+      />
     </div>
   );
 }

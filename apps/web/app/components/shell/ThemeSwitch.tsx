@@ -36,6 +36,16 @@ export function ThemeSwitch() {
     const t = readTheme(storage(), prefersDark());
     document.documentElement.dataset.theme = t;
     setTheme(t);
+    // The palette's "Toggle theme" changes the attribute directly; follow it.
+    const observer = new MutationObserver(() => {
+      const d = document.documentElement.dataset.theme;
+      if (d === "dark" || d === "light") setTheme(d);
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => observer.disconnect();
   }, []);
   const choose = (t: Theme) => {
     writeTheme(storage(), t);
