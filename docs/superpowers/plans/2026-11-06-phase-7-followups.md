@@ -56,3 +56,8 @@ Results:
 - Evaluations queued from Needs you, People or the drawer share one session set; the setup card shows them as "Queued".
 - An HTTP error from the overview reads "Overview unavailable", not "Unreachable".
 - Small: "Reset to draft" in the reply composer, the quota thresholds comment (0–1 fractions), `aria-haspopup="dialog"` on the health pill, and the Commitments filters are `aria-pressed` toggle buttons like the Inbox.
+
+## Left after the final re-review
+
+- `classifyOverviewFailure` (apps/web/lib/api.ts) treats every error that isn't an `ApiError` as unreachable. A 200 response with malformed JSON therefore shows "Unreachable". Narrow the check to `TypeError` and give malformed responses their own state.
+- `commitmentsToReview` and `peopleToEvaluate` are counted within the view limits (candidates: 50), the same limits the page fetches use. If either side's limit changes, the counts can disagree with the feed.
