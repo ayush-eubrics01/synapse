@@ -56,6 +56,7 @@ import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
 import { AutoReplyService } from "./modules/auto-reply/service";
 import { WipReminders } from "./modules/claude-activity/reminders";
 import { ClaudeActivityService } from "./modules/claude-activity/service";
+import { AwayCodeAnswerTrigger } from "./modules/code-answers/away-trigger";
 import { CodeAnswerService } from "./modules/code-answers/service";
 import { ExtractionQueue } from "./modules/commitments/extraction-queue";
 import { FollowupService } from "./modules/commitments/followups";
@@ -368,6 +369,16 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   outgoing.register(approvals, dispatcher);
   const urgentReplies = new UrgentReplies({ db, clock, audit, outgoing });
   registerOutgoingJobs({ handlers, outgoing });
+  const codeAnswers = new CodeAnswerService({
+    db,
+    clock,
+    events,
+    audit,
+    queue,
+    settings,
+    securityFlags,
+    outgoing,
+  });
   const autoReply = new AutoReplyService({
     db,
     clock,
@@ -378,6 +389,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     people,
     securityFlags,
     outgoing,
+    codeAnswers,
   });
   registerAutoReplyJobs({ handlers, autoReply });
   dispatcher.subscribe("message.urgent_detected", "autoreply.acknowledgement", (event, tx) =>
@@ -385,6 +397,17 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   );
   dispatcher.subscribe("followup.draft_created", "autoreply.followup", (event, tx) =>
     autoReply.onFollowupDraftCreated(event, tx),
+  );
+  // C6: while away, a priority person's question naming exactly one repository queues an answer.
+  const awayCodeAnswers = new AwayCodeAnswerTrigger({
+    clock,
+    settings,
+    autoReply,
+    people,
+    codeAnswers,
+  });
+  dispatcher.subscribe("message.received", "code_answer.away", (event, tx) =>
+    awayCodeAnswers.onMessageReceived(event, tx),
   );
   const profiles = new ProfileRecommendations({
     db,
@@ -424,16 +447,6 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   dispatcher.subscribe("followup.sent", "commitments.followup_sent", (event, tx) =>
     followupService.onFollowupSent(event, tx),
   );
-  const codeAnswers = new CodeAnswerService({
-    db,
-    clock,
-    events,
-    audit,
-    queue,
-    settings,
-    securityFlags,
-    outgoing,
-  });
   const slack = registerSlackJobs({
     db,
     clock,
@@ -595,7 +608,23 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   });
   engineeringSteps.register(approvals, dispatcher);
   registerInvestigateJob({ db, settings, orchestrator, service: engineering, handlers });
-  registerCodeAnswerJob({ db, settings, orchestrator, service: codeAnswers, handlers });
+  registerCodeAnswerJob({
+    db,
+    settings,
+    orchestrator,
+    service: codeAnswers,
+    handlers,
+    // C7: an away run that ended with something to decide goes to the auto-reply policy, queued in
+    // the transaction that settles the row. A failed away run records nothing.
+    onFinished: (tx, row) => {
+      if (
+        row.trigger === "away" &&
+        (row.status === "ready" || row.status === "not_answerable" || row.status === "unverified")
+      ) {
+        autoReply.enqueue(tx, { kind: "code_answer", codeAnswerId: row.id });
+      }
+    },
+  });
   registerStepJob({ db, settings, orchestrator, steps: engineeringSteps, handlers });
   registerPickupJobs({ service: engineering, lock: engineeringLock, scheduler, handlers });
 

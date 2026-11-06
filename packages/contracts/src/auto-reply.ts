@@ -16,7 +16,9 @@ export type AutoReplyKind =
  * not build the reply; `recipient_mismatch`, a DM reply whose recipient is not the DM partner;
  * `not_addressed`, `before_session`, `already_answered`, `injection_suspected`), `policy_disabled`
  * (the user tightened the `slack.auto_reply` permission, so the policy gate is shut) and `stale`
- * (too long between the decision and the send).
+ * (too long between the decision and the send). Phase 10b (C7) adds the code-answer reasons:
+ * `code_answer_review` (held for the user's approval because `codeAnswer.away.autoSend` is off),
+ * `content_code_block`, `not_answerable` and `unverified`.
  */
 export const holdReasonSchema = z.enum([
   "away_off",
@@ -40,6 +42,10 @@ export const holdReasonSchema = z.enum([
   "already_answered",
   "injection_suspected",
   "stale",
+  "code_answer_review",
+  "content_code_block",
+  "not_answerable",
+  "unverified",
 ]);
 export type HoldReason = z.infer<typeof holdReasonSchema>;
 

@@ -466,6 +466,7 @@ export class CodeAnswerService {
             reason: row.suspectedInjection.reason,
           }
         : null,
+      autoReplyId: row.autoReplyId,
       outgoingId: row.outgoingId,
       outgoingStatus,
       createdAt: row.createdAt,
@@ -607,6 +608,34 @@ export class CodeAnswerService {
       },
       { behavior: "immediate" },
     );
+  }
+
+  /**
+   * C7: links the away decision's `auto_replies` row, in the caller's (evaluate) transaction. With
+   * `status`, a `ready` row becomes `held` (the user decides; `outgoingId` when the answer became
+   * a pending send approval) or `sent` (policy auto-send). Without it the status is kept
+   * (`not_answerable`, `unverified`). A row decided once is never decided again.
+   */
+  markDecided(
+    tx: DbOrTx,
+    id: string,
+    d: { autoReplyId: string; status?: "held" | "sent"; outgoingId?: string },
+  ): void {
+    const row = this.row(tx, id);
+    if (!row) throw new CodeAnswerError("not_found");
+    if (row.autoReplyId !== null || (d.status !== undefined && row.status !== "ready")) {
+      throw new CodeAnswerError("invalid_state");
+    }
+    tx.update(codeAnswers)
+      .set({
+        autoReplyId: d.autoReplyId,
+        ...(d.status !== undefined ? { status: d.status } : {}),
+        ...(d.outgoingId !== undefined ? { outgoingId: d.outgoingId } : {}),
+        updatedAt: this.now(),
+      })
+      .where(eq(codeAnswers.id, id))
+      .run();
+    if (d.status !== undefined) this.publishStatus(tx, row, d.status);
   }
 
   get(id: string): CodeAnswerView | null {

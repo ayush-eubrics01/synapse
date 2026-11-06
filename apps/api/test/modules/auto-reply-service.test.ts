@@ -940,7 +940,8 @@ describe("evaluate: away off and failures", () => {
       settings: c.settings,
       people: c.people,
       securityFlags: c.securityFlags,
-      outgoing: { requestAutoSend },
+      outgoing: { requestAutoSend, requestSend: (tx, i) => c.outgoing.requestSend(tx, i) },
+      codeAnswers: c.codeAnswers,
     });
   }
 

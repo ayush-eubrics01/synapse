@@ -108,3 +108,24 @@ export function contentCheck(text: string): ContentIssue | null {
   if (PROMISE_PATTERNS.some((p) => p.test(text))) return "content_promise";
   return null;
 }
+
+// Phase 10b C7: any triple backtick (a fence anywhere on a line, broader than "a line starting with
+// three backticks" on purpose: Slack renders an inline ``` run as a block too).
+const FENCE = /```/;
+const INDENTED_LINE = /^(?: {4}|\t)/;
+const MAX_INDENTED_RUN = 3;
+
+/**
+ * C7: a code answer is held when it contains a fenced code block or more than 3 consecutive lines
+ * that start with 4 spaces or a tab. Separate from `contentCheck`, so other texts (and inspection
+ * facts) are unaffected. Pure.
+ */
+export function codeBlockCheck(text: string): "content_code_block" | null {
+  if (FENCE.test(text)) return "content_code_block";
+  let run = 0;
+  for (const line of text.split(/\r?\n/)) {
+    run = INDENTED_LINE.test(line) ? run + 1 : 0;
+    if (run > MAX_INDENTED_RUN) return "content_code_block";
+  }
+  return null;
+}

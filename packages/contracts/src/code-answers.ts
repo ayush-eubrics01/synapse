@@ -77,6 +77,8 @@ export interface CodeAnswerView {
     severity: z.infer<typeof flagSeveritySchema>;
     reason: string;
   } | null;
+  /** Set once the away decision (C7) recorded its `auto_replies` row. */
+  autoReplyId: string | null;
   outgoingId: string | null;
   outgoingStatus: string | null;
   createdAt: string;

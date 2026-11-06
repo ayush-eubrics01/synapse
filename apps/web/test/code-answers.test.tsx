@@ -34,6 +34,7 @@ const view = (o: Partial<CodeAnswerView> = {}): CodeAnswerView => ({
   failure: null,
   suspectedInjection: null,
   outgoingId: null,
+  autoReplyId: null,
   outgoingStatus: null,
   createdAt: "2026-11-06T10:00:00.000Z",
   updatedAt: "2026-11-06T10:00:00.000Z",
