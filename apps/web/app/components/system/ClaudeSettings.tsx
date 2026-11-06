@@ -7,6 +7,9 @@ import { Switch } from "../ui/Switch";
 export const AUTO_SEND_RISK =
   "Residual risk: with auto-send on, a repository secret that does not match a secret pattern could be sent to a priority person.";
 
+export const SANDBOX_HINT =
+  "Develop runs execute the repository's tests with no network and writes only inside the repository. Turning this off disables develop runs; tests never run outside the sandbox.";
+
 const TOGGLES: {
   key: ClaudeSettingsKey & keyof ClaudeSettingsDto;
   label: string;
@@ -15,6 +18,7 @@ const TOGGLES: {
   { key: "claudeActivity.enabled", label: "Watch Claude Code sessions" },
   { key: "claudeActivity.yieldWhenActive", label: "Pause background analysis while I work" },
   { key: "claudeActivity.yieldEngineering", label: "Also pause engineering tasks" },
+  { key: "engineering.sandbox.enabled", label: "Run tests in a sandbox", hint: SANDBOX_HINT },
   { key: "codeAnswer.away.enabled", label: "Answer code questions while away" },
   {
     key: "codeAnswer.away.autoSend",

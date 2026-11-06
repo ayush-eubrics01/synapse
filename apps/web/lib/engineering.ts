@@ -8,6 +8,11 @@ import type {
   RepositoryView,
 } from "@synapse/contracts";
 import {
+  type ApprovalTextEdit,
+  type ApprovalTextField,
+  isValidApprovalText,
+} from "@synapse/contracts";
+import {
   isSafeTestCommand,
   type TestRun,
   taskBranchName,
@@ -111,7 +116,16 @@ const REASONS: Record<string, string> = {
   repo_has_active_task:
     "This repository has an engineering task that is not finished. Cancel or finish it first.",
   checks_failing:
-    "The pull request's checks are failing, so it was not merged. Fix the checks, then cancel the task or merge the PR on GitHub.",
+    "The pull request's checks are failing, so it was not merged. Fix the checks, then use Check again, or cancel the task.",
+  sandbox_unavailable:
+    "The test sandbox could not start. Install bubblewrap and socat (sudo apt install bubblewrap socat), then restart Synapse.",
+  sandbox_path_too_long:
+    "The sandbox temp path is too long. Set XDG_CACHE_HOME to a shorter path and restart Synapse.",
+  repo_in_masked_path:
+    "This repository is inside a folder the test sandbox hides (for example /tmp or ~/.config), so develop runs are refused.",
+  sandbox_disabled: "Develop runs are disabled because the test sandbox is turned off.",
+  not_pending: "This approval was already decided or replaced.",
+  invalid_text: "The text is empty, too long or has characters that can't be used.",
   merged_after_cancel:
     "The pull request was merged while the task was being cancelled, so the task is completed.",
   cleanup_incomplete:
@@ -582,4 +596,63 @@ export async function friendly<T>(fn: () => Promise<T>): Promise<T> {
   } catch (e) {
     throw new Error(engineeringErrorText(e));
   }
+}
+
+export const SANDBOX_ON_TEXT =
+  "Tests run in a sandbox: no network, writes only inside the repository";
+export const SANDBOX_OFF_TEXT = "Develop runs are disabled: the test sandbox is turned off";
+
+export type TaskSource = { kind: "jira"; key: string } | { kind: "slack"; messageId: string };
+
+/** The repositories to offer when a proposal is ambiguous, by name. */
+export function repositoryChoices(repos: RepositoryView[]): Array<{ id: string; name: string }> {
+  return repos
+    .map((r) => ({ id: r.id, name: r.name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Failing checks at the merge step can be re-checked by asking for a new merge approval. */
+export function canCheckAgain(
+  t: Pick<EngineeringTaskView, "status" | "failure" | "currentStep">,
+): boolean {
+  return (
+    t.status === "needs_attention" && t.failure === "checks_failing" && t.currentStep === "merge_pr"
+  );
+}
+
+export type ApprovalTextValues = Partial<Record<ApprovalTextField, string>>;
+
+/** The editable text of a commit or push approval; null for the kinds with none. */
+export function approvalTextValues(p: EngineeringApproval): ApprovalTextValues | null {
+  if (p.kind === "commit") return { commitMessage: p.message };
+  if (p.kind === "push_pr") return { prTitle: p.title, prBody: p.body };
+  return null;
+}
+
+/** Only the fields whose text differs from the original. */
+export function changedText(
+  original: ApprovalTextValues,
+  current: ApprovalTextValues,
+): ApprovalTextEdit {
+  const out: ApprovalTextEdit = {};
+  for (const k of Object.keys(current) as ApprovalTextField[]) {
+    const v = current[k];
+    if (v !== undefined && v !== original[k]) out[k] = v;
+  }
+  return out;
+}
+
+const TEXT_PROBLEMS: Record<ApprovalTextField, string> = {
+  commitMessage: "A commit message needs 1 to 5000 characters and a first line of at most 200.",
+  prTitle: "A PR title needs 1 to 200 characters on one line.",
+  prBody: "A PR body can have at most 20000 characters.",
+};
+
+/** The first failing field's sentence. It only gates Save; the API is the authority. */
+export function approvalTextProblem(v: ApprovalTextValues): string | null {
+  for (const k of ["commitMessage", "prTitle", "prBody"] as const) {
+    const value = v[k];
+    if (value !== undefined && !isValidApprovalText(k, value)) return TEXT_PROBLEMS[k];
+  }
+  return null;
 }

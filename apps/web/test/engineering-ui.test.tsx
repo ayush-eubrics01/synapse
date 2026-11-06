@@ -12,18 +12,20 @@ import {
 } from "../app/components/engineering/EngineeringSection";
 import { NewTaskForm } from "../app/components/engineering/NewTaskForm";
 import { PlanApproval } from "../app/components/engineering/PlanApproval";
+import { RepositoryPicker } from "../app/components/engineering/RepositoryPicker";
 import { TaskTimeline } from "../app/components/engineering/TaskTimeline";
 import { JiraSection } from "../app/components/jira/JiraSection";
 import { Sidebar } from "../app/components/shell/Sidebar";
 import { Running } from "../app/components/system/Running";
 import {
+  approveWithEdits,
   EngineeringApprovalCard,
   EngineeringAttentionCard,
   EngineeringPlanCard,
   RejectControl,
 } from "../app/components/triage/EngineeringCards";
 import { createDeferred } from "../lib/deferred";
-import { lockText } from "../lib/engineering";
+import { lockText, SANDBOX_OFF_TEXT, SANDBOX_ON_TEXT } from "../lib/engineering";
 import { sidebarItems } from "../lib/nav";
 import { buildNeedsYou, type NeedsYouInput } from "../lib/needs-you";
 import { createNeedsYouActions, type NeedsYouApi } from "../lib/needs-you-actions";
@@ -36,7 +38,11 @@ const NOW = new Date("2026-11-06T10:05:00.000Z");
 // ---------------------------------------------------------------- plan approval
 
 const renderPlan = (r = repo(), d = detail()) =>
-  text(renderToString(<PlanApproval task={d} repo={r} onApprove={async () => null} />));
+  text(
+    renderToString(
+      <PlanApproval task={d} repo={r} sandboxEnabled={null} onApprove={async () => null} />,
+    ),
+  );
 
 test("plan approval: protected environments are disabled and labelled, others are selectable", () => {
   const html = renderPlan();
@@ -128,6 +134,7 @@ const card = (a: ReturnType<typeof approval>, d = detail()) =>
         detail={d}
         now={NOW}
         onDecide={noop}
+        onSaveText={async () => null}
       />,
     ),
   );
@@ -268,6 +275,7 @@ test("the needs attention card shows the plain-English reason", () => {
         now={NOW}
         onCancel={noop}
         onOpen={noop}
+        onCheckAgain={noop}
       />,
     ),
   );
@@ -708,4 +716,105 @@ test("a queued task shows why its pickup is waiting to retry (I1)", () => {
   expect(html).toContain("Waiting to retry");
   expect(html).toMatch(/Fetching from the remote failed/);
   expect(html).not.toContain("fetch_failed");
+});
+
+// ---------------------------------------------------------------- F2/F3/F1.6 web
+
+test("the commit card has an editable message and a Save button", () => {
+  const html = card(
+    approval("engineering.commit", {
+      diffHash: "h",
+      files: [],
+      filesTotal: 0,
+      message: "Fix add",
+      testsPassed: true,
+    }),
+  );
+  expect(html).toMatch(/<textarea[^>]*aria-label="Commit message"[^>]*>Fix add<\/textarea>/);
+  expect(html).toContain("Save");
+});
+
+test("the push card has an editable title and body", () => {
+  const html = card(
+    approval("engineering.push_pr", {
+      parentBranch: "staging",
+      commits: [],
+      commitsTotal: 0,
+      mergeSha: "1234567abcdef",
+      prTitle: "Fix add",
+      prBody: "Body text",
+      autoDeploys: false,
+      environmentName: null,
+    }),
+  );
+  expect(html).toMatch(/<input[^>]*aria-label="PR title"[^>]*value="Fix add"/);
+  expect(html).toMatch(/<textarea[^>]*aria-label="PR body"[^>]*>Body text<\/textarea>/);
+});
+
+const attention = (failure: string, currentStep: string) =>
+  text(
+    renderToString(
+      <EngineeringAttentionCard
+        task={task({ status: "needs_attention", failure, currentStep } as never)}
+        now={NOW}
+        onCancel={noop}
+        onOpen={noop}
+        onCheckAgain={noop}
+      />,
+    ),
+  );
+
+test("Check again shows for failing checks at the merge step only", () => {
+  expect(attention("checks_failing", "merge_pr")).toContain("Check again");
+  expect(attention("dirty_tree", "merge_pr")).not.toContain("Check again");
+});
+
+test("the plan card states whether tests run in the sandbox", () => {
+  const plan = (sandboxEnabled: boolean | null) =>
+    text(
+      renderToString(
+        <PlanApproval
+          task={detail()}
+          repo={repo()}
+          sandboxEnabled={sandboxEnabled}
+          onApprove={async () => null}
+        />,
+      ),
+    );
+  expect(plan(true)).toContain(SANDBOX_ON_TEXT);
+  expect(plan(false)).toContain(SANDBOX_OFF_TEXT);
+  expect(plan(null)).not.toContain("sandbox");
+});
+
+test("the repository picker lists the repositories by name", () => {
+  const html = text(
+    renderToString(
+      <RepositoryPicker
+        source={{ kind: "jira", key: "SB-1" }}
+        repos={[repo({ id: "r1", name: "demo" }), repo({ id: "r2", name: "api" })]}
+        onPick={noop}
+        onCancel={noop}
+      />,
+    ),
+  );
+  expect(html).toContain('aria-label="Choose a repository"');
+  expect(html).toMatch(/<option[^>]*>api<\/option><option[^>]*>demo<\/option>/);
+  expect(html).toContain("Create task");
+  expect(html).toContain("Cancel");
+});
+
+test("approving with unsaved edits saves first and stops on an error sentence", async () => {
+  const decided: string[] = [];
+  const failed = await approveWithEdits(
+    async () => "This approval was already decided or replaced.",
+    () => decided.push("x"),
+  );
+  expect(failed).toBe("This approval was already decided or replaced.");
+  expect(decided).toEqual([]);
+  const ok = await approveWithEdits(
+    async () => null,
+    () => decided.push("x"),
+  );
+  expect(ok).toBeNull();
+  expect(decided).toEqual(["x"]);
 });

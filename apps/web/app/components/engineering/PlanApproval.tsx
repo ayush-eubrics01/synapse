@@ -6,6 +6,8 @@ import {
   defaultPlanForm,
   deployEnvironment,
   parentBranchError,
+  SANDBOX_OFF_TEXT,
+  SANDBOX_ON_TEXT,
   taskBranchOf,
   testCommandError,
 } from "../../../lib/engineering";
@@ -26,10 +28,13 @@ export interface PlanApprovalValues {
 export function PlanApproval({
   task,
   repo,
+  sandboxEnabled,
   onApprove,
 }: {
   task: EngineeringTaskDetail;
   repo: RepositoryView | null;
+  /** The `engineering.sandbox.enabled` setting, or null while unknown. */
+  sandboxEnabled: boolean | null;
   /** Resolves to an error text, or null on success. */
   onApprove: (v: PlanApprovalValues) => Promise<string | null>;
 }) {
@@ -150,6 +155,10 @@ export function PlanApproval({
         <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
         <span>Remember as tracked branch</span>
       </label>
+
+      {sandboxEnabled !== null && (
+        <p className="syn-eng-note">{sandboxEnabled ? SANDBOX_ON_TEXT : SANDBOX_OFF_TEXT}</p>
+      )}
 
       {deploy && (
         <p className="syn-eng-deploy" role="alert">

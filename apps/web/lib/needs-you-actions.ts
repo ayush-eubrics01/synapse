@@ -1,3 +1,4 @@
+import type { ApprovalTextEdit } from "@synapse/contracts";
 import type {
   CommitmentEditsDto,
   FlagReviewStatus,
@@ -8,7 +9,7 @@ import * as apiModule from "./api";
 import { brainFactKey } from "./brain";
 import { decideThenRefresh } from "./decide";
 import type { Deferred } from "./deferred";
-import { friendly } from "./engineering";
+import { engineeringErrorText, friendly, type TaskSource } from "./engineering";
 import { flagKey } from "./needs-you";
 import type { Decision } from "./people-decision";
 
@@ -45,6 +46,15 @@ export interface NeedsYouHandlers {
   /** Engineering (Phase 10): proposals from a Jira issue or an inbox message, and cancelling a task. */
   createTaskFromJira: (key: string) => void;
   createTaskFromSlack: (messageId: string) => void;
+  /** Creates the proposal in the repository the user picked after an ambiguous refusal. */
+  createTaskInRepository: (source: TaskSource, repositoryId: string) => void;
+  retryEngineeringMerge: (taskId: string) => void;
+  /** Saves edited commit or PR text; resolves to an error sentence, or null on success. */
+  saveEngineeringApprovalText: (
+    taskId: string,
+    approvalId: string,
+    edit: ApprovalTextEdit,
+  ) => Promise<string | null>;
   cancelEngineeringTask: (taskId: string) => void;
   seeAllEngineering: (taskId?: string) => void;
 }
@@ -76,6 +86,8 @@ export type NeedsYouApi = Pick<
   | "createTaskFromJira"
   | "createTaskFromSlack"
   | "cancelEngineeringTask"
+  | "editEngineeringApproval"
+  | "retryEngineeringMerge"
 >;
 
 export const realNeedsYouApi: NeedsYouApi = apiModule;
@@ -97,6 +109,8 @@ export const TOASTS = {
   jiraEnabled: "Jira tracking on · first sync queued",
   taskProposed: "Task proposed · review it in Engineering. Nothing runs until you approve.",
   taskCancelled: "Task cancelled",
+  mergeRequested: "New merge approval created",
+  textSaved: "Saved",
   factAccepted: "Fact approved",
   factRejected: "Fact rejected",
   draftDiscarded: "Draft discarded",
@@ -131,6 +145,8 @@ export interface NeedsYouActionsDeps {
   seeAllProjects: () => void;
   registerRepository: () => void;
   seeAllEngineering?: (taskId?: string) => void;
+  /** An ambiguous proposal: the UI asks the user which repository to use. */
+  pickRepository?: (s: TaskSource) => void;
   /** A person whose evaluation was queued: added to the session's queued set People shares. */
   onEvaluationQueued?: (slackUserId: string) => void;
 }
@@ -199,6 +215,25 @@ export function createNeedsYouActions(d: NeedsYouActionsDeps): NeedsYouHandlers 
     if (out.actionError === null) toast.show(decision === "approve" ? "Approved" : "Rejected");
   };
 
+  // A proposal without a repository may be ambiguous: that opens the picker, it is not an error.
+  const propose = async (source: TaskSource, repositoryId?: string) => {
+    setActionError(null);
+    try {
+      const rest = repositoryId ? [repositoryId] : [];
+      if (source.kind === "jira") await api.createTaskFromJira(source.key, ...rest);
+      else await api.createTaskFromSlack(source.messageId, ...rest);
+      toast.show(TOASTS.taskProposed);
+    } catch (e) {
+      const code = (e as { code?: unknown } | null)?.code;
+      if (!repositoryId && code === "ambiguous_repository" && d.pickRepository) {
+        d.pickRepository(source);
+        return;
+      }
+      setActionError(engineeringErrorText(e));
+    }
+    await refresh();
+  };
+
   return {
     urgentStatus: (id, s) => void now(() => api.setUrgentStatus(id, s)),
     urgentReply: (id, text) =>
@@ -244,10 +279,21 @@ export function createNeedsYouActions(d: NeedsYouActionsDeps): NeedsYouHandlers 
     seeAllProjects: d.seeAllProjects,
     registerRepository: d.registerRepository,
     // Immediate: a proposal only stores a draft; cancelling a task is the user's explicit call.
-    createTaskFromJira: (key) =>
-      void now(() => friendly(() => api.createTaskFromJira(key)), TOASTS.taskProposed),
-    createTaskFromSlack: (id) =>
-      void now(() => friendly(() => api.createTaskFromSlack(id)), TOASTS.taskProposed),
+    createTaskFromJira: (key) => void propose({ kind: "jira", key }),
+    createTaskFromSlack: (messageId) => void propose({ kind: "slack", messageId }),
+    createTaskInRepository: (source, repositoryId) => void propose(source, repositoryId),
+    retryEngineeringMerge: (id) =>
+      void now(() => friendly(() => api.retryEngineeringMerge(id)), TOASTS.mergeRequested),
+    saveEngineeringApprovalText: async (taskId, approvalId, edit) => {
+      try {
+        await api.editEngineeringApproval(taskId, approvalId, edit);
+      } catch (e) {
+        return engineeringErrorText(e);
+      }
+      toast.show(TOASTS.textSaved);
+      await refresh();
+      return null;
+    },
     cancelEngineeringTask: (id) =>
       void now(() => friendly(() => api.cancelEngineeringTask(id)), TOASTS.taskCancelled),
     seeAllEngineering: (taskId) => d.seeAllEngineering?.(taskId),

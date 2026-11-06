@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { TOAST_MS } from "../app/components/ui/Toasts";
+import { ApiError } from "../lib/api";
 import { createDeferred } from "../lib/deferred";
 import {
   createNeedsYouActions,
@@ -36,7 +37,11 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 
 const DELAY = 5000;
 
-function setup(fail: Partial<Record<keyof NeedsYouApi, Error>> = {}, evalQueued = true) {
+function setup(
+  fail: Partial<Record<keyof NeedsYouApi, Error>> = {},
+  evalQueued = true,
+  pickRepository?: (s: unknown) => void,
+) {
   const calls: string[] = [];
   const api = new Proxy({} as NeedsYouApi, {
     get:
@@ -80,6 +85,7 @@ function setup(fail: Partial<Record<keyof NeedsYouApi, Error>> = {}, evalQueued 
     seeAllProjects: () => {},
     registerRepository: () => {},
     onEvaluationQueued: (id) => evaluationsQueued.push(id),
+    pickRepository: pickRepository as never,
   });
   const hidden = () => new Set([...deferred.pending(), ...committing]);
   return {
@@ -346,4 +352,54 @@ test("a failed fact accept surfaces on the immediate error channel", async () =>
   s.handlers.acceptBrainFact("f1");
   await settle();
   expect(s.errors).toContain("POST /api/brain/facts/f1/accept failed with 409: invalid_state");
+});
+
+test("an ambiguous repository opens the picker and sets no action error", async () => {
+  const picked: unknown[] = [];
+  const s = setup(
+    { createTaskFromJira: new ApiError("x", 400, "ambiguous_repository") },
+    true,
+    (src) => picked.push(src),
+  );
+  s.handlers.createTaskFromJira("SB-1");
+  await settle();
+  expect(picked).toEqual([{ kind: "jira", key: "SB-1" }]);
+  expect(s.errors.filter((e) => e !== null)).toEqual([]);
+});
+
+test("another refusal from a proposal is shown as its plain-English reason", async () => {
+  const s = setup({ createTaskFromSlack: new ApiError("x", 400, "no_content") });
+  s.handlers.createTaskFromSlack("m1");
+  await settle();
+  expect(s.errors.at(-1)).toBe("There is no text to make a task from.");
+});
+
+test("createTaskInRepository passes the repository id and toasts", async () => {
+  const s = setup();
+  s.handlers.createTaskInRepository({ kind: "slack", messageId: "m1" }, "r1");
+  await settle();
+  expect(s.calls).toContain('createTaskFromSlack("m1","r1")');
+  expect(s.toasts.map((t) => t.text)).toContain(TOASTS.taskProposed);
+});
+
+test("retryEngineeringMerge shows the checks_failing reason when checks still fail", async () => {
+  const s = setup({ retryEngineeringMerge: new ApiError("x", 409, "checks_failing") });
+  s.handlers.retryEngineeringMerge("t1");
+  await settle();
+  expect(s.errors.at(-1)).toContain("use Check again");
+  const ok = setup();
+  ok.handlers.retryEngineeringMerge("t1");
+  await settle();
+  expect(ok.toasts.map((t) => t.text)).toContain(TOASTS.mergeRequested);
+});
+
+test("saveEngineeringApprovalText resolves to an error sentence, or null on success", async () => {
+  const bad = setup({ editEngineeringApproval: new ApiError("x", 409, "not_pending") });
+  expect(await bad.handlers.saveEngineeringApprovalText("t1", "a1", { prTitle: "T" })).toBe(
+    "This approval was already decided or replaced.",
+  );
+  const ok = setup();
+  expect(await ok.handlers.saveEngineeringApprovalText("t1", "a1", { prTitle: "T" })).toBeNull();
+  expect(ok.calls).toContain('editEngineeringApproval("t1","a1",{"prTitle":"T"})');
+  expect(ok.toasts.map((t) => t.text)).toContain(TOASTS.textSaved);
 });

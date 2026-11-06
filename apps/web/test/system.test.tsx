@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DashboardOverview, Job } from "@synapse/contracts";
 import { renderToString } from "react-dom/server";
+import { ClaudeSettings, SANDBOX_HINT } from "../app/components/system/ClaudeSettings";
 import { QuotaBars } from "../app/components/system/QuotaBars";
 import { Running } from "../app/components/system/Running";
 import { SystemDetails } from "../app/components/system/SystemDetails";
@@ -221,4 +222,19 @@ test("Running with no pipeline yet says it is waiting for the API instead of an 
   const html = renderToString(<Running pipeline={[]} status={null} runs={[]} now={NOW} />);
   expect(html).not.toContain('class="syn-stages"');
   expect(html).toContain("Waiting for the API.");
+});
+
+test("the sandbox setting renders as a switch with its hint", () => {
+  const values = {
+    "engineering.sandbox.enabled": true,
+    "claudeActivity.enabled": true,
+    "claudeActivity.yieldWhenActive": true,
+    "claudeActivity.yieldEngineering": false,
+    "codeAnswer.away.enabled": false,
+    "codeAnswer.away.autoSend": false,
+    "codeAnswer.model": "sonnet",
+  } as never;
+  const html = renderToString(<ClaudeSettings values={values} onChange={() => {}} />);
+  expect(html).toContain("Run tests in a sandbox");
+  expect(html).toContain(SANDBOX_HINT.replace(/'/g, "&#x27;"));
 });

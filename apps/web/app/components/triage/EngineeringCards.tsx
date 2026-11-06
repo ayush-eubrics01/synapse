@@ -1,10 +1,20 @@
 "use client";
 
-import type { ApprovalView, EngineeringTaskDetail, EngineeringTaskView } from "@synapse/contracts";
+import type {
+  ApprovalTextEdit,
+  ApprovalView,
+  EngineeringTaskDetail,
+  EngineeringTaskView,
+} from "@synapse/contracts";
 import { useState } from "react";
 import {
+  type ApprovalTextValues,
+  approvalTextProblem,
+  approvalTextValues,
   CANCEL_CONFIRM_TEXT,
   type CommitRef,
+  canCheckAgain,
+  changedText,
   clockTime,
   developOutput,
   type EngineeringApproval,
@@ -88,7 +98,17 @@ function Commits({ commits, total }: { commits: CommitRef[]; total: number }) {
   );
 }
 
-function Body({ p, detail }: { p: EngineeringApproval; detail: EngineeringTaskDetail | null }) {
+function Body({
+  p,
+  detail,
+  text,
+  onText,
+}: {
+  p: EngineeringApproval;
+  detail: EngineeringTaskDetail | null;
+  text: ApprovalTextValues;
+  onText: (v: ApprovalTextValues) => void;
+}) {
   switch (p.kind) {
     case "commit": {
       const dev = developOutput(detail);
@@ -102,7 +122,13 @@ function Body({ p, detail }: { p: EngineeringApproval; detail: EngineeringTaskDe
               {`${p.filesTotal} ${p.filesTotal === 1 ? "file" : "files"} changed`}
             </span>
           </div>
-          <pre className="syn-eng-message">{p.message}</pre>
+          <textarea
+            className="syn-eng-edit"
+            aria-label="Commit message"
+            rows={6}
+            value={text.commitMessage ?? ""}
+            onChange={(e) => onText({ ...text, commitMessage: e.target.value })}
+          />
           {dev && dev.testOutputTail !== "" && (
             <details className="syn-eng-tail">
               <summary>Test output</summary>
@@ -144,8 +170,19 @@ function Body({ p, detail }: { p: EngineeringApproval; detail: EngineeringTaskDe
           <div className="syn-eng-label">Commits</div>
           <Commits commits={p.commits} total={p.commitsTotal} />
           <div className="syn-eng-label">Pull request</div>
-          <div className="syn-eng-pr-title">{p.title}</div>
-          {p.body !== "" && <pre className="syn-eng-message">{p.body}</pre>}
+          <input
+            className="syn-eng-edit"
+            aria-label="PR title"
+            value={text.prTitle ?? ""}
+            onChange={(e) => onText({ ...text, prTitle: e.target.value })}
+          />
+          <textarea
+            className="syn-eng-edit"
+            aria-label="PR body"
+            rows={6}
+            value={text.prBody ?? ""}
+            onChange={(e) => onText({ ...text, prBody: e.target.value })}
+          />
         </>
       );
     case "merge_pr": {
@@ -186,6 +223,20 @@ function Body({ p, detail }: { p: EngineeringApproval; detail: EngineeringTaskDe
   }
 }
 
+/**
+ * Saves unsaved text edits, then decides. A save that fails with an error sentence stops the
+ * decision, so the user never approves text other than what is on screen.
+ */
+export async function approveWithEdits(
+  save: () => Promise<string | null>,
+  decide: () => void,
+): Promise<string | null> {
+  const error = await save();
+  if (error !== null) return error;
+  decide();
+  return null;
+}
+
 /** One card per engineering approval kind (E20). Approve and reject are immediate API calls. */
 export function EngineeringApprovalCard({
   approval: a,
@@ -193,15 +244,39 @@ export function EngineeringApprovalCard({
   detail,
   now,
   onDecide,
+  onSaveText,
 }: {
   approval: ApprovalView;
   taskTitle: string | null;
   detail: EngineeringTaskDetail | null;
   now: Date | null;
   onDecide: (id: string, decision: "approve" | "reject") => void;
+  /** Resolves to an error sentence, or null once the text is saved. */
+  onSaveText: (
+    taskId: string,
+    approvalId: string,
+    edit: ApprovalTextEdit,
+  ) => Promise<string | null>;
 }) {
   const p = engineeringApproval(a);
+  const original = p ? approvalTextValues(p) : null;
+  const [draft, setDraft] = useState<ApprovalTextValues | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   if (!p) return null;
+  const text = draft ?? original ?? {};
+  const edit = original ? changedText(original, text) : {};
+  const dirty = Object.keys(edit).length > 0;
+  const problem = original ? approvalTextProblem(text) : null;
+  const save = async (): Promise<string | null> => {
+    if (!dirty) return null;
+    setBusy(true);
+    const err = await onSaveText(p.taskId, a.id, edit);
+    setBusy(false);
+    setError(err);
+    if (err === null) setDraft(null);
+    return err;
+  };
   return (
     <CardFrame
       tag={TAGS[p.kind]}
@@ -209,9 +284,28 @@ export function EngineeringApprovalCard({
       meta={metaLine(a.createdAt, now, "engineering")}
       title={taskTitle ?? "Engineering task"}
     >
-      <Body p={p} detail={detail} />
+      <Body p={p} detail={detail} text={text} onText={setDraft} />
+      {original && problem !== null && <p className="syn-eng-reason">{problem}</p>}
+      {error !== null && (
+        <p className="syn-eng-reason" role="alert">
+          {error}
+        </p>
+      )}
       <Actions>
-        <Button variant="primary" onClick={() => onDecide(a.id, "approve")}>
+        {original && (
+          <Button
+            variant="secondary"
+            disabled={!dirty || problem !== null || busy}
+            onClick={() => void save()}
+          >
+            Save
+          </Button>
+        )}
+        <Button
+          variant="primary"
+          disabled={busy || (dirty && problem !== null)}
+          onClick={() => void approveWithEdits(save, () => onDecide(a.id, "approve"))}
+        >
           {APPROVE[p.kind]}
         </Button>
         <RejectControl onReject={() => onDecide(a.id, "reject")} />
@@ -262,11 +356,13 @@ export function EngineeringAttentionCard({
   now,
   onCancel,
   onOpen,
+  onCheckAgain,
 }: {
   task: EngineeringTaskView;
   now: Date | null;
   onCancel: (taskId: string) => void;
   onOpen: (taskId: string) => void;
+  onCheckAgain: (taskId: string) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
   return (
@@ -278,6 +374,11 @@ export function EngineeringAttentionCard({
     >
       <Explainer>{reasonLabel(task.failure) || "The task stopped and needs a decision."}</Explainer>
       <Actions>
+        {canCheckAgain(task) && (
+          <Button variant="primary" onClick={() => onCheckAgain(task.id)}>
+            Check again
+          </Button>
+        )}
         <Button variant="secondary" onClick={() => onOpen(task.id)}>
           Open task
         </Button>

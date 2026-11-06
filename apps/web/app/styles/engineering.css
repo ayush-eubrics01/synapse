@@ -250,6 +250,23 @@
   overflow-wrap: anywhere;
 }
 
+.syn-eng-edit {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--subtle2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+
+.syn-eng-edit:focus {
+  outline: 2px solid var(--blueLine);
+  outline-offset: 1px;
+}
+
 .syn-eng-pr-title {
   font-size: 14px;
   font-weight: 600;
@@ -375,4 +392,11 @@
   background: var(--amberBg);
   color: var(--amberFg);
   font-size: 13px;
+}
+
+.syn-eng-picker {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
 }

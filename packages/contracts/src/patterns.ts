@@ -141,5 +141,10 @@ export const ENGINEERING_REASON_CODES = [
   "checks_failing",
   "merged_after_cancel",
   "cleanup_incomplete",
+  // Sandbox (F1).
+  "sandbox_unavailable",
+  "sandbox_disabled",
+  "repo_in_masked_path",
+  "sandbox_path_too_long",
 ] as const;
 export type EngineeringReasonCode = (typeof ENGINEERING_REASON_CODES)[number];

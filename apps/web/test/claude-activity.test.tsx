@@ -159,6 +159,7 @@ const settings: ClaudeSettingsDto = {
   "codeAnswer.away.enabled": true,
   "codeAnswer.away.autoSend": false,
   "codeAnswer.away.maxRunsPerDay": 10,
+  "engineering.sandbox.enabled": true,
 };
 
 test("settings render the auto-send switch with the residual-risk sentence", () => {

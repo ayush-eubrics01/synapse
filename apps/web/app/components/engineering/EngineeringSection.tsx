@@ -168,12 +168,14 @@ function TaskRow({
   repo,
   now,
   handlers,
+  sandboxEnabled,
 }: {
   task: EngineeringTaskView;
   detail: EngineeringTaskDetail | null;
   repo: RepositoryView | null;
   now: Date | null;
   handlers: EngineeringHandlers;
+  sandboxEnabled: boolean | null;
 }) {
   const dev = developOutput(detail);
   const prHref = safeHttpsUrl(task.prUrl);
@@ -215,6 +217,7 @@ function TaskRow({
           <PlanApproval
             task={detail}
             repo={repo}
+            sandboxEnabled={sandboxEnabled}
             onApprove={(v) => handlers.approvePlan(task.id, v)}
           />
         ) : (
@@ -249,6 +252,7 @@ export function EngineeringSection({
   lock,
   now,
   handlers,
+  sandboxEnabled = null,
 }: {
   tasks: EngineeringTaskView[];
   details: Record<string, EngineeringTaskDetail>;
@@ -256,6 +260,8 @@ export function EngineeringSection({
   lock: DashboardOverview["engineeringLock"] | null;
   now: Date | null;
   handlers: EngineeringHandlers;
+  /** The `engineering.sandbox.enabled` setting, or null while unknown. */
+  sandboxEnabled?: boolean | null;
 }) {
   const groups = groupTasks(tasks);
   const sections: Array<[string, EngineeringTaskView[]]> = [
@@ -303,6 +309,7 @@ export function EngineeringSection({
                   repo={repos.find((r) => r.id === t.repositoryId) ?? null}
                   now={now}
                   handlers={handlers}
+                  sandboxEnabled={sandboxEnabled}
                 />
               ))}
             </ul>
