@@ -8,8 +8,6 @@ import { dateLine, greeting } from "../../../lib/format";
 import { Switch } from "../ui/Switch";
 import { HealthPill } from "./HealthPill";
 
-export const AWAY_HINT = "Away mode isn't available yet. Until it is, every reply waits for you.";
-
 export interface HeaderProps {
   overview: DashboardOverview | null;
   /** Why the latest overview fetch failed, or null; `overview` (if any) is the last good one. */
@@ -17,6 +15,8 @@ export interface HeaderProps {
   /** The browser clock; null until mounted so server and client markup match. */
   now: Date | null;
   onOpenPalette: () => void;
+  /** Turns away mode on or off; the switch shows the server state, so it only moves after a refresh. */
+  onToggleAway: (on: boolean) => void;
   backfillStarted: boolean;
   /** Increment to open the health popover from outside (palette action). */
   openHealthSignal?: number;
@@ -29,6 +29,7 @@ export function Header({
   failure,
   now,
   onOpenPalette,
+  onToggleAway,
   backfillStarted,
   openHealthSignal = 0,
   initiallyOpen = false,
@@ -65,7 +66,12 @@ export function Header({
           <kbd>⌘K</kbd>
         </button>
         <span className="syn-away">
-          <Switch checked={false} onChange={() => {}} label="Away mode" disabled hint={AWAY_HINT} />
+          <Switch
+            checked={overview?.away.on ?? false}
+            onChange={onToggleAway}
+            label="Away mode"
+            disabled={overview === null}
+          />
         </span>
         <HealthPill
           health={overview?.health ?? null}

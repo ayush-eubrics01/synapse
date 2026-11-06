@@ -164,6 +164,15 @@ test("sent badge", () => {
   ).toContain("sent via Synapse · approved by you · delivery not yet verified");
 });
 
+test("auto-reply badge", () => {
+  expect(withThread([msg("1", { sentViaSynapse: { status: "sent", auto: true } })])).toContain(
+    "sent via Synapse · auto-reply while away",
+  );
+  expect(withThread([msg("1", { sentViaSynapse: { status: "sent", auto: true } })])).not.toContain(
+    "approved by you",
+  );
+});
+
 const urgentItem = {
   messageId: "m1",
   draft: { text: "On it, back soon", confidence: 0.6 },

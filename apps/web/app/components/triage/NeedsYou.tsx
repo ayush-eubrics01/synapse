@@ -6,6 +6,7 @@ import type { NeedsYouHandlers } from "../../../lib/needs-you-actions";
 import { Chip } from "../ui/Chip";
 import { AllClear } from "./AllClear";
 import { ApprovalCard } from "./ApprovalCard";
+import { AwayDigestCard } from "./AwayDigestCard";
 import { CommitmentReviewCard } from "./CommitmentReviewCard";
 import { FlagCard } from "./FlagCard";
 import { FollowupCard } from "./FollowupCard";
@@ -36,6 +37,8 @@ export interface NeedsYouProps {
 function Card({ card, p }: { card: NeedsCard; p: NeedsYouProps }) {
   const h = p.handlers;
   switch (card.kind) {
+    case "away-digest":
+      return <AwayDigestCard digest={card.data} now={p.now} onDismiss={h.dismissAwayDigest} />;
     case "urgent":
       return (
         <UrgentCard

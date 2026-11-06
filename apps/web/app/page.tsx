@@ -2,6 +2,7 @@
 
 import type {
   ApprovalView,
+  AwayDigest,
   CandidatesResponse,
   CommitmentFilter,
   ConversationSummary,
@@ -25,6 +26,7 @@ import {
   type FollowupViewDto,
   type GroupedFlagsDto,
   getApprovals,
+  getAwayDigest,
   getCandidates,
   getClaudeRuns,
   getClaudeStatus,
@@ -69,6 +71,7 @@ import type { PaletteItem } from "../lib/palette";
 import type { EvalOutcome } from "../lib/people-ui";
 import { writeTheme } from "../lib/theme";
 import { Commitments } from "./components/commitments/Commitments";
+import { AwayBanner } from "./components/header/AwayBanner";
 import { CommandPalette } from "./components/header/CommandPalette";
 import { Header } from "./components/header/Header";
 import { Inbox } from "./components/inbox/Inbox";
@@ -177,6 +180,7 @@ export default function Dashboard() {
   const [thread, setThread] = useState<ConversationThread | null>(null);
   const threadIdRef = useRef<string | null>(null);
   const [urgent, setUrgent] = useState<UrgentItemDto[]>([]);
+  const [awayDigest, setAwayDigest] = useState<AwayDigest | null>(null);
   const [flags, setFlags] = useState<GroupedFlagsDto[]>([]);
   const [people, setPeople] = useState<PersonDto[]>([]);
   const [candidates, setCandidates] = useState<CandidatesResponse | null>(null);
@@ -220,7 +224,7 @@ export default function Dashboard() {
   const refresh = useCallback(async () => {
     const openUser = personRef.current;
     const threadId = threadIdRef.current;
-    const [a, j, cs, cr, ss, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv, pd, td] =
+    const [a, j, cs, cr, ss, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv, pd, td, ad] =
       await Promise.allSettled([
         getApprovals(),
         getJobs(20),
@@ -240,6 +244,7 @@ export default function Dashboard() {
         getConversations(50),
         openUser ? getPersonProfile(openUser) : Promise.resolve(null),
         threadId ? getThread(threadId) : Promise.resolve(null),
+        getAwayDigest(),
       ]);
     if (a.status === "fulfilled") setApprovals(a.value);
     if (j.status === "fulfilled") setJobs(j.value);
@@ -258,6 +263,7 @@ export default function Dashboard() {
     if (ov.status === "fulfilled") setOverview(ov.value);
     setOverviewFailure(ov.status === "rejected" ? classifyOverviewFailure(ov.reason) : null);
     if (cv.status === "fulfilled") setConversations(cv.value);
+    if (ad.status === "fulfilled") setAwayDigest(ad.value);
     // The open thread is refetched with everything else; stale answers for another conversation are dropped.
     if (td.status === "fulfilled" && td.value && threadIdRef.current === threadId)
       setThread(td.value);
@@ -280,7 +286,7 @@ export default function Dashboard() {
       return next;
     });
     // A failed thread refetch surfaces like any other fetch failure.
-    const failed = [a, j, cs, cr, ss, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv, td].find(
+    const failed = [a, j, cs, cr, ss, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv, td, ad].find(
       (r) => r.status === "rejected",
     );
     const message = failed?.status === "rejected" ? String(failed.reason) : null;
@@ -415,6 +421,7 @@ export default function Dashboard() {
     people,
     candidates,
     slackStatus,
+    awayDigest,
     hidden: feed.hidden,
   };
   const cards = buildNeedsYou(needsInput);
@@ -519,8 +526,15 @@ export default function Dashboard() {
               now={now}
               onOpenPalette={() => setPaletteOpen(true)}
               backfillStarted={backfillStarted(slackStatus)}
+              onToggleAway={feed.handlers.setAway}
               openHealthSignal={openHealthSignal}
             />
+            {overview?.away.on && (
+              <AwayBanner
+                highPriorityCount={overview.away.highPriorityCount}
+                onSetPriority={() => goTo("people")}
+              />
+            )}
             {loadError && <p className="syn-alert">{loadError}</p>}
             {actionError && (
               <p className="syn-alert">

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { PersonDto, PersonPriorityDto } from "../../../lib/api";
+import { PRIORITY_SUBTITLE } from "../../../lib/away";
 import { priorityRows } from "../../../lib/people-ui";
 import { Avatar } from "../ui/Avatar";
 import { Card } from "../ui/Card";
@@ -26,9 +27,7 @@ export function PriorityList({
       <div className="syn-card-head syn-card-head--top">
         <div>
           <h3>Priority</h3>
-          <div className="syn-card-sub">
-            Extra attention screens a person's messages more carefully.
-          </div>
+          <div className="syn-card-sub">{PRIORITY_SUBTITLE}</div>
         </div>
         <input
           type="search"

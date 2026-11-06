@@ -1,4 +1,9 @@
-import type { ApprovalView, CandidatesResponse, RecommendationView } from "@synapse/contracts";
+import type {
+  ApprovalView,
+  AwayDigest,
+  CandidatesResponse,
+  RecommendationView,
+} from "@synapse/contracts";
 import type {
   CommitmentViewDto,
   FollowupViewDto,
@@ -34,6 +39,7 @@ interface CardBase {
 
 export type NeedsCard = CardBase &
   (
+    | { kind: "away-digest"; data: AwayDigest }
     | { kind: "urgent"; data: UrgentItemDto }
     | { kind: "outgoing"; data: OutgoingAttention }
     | { kind: "approval"; data: ApprovalView }
@@ -61,6 +67,8 @@ export interface NeedsYouInput {
   candidates: CandidatesResponse | null;
   slackStatus: SlackStatusDto | null;
   /** Keys of items pending a deferred commit (spec D8): never shown, whatever the data says. */
+  /** The return digest of the last away session, until dismissed (spec A17). */
+  awayDigest?: AwayDigest | null;
   hidden: Set<string>;
 }
 
@@ -76,6 +84,8 @@ const FLAG_RANK: Record<GroupedFlagsDto["maxSeverity"], number> = {
   warning: 31,
   info: 32,
 };
+/** Above every urgent level (0): the user just came back, and this is what happened meanwhile. */
+const AWAY_DIGEST_RANK = -1;
 const RANK = {
   outgoing: 10,
   approval: 20,
@@ -132,6 +142,15 @@ export function buildNeedsYou(input: NeedsYouInput): NeedsCard[] {
     outgoing.add(o.outgoingId);
     cards.push({ key: `outgoing:${o.outgoingId}`, kind: "outgoing", rank: RANK.outgoing, data: o });
   };
+
+  if (input.awayDigest) {
+    cards.push({
+      key: `away-digest:${input.awayDigest.session.id}`,
+      kind: "away-digest",
+      rank: AWAY_DIGEST_RANK,
+      data: input.awayDigest,
+    });
+  }
 
   for (const u of input.urgent) {
     cards.push({

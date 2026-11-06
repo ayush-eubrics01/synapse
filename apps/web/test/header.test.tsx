@@ -53,6 +53,7 @@ const render = (
       failure={failure}
       now={now}
       onOpenPalette={() => {}}
+      onToggleAway={() => {}}
       backfillStarted
       initiallyOpen={initiallyOpen}
     />,
@@ -63,16 +64,6 @@ test("greeting with and without a name", () => {
   const html = render(overview({ status: "ok", issues: [] }, null));
   expect(html).toContain("Good morning.");
   expect(html).not.toContain("Good morning,");
-});
-
-test("away switch is disabled with the D9 text", () => {
-  const html = render(overview({ status: "ok", issues: [] }));
-  expect(html).toContain('role="switch"');
-  expect(html).toContain('aria-disabled="true"');
-  expect(html).toContain("Away mode");
-  expect(html).toContain(
-    "Away mode isn&#x27;t available yet. Until it is, every reply waits for you.",
-  );
 });
 
 test("health pill states", () => {
