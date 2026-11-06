@@ -234,3 +234,45 @@ export type InspectionOutput = z.infer<typeof inspectionOutputSchema>;
 /** `POST /api/repos/inspect` body. */
 export const repositoryInspectInputSchema = z.object({ path: safePathSchema });
 export type RepositoryInspectInput = z.infer<typeof repositoryInspectInputSchema>;
+
+/** `PUT /api/projects/:id`. */
+export const projectUpdateInputSchema = z
+  .object({
+    name: z.string().regex(REPO_NAME_RE),
+    summary: z.string().max(2000).nullable(),
+  })
+  .partial()
+  .strict();
+export type ProjectUpdateInput = z.infer<typeof projectUpdateInputSchema>;
+
+/** `POST /api/projects/:id/facts`: a user-added fact, approved at once (C9). */
+export const factCreateInputSchema = z.object({
+  kind: factKindSchema,
+  content: z.string().trim().min(1).max(INSPECTION_MAX_CONTENT),
+  evidence: z.array(evidenceSchema).max(5).default([]),
+});
+export type FactCreateInput = z.input<typeof factCreateInputSchema>;
+
+/** `POST /api/brain/facts/:id/accept`: optionally with edited content. */
+export const factAcceptInputSchema = z
+  .object({ content: z.string().trim().min(1).max(INSPECTION_MAX_CONTENT) })
+  .partial()
+  .strict();
+export type FactAcceptInput = z.infer<typeof factAcceptInputSchema>;
+
+/** `PUT /api/projects/:id/milestones/:mid`: every field optional (no defaults). */
+export const milestoneUpdateInputSchema = z
+  .object({
+    name: z.string().min(1).max(120),
+    targetDate: isoDateSchema,
+    environmentId: z.string().nullable(),
+    status: milestoneStatusSchema,
+    notes: z.string().max(1000).nullable(),
+  })
+  .partial()
+  .strict();
+export type MilestoneUpdateInput = z.infer<typeof milestoneUpdateInputSchema>;
+
+/** `GET /api/brain/upcoming` and the overview: a planned milestone with its project's name. */
+export const upcomingMilestoneSchema = milestoneViewSchema.extend({ projectName: z.string() });
+export type UpcomingMilestone = z.infer<typeof upcomingMilestoneSchema>;

@@ -62,6 +62,15 @@ Milestones and go-live dates can reference an environment (for example, "go-live
 
 Purpose, current status, repositories, technical architecture, important modules, active features, known bugs, technical debt, dependencies, blockers, technical decisions, release milestones, go-live dates, relevant Jira issues, relevant Slack discussions.
 
+## Projects, review, milestones and API (C9 to C12)
+
+`BrainService` (`modules/engineering-brain/service.ts`) owns fact review, milestones and the Jira summary; `routes/brain.ts` exposes them.
+
+- **Review.** Accepting a `needs_review` fact (optionally with edited content, 1 to 400 characters) approves it; an approved fact of the same project, kind and normalised content becomes `outdated` and the new fact's `supersedes_id` points at it. Rejecting sets `rejected`. A decided fact cannot be decided again (409). User-added facts are `approved` at once and supersede the same way. `brain.fact_decided` and the audit row carry ids and the status only, never fact text.
+- **Milestones.** An environment must belong to a repository of the same project (400 `invalid_environment`). `upcoming()` lists `planned` milestones due within `brain.upcoming.days` or already past, by date; a past `planned` milestone has `overdue: true`. The overview carries `counts.brainReview` and the next three as `upcoming`.
+- **Jira (C11).** The project detail counts in-scope `jira_issues` with an attention whose `project_key` is in the union of its repositories' `jira_project_keys`, and lists the five most urgent (overdue, blocked, due_soon, stale). It is not gated on `jira.enabled`.
+- **HTTP errors.** Fixed codes only, never paths, URLs, branch names or fact text. 400: validation and path reasons (`invalid_input`, `not_found` for a missing path on register or inspect, `not_directory`, `not_git_root`, `unsafe_chars`, `forbidden_location`, `nested`, `unknown_tracked_branch`, `unknown_environment_branch`, `duplicate_environment`, `invalid_environment`). 409: `already_registered`, `duplicate_name`, `path_unavailable`, `invalid_state`, and `already_queued` for a second inspection request. 404: an unknown id. `POST /api/repos/:id/accept-remotes` accepts the current remotes (200 with the view).
+
 ## Ports used / provided
 
 - `RepositoryProvider` (`repository/local-git`): `listRegistered`, `inspect`, `getHistory`. Registered paths only.

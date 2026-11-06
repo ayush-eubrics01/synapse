@@ -6,6 +6,7 @@ import type { ApprovalEngine } from "../../core/approvals/approvals";
 import type { SettingsService } from "../../core/config/settings";
 import type { FollowupService } from "../commitments/followups";
 import type { CommitmentLifecycle } from "../commitments/lifecycle";
+import type { BrainService } from "../engineering-brain/service";
 import type { SyncStateService } from "../inbox/sync-state";
 import type { UrgentInbox } from "../inbox/urgent";
 import type { PeopleViews } from "../people/views";
@@ -25,6 +26,7 @@ export interface DashboardDeps {
   peopleViews: PeopleViews;
   sync: SyncStateService;
   health: { report(): Promise<HealthReport> };
+  brain: Pick<BrainService, "reviewCount" | "upcoming">;
 }
 
 const DAY_MS = 86_400_000;
@@ -107,6 +109,7 @@ export class DashboardService {
                 and(eq(schema.jiraIssues.inScope, true), isNotNull(schema.jiraIssues.attention)),
               )
               .get()?.n ?? 0),
+        brainReview: this.deps.brain.reviewCount(),
       },
       away: {
         on: settings.get("autoReply.awayMode"),
@@ -141,6 +144,7 @@ export class DashboardService {
         },
         now,
       ),
+      upcoming: this.deps.brain.upcoming().slice(0, 3),
       engineeringLock: null,
     };
   }

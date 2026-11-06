@@ -54,6 +54,7 @@ import { CommitmentStore } from "./modules/commitments/store";
 import { DashboardService } from "./modules/dashboard/service";
 import type { InspectionService } from "./modules/engineering-brain/inspection";
 import { RepositoryRegistry } from "./modules/engineering-brain/registry";
+import { BrainService } from "./modules/engineering-brain/service";
 import { InboxConversations } from "./modules/inbox/conversations";
 import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
@@ -137,6 +138,8 @@ export interface Container {
   repositories: RepositoryRegistry;
   /** Repository inspection (Phase 9, C6): `requestInspection` backs "Inspect now". */
   inspections: InspectionService;
+  /** Projects, fact review, milestones and the Jira association (Phase 9, C9 to C12). */
+  brain: BrainService;
   slack: Pick<ReturnType<typeof registerSlackJobs>, "startBackfill" | "backfillResumable">;
 }
 
@@ -476,6 +479,16 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     handlers,
   });
 
+  const brain = new BrainService({
+    db,
+    clock,
+    settings,
+    audit,
+    events,
+    registry: repositories,
+    inspections,
+  });
+
   const health = new HealthService({
     database: databaseCheck(sqlite),
     jobs: jobsCheck(db, clock),
@@ -502,6 +515,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     peopleViews,
     sync,
     health,
+    brain,
   });
 
   return {
@@ -546,6 +560,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     jira,
     repositories,
     inspections,
+    brain,
     handlers,
     recoverySweeps: [
       { name: "urgency.assess", run: urgency.recoverySweep },
