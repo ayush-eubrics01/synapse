@@ -6,15 +6,15 @@
 
 ## Context
 
-The Git workflow (ADR-030) depends on knowing the right parent branch for each task. Repositories differ: some have one main line, others have several deployment branches. For example, `flexi-demo` deploys `stage` and `prod` from separate branches. The user wants Synapse to keep a simple note of the tracked branch per repository and the branch behind each deployment, and to **ask** which branch to use before starting work.
+The Git workflow (ADR-030) depends on knowing the right parent branch for each task. Repositories differ: some have one main line, others have several deployment branches. For example, `demo-app` deploys `stage` and `prod` from separate branches. The user wants Synapse to keep a simple note of the tracked branch per repository and the branch behind each deployment, and to **ask** which branch to use before starting work.
 
-Observed in `flexi-demo` (2026-11-05): checked out on `stage`; `origin` = the user's fork (`ayush-eubrics01/flexi-demo`); `upstream` = `Eubrics/flexi-demo` with pushes disabled; `origin/stage` and `origin/prod` exist.
+Observed in a real repository (2026-11-05; called `demo-app` here): checked out on `stage`; `origin` = the user's fork (`example-user/demo-app`); `upstream` = `ExampleOrg/demo-app` with pushes disabled; `origin/stage` and `origin/prod` exist.
 
 ## Decision
 
 ### Registry
 
-The registry lives **only in the SQLite database** (`repositories`, `repository_environments`). It is entered through the registration flow in the UI and changed through the UI or the branch confirmation step. There is no config file or seed file for it. Examples in these docs (such as `flexi-demo`) are illustrative only and are never loaded by the application.
+The registry lives **only in the SQLite database** (`repositories`, `repository_environments`). It is entered through the registration flow in the UI and changed through the UI or the branch confirmation step. There is no config file or seed file for it. Examples in these docs (such as `demo-app`) are illustrative only and are never loaded by the application.
 
 Each registered repository has:
 
@@ -27,7 +27,7 @@ Each registered repository has:
 
 Plus zero or more **deployment environments**:
 
-| Field | Example (`flexi-demo`) |
+| Field | Example (`demo-app`) |
 |---|---|
 | `name` | `stage`, `prod` |
 | `branch` | `stage`, `prod` (confirmed by the user 2026-11-05) |
@@ -40,7 +40,7 @@ On registration, Synapse proposes values detected from Git (current branch, remo
 Every engineering task gets a **branch confirmation** step before any branch is created, shown together with the plan approval:
 
 ```text
-Repository:   flexi-demo
+Repository:   demo-app
 Environment:  stage            (suggested from the task source, or "none")
 Parent branch: stage           (from the environment, else tracked_branch)
 Task branch:  synapse/<task-id>-<slug>
@@ -56,7 +56,7 @@ PR:           origin/stage  ─▶  upstream/stage
 
 ## Consequences
 
-- **Positive:** the user always sees and confirms where work lands. Multi-environment repos like `flexi-demo` are handled explicitly.
+- **Positive:** the user always sees and confirms where work lands. Multi-environment repos like `demo-app` are handled explicitly.
 - **Positive:** the Engineering Brain can link milestones and go-live dates to environments.
 - **Negative:** one extra confirmation per task. It's merged into the existing plan approval, so it isn't a separate wait.
 - Environment detection from branch names is only a suggestion. The user's confirmation is the source of truth.

@@ -40,8 +40,7 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *  G. ToolSearch required for connector tools (rule 3)
  *  H. denylist covers every unused known server (rule 4)
  *  H2. denylist contains every network built-in, and every write and filesystem-read built-in
- *     unless engineering (R26, I4); an engineering run must deny each filesystem-read built-in it
- *     does not allow (final review)
+ *     (R26, I4); an engineering run must deny each of them it does not allow (final review)
  *  I. send run with untrusted content (rule 5; subsumed by D, kept as defence in depth)
  *  J. untrusted content contains the boundary (rule 6)
  *  K. policy_approved content outside a send run (rule F's single write connector; J1, ADR-033);
@@ -149,7 +148,7 @@ export function validateRequest(
   const required = [
     ...BUILTIN_NETWORK,
     ...(req.workerProfile === "engineering"
-      ? BUILTIN_FS_READ.filter((t) => !allowed.includes(t))
+      ? [...BUILTIN_WRITE, ...BUILTIN_FS_READ].filter((t) => !allowed.includes(t))
       : [...BUILTIN_WRITE, ...BUILTIN_FS_READ]),
   ];
   for (const t of required) {

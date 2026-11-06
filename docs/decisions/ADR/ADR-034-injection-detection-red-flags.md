@@ -30,6 +30,8 @@ Synapse detects suspected prompt-injection attempts and shows them as **red flag
 
 A runtime-detector hit is always at least `warning`; a denied write/send tool is `high`.
 
+**Exception: repository inspection (Phase 9).** The `brain.inspect_repository` output schema has no `suspectedInjection` field. It is an `engineering` run whose prompt carries only `system` parts; the repository content it reads is untrusted, but the run can't act on it: its only tools are `Read`, `Grep` and `Glob`, path-scoped to the repository (validator rule L), and every write, shell and network built-in is denied. Runtime security flags are tied to Slack messages, so none is raised; permission denials are audited by tool name instead. Fact text from an inspection stays untrusted, repository-derived content: any future use of it in a prompt must tag it `untrusted`, and adding the field is a follow-up.
+
 ### What happens
 
 - A `security_flags` record is created with the person, conversation, message, detector, rule ID, severity and a short evidence excerpt.

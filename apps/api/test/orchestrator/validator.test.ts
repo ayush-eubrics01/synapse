@@ -312,6 +312,12 @@ describe("final-review fixes", () => {
       ok: false,
       reason: "denylist missing Grep",
     });
+    // Likewise every write built-in it does not allow (closes the Phase 9 H2 follow-up).
+    expect(v({ ...r, disallowedTools: r.disallowedTools.filter((t) => t !== "Bash") })).toEqual({
+      ok: false,
+      reason: "denylist missing Bash",
+    });
+    expect(v(r)).toEqual({ ok: true });
     const full = buildDenylist([SEARCH, "ToolSearch"], DEFAULT_KNOWN_SERVERS, "collector");
     expect(reason(v(make({ disallowedTools: full.filter((t) => t !== "Grep") })))).toBe(
       "denylist missing Grep",

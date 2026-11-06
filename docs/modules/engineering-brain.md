@@ -19,7 +19,7 @@ Non-responsibilities:
 
 - Inventing missing information. Unknowns are returned by the model but not stored; a fact needs verifiable evidence.
 - Modifying repositories. The module never writes to a repository, and the inspection run has read-only, path-scoped tools.
-- Hard-coding project names. `flexi-demo` in the ADRs is illustrative only.
+- Hard-coding project names. `demo-app` in the ADRs is illustrative only.
 
 ## Owned data (tables, migration 0016)
 
@@ -39,7 +39,7 @@ Non-responsibilities:
 Registration is two calls:
 
 1. `POST /api/repos/inspect {path}` (`propose`) saves nothing. It runs the path rules and returns a proposal: the realpath, a suggested name (the basename), the current branch (also the suggested tracked branch), head sha, credential-stripped remote URLs, whether upstream push is disabled, all branch names and environment candidates.
-2. `POST /api/repos {path, name, trackedBranch, environments[], jiraProjectKeys[], notes?}` (`register`) re-checks the path, re-inspects, requires `trackedBranch` and every environment branch to exist as a local or remote branch, then saves the repository, its environments and a **project with the same name**, linked to it, in one transaction. It audits `repo.registered` and publishes the `repo.registered` event, whose consumer enqueues the first inspection.
+2. `POST /api/repos {path, name, trackedBranch, environments[], jiraProjectKeys[], notes?}` (`register`) re-checks the path, re-inspects, requires `trackedBranch` and every environment branch to exist as a local or remote branch, then saves the repository, its environments and a **project with the same name**, linked to it, in one transaction. The transaction re-checks the name, the path and nesting against the stored realpaths, because another registration may have landed while git ran (final review). It audits `repo.registered` and publishes the `repo.registered` event, whose consumer enqueues the first inspection.
 
 Other calls: `PUT /api/repos/:id` (every field optional; `environments` replaces the set, matched by name so kept environments keep their id; changed branches are re-checked; audited as `repo.updated` with field names only), `DELETE /api/repos/:id` (`repo.unregistered`; the project and its facts stay) and `POST /api/repos/:id/accept-remotes` (below). Audit rows and events carry ids only: never paths, remote URLs or branch names.
 
@@ -57,7 +57,7 @@ Other calls: `PUT /api/repos/:id` (every field optional; `environments` replaces
 | `already_registered` | the realpath is not registered |
 | `nested` | it is not inside, and does not contain, a registered path |
 
-`isSafeAbsolutePath` (`packages/contracts/src/brain.ts`) is the shared predicate for any path embedded in a `Tool(<path>/**)` specifier. It requires the pattern `^/[A-Za-z0-9._/-]+$` (no spaces, commas, parentheses or quotes), no empty, `.` or `..` segment (so no `//` or `a/../..`), and at least two segments, so neither `/` nor a top-level directory like `/tmp` can be a scope. One trailing slash is tolerated. The registry, the inspection `prepare` step and validator rule L all use it. The realpath is what gets stored.
+`isSafeAbsolutePath` (`packages/contracts/src/brain.ts`) is the shared predicate for any path embedded in a `Tool(/<path>/**)` specifier (the CLI's `//abs/path/**` form). It requires the pattern `^/[A-Za-z0-9._/-]+$` (no spaces, commas, parentheses or quotes), no empty, `.` or `..` segment (so no `//` or `a/../..`), and at least two segments, so neither `/` nor a top-level directory like `/tmp` can be a scope. One trailing slash is tolerated. The registry, the inspection `prepare` step and validator rule L all use it. The realpath is what gets stored.
 
 ### Provider (C3)
 
@@ -78,7 +78,7 @@ Each environment records `protected` and `auto_deploys_on_merge`. **Phase 9 only
 | `remotesChanged` | the origin or upstream fetch URL, or the upstream push-disabled state, changed |
 | `pathMissing` | the path is gone or no longer a git work tree |
 
-A git failure that is not a missing path leaves the stored drift alone. **Notify once:** a drift's identity is everything except `detectedAt`. Only a new identity writes `drift`, raises one in-app and desktop notification (kind `repo.drift`, title only: "Repository drift: <name>") and publishes `repo.drift_detected`. The same drift on later runs is quiet; a resolved drift is cleared without a notification. One repository failing never stops the others.
+A git failure that is not a missing path leaves the stored drift alone. **Notify once:** a drift's identity is everything except `detectedAt`, with `offTrackedBranch` counted as a boolean (final review). The branch name is for display only: moving from one feature branch to another is the same drift, stays quiet, and only updates the stored name. Only a new identity writes `drift`, raises one in-app and desktop notification (kind `repo.drift`, title only: "Repository drift: <name>") and publishes `repo.drift_detected`. The same drift on later runs is quiet; a resolved drift is cleared without a notification. One repository failing never stops the others.
 
 The check never updates the registry. The one way the stored remotes change is the user's explicit **accept remotes** (`POST /api/repos/:id/accept-remotes`, audited `repo.remotes_accepted`). It stores the current credential-stripped URLs and push state, then re-evaluates the drift without notifying: `remotesChanged` clears, parts git no longer shows clear too, and parts that remain keep their `detectedAt`. Findings that are new since the stored drift are not added there; the next drift check records them and notifies, so accepting remotes can never swallow a notification.
 
@@ -95,16 +95,21 @@ Triggers: registration (the `repo.registered` consumer), the "Inspect now" butto
 | Profile | `engineering` |
 | Model | setting `brain.inspect.model` (`haiku`, `sonnet` or `opus`; default `sonnet`) |
 | Working directory | the repository realpath, re-verified before the run (`prepare`: the path must still be safe, resolve to itself and be a git top level, else the job returns `skipped: path_unavailable`) |
-| Allowed tools | `Read(<root>/**)`, `Grep(<root>/**)`, `Glob(<root>/**)` and nothing else |
+| Allowed tools | `Read(/<root>/**)`, `Grep(/<root>/**)`, `Glob(/<root>/**)` and nothing else. `<root>` starts with `/`, so each is the CLI's double-slash absolute form, for example `Read(//home/u/app/**)` |
+| Expected tools | `Read`, `Grep`, `Glob` (`expectedToolNames`): a run with no successful result from one of them fails as `incomplete_ai_output` (ADR-026) |
 | Prompt parts | `system` only: the instructions and the repository name and root. No untrusted content; the run reads the repository itself |
 | Output | a fenced json block `{facts: [{kind, content, evidence: [{path, line?}]}], unknowns: []}` |
 | Priority class | `batch` |
 
-**Rule L (validator).** For `engineering` runs, every allowed `Read`, `Grep` or `Glob` must be exactly `Tool(<workingDirectory>/**)`, and `workingDirectory` must satisfy `isSafeAbsolutePath`. A bare `Read` fails with `fs read tools must be scoped to the working directory`. Details in `docs/modules/claude-orchestrator.md`.
+**Rule L (validator).** For `engineering` runs, `workingDirectory` must satisfy `isSafeAbsolutePath`, and every allowed `Read`, `Grep` or `Glob` must be exactly `Tool(/<workingDirectory>/**)` (double slash). A bare `Read`, or the single-slash form, fails with `fs read tools must be scoped to the working directory`. Details in `docs/modules/claude-orchestrator.md`.
 
-**User-permission guard.** The CLI merges the user's `~/.claude/settings.json` permissions into every run, and the override cannot remove them, so a user-level `permissions.allow` for `Read`, `Bash`, `Edit` and similar would defeat the path scope. The orchestrator therefore refuses every engineering run, before spawning, when the startup read of the user's settings found such an entry, additional directories, or a default mode of `bypassPermissions` or `acceptEdits`. The inspection job then fails with a fixed `needs_attention` message. Details in the orchestrator doc and the security model.
+*Amendment (final review).* Rule L and the inspection first used the single-slash form `Read(<root>/**)`. On the real CLI that form is not absolute (it resolved against the cwd) and granted nothing; the inspection could read only because the cwd was the repository. The controller verified the double-slash form with the cwd elsewhere: inside reads allowed, outside reads denied, nothing leaked.
 
-**Single attempt.** The job is enqueued with `maxAttempts: 1`: an inspection is an expensive run and a retry rarely fixes it. A run that stops on max turns or timeout is audited (`brain.inspect_failed`, repository id and kind only) and ends `needs_attention`; a reply that does not parse ends `parse_failed`. The user can press "Inspect now".
+**Repository configuration and hermetic runs.** `--setting-sources user` keeps the inspected repository's `CLAUDE.md`, `.claude/settings.json` and `.mcp.json` out of the run, and every run sets `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. Every run also passes `--permission-mode default`.
+
+**User-permission guard.** The CLI merges the user's `~/.claude/settings.json` permissions into every run, and the override cannot remove them, so a user-level `permissions.allow` for `Read`, `Bash`, `Edit` and similar would defeat the path scope. The orchestrator therefore refuses every engineering run, before spawning, when the startup read of the user's settings found such an entry, additional directories, or a default mode of `bypassPermissions`, `acceptEdits` or `auto`. The inspection job then fails with a fixed `needs_attention` message. Details in the orchestrator doc and the security model.
+
+**Single attempt.** The job is enqueued with `maxAttempts: 1`: an inspection is an expensive run and a retry rarely fixes it. A run that stops on max turns or timeout is audited (`brain.inspect_failed`, repository id and kind only) and ends `needs_attention`. A run with no successful `Read`, `Grep` or `Glob` result (the provider's `expectedToolNames` check, and the worker checks again) is audited the same way with kind `incomplete_ai_output` and fails as `incomplete_ai_output`, storing nothing (ADR-026). A reply that does not parse ends `parse_failed`. The user can press "Inspect now".
 
 **Turn budget.** `brain.inspect.maxTurns` (default 30, up to 100) is clamped to 50 in the request, which is the CLI cap, and the system part tells the model its turn budget so it batches reads and answers before running out. `brain.inspect.timeoutMinutes` (default 10, up to 60) is the run timeout; the job handler allows 65 minutes so the worker never times out first.
 
@@ -116,10 +121,11 @@ Triggers: registration (the `repo.registered` consumer), the "Inspect now" butto
 |---|---|
 | `too_much_evidence` | more than 5 evidence entries |
 | `unsafe_path` | a path is absolute, empty, longer than 500 characters, starts with `~`, holds a NUL byte or has a `..` segment |
-| `sensitive_path` | a path names `.git` internals, `.env*`, `*.pem`/`*.key`/`*.p12`/`*.pfx`, `id_rsa`, `id_ed25519`, `id_ecdsa` (and `.pub`), `credentials.json` or `.npmrc`; also when the resolved target of a harmless name is one of these |
+| `sensitive_path` | a path names `.git` internals, `.env*`, `*.pem`/`*.key`/`*.p12`/`*.pfx`/`*.kdbx`, `id_rsa`, `id_dsa`, `id_ed25519`, `id_ecdsa` (and `.pub`), `credentials` or `credentials.json`, `secrets.*`, `.npmrc`, `.netrc`, `.pgpass` or `.git-credentials`; also when the resolved target of a harmless name is one of these |
 | `missing` | the path does not resolve (realpath) |
 | `outside_repo` | the realpath is not strictly inside the repository root (this covers symlinks that point out) |
 | `not_file` | the target is not a regular file |
+| `not_read` | the run never observed the path (ADR-026). Observed means the `file_path` of a successful `Read` (absolute under the root, or relative to it, after normalisation), or a whole path, absolute or relative, named in the content of a successful `Grep` or `Glob` result. Built from raw tool results only, never the reply |
 | `content_secret` / `content_internal_url` | the content fails the secret or internal-URL checks. Tokens naming an existing repository path (optionally with `:line`) are masked first, so a long module path is not mistaken for a secret |
 | `too_long` | the content is over 400 characters. It is dropped, never truncated |
 
@@ -140,12 +146,12 @@ Surviving facts are inserted as `needs_review` (source `inspection`, with the cl
 
 - **Projects.** One per repository by default (created at registration). `PUT /api/projects/:id {name?, summary?}` renames or edits (audited with field names only). `GET /api/projects/:id` returns the repositories, facts, milestones and the Jira summary.
 - **Milestones.** CRUD under `/api/projects/:id/milestones` (name up to 120 characters, `targetDate` as YYYY-MM-DD, status default `planned`, optional environment and notes). An environment must belong to a repository of the same project (400 `invalid_environment`). All changes are audited by id.
-- **Upcoming.** `GET /api/brain/upcoming` lists `planned` milestones due within `brain.upcoming.days` (default 30) or already past, by date then name, with the project and environment name. A past `planned` milestone has `overdue: true`. The overview gains `counts.brainReview` (facts needing review) and `upcoming` (the next three).
+- **Upcoming.** `GET /api/brain/upcoming` lists `planned` milestones due within `brain.upcoming.days` (default 30) or already past, by date then name, with the project and environment name. A past `planned` milestone has `overdue: true`. "Today" and the horizon are local calendar dates (`localDate` in `@synapse/shared`, shared with the Jira attention rules; final review), not UTC ones. The overview gains `counts.brainReview` (facts needing review) and `upcoming` (the next three).
 - **Jira association (C11).** A project's issues are in-scope `jira_issues` with an attention whose `project_key` is in the union of its repositories' `jira_project_keys`. The detail has counts by attention (overdue, blocked, due_soon, stale) and the five most urgent issues. No new table. It is **not gated on `jira.enabled`** (deferred item).
 
 ## Web (C13)
 
-A "Projects" section after Jira (`apps/web/app/components/brain`): the repository list with branch, environment chips, a drift warning with "Accept remotes" and "Inspect now", the register flow (path, proposal, confirm form), and project cards with approved facts grouped by kind, pending facts with Accept, Edit and Reject, milestones, and the Jira summary. Needs-you cards: "PROJECTS · REVIEW" (facts needing review) and "PROJECTS · SETUP" (no repository registered). Upcoming go-lives appear in the Running panel. The frontend holds no business logic. Fact text is shown as plain text.
+A "Projects" section after Jira (`apps/web/app/components/brain`): the repository list with branch, environment chips, a drift warning with "Accept remotes" and "Inspect now", the register flow (path, proposal, confirm form), and project cards with approved facts grouped by kind, pending facts with Accept, Edit and Reject, milestones (the edit form sets planned, done, slipped or cancelled; Delete asks for an inline confirmation), and the Jira summary. Jira keys in the register form use `JIRA_PROJECT_KEY_RE` from `@synapse/contracts/patterns`, the same rule as the API schema. Needs-you cards: "PROJECTS · REVIEW" (facts needing review) and "PROJECTS · SETUP" (no repository registered). Upcoming go-lives appear in the Running panel. The frontend holds no business logic. Fact text is shown as plain text.
 
 ## Routes
 
@@ -202,7 +208,7 @@ Reading registered repositories and proposing facts is allowed. Facts are kept o
 
 ## Tests
 
-Unit and integration tests cover the path rules, the provider (against real throwaway git repos), registration and its failure paths, the drift shapes and notify-once, evidence verification and every drop reason, dedupe and supersede, milestones and upcoming, the Jira summary, the routes, and rule L with the user-permission guard. Nothing in the suite runs a real `claude`. Two controller-run smoke scripts exercise the real CLI: `scripts/dev/scope-smoke.ts` (path scoping) and `scripts/dev/inspect-smoke.ts` (one inspection of a throwaway repo). Results are recorded in `docs/superpowers/plans/2026-11-06-phase-9-followups.md`.
+Unit and integration tests cover the path rules, the provider (against real throwaway git repos), registration and its failure paths, the drift shapes and notify-once, evidence verification and every drop reason, dedupe and supersede, milestones and upcoming, the Jira summary, the routes, and rule L with the user-permission guard. Nothing in the suite runs a real `claude`. Two controller-run smoke scripts exercise the real CLI: `scripts/dev/scope-smoke.ts` (path scoping) and `scripts/dev/inspect-smoke.ts` (one inspection of a throwaway repo). `scope-smoke` runs at provider level with the cwd in a third temp dir and a single-slash negative control. Results are recorded in `docs/superpowers/plans/2026-11-06-phase-9-followups.md`.
 
 ## Deferred
 

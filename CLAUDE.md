@@ -78,6 +78,7 @@ All runs go through the orchestrator and use this shape:
 ```bash
 claude -p "<prompt naming exact tools and arguments>" \
   --setting-sources user --settings "$OVERRIDE" --disable-slash-commands \
+  --permission-mode default \
   --system-prompt "<short worker-specific prompt>" \
   --allowedTools "ToolSearch,<only what this job needs>" \
   --disallowedTools "<explicit denylist>" \
@@ -89,6 +90,7 @@ claude -p "<prompt naming exact tools and arguments>" \
 - `--bare` is unusable (API key only; connectors need claude.ai OAuth).
 - Never use `--tools`; it hides MCP connector tools. Use `--allowedTools`/`--disallowedTools`.
 - Always allow `ToolSearch`; connector tools are deferred.
+- Every run's env sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` and `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` (hermetic: never the user's memory or any CLAUDE.md); path scopes use the absolute `//` form, e.g. `Read(//abs/repo/**)`.
 - Read quota from the `rate_limit_event` (five-hour and seven-day utilization) and gate jobs on it. (ADR-029)
 
 ## Before implementing a feature

@@ -51,3 +51,12 @@ This phase delivers:
 ## Pre-check (controller, 2026-11-06)
 
 A real-CLI run with `allowedTools: ["Read(<tmp>/inside/**)"]` was given two reads. The read inside the scoped directory returned content. The read outside it was an error tool_result with `permissionDenials: ["Read"]`, and no outside content was returned. Path scoping holds, so C7 and C8 rest on observed behaviour.
+
+## Amendment (final review, 2026-11-06)
+
+C7, C8 and the pre-check above are kept as written; this note corrects them.
+
+- **The single-slash specifier is not absolute.** In Claude Code permission rules `Read(/abs/dir/**)` is not an absolute path: for `--allowedTools` it resolved against the cwd. The controller verified on the real CLI, at provider level with the cwd in a third temp dir: `Read(/abs/inside/**)` denied the inside read (it grants nothing outside the cwd) and the outside read; `Read(//abs/inside/**)` allowed the inside read, denied the outside read and leaked nothing. The pre-check and the first `scope-smoke` passed only because the cwd was the scoped directory, and the CLI allows reads under the cwd by default.
+- **C7 now.** Every engineering run's `workingDirectory` must pass `isSafeAbsolutePath`, whether or not it allows a filesystem read. Each allowed `Read`/`Grep`/`Glob` must equal `Tool(/<workingDirectory>/**)`, the double-slash form `//abs/dir/**`; the single-slash form fails like any other mismatch. The engineering denylist denies every write and filesystem-read built-in the run does not allow, and validator rule H2 requires it.
+- **C8 now.** `scripts/dev/scope-smoke.ts` runs at provider level (`ClaudeCliProvider.execute`; the orchestrator would refuse the control by design) with the cwd in a third temp dir. Case `double` (`Read(//<tmp>/inside/**)`) passes with `inside=ok outside=blocked`; case `single(control)` (`Read(/<tmp>/inside/**)`) passes with `inside=denied`, which proves the rule, not the cwd, grants access. It prints `double: …`, `single(control): …` and `scope-smoke: blocked|LEAKED|inconclusive`.
+- **Also from the final review.** Every run passes `--permission-mode default` and sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` and `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`; `defaultMode: auto` counts as widening. Inspection follows ADR-026: a run with no successful `Read`/`Grep`/`Glob` result fails as `incomplete_ai_output`, and evidence the run never observed is dropped as `not_read`.

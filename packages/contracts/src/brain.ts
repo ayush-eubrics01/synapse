@@ -6,7 +6,7 @@ import { JIRA_PROJECT_KEY_RE } from "./patterns";
 export const REPO_PATH_RE = /^\/[A-Za-z0-9._/-]+$/;
 
 /**
- * True for an absolute path that is safe to embed in a `Tool(<path>/**)` specifier: safe
+ * True for an absolute path that is safe to embed in a `Tool(/<path>/**)` specifier (the CLI's absolute `//path/**` form): safe
  * characters only, no empty, `.` or `..` segment (so no `//` or `/tmp/a/../..`), and at least two
  * segments (so neither `/` nor a top-level directory like `/tmp` can become a scope). One trailing
  * slash is tolerated.
