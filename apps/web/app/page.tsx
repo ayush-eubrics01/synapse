@@ -373,9 +373,16 @@ export default function Dashboard() {
       setEngineeringTasks(et.value);
       const open = et.value.filter((t) => !isTerminal(t.status));
       const fetched = await Promise.allSettled(open.map((t) => getEngineeringTask(t.id)));
-      setEngineeringDetails(
+      // A failed fetch keeps the detail already shown, so an open description form is not
+      // unmounted (and its edits lost) by one bad refresh.
+      setEngineeringDetails((prev) =>
         Object.fromEntries(
-          fetched.flatMap((d) => (d.status === "fulfilled" ? [[d.value.id, d.value]] : [])),
+          open.flatMap((t, i) => {
+            const d = fetched[i];
+            if (d?.status === "fulfilled") return [[t.id, d.value]];
+            const kept = prev[t.id];
+            return kept ? [[t.id, kept]] : [];
+          }),
         ),
       );
     }

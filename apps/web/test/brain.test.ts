@@ -110,6 +110,7 @@ test("registryErrorLabel maps every API code and falls back to the code", () => 
     "invalid_input",
     "duplicate_environment",
     "path_unavailable",
+    "repo_has_active_task",
     "git_failed",
     "invalid_environment",
     "invalid_state",

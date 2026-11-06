@@ -7,7 +7,12 @@ import type {
   EnvironmentView,
   RepositoryView,
 } from "@synapse/contracts";
-import { isSafeTestCommand, taskBranchName } from "@synapse/contracts/patterns";
+import {
+  isSafeTestCommand,
+  type TestRun,
+  taskBranchName,
+  testResultLabel,
+} from "@synapse/contracts/patterns";
 
 /** Step labels for the timeline (spec E8-E18). */
 const STEP_LABELS: Record<EngineeringStep, string> = {
@@ -62,6 +67,8 @@ const REASONS: Record<string, string> = {
     "The origin remote points at the upstream repository. Synapse never pushes there.",
   no_upstream_reference: "No upstream repository is registered to compare the push target against.",
   config_changed: "The git configuration changed while the task was running, so it was stopped.",
+  origin_changed:
+    "The origin remote no longer points at the registered fork, so nothing was pushed. Accept the current remotes in the repository settings or fix origin, then cancel the task.",
   // Unsafe diff reasons
   git_dir_changed: "The .git directory or git configuration changed during the run.",
   git_path: "A changed file is inside .git.",
@@ -96,6 +103,19 @@ const REASONS: Record<string, string> = {
   lock_held: "Another engineering task holds the lock.",
   max_turns: "Claude ran out of turns before finishing.",
   timeout: "The run took too long and was stopped.",
+  lock_lost: "The task no longer holds the engineering lock, so the step was stopped.",
+  lock_held_by_other:
+    "Another engineering task holds the lock, so this task's cleanup did not touch the repository.",
+  step_running: "Another step of this task is still running. Cleanup runs when it ends.",
+  not_terminal: "The task is still running, so it was not cleaned up.",
+  repo_has_active_task:
+    "This repository has an engineering task that is not finished. Cancel or finish it first.",
+  checks_failing:
+    "The pull request's checks are failing, so it was not merged. Fix the checks, then cancel the task or merge the PR on GitHub.",
+  merged_after_cancel:
+    "The pull request was merged while the task was being cancelled, so the task is completed.",
+  cleanup_incomplete:
+    "The task's local cleanup stopped part way. Check the repository, then cancel the task to clean up again.",
   // Route refusals
   not_found: "That task or item no longer exists.",
   invalid_input: "Some of the input is not valid.",
@@ -185,7 +205,7 @@ export function groupTasks(tasks: EngineeringTaskView[]): TaskGroups {
 export function testCommandError(cmd: string): string | null {
   if (cmd.trim() === "") return "A test command is required.";
   if (!isSafeTestCommand(cmd)) {
-    return "Not allowed. Use a known runner (bun, npm, pnpm, yarn, pytest, make, go, cargo, ...) with plain arguments and no ; & | > < $ or quotes.";
+    return "Not allowed. Use a test command such as bun test, npm test, npm run test:unit, npx vitest, pytest, python -m pytest, make test, go test ./... or cargo test, with plain arguments and no ; & | > < $ or quotes.";
   }
   return null;
 }
@@ -359,6 +379,8 @@ export type EngineeringApproval =
       files: Array<{ path: string; added: number; removed: number }>;
       filesTotal: number;
       testsPassed: boolean | null;
+      /** M1: how the confirmed test command ran; null on a payload from before it existed. */
+      testRun: TestRun | null;
     }
   | {
       kind: "merge_local";
@@ -389,6 +411,8 @@ export type EngineeringApproval =
       state: string;
       mergeable: string;
       checks: string;
+      /** M6: when the checks were read (ISO), or null. */
+      checkedAt: string | null;
       autoDeploys: boolean;
       environmentName: string | null;
       pushedSha: string;
@@ -428,6 +452,10 @@ export function engineeringApproval(a: Approval): EngineeringApproval | null {
         files: fileList(p.files),
         filesTotal: typeof p.filesTotal === "number" ? p.filesTotal : fileList(p.files).length,
         testsPassed: typeof p.testsPassed === "boolean" ? p.testsPassed : null,
+        testRun:
+          p.testRun === "exact" || p.testRun === "partial" || p.testRun === "none"
+            ? p.testRun
+            : null,
       };
     case "merge_local": {
       const commits = commitRefs(p.commits);
@@ -466,12 +494,70 @@ export function engineeringApproval(a: Approval): EngineeringApproval | null {
         state: str(s.state),
         mergeable: str(s.mergeable),
         checks: str(s.checks),
+        checkedAt: str(s.checkedAt) || null,
         autoDeploys: p.autoDeploys === true,
         environmentName: str(p.environmentName) || null,
         pushedSha: str(p.pushedSha),
       };
     }
   }
+}
+
+/**
+ * M1: the commit card's test chip: its text and tone. A payload without `testRun` (requested
+ * before the final review) reads as an exact run when a result exists.
+ */
+export function testChip(
+  testsPassed: boolean | null,
+  testRun: TestRun | null,
+): { label: string; tone: "green" | "red" | "amber" | "neutral" } {
+  if (testsPassed === null || testRun === "none") {
+    return { label: testResultLabel(false, "none"), tone: "neutral" };
+  }
+  const run = testRun ?? "exact";
+  const label = testResultLabel(testsPassed, run);
+  if (run === "partial") return { label, tone: "amber" };
+  return { label, tone: testsPassed ? "green" : "red" };
+}
+
+export interface ChecksView {
+  checks: string;
+  checkedAt: string | null;
+}
+
+/**
+ * M6: the PR checks to show on the merge card: the status the approval was requested with, or
+ * the fresher one the last revalidation read (kept on the merge_pr step), whichever is newer.
+ */
+export function latestChecks(
+  payload: ChecksView,
+  task: EngineeringTaskDetail | null | undefined,
+): ChecksView {
+  const out = task?.steps.find((s) => s.step === "merge_pr")?.output;
+  const fresh = isRecord(out) && isRecord(out.freshStatus) ? out.freshStatus : null;
+  if (!fresh || typeof fresh.checks !== "string" || typeof fresh.checkedAt !== "string") {
+    return payload;
+  }
+  if (payload.checkedAt !== null && payload.checkedAt >= fresh.checkedAt) return payload;
+  return { checks: fresh.checks, checkedAt: fresh.checkedAt };
+}
+
+/** `HH:MM` (local time) of an ISO timestamp, or empty for an invalid one. */
+export function clockTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** M7: what cancelling (or rejecting a step, which cancels) does, shown before it happens. */
+export const CANCEL_CONFIRM_TEXT =
+  "This cancels the task and discards Synapse's uncommitted changes. Committed work is kept on the task branch.";
+
+/** I3: the note over a draft that came from Jira or Slack; null for one the user wrote. */
+export function draftSourceNote(source: EngineeringTaskView["source"]): string | null {
+  if (source === "manual") return null;
+  const from = source === "jira" ? "Jira" : "Slack";
+  return `From ${from}: written by someone else. Review and edit before approving — only what you approve is given to Claude.`;
 }
 
 /** Only an https link is rendered as one: the URL comes from a payload, not from the user. */

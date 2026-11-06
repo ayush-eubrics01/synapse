@@ -3,13 +3,17 @@
 import type { ApprovalView, EngineeringTaskDetail, EngineeringTaskView } from "@synapse/contracts";
 import { useState } from "react";
 import {
+  CANCEL_CONFIRM_TEXT,
   type CommitRef,
+  clockTime,
   developOutput,
   type EngineeringApproval,
   engineeringApproval,
+  latestChecks,
   reasonLabel,
   safeHttpsUrl,
   shortSha,
+  testChip,
 } from "../../../lib/engineering";
 import { DiffViewer } from "../engineering/DiffViewer";
 import { Button } from "../ui/Button";
@@ -50,7 +54,7 @@ export function RejectControl({
   }
   return (
     <span className="syn-eng-confirm">
-      <span className="syn-eng-confirm-text">Rejecting cancels the task.</span>
+      <span className="syn-eng-confirm-text">{CANCEL_CONFIRM_TEXT}</span>
       <Button variant="secondary" onClick={onReject}>
         Reject and cancel task
       </Button>
@@ -88,17 +92,12 @@ function Body({ p, detail }: { p: EngineeringApproval; detail: EngineeringTaskDe
   switch (p.kind) {
     case "commit": {
       const dev = developOutput(detail);
+      const tests = testChip(p.testsPassed, p.testRun);
       const files = p.files.length > 0 ? p.files : (dev?.files ?? []);
       return (
         <>
           <div className="syn-eng-row">
-            {p.testsPassed === null ? (
-              <Chip>Tests not run</Chip>
-            ) : p.testsPassed ? (
-              <Chip tone="green">Tests passed</Chip>
-            ) : (
-              <Chip tone="red">Tests failed</Chip>
-            )}
+            <Chip tone={tests.tone}>{tests.label}</Chip>
             <span className="syn-eng-faint">
               {`${p.filesTotal} ${p.filesTotal === 1 ? "file" : "files"} changed`}
             </span>
@@ -151,16 +150,24 @@ function Body({ p, detail }: { p: EngineeringApproval; detail: EngineeringTaskDe
       );
     case "merge_pr": {
       const href = safeHttpsUrl(p.prUrl);
+      const checks = latestChecks({ checks: p.checks, checkedAt: p.checkedAt }, detail);
+      const at = checks.checkedAt ? clockTime(checks.checkedAt) : "";
       return (
         <>
           {p.autoDeploys && <DeployBanner env={p.environmentName} />}
           <div className="syn-eng-row">
             <span>{p.prNumber === null ? "Pull request" : `Pull request #${p.prNumber}`}</span>
-            {p.checks !== "" && (
+            {checks.checks !== "" && (
               <Chip
-                tone={p.checks === "passing" ? "green" : p.checks === "failing" ? "red" : "neutral"}
+                tone={
+                  checks.checks === "passing"
+                    ? "green"
+                    : checks.checks === "failing"
+                      ? "red"
+                      : "neutral"
+                }
               >
-                {`checks ${p.checks}`}
+                {at === "" ? `checks ${checks.checks}` : `checks ${checks.checks} at ${at}`}
               </Chip>
             )}
             {p.mergeable !== "" && (
@@ -276,7 +283,7 @@ export function EngineeringAttentionCard({
         </Button>
         {confirming ? (
           <span className="syn-eng-confirm">
-            <span className="syn-eng-confirm-text">Cancel this task?</span>
+            <span className="syn-eng-confirm-text">{CANCEL_CONFIRM_TEXT}</span>
             <Button variant="secondary" onClick={() => onCancel(task.id)}>
               Cancel task
             </Button>

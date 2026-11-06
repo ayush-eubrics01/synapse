@@ -114,6 +114,25 @@ test("every fixed reason code in the contracts has a plain-English label", () =>
   }
 });
 
+test("the final-review codes have their own labels (M11)", () => {
+  for (const code of [
+    "lock_lost",
+    "lock_held_by_other",
+    "step_running",
+    "not_terminal",
+    "repo_has_active_task",
+    "checks_failing",
+    "origin_changed",
+    "merged_after_cancel",
+    "cleanup_incomplete",
+  ]) {
+    expect(reasonLabel(code)).not.toBe(reasonLabel("definitely_not_a_code"));
+  }
+  expect(reasonLabel("checks_failing")).toMatch(/checks/i);
+  expect(reasonLabel("origin_changed")).toMatch(/origin/i);
+  expect(reasonLabel("merged_after_cancel")).toMatch(/merged/i);
+});
+
 test("the named reasons read as sentences, and unknown or empty codes never echo raw text", () => {
   expect(reasonLabel("unsafe_change")).toMatch(/outside|unsafe|\.git/i);
   expect(reasonLabel("parent_conflict")).toMatch(/conflict/i);

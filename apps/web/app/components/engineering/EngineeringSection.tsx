@@ -8,7 +8,9 @@ import type {
 } from "@synapse/contracts";
 import { useState } from "react";
 import {
+  CANCEL_CONFIRM_TEXT,
   developOutput,
+  draftSourceNote,
   groupTasks,
   isTerminal,
   lockText,
@@ -50,7 +52,12 @@ const STATUS_TONE: Record<EngineeringTaskView["status"], ChipTone> = {
   needs_attention: "red",
 };
 
-function DescriptionApproval({
+/**
+ * I3: mounts the description form only once the task detail is loaded, keyed on the detail's id
+ * and `updatedAt`, so the form's text always starts from the stored description (a detail that
+ * arrives after the first render, or a newer one, gives a fresh form). No hooks here.
+ */
+export function DescriptionApproval({
   task,
   detail,
   onApprove,
@@ -59,14 +66,38 @@ function DescriptionApproval({
   detail: EngineeringTaskDetail | null;
   onApprove: EngineeringHandlers["approveDescription"];
 }) {
-  const [text, setText] = useState(detail?.draftDescription ?? "");
+  if (!detail) return <p className="syn-eng-note">Loading the description...</p>;
+  return (
+    <DescriptionForm
+      key={`${detail.id}:${detail.updatedAt}`}
+      taskId={task.id}
+      source={detail.source}
+      initial={detail.approvedDescription ?? detail.draftDescription}
+      onApprove={onApprove}
+    />
+  );
+}
+
+/** The editable description; `initial` is read once (the parent remounts it with a new key). */
+export function DescriptionForm({
+  taskId,
+  source,
+  initial,
+  onApprove,
+}: {
+  taskId: string;
+  source: EngineeringTaskView["source"];
+  initial: string;
+  onApprove: EngineeringHandlers["approveDescription"];
+}) {
+  const [text, setText] = useState(initial);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  if (!detail) return <p className="syn-eng-note">Loading the description...</p>;
+  const note = draftSourceNote(source);
   const submit = async () => {
     setBusy(true);
     setError(null);
-    const e = await onApprove(task.id, text);
+    const e = await onApprove(taskId, text);
     setBusy(false);
     if (e) setError(e);
   };
@@ -78,6 +109,11 @@ function DescriptionApproval({
         if (text.trim() !== "" && !busy) void submit();
       }}
     >
+      {note && (
+        <p className="syn-eng-source-note" role="note">
+          {note}
+        </p>
+      )}
       <label className="syn-eng-field">
         <span>Description (edit it, then approve to start the investigation)</span>
         <textarea
@@ -94,6 +130,35 @@ function DescriptionApproval({
         </Button>
       </div>
     </form>
+  );
+}
+
+/** M7: "Cancel task" with inline confirmation that says what a cancel does. */
+export function CancelTaskControl({
+  onCancel,
+  initiallyConfirming = false,
+}: {
+  onCancel: () => void;
+  initiallyConfirming?: boolean;
+}) {
+  const [confirming, setConfirming] = useState(initiallyConfirming);
+  if (!confirming) {
+    return (
+      <Button variant="ghost" size="sm" onClick={() => setConfirming(true)}>
+        Cancel task
+      </Button>
+    );
+  }
+  return (
+    <span className="syn-eng-confirm">
+      <span className="syn-eng-confirm-text">{CANCEL_CONFIRM_TEXT}</span>
+      <Button variant="secondary" size="sm" onClick={onCancel}>
+        Cancel task
+      </Button>
+      <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
+        Keep
+      </Button>
+    </span>
   );
 }
 
@@ -155,6 +220,9 @@ function TaskRow({
         ) : (
           <p className="syn-eng-note">Loading the plan...</p>
         ))}
+      {task.status === "queued" && task.lastPickupError && (
+        <p className="syn-eng-reason">{`Waiting to retry: ${reasonLabel(task.lastPickupError)}`}</p>
+      )}
       {task.status === "awaiting_approval" && (
         <p className="syn-eng-note">Waiting for your approval in Needs you.</p>
       )}
@@ -166,9 +234,7 @@ function TaskRow({
       )}
       {!isTerminal(task.status) && (
         <div className="syn-eng-actions">
-          <Button variant="ghost" size="sm" onClick={() => handlers.cancel(task.id)}>
-            Cancel task
-          </Button>
+          <CancelTaskControl onCancel={() => handlers.cancel(task.id)} />
         </div>
       )}
     </li>

@@ -107,6 +107,7 @@ const REGISTRY_LABELS: Record<string, string> = {
   path_unavailable: "That path is not available right now",
   git_failed: "Couldn't read this repository",
   invalid_state: "Not possible in the current state",
+  repo_has_active_task: "An engineering task for this repository is not finished. Cancel it first",
 };
 
 /** The inline text for an API error code from inspecting or registering a repository. */

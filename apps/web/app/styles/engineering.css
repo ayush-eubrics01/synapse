@@ -365,3 +365,14 @@
 .syn-msg-task {
   margin-top: 2px;
 }
+
+/* I3: a draft that came from Jira or Slack was written by someone else. */
+.syn-eng-source-note {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--amberLine);
+  border-radius: 8px;
+  background: var(--amberBg);
+  color: var(--amberFg);
+  font-size: 13px;
+}

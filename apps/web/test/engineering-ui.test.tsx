@@ -3,7 +3,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderToString } from "react-dom/server";
 import { DiffViewer } from "../app/components/engineering/DiffViewer";
-import { EngineeringSection } from "../app/components/engineering/EngineeringSection";
+import {
+  CancelTaskControl,
+  DescriptionApproval,
+  DescriptionForm,
+  EngineeringSection,
+} from "../app/components/engineering/EngineeringSection";
 import { NewTaskForm } from "../app/components/engineering/NewTaskForm";
 import { PlanApproval } from "../app/components/engineering/PlanApproval";
 import { TaskTimeline } from "../app/components/engineering/TaskTimeline";
@@ -234,12 +239,24 @@ test("the merge PR card shows the red deploy banner only when the flag is set", 
   expect(hostile).not.toContain("javascript:");
 });
 
-test("reject asks for confirmation inline: rejecting cancels the task", () => {
+const CANCEL_TEXT =
+  "This cancels the task and discards Synapse&#x27;s uncommitted changes. Committed work is kept on the task branch.";
+
+test("reject asks for confirmation inline with the cancel consequences (M7)", () => {
   const closed = text(renderToString(<RejectControl onReject={noop} />));
   expect(closed).toContain("Reject");
-  expect(closed).not.toContain("Rejecting cancels the task");
+  expect(closed).not.toContain(CANCEL_TEXT);
   const open = text(renderToString(<RejectControl onReject={noop} initiallyConfirming />));
-  expect(open).toContain("Rejecting cancels the task");
+  expect(open).toContain(CANCEL_TEXT);
+});
+
+test("cancel task asks for the same inline confirmation (M7)", () => {
+  const closed = text(renderToString(<CancelTaskControl onCancel={noop} />));
+  expect(closed).toContain("Cancel task");
+  expect(closed).not.toContain(CANCEL_TEXT);
+  const open = text(renderToString(<CancelTaskControl onCancel={noop} initiallyConfirming />));
+  expect(open).toContain(CANCEL_TEXT);
+  expect(open).toContain("Keep");
 });
 
 test("the needs attention card shows the plain-English reason", () => {
@@ -557,4 +574,136 @@ test("page.tsx puts Engineering after Projects and feeds the footer lock from th
   expect(at("engineering")).toBeLessThan(at("people"));
   expect(page).toContain("lockText(overview?.engineeringLock)");
   expect(page).toContain("onCreateTask={feed.handlers.createTaskFromJira}");
+});
+
+// ---------------------------------------------------------------- final review (web)
+
+test("description approval mounts the form only once the detail exists, keyed on id and updatedAt (I3)", () => {
+  const t = task({ status: "proposed" });
+  const loading = DescriptionApproval({ task: t, detail: null, onApprove: async () => null });
+  expect(text(renderToString(loading))).toContain("Loading the description");
+  expect(text(renderToString(loading))).not.toContain("<textarea");
+  // The detail arrives: a fresh form element keyed on it, so its state starts from the detail.
+  const d = detail({
+    status: "proposed",
+    approvedDescription: null,
+    draftDescription: "the draft",
+  });
+  const ready = DescriptionApproval({ task: t, detail: d, onApprove: async () => null });
+  expect(ready.type).toBe(DescriptionForm);
+  expect(ready.key).toBe(`${d.id}:${d.updatedAt}`);
+  expect(text(renderToString(ready))).toContain(">the draft</textarea>");
+  // An edited, approved description is what comes back after a failed investigation.
+  const again = DescriptionApproval({
+    task: t,
+    detail: detail({ status: "proposed", approvedDescription: "my edit", draftDescription: "x" }),
+    onApprove: async () => null,
+  });
+  expect(text(renderToString(again))).toContain(">my edit</textarea>");
+});
+
+test("a Jira or Slack draft carries the note that someone else wrote it (I3)", () => {
+  const render = (source: "manual" | "jira" | "slack") =>
+    text(
+      renderToString(
+        DescriptionApproval({
+          task: task({ status: "proposed", source }),
+          detail: detail({ status: "proposed", source }),
+          onApprove: async () => null,
+        }),
+      ),
+    );
+  expect(render("jira")).toContain(
+    "From Jira: written by someone else. Review and edit before approving — only what you approve is given to Claude.",
+  );
+  expect(render("slack")).toContain("From Slack: written by someone else.");
+  expect(render("manual")).not.toContain("written by someone else");
+});
+
+test("the commit card labels exact, partial and missing test runs (M1)", () => {
+  const base = { diffHash: "h", files: [], filesTotal: 1, message: "m" };
+  expect(
+    card(approval("engineering.commit", { ...base, testsPassed: true, testRun: "exact" })),
+  ).toContain("Tests passed");
+  expect(
+    card(approval("engineering.commit", { ...base, testsPassed: false, testRun: "exact" })),
+  ).toContain("Tests failed");
+  const partial = card(
+    approval("engineering.commit", { ...base, testsPassed: true, testRun: "partial" }),
+  );
+  expect(partial).toContain("Partial test run (passed)");
+  expect(partial).not.toContain("Tests passed");
+  expect(
+    card(approval("engineering.commit", { ...base, testsPassed: false, testRun: "partial" })),
+  ).toContain("Partial test run (failed)");
+  expect(
+    card(approval("engineering.commit", { ...base, testsPassed: false, testRun: "none" })),
+  ).toContain("Tests not run");
+});
+
+test("the merge PR card shows when the checks were read, preferring the fresher status (M6)", () => {
+  const payload = {
+    parentBranch: "main",
+    prNumber: 7,
+    prUrl: "https://github.com/o/r/pull/7",
+    status: {
+      state: "OPEN",
+      mergeable: "MERGEABLE",
+      checks: "pending",
+      headSha: null,
+      checkedAt: "2026-11-06T10:00:00.000Z",
+    },
+    pushedSha: "a".repeat(40),
+    autoDeploys: false,
+  };
+  const html = card(approval("engineering.merge_pr", payload));
+  expect(html).toMatch(/checks pending at \d{2}:\d{2}/);
+  const fresh = detail({
+    steps: [
+      {
+        id: "s",
+        step: "merge_pr",
+        status: "failed",
+        approvalId: "a1",
+        claudeRunId: null,
+        output: {
+          freshStatus: {
+            state: "OPEN",
+            mergeable: "MERGEABLE",
+            checks: "failing",
+            headSha: null,
+            checkedAt: "2026-11-06T10:04:00.000Z",
+          },
+        },
+        createdAt: "",
+        updatedAt: "",
+      },
+    ],
+  });
+  const html2 = card(approval("engineering.merge_pr", payload), fresh);
+  expect(html2).toMatch(/checks failing at \d{2}:\d{2}/);
+  expect(html2).toMatch(/syn-chip--red/);
+});
+
+test("a queued task shows why its pickup is waiting to retry (I1)", () => {
+  const html = text(
+    renderToString(
+      <EngineeringSection
+        tasks={[task({ status: "queued", lastPickupError: "fetch_failed" })]}
+        details={{}}
+        repos={[repo()]}
+        lock={{ held: false }}
+        now={NOW}
+        handlers={{
+          create: async () => null,
+          approveDescription: async () => null,
+          approvePlan: async () => null,
+          cancel: noop,
+        }}
+      />,
+    ),
+  );
+  expect(html).toContain("Waiting to retry");
+  expect(html).toMatch(/Fetching from the remote failed/);
+  expect(html).not.toContain("fetch_failed");
 });
