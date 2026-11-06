@@ -313,6 +313,7 @@ Port in `packages/contracts/src/repository.ts`; adapter `LocalGitWorkflow` in `a
 ```typescript
 interface GitWorkflow {
   preflight(repo, parent, opts?: { allowUpstreamPush?: boolean }): Promise<GitPreflightResult>;
+  localState(repo): Promise<GitLocalStateResult>;  // preflight's local checks only; no remote
   currentBranch(repo): Promise<string | null>;
   createTaskBranch(repo, parent, taskBranch): Promise<{ baseSha: string }>;
   gitDirFingerprint(repo): Promise<string>;   // filesystem reads only; includes configFingerprint
@@ -326,18 +327,19 @@ interface GitWorkflow {
   branchExists(repo, name): Promise<boolean>;
   branchTip(repo, name): Promise<string | null>;
   commitsAhead(repo, parent): Promise<GitCommitSummary[]>;  // newest first
-  cleanup(repo, taskBranch, returnTo, opts: { force: boolean }): Promise<{ ok: true; deleted: boolean } | { ok: false; dirty: true }>;
+  cleanup(repo, taskBranch, returnTo: string | null, opts: { force: boolean }): Promise<{ ok: true; deleted: boolean } | { ok: false; dirty: true }>;
 }
 ```
 
-- **Options.** `GitConfigGuard.expectedConfigFingerprint`: when given and different, the call fails `config_changed` before any git command. `GitDiffOptions.gitDirBaseline` is compared before any git command (`unsafe`, reason `git_dir_changed`). `GitMergeOptions.commit` pins the task-branch tip (`branch_moved`; exactly that commit is merged). `GitPushOptions.expectedSha` pins the parent tip (`branch_moved`; `<sha>:refs/heads/<parent>` is pushed), plus `protectedBranches` and the registered `upstreamUrl`.
+- **Options.** `GitConfigGuard.expectedConfigFingerprint`: when given and different, the call fails `config_changed` before any git command. `GitDiffOptions.gitDirBaseline` is compared before any git command (`unsafe`, reason `git_dir_changed`). `GitMergeOptions.commit` pins the task-branch tip (`branch_moved`; exactly that commit is merged). `GitPushOptions.expectedSha` pins the parent tip (`branch_moved`; `<sha>:refs/heads/<parent>` is pushed), plus `protectedBranches`, the registered `upstreamUrl` and (final review) the registered `expectedOriginUrl`.
 - **`GitDiffSummary`**: `files` (path, added, removed), `hash` (sha256 over HEAD and the kind, mode and on-disk content of every changed path; staging does not change it), `unsafe` and sorted `unsafeReasons` (`GIT_UNSAFE_REASONS`), `diffText` (at most `GIT_DIFF_TEXT_MAX_BYTES` = 200 KiB, cut on a UTF-8 boundary) and `truncated`.
 - **`commitAll`**: checks the hash, `git add -A`, checks again (resetting and `diff_changed` on a mismatch), then commits. `nothing_to_commit` and `unsafe_change` are refusals.
 - **`updateParent`** fetches `origin` and `upstream` with explicit refspecs and merges (`--ff-only`, else a merge commit); it is not `git pull`. **`createTaskBranch`** fast-forwards the local parent to `origin/<parent>` only, then `switch -c` with no tracking. A conflict is aborted (`merge --abort`) and reported as `{ ok: false, conflict: true }`; every merge carries `-c branch.<parent>.mergeOptions= -c rerere.enabled=false -c rerere.autoUpdate=false -c submodule.recurse=false`.
-- **`pushParent`** pushes only to `origin`, never forces, and refuses a protected parent (`protected_branch`), an origin push URL equal to the upstream repository (`push_target_is_upstream`; same normalised URL or same `owner/repo`) and a missing comparison reference (`no_upstream_reference`).
+- **`pushParent`** pushes only to `origin`, never forces, and refuses a protected parent (`protected_branch`), an origin push URL equal to the upstream repository (`push_target_is_upstream`; same normalised URL or same `owner/repo`) and a missing comparison reference (`no_upstream_reference`). With `expectedOriginUrl` it also refuses (`origin_changed`) when any effective origin push URL (`git remote get-url --push --all origin`, insteadOf rules expanded) is not that URL by normalised key or `owner/repo`; null always refuses.
+- **`localState`** (final review): realpath equals git's top level, no merge/rebase/cherry-pick/revert in progress, clean status; `{ ok: false, reason: "not_a_repository" | "merge_in_progress" | "dirty_tree" }` otherwise. No remote is contacted (startup recovery uses it). `preflight` runs it first.
 - **`discardChanges`** (`reset --hard HEAD` plus `clean` of exactly the diff's untracked paths) runs only when the tree still hashes to `expectedHash` and the diff is safe; otherwise `diff_changed`, `unsafe_change`, `dirty_tree` or `config_changed`.
-- **`cleanup`** deletes the task branch only when another local branch contains it, unless `force`; a dirty tree or merge in progress is untouched (`{ ok: false, dirty: true }`).
-- **Preflight reasons** (`GIT_PREFLIGHT_REASONS`): `not_a_repository`, `merge_in_progress`, `dirty_tree`, `missing_remote`, `upstream_push_enabled`, `parent_missing_origin`, `parent_missing_upstream`. **Error codes** (`GIT_WORKFLOW_ERROR_CODES`): `git_failed`, `git_timeout`, `fetch_failed`, `push_failed`, `invalid_ref`, `branch_exists`, `branch_missing`, `missing_remote`, `dirty_tree`, `diff_changed`, `unsafe_change`, `nothing_to_commit`, `protected_branch`, `push_target_is_upstream`, `no_upstream_reference`, `config_changed`, `branch_moved`.
+- **`cleanup`** switches to `returnTo` (null: stays on the current branch) and deletes the task branch only when another local branch contains it, unless `force`; it never deletes the task branch while it is checked out (`deleted: false`); a dirty tree or merge in progress is untouched (`{ ok: false, dirty: true }`).
+- **Preflight reasons** (`GIT_PREFLIGHT_REASONS`): `not_a_repository`, `merge_in_progress`, `dirty_tree`, `missing_remote`, `upstream_push_enabled`, `parent_missing_origin`, `parent_missing_upstream`. **Error codes** (`GIT_WORKFLOW_ERROR_CODES`): `git_failed`, `git_timeout`, `fetch_failed`, `push_failed`, `invalid_ref`, `branch_exists`, `branch_missing`, `missing_remote`, `dirty_tree`, `diff_changed`, `unsafe_change`, `nothing_to_commit`, `protected_branch`, `push_target_is_upstream`, `no_upstream_reference`, `config_changed`, `branch_moved`, `origin_changed`.
 
 ## 4.2 Pull request provider (`PullRequestProvider`, Phase 10)
 
