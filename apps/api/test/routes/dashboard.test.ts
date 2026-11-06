@@ -117,7 +117,7 @@ describe("GET /api/dashboard/overview", () => {
     const o = await overview();
     expect(o.self).toEqual({ slackUserId: null, name: null });
     expect(Object.values(o.counts).every((n) => n === 0)).toBe(true);
-    expect(o.engineeringLock).toBeNull();
+    expect(o.engineeringLock).toEqual({ held: false });
     expect(o.lastSlackSyncAt).toBeNull();
     expect(o.pipeline.map((s) => s.id)).toEqual(["collect", "screen", "assess", "surface"]);
     expect(o.pipeline.find((s) => s.id === "surface")?.state).toBe("idle");

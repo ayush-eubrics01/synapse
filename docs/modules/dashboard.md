@@ -4,7 +4,7 @@ Read-only aggregates for the web dashboard. No writes, no AI, no external calls.
 
 ## Endpoints
 
-- `GET /api/dashboard/overview` returns `DashboardOverview`: `generatedAt` (the clock), `self` (confirmed Slack id and display name, or nulls), `counts`, `lastSlackSyncAt`, `health`, `pipeline`, and `engineeringLock` (always `null` until Phase 10).
+- `GET /api/dashboard/overview` returns `DashboardOverview`: `generatedAt` (the clock), `self` (confirmed Slack id and display name, or nulls), `counts`, `lastSlackSyncAt`, `health`, `pipeline`, and `engineeringLock` (`{held, taskId?, taskTitle?, since?}`, Phase 10); `counts.engineeringAwaiting` is the number of engineering tasks in `awaiting_approval` or `needs_attention`.
 - `GET /api/claude/status` additionally returns `thresholds` (`fiveHour: {soft, hard, stop}`, `sevenDay: {soft, hard}`), in the units the settings store. It is present even when `quota` is `null`.
 
 Every count starts from the same service method as its list endpoint and applies the Needs-you feed's rules (`apps/web/lib/needs-you.ts`), so each count matches the cards the feed shows. Where the feed drops rows a list returns, the count drops them too:

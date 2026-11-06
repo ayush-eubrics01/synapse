@@ -197,8 +197,8 @@ test("evaluatePerson returns a refusal as data and a 409 retry as an error", asy
 });
 
 test("getOverview reads the dashboard aggregate", async () => {
-  const { calls, impl } = fake(200, { engineeringLock: null });
-  expect((await getOverview(impl)).engineeringLock).toBeNull();
+  const { calls, impl } = fake(200, { engineeringLock: { held: false } });
+  expect((await getOverview(impl)).engineeringLock).toEqual({ held: false });
   expect(calls[0]?.url).toBe("/api/dashboard/overview");
   expect(calls[0]?.init?.method).toBeUndefined();
 });

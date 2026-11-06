@@ -144,6 +144,7 @@ const counts = {
   conversations: 0,
   jiraAttention: 0,
   brainReview: 4,
+  engineeringAwaiting: 0,
 };
 
 test("the nav has Projects after Jira with the brainReview badge", () => {

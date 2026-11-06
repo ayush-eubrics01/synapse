@@ -578,6 +578,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     sync,
     health,
     brain,
+    engineeringLock,
   });
 
   return {

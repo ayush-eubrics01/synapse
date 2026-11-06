@@ -156,6 +156,7 @@ test("sidebarItems shows the Needs-you card count and marks it hot", () => {
     conversations: 12,
     jiraAttention: 0,
     brainReview: 0,
+    engineeringAwaiting: 0,
   };
   const items = sidebarItems(counts, 8);
   expect(items.map((i) => i.id)).toEqual([

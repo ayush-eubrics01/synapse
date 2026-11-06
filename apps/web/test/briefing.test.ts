@@ -24,6 +24,7 @@ function overview(
       conversations: 0,
       jiraAttention: 0,
       brainReview: 0,
+      engineeringAwaiting: 0,
       ...counts,
     },
     away: { on: false, highPriorityCount: 0 },
