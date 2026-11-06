@@ -60,6 +60,7 @@ const resourcesSchema = z.array(
 
 function toUtcIso(s: string): string {
   // "+0530" lacks a colon, which not every engine accepts.
+  if (!/(Z|[+-]\d{2}:?\d{2})$/.test(s)) throw new JiraParseError(); // never fall back to local time
   const fixed = s.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
   const t = new Date(fixed).getTime();
   if (Number.isNaN(t)) throw new JiraParseError();
@@ -74,8 +75,8 @@ export function parseSearchResult(content: string): {
   const r = searchSchema.safeParse(decode(content));
   if (!r.success) throw new JiraParseError();
   const { nodes, pageInfo, totalCount } = r.data.issues;
-  const issues = nodes.map((n) =>
-    sourceIssueSchema.parse({
+  const issues = nodes.map((n) => {
+    const r = sourceIssueSchema.safeParse({
       key: n.key,
       jiraId: n.id,
       projectKey: n.fields.project.key,
@@ -89,8 +90,11 @@ export function parseSearchResult(content: string): {
       createdAt: toUtcIso(n.fields.created),
       updatedAt: toUtcIso(n.fields.updated),
       webUrl: n.webUrl,
-    }),
-  );
+    });
+    // A ZodError message can echo Jira content; throw the fixed-message error instead.
+    if (!r.success) throw new JiraParseError();
+    return r.data;
+  });
   const nextPageToken = pageInfo.hasNextPage ? (pageInfo.endCursor ?? null) : null;
   if (pageInfo.hasNextPage && !nextPageToken) throw new JiraParseError();
   return { issues, nextPageToken, total: totalCount ?? null };

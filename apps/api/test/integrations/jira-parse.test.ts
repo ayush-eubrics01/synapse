@@ -90,6 +90,26 @@ describe("jira parseSearchResult", () => {
   });
 });
 
+describe("jira parse hardening", () => {
+  test("a malformed duedate throws a content-free JiraParseError", () => {
+    const bad = node("DEMO-1", { duedate: "01/10/2026" });
+    try {
+      parseSearchResult(page([bad], false));
+      throw new Error("expected throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(JiraParseError);
+      const m = (e as Error).message;
+      expect(m).not.toContain("synthetic summary");
+      expect(m).not.toContain("DEMO-1");
+    }
+  });
+
+  test("a timestamp without an offset or Z is rejected", () => {
+    const bad = node("DEMO-1", { created: "2026-09-14T10:49:18.071" });
+    expect(() => parseSearchResult(page([bad], false))).toThrow(JiraParseError);
+  });
+});
+
 describe("jira parseResources", () => {
   test("one site", () => {
     const content = JSON.stringify([
