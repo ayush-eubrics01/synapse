@@ -64,17 +64,16 @@ import {
 } from "../lib/needs-you";
 import type { PaletteItem } from "../lib/palette";
 import { writeTheme } from "../lib/theme";
-import { ClaudePanel } from "./components/ClaudePanel";
 import { CommitmentsPanel } from "./components/CommitmentsPanel";
 import { CommandPalette } from "./components/header/CommandPalette";
 import { Header } from "./components/header/Header";
 import { InboxPanel } from "./components/InboxPanel";
-import { JobsTable } from "./components/JobsTable";
 import { PeopleCandidates } from "./components/PeopleCandidates";
 import { PersonProfile } from "./components/PersonProfile";
 import { PriorityPeople } from "./components/PriorityPeople";
-import { SlackStatus } from "./components/SlackStatus";
 import { Sidebar } from "./components/shell/Sidebar";
+import { Running } from "./components/system/Running";
+import { SystemDetails } from "./components/system/SystemDetails";
 import { NeedsYou } from "./components/triage/NeedsYou";
 import { BACKFILL_CARD_ID } from "./components/triage/SetupCards";
 import { useNeedsYouActions } from "./components/triage/useNeedsYouActions";
@@ -468,6 +467,16 @@ export default function Dashboard() {
               backfillConfirmSignal={backfillSignal}
             />
           </section>
+          {overview && (
+            <section id="running" className="syn-section">
+              <Running
+                pipeline={overview.pipeline}
+                status={claudeStatus}
+                runs={claudeRuns}
+                now={now}
+              />
+            </section>
+          )}
           <section id="inbox" className="syn-section">
             <h2>Inbox</h2>
             <InboxPanel messages={messages} />
@@ -538,12 +547,13 @@ export default function Dashboard() {
             />
           </section>
           <section id="system" className="syn-section">
-            <h2>Latest jobs</h2>
-            <JobsTable jobs={jobs} />
-            <h2>Claude</h2>
-            <ClaudePanel status={claudeStatus} runs={claudeRuns} />
-            <h2>Slack</h2>
-            <SlackStatus status={slackStatus} onSkip={() => void skipPage()} />
+            <SystemDetails
+              jobs={jobs}
+              slack={slackStatus}
+              runs={claudeRuns}
+              onSkip={() => void skipPage()}
+              now={now}
+            />
           </section>
         </div>
       </main>

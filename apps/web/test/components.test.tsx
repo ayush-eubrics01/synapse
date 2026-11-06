@@ -9,8 +9,7 @@ import { renderToString } from "react-dom/server";
 import { CommitmentsPanel } from "../app/components/CommitmentsPanel";
 import { PeopleCandidates } from "../app/components/PeopleCandidates";
 import { PersonProfile } from "../app/components/PersonProfile";
-import { SlackStatus } from "../app/components/SlackStatus";
-import type { CommitmentViewDto, SlackStatusDto } from "../lib/api";
+import type { CommitmentViewDto } from "../lib/api";
 
 const ev = (o: Partial<EvidenceView> = {}): EvidenceView => ({
   observationKey: "communication.brief",
@@ -200,35 +199,4 @@ test("CommitmentsPanel shows proposal confirm and reject only with confirm_propo
   expect(renderCommitments([commitment({ proposals: [p], actions: ["start"] })])).not.toContain(
     "Confirm completed",
   );
-});
-
-// Moves to the System section with Task 6.
-const sync = {
-  stream: "slack.messages",
-  checkpoint: null,
-  upperBound: null,
-  status: "idle" as const,
-  pagesDone: 0,
-  lastSuccessAt: null,
-  lastError: null,
-  nextRunAfter: null,
-};
-const slackStatus = (o: Partial<SlackStatusDto["incremental"]> = {}): SlackStatusDto => ({
-  incremental: { ...sync, ...o },
-  backfill: { ...sync, stream: "slack.backfill", resumable: false },
-  searchesToday: 3,
-});
-
-test("SlackStatus offers Skip unreadable page only for a stalled parse, and no backfill button", () => {
-  const stalled = renderToString(
-    <SlackStatus
-      status={slackStatus({ status: "error", lastError: { kind: "parse_failed", message: "m" } })}
-      onSkip={() => {}}
-    />,
-  );
-  expect(stalled).toContain("Skip unreadable page");
-  const fine = renderToString(<SlackStatus status={slackStatus()} onSkip={() => {}} />);
-  expect(fine).not.toContain("Skip unreadable page");
-  // The backfill is started from the Needs-you setup card now.
-  expect(fine).not.toContain("<button");
 });
