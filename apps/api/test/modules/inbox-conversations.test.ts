@@ -44,7 +44,8 @@ function seed(withSelf = true): void {
   const conv = (id: string, ext: string, type: "im" | "mpim" | "channel", name: string | null) =>
     db.insert(schema.slackConversations).values({ id, externalId: ext, type, name }).run();
   conv("c-ada", "D0ADA0001", "im", null);
-  conv("c-self", "D0SELF001", "im", null);
+  // The self DM is recognised by its stored name equalling the self user's stored name.
+  conv("c-self", "D0SELF001", "im", "Grace");
   conv("c-ops", "C0OPS0001", "channel", "ops");
   let n = 0;
   const msg = (id: string, conv: string, sender: string, min: number, text: string | null) =>
@@ -89,6 +90,36 @@ describe("GET /api/inbox/conversations", () => {
     expect(ada.messageCount).toBe(2);
     expect(ada.lastSender).toEqual({ id: ADA, name: "Ada", isSelf: false });
     expect(ops.lastMessageAt).toBe(at(5));
+  });
+
+  test("a DM I started with no reply and no name is not a self DM", async () => {
+    seed();
+    c.db
+      .insert(schema.slackConversations)
+      .values({ id: "c-new", externalId: "D0NEW0001", type: "im", name: null })
+      .run();
+    c.db
+      .insert(schema.slackMessages)
+      .values({
+        id: "m9",
+        conversationId: "c-new",
+        ts: "1793889999.000100",
+        senderUserId: "u-self",
+        text: "invented opener",
+        sentAt: at(30),
+        collectedAt: at(30),
+      })
+      .run();
+    const d = (await list()).find((x) => x.id === "D0NEW0001");
+    expect(d).toMatchObject({ isSelfDm: false, partner: null, theyWroteLast: false, name: null });
+    expect(d?.lastSender.isSelf).toBe(true);
+  });
+
+  test("a partner-less DM whose name differs from the self name is not a self DM", async () => {
+    seed();
+    c.sqlite.run("update slack_conversations set name = 'someone-else' where id = 'c-self'");
+    const d = (await list()).find((x) => x.id === "D0SELF001");
+    expect(d).toMatchObject({ isSelfDm: false, partner: null, theyWroteLast: false });
   });
 
   test("null preview when latest text expired", async () => {
@@ -142,6 +173,13 @@ describe("GET /api/inbox/conversations/:id/thread", () => {
     expect(nf.status).toBe(404);
     expect(await nf.json()).toEqual({ error: "conversation not found" });
     expect((await thread("xyz")).status).toBe(400);
+  });
+
+  test("thread limit is bounded to 1..500", async () => {
+    seed();
+    expect((await thread("C0OPS0001", "?limit=0")).status).toBe(400);
+    expect((await thread("C0OPS0001", "?limit=501")).status).toBe(400);
+    expect((await thread("C0OPS0001", "?limit=500")).status).toBe(200);
   });
 
   test("oldest first, isSelf, newest-limit window", async () => {
@@ -221,7 +259,7 @@ describe("GET /api/inbox/conversations/:id/thread", () => {
 
   test("sentViaSynapse matches normalised text within an hour only", async () => {
     seed();
-    const out = (id: string, text: string, status: "sent" | "pending") =>
+    const out = (text: string, status: "sent" | "pending") =>
       c.db.transaction((tx) => {
         const r = c.outgoing.requestSend(tx, {
           followupId: null,
@@ -234,7 +272,7 @@ describe("GET /api/inbox/conversations/:id/thread", () => {
           .where(eq(schema.outgoingMessages.id, r.outgoingId))
           .run();
       });
-    out("o1", "ok Q&A sure", "sent");
+    out("ok Q&A sure", "sent");
     const t = (await (await thread("C0OPS0001")).json()) as ConversationThread;
     // m6 sentAt = at(4): 2 min after sendingAt
     expect(t.messages.find((m) => m.id === "m6")?.sentViaSynapse).toEqual({ status: "sent" });

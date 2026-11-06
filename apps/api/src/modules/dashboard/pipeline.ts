@@ -9,7 +9,8 @@ export interface PipelineInput {
   };
   rulesOk: boolean;
   openRedFlags: number;
-  assess: { duePending: number; running: number; failedRecent: number };
+  /** Pending jobs that are due, running jobs and jobs waiting to retry all count as waiting. */
+  assess: { duePending: number; running: number; retrying: number; failedRecent: number };
   openUrgent: number;
   pendingApprovals: number;
 }
@@ -49,7 +50,7 @@ export function pipelineStages(input: PipelineInput, now: Date): Stages {
     summary: `${input.openRedFlags} red flags open`,
   };
 
-  const waiting = assess.duePending + assess.running;
+  const waiting = assess.duePending + assess.running + assess.retrying;
   const assessStage: Stages[number] = {
     id: "assess",
     label: "Assess",

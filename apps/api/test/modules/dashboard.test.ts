@@ -10,7 +10,7 @@ function input(o: Partial<PipelineInput> = {}): PipelineInput {
     slack: { lastSuccessAt: minutesAgo(10), error: false, stalled: false, searchesToday: 4 },
     rulesOk: true,
     openRedFlags: 2,
-    assess: { duePending: 0, running: 0, failedRecent: 0 },
+    assess: { duePending: 0, running: 0, retrying: 0, failedRecent: 0 },
     openUrgent: 0,
     pendingApprovals: 0,
     ...o,
@@ -60,20 +60,51 @@ describe("pipelineStages", () => {
 
   test("assess: failing beats pending; waiting for pending or running; else up to date", () => {
     const failed = stage(
-      input({ assess: { duePending: 3, running: 0, failedRecent: 1 } }),
+      input({ assess: { duePending: 3, running: 0, retrying: 0, failedRecent: 1 } }),
       "assess",
     );
     expect(failed.state).toBe("failing");
     expect(
-      stage(input({ assess: { duePending: 2, running: 0, failedRecent: 0 } }), "assess"),
+      stage(
+        input({ assess: { duePending: 2, running: 0, retrying: 0, failedRecent: 0 } }),
+        "assess",
+      ),
     ).toMatchObject({
       state: "waiting",
       summary: "2 waiting",
     });
     expect(
-      stage(input({ assess: { duePending: 0, running: 1, failedRecent: 0 } }), "assess").state,
+      stage(
+        input({ assess: { duePending: 0, running: 1, retrying: 0, failedRecent: 0 } }),
+        "assess",
+      ).state,
     ).toBe("waiting");
     expect(stage(input(), "assess")).toMatchObject({ state: "ok", summary: "up to date" });
+  });
+
+  test("assess: a job in RETRY counts as waiting", () => {
+    expect(
+      stage(
+        input({ assess: { duePending: 0, running: 0, retrying: 2, failedRecent: 0 } }),
+        "assess",
+      ),
+    ).toMatchObject({ state: "waiting", summary: "2 waiting" });
+  });
+
+  test("assess: failures alone read '<n> failed in the last 24 h'", () => {
+    expect(
+      stage(
+        input({ assess: { duePending: 0, running: 0, retrying: 0, failedRecent: 3 } }),
+        "assess",
+      ),
+    ).toMatchObject({ state: "failing", summary: "3 failed in the last 24 h" });
+  });
+
+  test("collect: exactly 25 min is ok, past 25 min is waiting", () => {
+    const at = (m: number) =>
+      stage(input({ slack: { ...input().slack, lastSuccessAt: minutesAgo(m) } }), "collect").state;
+    expect(at(25)).toBe("ok");
+    expect(at(25.02)).toBe("waiting");
   });
 
   test("surface: idle at 0/0, ok with an urgent item or an approval", () => {

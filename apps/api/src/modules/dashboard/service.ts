@@ -132,7 +132,12 @@ export class DashboardService {
     );
   }
 
-  private assessJobs(now: Date): { duePending: number; running: number; failedRecent: number } {
+  private assessJobs(now: Date): {
+    duePending: number;
+    running: number;
+    retrying: number;
+    failedRecent: number;
+  } {
     const { jobs } = schema;
     const n = (cond: ReturnType<typeof and>) =>
       this.deps.db.select({ n: count() }).from(jobs).where(cond).get()?.n ?? 0;
@@ -141,6 +146,8 @@ export class DashboardService {
     return {
       duePending: n(and(type, eq(jobs.status, "PENDING"), lte(jobs.runAfter, now.toISOString()))),
       running: n(and(type, eq(jobs.status, "RUNNING"))),
+      // A job backing off before its next attempt is still waiting, whatever its runAfter.
+      retrying: n(and(type, eq(jobs.status, "RETRY"))),
       failedRecent: n(
         and(
           type,

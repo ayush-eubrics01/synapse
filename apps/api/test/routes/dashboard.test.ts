@@ -196,6 +196,39 @@ describe("GET /api/dashboard/overview", () => {
     for (const i of o.health.issues) expect(i.status).not.toBe("ok");
   });
 
+  const job = (id: string, status: string, finishedAt: string | null, runAfter = NOW) =>
+    c.db
+      .insert(schema.jobs)
+      .values({
+        id,
+        type: "urgency.assess",
+        status: status as "FAILED",
+        idempotencyKey: id,
+        runAfter,
+        createdAt: finishedAt ?? NOW,
+        finishedAt,
+      })
+      .run();
+  const assess = async () => (await overview()).pipeline.find((s) => s.id === "assess");
+
+  test("an assess job in RETRY counts as waiting, even before its runAfter", async () => {
+    job("j-retry", "RETRY", null, "2026-11-06T12:05:00.000Z");
+    expect(await assess()).toMatchObject({ state: "waiting", summary: "1 waiting" });
+  });
+
+  test("an assess job in NEEDS_ATTENTION fails the assess stage", async () => {
+    job("j-na", "NEEDS_ATTENTION", NOW);
+    expect(await assess()).toMatchObject({
+      state: "failing",
+      summary: "1 failed in the last 24 h",
+    });
+  });
+
+  test("a failure older than 24 h is ignored", async () => {
+    job("j-old", "FAILED", "2026-11-05T11:59:00.000Z");
+    expect(await assess()).toMatchObject({ state: "ok", summary: "up to date" });
+  });
+
   test("an assess job that failed recently fails the assess stage", async () => {
     c.db
       .insert(schema.jobs)

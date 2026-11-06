@@ -216,11 +216,23 @@ export class InboxConversations {
       urgentBy.set(u.conversation.id, list);
     }
 
+    const selfName =
+      self === null
+        ? null
+        : (db
+            .select({ name: slackUsers.name })
+            .from(slackUsers)
+            .where(eq(slackUsers.externalId, self))
+            .get()?.name ?? null);
+
     return rows.map((r) => {
       const lastIsSelf = self !== null && r.senderExternalId === self;
       // Same rule as the commitment extractor's partnerOf: the first non-self sender in an im.
       const partner = r.type === "im" && self !== null ? this.partnerOf(r.convId, self) : null;
-      const isSelfDm = r.type === "im" && self !== null && partner === null;
+      // A partner-less im is the self DM only when its stored name equals the self user's stored
+      // name. A DM I started that has no reply yet is also partner-less, so that alone is not enough.
+      const isSelfDm =
+        r.type === "im" && partner === null && selfName !== null && r.name === selfName;
       return {
         id: r.externalId,
         type: r.type,
