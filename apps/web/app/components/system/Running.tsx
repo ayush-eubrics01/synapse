@@ -1,5 +1,6 @@
-import type { DashboardOverview } from "@synapse/contracts";
+import type { DashboardOverview, UpcomingMilestone } from "@synapse/contracts";
 import type { ClaudeRun, ClaudeStatus } from "../../../lib/api";
+import { milestoneLabel } from "../../../lib/brain";
 import { QuotaBars } from "./QuotaBars";
 
 export const seconds = (ms: number | null) => (ms === null ? "-" : `${(ms / 1000).toFixed(1)}s`);
@@ -32,11 +33,14 @@ export function Running({
   status,
   runs,
   now,
+  upcoming = [],
 }: {
   pipeline: DashboardOverview["pipeline"];
   status: ClaudeStatus | null;
   runs: ClaudeRun[];
   now: Date | null;
+  /** The next milestones (Phase 9); the first three are shown. */
+  upcoming?: UpcomingMilestone[];
 }) {
   const last = runs[0];
   return (
@@ -89,6 +93,30 @@ export function Running({
           )}
           <Fact label="Engineering task" value="None running" sub="lock not in use yet" />
         </div>
+        {upcoming.length > 0 && (
+          <>
+            <hr className="syn-panel-divider" />
+            <div className="syn-run-upcoming">
+              <div className="syn-run-fact-label">Upcoming</div>
+              <ul className="syn-run-upcoming-list">
+                {upcoming.slice(0, 3).map((m) => (
+                  <li key={m.id} className="syn-run-upcoming-row">
+                    <span>
+                      {m.projectName} · {m.name}
+                    </span>
+                    <span
+                      className={
+                        m.overdue ? "syn-run-upcoming-due is-overdue" : "syn-run-upcoming-due"
+                      }
+                    >
+                      {milestoneLabel(m, now)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

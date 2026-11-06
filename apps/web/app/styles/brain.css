@@ -1,0 +1,172 @@
+/* Projects section, Needs-you brain cards and the Running "Upcoming" list (spec C13). Tokens only. */
+.syn-brain-repos,
+.syn-brain-facts,
+.syn-run-upcoming-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.syn-brain-repo {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.syn-brain-repo-main,
+.syn-brain-row,
+.syn-brain-project-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.syn-brain-repo-name,
+.syn-brain-project-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.syn-brain-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.syn-brain-drift {
+  margin: 0;
+  font-size: 13px;
+  color: var(--amberFg);
+}
+
+.syn-brain-register {
+  margin: 16px 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.syn-brain-subhead,
+.syn-brain-group-head {
+  margin: 0 0 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.syn-brain-form,
+.syn-brain-envs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.syn-brain-envs {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+}
+
+.syn-brain-env,
+.syn-brain-milestone-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.syn-brain-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.syn-brain-grow {
+  flex: 1;
+  min-width: 200px;
+}
+
+.syn-brain-wide {
+  width: 100%;
+}
+
+.syn-brain-error {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--redFg);
+}
+
+.syn-brain-project {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.syn-brain-summary {
+  margin: 6px 0 0;
+  color: var(--ink2);
+}
+
+.syn-brain-group {
+  margin-top: 16px;
+}
+
+.syn-brain-fact,
+.syn-brain-milestone {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 0;
+}
+
+.syn-brain-fact.is-pending {
+  align-items: center;
+}
+
+.syn-brain-fact-text {
+  flex: 1;
+  min-width: 200px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.syn-brain-evidence {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.syn-brain-fact-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.syn-run-upcoming-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--ink2);
+}
+
+.syn-run-upcoming-due {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.syn-run-upcoming-due.is-overdue {
+  color: var(--redFg);
+}

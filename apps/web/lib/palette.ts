@@ -1,7 +1,7 @@
 export interface PaletteItem {
   id: string;
   label: string;
-  group: "go to" | "conversation" | "person" | "jira" | "action";
+  group: "go to" | "conversation" | "person" | "jira" | "project" | "action";
   run: () => void;
 }
 

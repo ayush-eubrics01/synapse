@@ -11,17 +11,25 @@ import type {
   JiraIssueView,
   Job,
   PersonDetail,
+  ProjectDetail,
   RecommendationView,
+  RepositoryView,
 } from "@synapse/contracts";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ComponentProps, useCallback, useEffect, useRef, useState } from "react";
 import { type ActionErrors, actionErrorText, NO_ACTION_ERRORS } from "../lib/action-errors";
 import {
+  ApiError,
+  acceptBrainFact,
+  acceptCurrentRemotes,
+  addProjectFact,
   type ClaudeRun,
   type ClaudeStatus,
   type CommitmentStatusDto,
   type CommitmentViewDto,
   classifyOverviewFailure,
+  createMilestone,
   decideProposal,
+  deleteMilestone,
   draftFollowup,
   evaluatePerson,
   type FollowupViewDto,
@@ -41,16 +49,22 @@ import {
   getPeople,
   getPersonFlags,
   getPersonProfile,
+  getProject,
+  getProjects,
   getRecommendations,
+  getRepositories,
   getSecurityFlags,
   getSlackIdentity,
   getSlackStatus,
   getThread,
   getUrgent,
+  inspectRepositoryNow,
+  inspectRepositoryPath,
   type JiraStatusDto,
   type OverviewFailure,
   type PersonDto,
   type PersonPriorityDto,
+  registerRepository,
   type SecurityFlagDto,
   type SlackIdentityDto,
   type SlackStatusDto,
@@ -58,7 +72,9 @@ import {
   setPersonPriority,
   skipUnreadablePage,
   type UrgentItemDto,
+  updateMilestone,
 } from "../lib/api";
+import { brainPaletteItems, projectRowId } from "../lib/brain";
 import { trailingDebounce } from "../lib/debounce";
 import { conversationTitle, filterConversations, type InboxFilter } from "../lib/inbox";
 import { jiraPaletteItems, jiraRowId } from "../lib/jira";
@@ -75,6 +91,8 @@ import { TOASTS } from "../lib/needs-you-actions";
 import type { PaletteItem } from "../lib/palette";
 import type { EvalOutcome } from "../lib/people-ui";
 import { writeTheme } from "../lib/theme";
+import type { MilestoneDraft } from "./components/brain/ProjectCard";
+import { ProjectsSection } from "./components/brain/ProjectsSection";
 import { Commitments } from "./components/commitments/Commitments";
 import { AwayBanner } from "./components/header/AwayBanner";
 import { CommandPalette } from "./components/header/CommandPalette";
@@ -155,6 +173,7 @@ const GO_TO: Array<{ id: SectionId; label: string }> = [
   { id: "inbox", label: "Inbox" },
   { id: "commitments", label: "Commitments" },
   { id: "jira", label: "Jira" },
+  { id: "projects", label: "Projects" },
   { id: "people", label: "People" },
   { id: "system", label: "System" },
 ];
@@ -208,6 +227,9 @@ export default function Dashboard() {
   const [jiraStatus, setJiraStatus] = useState<JiraStatusDto | null>(null);
   const [jiraIssues, setJiraIssues] = useState<JiraIssueView[]>([]);
   const [jiraAttention, setJiraAttention] = useState<JiraIssueView[]>([]);
+  const [repos, setRepos] = useState<RepositoryView[] | null>(null);
+  const [projectDetails, setProjectDetails] = useState<ProjectDetail[]>([]);
+  const [registerSignal, setRegisterSignal] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionErrors, setActionErrors] = useState<ActionErrors>(NO_ACTION_ERRORS);
   // Immediate actions clear only their own channel; a deferred commit's failure stays until Dismiss.
@@ -234,31 +256,57 @@ export default function Dashboard() {
   const refresh = useCallback(async () => {
     const openUser = personRef.current;
     const threadId = threadIdRef.current;
-    const [a, j, cs, cr, ss, ug, sf, pp, id, cd, rc, cm, rq, fu, ov, cv, pd, td, ad, js, ji, ja] =
-      await Promise.allSettled([
-        getApprovals(),
-        getJobs(20),
-        getClaudeStatus(),
-        getClaudeRuns(10),
-        getSlackStatus(),
-        getUrgent("open"),
-        getSecurityFlags(false),
-        getPeople(),
-        getSlackIdentity(),
-        getCandidates(50),
-        getRecommendations(),
-        getCommitments(commitmentFilterRef.current),
-        getCommitments("review"),
-        getFollowups(),
-        getOverview(),
-        getConversations(50),
-        openUser ? getPersonProfile(openUser) : Promise.resolve(null),
-        threadId ? getThread(threadId) : Promise.resolve(null),
-        getAwayDigest(),
-        getJiraStatus(),
-        getJiraIssues("all"),
-        getJiraIssues("attention"),
-      ]);
+    const [
+      a,
+      j,
+      cs,
+      cr,
+      ss,
+      ug,
+      sf,
+      pp,
+      id,
+      cd,
+      rc,
+      cm,
+      rq,
+      fu,
+      ov,
+      cv,
+      pd,
+      td,
+      ad,
+      js,
+      ji,
+      ja,
+      rp,
+      pr,
+    ] = await Promise.allSettled([
+      getApprovals(),
+      getJobs(20),
+      getClaudeStatus(),
+      getClaudeRuns(10),
+      getSlackStatus(),
+      getUrgent("open"),
+      getSecurityFlags(false),
+      getPeople(),
+      getSlackIdentity(),
+      getCandidates(50),
+      getRecommendations(),
+      getCommitments(commitmentFilterRef.current),
+      getCommitments("review"),
+      getFollowups(),
+      getOverview(),
+      getConversations(50),
+      openUser ? getPersonProfile(openUser) : Promise.resolve(null),
+      threadId ? getThread(threadId) : Promise.resolve(null),
+      getAwayDigest(),
+      getJiraStatus(),
+      getJiraIssues("all"),
+      getJiraIssues("attention"),
+      getRepositories(),
+      getProjects(),
+    ]);
     if (a.status === "fulfilled") setApprovals(a.value);
     if (j.status === "fulfilled") setJobs(j.value);
     if (cs.status === "fulfilled") setClaudeStatus(cs.value);
@@ -280,6 +328,7 @@ export default function Dashboard() {
     if (js.status === "fulfilled") setJiraStatus(js.value);
     if (ji.status === "fulfilled") setJiraIssues(ji.value);
     if (ja.status === "fulfilled") setJiraAttention(ja.value);
+    if (rp.status === "fulfilled") setRepos(rp.value);
     // The open thread is refetched with everything else; stale answers for another conversation are dropped.
     if (td.status === "fulfilled" && td.value && threadIdRef.current === threadId)
       setThread(td.value);
@@ -290,6 +339,19 @@ export default function Dashboard() {
         personRef.current = null;
         setPerson(null);
       }
+    }
+    // Project details (facts, milestones) follow the project list; a failed one keeps its old copy.
+    let projectsFailed = pr.status === "rejected";
+    if (pr.status === "fulfilled") {
+      const details = await Promise.allSettled(pr.value.map((p) => getProject(p.id)));
+      projectsFailed = details.some((d) => d.status === "rejected");
+      const fresh = details.flatMap((d) => (d.status === "fulfilled" ? [d.value] : []));
+      setProjectDetails((prev) =>
+        pr.value.flatMap((p) => {
+          const d = fresh.find((x) => x.id === p.id) ?? prev.find((x) => x.id === p.id);
+          return d ? [d] : [];
+        }),
+      );
     }
     // Expanded histories are refetched on every refresh so review changes show at once.
     const open = expandedRef.current;
@@ -323,8 +385,14 @@ export default function Dashboard() {
       ad,
       js,
       ji,
+      rp,
     ].find((r) => r.status === "rejected");
-    const message = failed?.status === "rejected" ? String(failed.reason) : null;
+    const message =
+      failed?.status === "rejected"
+        ? String(failed.reason)
+        : projectsFailed
+          ? "Could not load the projects"
+          : null;
     setLoadError(message);
     return message;
   }, []);
@@ -415,6 +483,43 @@ export default function Dashboard() {
     await refresh();
   };
 
+  const inspectNow = async (id: string) => {
+    setActionError(null);
+    try {
+      await inspectRepositoryNow(id);
+      toast.show("Inspection queued · runs in the background");
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) toast.show("Inspection already queued");
+      else setActionError(String(e));
+    }
+    await refresh();
+  };
+
+  const proposeRepository = async (path: string) => {
+    try {
+      return { ok: true, proposal: await inspectRepositoryPath(path) } as const;
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof ApiError ? (e.code ?? "git_failed") : "unreachable",
+      } as const;
+    }
+  };
+
+  const register: ComponentProps<typeof ProjectsSection>["onRegister"] = async (input) => {
+    try {
+      await registerRepository(input);
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof ApiError ? (e.code ?? "invalid_input") : "unreachable",
+      };
+    }
+    toast.show("Repository registered");
+    await refresh();
+    return { ok: true };
+  };
+
   const setPriority = (
     p: { slackUserId: string; rationale: string | null },
     priority: PersonPriorityDto,
@@ -436,6 +541,12 @@ export default function Dashboard() {
     scrollToSection(id);
   };
 
+  const openRegister = () => {
+    setActive("projects");
+    setRegisterSignal((n) => n + 1);
+    scrollToSection("projects");
+  };
+
   const feed = useNeedsYouActions({
     refresh,
     setActionError,
@@ -443,6 +554,8 @@ export default function Dashboard() {
     toggleHistory,
     seeAllPeople: () => goTo("people"),
     seeAllJira: () => goTo("jira"),
+    seeAllProjects: () => goTo("projects"),
+    registerRepository: () => openRegister(),
     onEvaluationQueued: (id) => evalQueue.markQueued([id]),
   });
   // Pending-undo keys are passed in, so a live refresh can't bring a hidden item back (D8).
@@ -460,6 +573,12 @@ export default function Dashboard() {
     awayDigest,
     jiraStatus,
     jiraAttention,
+    brainReview: projectDetails.flatMap((d) =>
+      d.facts
+        .filter((f) => f.status === "needs_review")
+        .map((fact) => ({ fact, projectName: d.name })),
+    ),
+    repositories: repos,
     hidden: feed.hidden,
   };
   const cards = buildNeedsYou(needsInput);
@@ -529,6 +648,13 @@ export default function Dashboard() {
       open: (key) => {
         setActive("jira");
         scrollToSection(jiraRowId(key));
+      },
+    }),
+    ...brainPaletteItems(projectDetails, {
+      register: openRegister,
+      open: (id) => {
+        setActive("projects");
+        scrollToSection(projectRowId(id));
       },
     }),
     { id: "act-theme", label: "Toggle theme", group: "action", run: toggleTheme },
@@ -617,6 +743,7 @@ export default function Dashboard() {
                 status={claudeStatus}
                 runs={claudeRuns}
                 now={now}
+                upcoming={overview?.upcoming}
               />
             </section>
           </div>
@@ -667,6 +794,31 @@ export default function Dashboard() {
               now={now}
               onSync={feed.handlers.syncJira}
               onGoToSetup={() => goTo("triage")}
+            />
+          </section>
+          <section id="projects" className="syn-section">
+            <ProjectsSection
+              repos={repos ?? []}
+              projects={projectDetails}
+              loaded={repos !== null}
+              now={now}
+              hidden={feed.hidden}
+              registerSignal={registerSignal}
+              onInspectNow={(id) => void inspectNow(id)}
+              onAcceptRemotes={(id) => void act(() => acceptCurrentRemotes(id))}
+              onProposal={proposeRepository}
+              onRegister={register}
+              onAcceptFact={feed.handlers.acceptBrainFact}
+              onRejectFact={feed.handlers.rejectBrainFact}
+              onAddFact={(projectId, kind, content) =>
+                void act(() => addProjectFact(projectId, { kind, content }))
+              }
+              onSaveMilestone={(projectId, id, d: MilestoneDraft) =>
+                void act(() =>
+                  id === null ? createMilestone(projectId, d) : updateMilestone(projectId, id, d),
+                )
+              }
+              onDeleteMilestone={(projectId, id) => void act(() => deleteMilestone(projectId, id))}
             />
           </section>
           <section id="people" className="syn-section">

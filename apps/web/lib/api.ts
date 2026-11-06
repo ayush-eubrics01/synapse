@@ -18,10 +18,21 @@ import type {
   JiraIssueViewKind,
   JiraStatusDto as JiraStatusDtoContract,
   Job,
+  MilestoneInput,
+  MilestoneUpdateInput,
+  MilestoneView,
   OutgoingResolveAction,
   PersonDetail,
   PersonFlag,
+  ProjectDetail,
+  ProjectFactView,
+  ProjectView,
   RecommendationView,
+  RepositoryProposal,
+  RepositoryRegisterInput,
+  RepositoryUpdateInput,
+  RepositoryView,
+  UpcomingMilestone,
   UrgencyStatus,
   UrgentItem,
 } from "@synapse/contracts";
@@ -31,6 +42,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** The API's fixed `error` code, when the body had one. */
+    readonly code?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -54,15 +67,20 @@ async function request<T>(
   const res = await fetchImpl(url, init);
   if (!res.ok && !okStatuses.includes(res.status)) {
     let detail = "";
+    let code: string | undefined;
     try {
       const body = (await res.json()) as { error?: unknown };
-      if (typeof body.error === "string") detail = `: ${body.error}`;
+      if (typeof body.error === "string") {
+        detail = `: ${body.error}`;
+        code = body.error;
+      }
     } catch {
       // body was not JSON; the status alone is reported
     }
     throw new ApiError(
       `${init?.method ?? "GET"} ${url} failed with ${res.status}${detail}`,
       res.status,
+      code,
     );
   }
   // No Content has no body to parse.
@@ -633,4 +651,148 @@ export function updateJiraSettings(
     { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(patch) },
     fetchImpl,
   );
+}
+
+// ---- Engineering Brain (Phase 9, C12) ----
+
+const JSON_HEADERS = { "content-type": "application/json" };
+
+function send<T>(
+  method: "POST" | "PUT",
+  url: string,
+  body: unknown,
+  fetchImpl: typeof fetch,
+): Promise<T> {
+  return request(url, { method, headers: JSON_HEADERS, body: JSON.stringify(body) }, fetchImpl);
+}
+
+export function getRepositories(fetchImpl: typeof fetch = fetch): Promise<RepositoryView[]> {
+  return request("/api/repos", undefined, fetchImpl);
+}
+
+/** Saves nothing; a refused path is an ApiError whose `code` is the reason. */
+export function inspectRepositoryPath(
+  path: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<RepositoryProposal> {
+  return send("POST", "/api/repos/inspect", { path }, fetchImpl);
+}
+
+export function registerRepository(
+  input: RepositoryRegisterInput,
+  fetchImpl: typeof fetch = fetch,
+): Promise<RepositoryView> {
+  return send("POST", "/api/repos", input, fetchImpl);
+}
+
+export function updateRepository(
+  id: string,
+  input: RepositoryUpdateInput,
+  fetchImpl: typeof fetch = fetch,
+): Promise<RepositoryView> {
+  return send("PUT", `/api/repos/${encodeURIComponent(id)}`, input, fetchImpl);
+}
+
+/** Queues an inspection; 409 (thrown, code `already_queued`) when one is already queued. */
+export function inspectRepositoryNow(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ jobId: string }> {
+  return request(`/api/repos/${encodeURIComponent(id)}/inspect`, { method: "POST" }, fetchImpl);
+}
+
+export function acceptCurrentRemotes(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<RepositoryView> {
+  return request(
+    `/api/repos/${encodeURIComponent(id)}/accept-remotes`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export function getProjects(fetchImpl: typeof fetch = fetch): Promise<ProjectView[]> {
+  return request("/api/projects", undefined, fetchImpl);
+}
+
+export function getProject(id: string, fetchImpl: typeof fetch = fetch): Promise<ProjectDetail> {
+  return request(`/api/projects/${encodeURIComponent(id)}`, undefined, fetchImpl);
+}
+
+/** A user-added fact is approved at once (C9). */
+export function addProjectFact(
+  projectId: string,
+  input: { kind: ProjectFactView["kind"]; content: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<ProjectFactView> {
+  return send("POST", `/api/projects/${encodeURIComponent(projectId)}/facts`, input, fetchImpl);
+}
+
+/** Approves a fact, optionally with edited content. */
+export function acceptBrainFact(
+  id: string,
+  content?: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ProjectFactView> {
+  return send(
+    "POST",
+    `/api/brain/facts/${encodeURIComponent(id)}/accept`,
+    content === undefined ? {} : { content },
+    fetchImpl,
+  );
+}
+
+export function rejectBrainFact(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ProjectFactView> {
+  return request(
+    `/api/brain/facts/${encodeURIComponent(id)}/reject`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export function createMilestone(
+  projectId: string,
+  input: Omit<MilestoneInput, "status"> & { status?: MilestoneInput["status"] },
+  fetchImpl: typeof fetch = fetch,
+): Promise<MilestoneView> {
+  return send(
+    "POST",
+    `/api/projects/${encodeURIComponent(projectId)}/milestones`,
+    input,
+    fetchImpl,
+  );
+}
+
+export function updateMilestone(
+  projectId: string,
+  id: string,
+  input: MilestoneUpdateInput,
+  fetchImpl: typeof fetch = fetch,
+): Promise<MilestoneView> {
+  return send(
+    "PUT",
+    `/api/projects/${encodeURIComponent(projectId)}/milestones/${encodeURIComponent(id)}`,
+    input,
+    fetchImpl,
+  );
+}
+
+export function deleteMilestone(
+  projectId: string,
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  return request(
+    `/api/projects/${encodeURIComponent(projectId)}/milestones/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+    fetchImpl,
+  );
+}
+
+export function getUpcoming(fetchImpl: typeof fetch = fetch): Promise<UpcomingMilestone[]> {
+  return request("/api/brain/upcoming", undefined, fetchImpl);
 }

@@ -17,6 +17,8 @@ export interface NeedsYouActionsOptions {
   toggleHistory: (slackUserId: string) => void;
   seeAllPeople: () => void;
   seeAllJira: () => void;
+  seeAllProjects: () => void;
+  registerRepository: () => void;
   onEvaluationQueued?: (slackUserId: string) => void;
 }
 
