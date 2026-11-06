@@ -163,3 +163,40 @@ export interface LockView {
   taskId?: string;
   since?: string;
 }
+
+// ---- approval text edits (F2.1) --------------------------------------------------------------
+
+export const COMMIT_MESSAGE_MAX = 5000;
+export const COMMIT_SUBJECT_MAX = 200;
+export const PR_TITLE_MAX = 200;
+export const PR_BODY_EDIT_MAX = 20000;
+
+export type ApprovalTextField = "commitMessage" | "prTitle" | "prBody";
+
+export const approvalTextEditSchema = z.strictObject({
+  commitMessage: z.string().optional(),
+  prTitle: z.string().optional(),
+  prBody: z.string().optional(),
+});
+export type ApprovalTextEdit = z.infer<typeof approvalTextEditSchema>;
+
+// Control characters git or argv cannot take, `\r` included (tab and `\n` stay allowed).
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the point is to reject these
+const CONTROL = /[\u0000-\u0008\u000B-\u001F\u007F]/;
+
+/** Whether `value` is text the commit or PR executors can pass on as one argv element. */
+export function isValidApprovalText(field: ApprovalTextField, value: string): boolean {
+  if (CONTROL.test(value)) return false;
+  const length = [...value].length;
+  switch (field) {
+    case "commitMessage": {
+      if (length < 1 || length > COMMIT_MESSAGE_MAX) return false;
+      const first = value.split("\n", 1)[0] ?? "";
+      return first.trim() !== "" && [...first].length <= COMMIT_SUBJECT_MAX;
+    }
+    case "prTitle":
+      return length >= 1 && length <= PR_TITLE_MAX && !value.includes("\n") && value.trim() !== "";
+    case "prBody":
+      return length <= PR_BODY_EDIT_MAX;
+  }
+}

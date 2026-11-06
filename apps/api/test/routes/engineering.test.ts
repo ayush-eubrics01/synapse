@@ -382,3 +382,20 @@ describe("cancel, lock and overview", () => {
     expect(o.engineeringLock.since).toBeTruthy();
   });
 });
+
+describe("approval text edit and retry-merge routes (F2.1, F3.2)", () => {
+  test("invalid bodies are 400 invalid_input; unknown approval or task is 404", async () => {
+    const t = await createTask();
+    const base = `/api/engineering/tasks/${t.id}/approvals/nope`;
+    expect((await send("PUT", base, {})).status).toBe(404);
+    expect((await send("PUT", base, { commitMessage: 5 })).status).toBe(400);
+    expect((await send("PUT", base, { nope: "x" })).status).toBe(400);
+    const res = await send("PUT", base, { commitMessage: "Fix add" });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "not_found" });
+    const r = await send("POST", `/api/engineering/tasks/${t.id}/retry-merge`);
+    expect(r.status).toBe(400);
+    expect(await r.json()).toEqual({ error: "invalid_state" });
+    expect((await send("POST", "/api/engineering/tasks/nope/retry-merge")).status).toBe(404);
+  });
+});

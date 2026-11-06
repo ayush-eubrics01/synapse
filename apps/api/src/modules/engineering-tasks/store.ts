@@ -35,6 +35,12 @@ export const ENGINEERING_TASK_ERROR_CODES = [
   "protected_branch",
   "unsafe_test_command",
   "path_unavailable",
+  "not_pending",
+  "invalid_text",
+  "checks_failing",
+  "pr_head_moved",
+  "pr_status_failed",
+  "state_changed",
 ] as const;
 /** `registry_error:<RegistryErrorCode>` wraps a refusal of the repository registry. */
 export type EngineeringTaskErrorCode =

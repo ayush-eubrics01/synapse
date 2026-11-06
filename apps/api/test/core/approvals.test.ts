@@ -282,3 +282,16 @@ test("user_only operations cannot be requested", () => {
   const { db, engine } = setup();
   expect(() => engine.request(db, req("person.priority.set"))).toThrow();
 });
+
+test("updatePendingPayload changes a pending payload only", () => {
+  const { db, engine } = setup();
+  const a = db.transaction((tx) => engine.request(tx, req("slack.send")));
+  const upd = db.transaction((tx) => engine.updatePendingPayload(tx, a.id, { text: "new" }));
+  expect(upd?.payload).toEqual({ text: "new" });
+  engine.approve(a.id);
+  const again = db.transaction((tx) => engine.updatePendingPayload(tx, a.id, { text: "late" }));
+  expect(again).toBeNull();
+  const row = db.select().from(schema.approvals).where(eq(schema.approvals.id, a.id)).get();
+  expect(row?.payload).toEqual({ text: "new" });
+  expect(db.transaction((tx) => engine.updatePendingPayload(tx, "missing", {}))).toBeNull();
+});

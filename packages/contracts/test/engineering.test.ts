@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  approvalTextEditSchema,
   DEFAULT_POLICIES,
   developOutputSchema,
   engineeringTaskCreateInputSchema,
   investigationOutputSchema,
   isSafeTestCommand,
+  isValidApprovalText,
   parentBranchSchema,
   planApprovalInputSchema,
   taskBranchName,
@@ -194,4 +196,40 @@ test("caps", () => {
     engineeringTaskCreateInputSchema.safeParse({ ...c, draftDescription: "a".repeat(8001) })
       .success,
   ).toBe(false);
+});
+
+describe("isValidApprovalText (F2.1)", () => {
+  const ok = (f: "commitMessage" | "prTitle" | "prBody", v: string) => isValidApprovalText(f, v);
+  test("commit message", () => {
+    expect(ok("commitMessage", "Fix add\n\nTask: t1")).toBe(true);
+    expect(ok("commitMessage", "   \nbody")).toBe(false);
+    expect(ok("commitMessage", "a".repeat(201))).toBe(false);
+    expect(ok("commitMessage", `${"a".repeat(200)}\nx`)).toBe(true);
+    expect(ok("commitMessage", `x\n${"a".repeat(4998)}`)).toBe(true);
+    expect(ok("commitMessage", `x\n${"a".repeat(4999)}`)).toBe(false);
+    expect(ok("commitMessage", "Fix\u0000")).toBe(false);
+    expect(ok("commitMessage", "Fix\r\nx")).toBe(false);
+    expect(ok("commitMessage", "")).toBe(false);
+  });
+  test("code points, not UTF-16 units", () => {
+    expect(ok("prTitle", "\u{1F600}".repeat(200))).toBe(true);
+    expect(ok("prTitle", "\u{1F600}".repeat(201))).toBe(false);
+  });
+  test("pr title", () => {
+    expect(ok("prTitle", "Fix add")).toBe(true);
+    expect(ok("prTitle", "a\nb")).toBe(false);
+    expect(ok("prTitle", "a".repeat(201))).toBe(false);
+    expect(ok("prTitle", "  ")).toBe(false);
+  });
+  test("pr body", () => {
+    expect(ok("prBody", "a".repeat(20000))).toBe(true);
+    expect(ok("prBody", "a".repeat(20001))).toBe(false);
+    expect(ok("prBody", "")).toBe(true);
+    expect(ok("prBody", "line\nline\ttab")).toBe(true);
+    expect(ok("prBody", "x\u007F")).toBe(false);
+  });
+  test("edit schema is strict", () => {
+    expect(approvalTextEditSchema.safeParse({ prTitle: "x" }).success).toBe(true);
+    expect(approvalTextEditSchema.safeParse({ other: "x" }).success).toBe(false);
+  });
 });

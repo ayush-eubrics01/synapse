@@ -1,5 +1,6 @@
 import { zValidator } from "@hono/zod-validator";
 import {
+  approvalTextEditSchema,
   approveDescriptionInputSchema,
   engineeringTaskCreateInputSchema,
   engineeringTaskStatusSchema,
@@ -33,6 +34,12 @@ const STATUS: Record<
   unknown_environment: 400,
   protected_branch: 400,
   unsafe_test_command: 400,
+  invalid_text: 400,
+  not_pending: 409,
+  checks_failing: 409,
+  pr_head_moved: 409,
+  pr_status_failed: 409,
+  state_changed: 409,
 };
 
 export function engineeringErrorResponse(e: EngineeringTaskError): {
@@ -110,6 +117,23 @@ export function engineeringRoutes(c: Container): Hono {
   app.post("/api/engineering/tasks/:id/cancel", (ctx) =>
     ctx.json(c.engineering.cancel(ctx.req.param("id"))),
   );
+  app.put(
+    "/api/engineering/tasks/:id/approvals/:approvalId",
+    zValidator("json", approvalTextEditSchema, invalid),
+    (ctx) =>
+      ctx.json(
+        c.engineeringSteps.editApprovalText(
+          ctx.req.param("id"),
+          ctx.req.param("approvalId"),
+          ctx.req.valid("json"),
+        ),
+      ),
+  );
+  app.post("/api/engineering/tasks/:id/retry-merge", async (ctx) => {
+    const id = ctx.req.param("id");
+    await c.engineeringSteps.retryMerge(id);
+    return ctx.json(c.engineering.get(id));
+  });
   app.get("/api/engineering/lock", (ctx) => ctx.json(c.engineeringLock.view()));
   return app;
 }

@@ -2,13 +2,17 @@ import { realpathSync } from "node:fs";
 import {
   type AIExecutionResult,
   type Approval,
+  type ApprovalTextEdit,
+  type ApprovalTextField,
   type EngineeringStep,
   type GitWorkflow,
   GitWorkflowError,
   type InvestigationOutput,
   isSafeTestCommand,
+  isValidApprovalText,
   JobError,
   type Operation,
+  PR_BODY_EDIT_MAX,
   type PrStatus,
   PullRequestError,
   type PullRequestProvider,
@@ -37,6 +41,7 @@ import {
 import { type EngineeringLock, STEP_JOB } from "./lock";
 import {
   ACTIVE_STATUSES,
+  EngineeringTaskError,
   EngineeringTaskStore,
   priorFailureOf,
   priorTerminalStatus,
@@ -108,7 +113,7 @@ export const pushPrPayloadSchema = z.object({
   /** The parent tip after merge_local: exactly this commit is pushed. */
   mergeSha: z.string().min(1),
   prTitle: z.string().min(1).max(256),
-  prBody: z.string().max(PR_BODY_MAX + 500),
+  prBody: z.string().max(PR_BODY_EDIT_MAX),
   configFingerprint: z.string().min(1),
   ...deployNotice,
 });
@@ -168,7 +173,10 @@ export interface EngineeringStepDeps {
   events: Pick<EventPublisher, "publish">;
   audit: Pick<AuditLogger, "record">;
   queue: Pick<JobQueue, "enqueue">;
-  approvals: Pick<ApprovalEngine, "request" | "revokeAsSystem" | "expireAsSystem">;
+  approvals: Pick<
+    ApprovalEngine,
+    "request" | "revokeAsSystem" | "expireAsSystem" | "updatePendingPayload"
+  >;
   lock: Pick<EngineeringLock, "holder" | "release">;
   git: GitWorkflow;
   prs: PullRequestProvider;
@@ -248,6 +256,158 @@ export class EngineeringStepService {
         }
       });
     }
+  }
+
+  // ---- F2.1: edit the text of a pending commit or push approval --------------------------------
+
+  /**
+   * The user's edit of the commit message or PR title/body. Allowed only on a `pending` approval
+   * of the task's current step; the text is stored in the payload and used verbatim by the
+   * executors (argv only). Revalidation is untouched. The audit row holds field names only.
+   */
+  editApprovalText(taskId: string, approvalId: string, edit: ApprovalTextEdit): Approval {
+    return this.deps.db.transaction(
+      (tx) => {
+        const row = tx.select().from(approvalsTable).where(eq(approvalsTable.id, approvalId)).get();
+        const task = this.store.get(tx, taskId);
+        if (
+          !task ||
+          !row ||
+          row.targetRef !== taskId ||
+          row.targetIntegration !== ENGINEERING_INTEGRATION
+        ) {
+          throw new EngineeringTaskError("not_found");
+        }
+        const step = ACTION_STEP[row.action];
+        const allowed: Partial<Record<ApprovalStep, ApprovalTextField[]>> = {
+          commit: ["commitMessage"],
+          push_pr: ["prTitle", "prBody"],
+        };
+        const fields = (Object.keys(edit) as ApprovalTextField[]).filter(
+          (f) => edit[f] !== undefined,
+        );
+        const stepFields = step ? allowed[step] : undefined;
+        if (
+          !step ||
+          !stepFields ||
+          fields.length === 0 ||
+          fields.some((f) => !stepFields.includes(f))
+        ) {
+          throw new EngineeringTaskError("invalid_input");
+        }
+        if (
+          row.status !== "pending" ||
+          task.status !== "awaiting_approval" ||
+          task.currentStep !== step ||
+          this.stepRow(tx, taskId, step)?.approvalId !== approvalId
+        ) {
+          throw new EngineeringTaskError("not_pending");
+        }
+        const merged: Record<string, unknown> = {
+          ...((row.payload as Record<string, unknown> | null) ?? {}),
+        };
+        for (const f of fields) {
+          const value = edit[f] as string;
+          if (!isValidApprovalText(f, value)) throw new EngineeringTaskError("invalid_text");
+          merged[f === "commitMessage" ? "message" : f] = value;
+        }
+        if (!PAYLOAD_SCHEMAS[step].safeParse(merged).success) {
+          throw new EngineeringTaskError("invalid_text");
+        }
+        const updated = this.deps.approvals.updatePendingPayload(tx, approvalId, merged);
+        if (!updated) throw new EngineeringTaskError("not_pending");
+        this.deps.audit.record(tx, {
+          actor: "user",
+          module: MODULE,
+          action: "engineering.approval_edited",
+          workerProfile: WORKER,
+          targetRef: taskId,
+          approvalId,
+          result: "ok",
+          details: { taskId, fields },
+        });
+        return updated;
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  // ---- F3.2: re-request merge_pr after failing checks ---------------------------------------------
+
+  /**
+   * "Check again": a task parked at `merge_pr` with `checks_failing` re-reads the PR. Passing (or
+   * pending but mergeable) checks on the unmoved head request a fresh `engineering.merge_pr`
+   * approval; anything else is a fixed refusal and the task stays as it was.
+   */
+  async retryMerge(taskId: string): Promise<void> {
+    const ctx = this.context(taskId);
+    if ("skip" in ctx) {
+      throw new EngineeringTaskError(
+        ctx.skip === "not_found" || ctx.skip === "path_unavailable" ? ctx.skip : "invalid_state",
+      );
+    }
+    const { task, repo, parent } = ctx;
+    const eligible = (t: TaskRow | undefined) =>
+      t?.status === "needs_attention" &&
+      t.failure === "checks_failing" &&
+      t.currentStep === "merge_pr";
+    const upstream = this.deps.prs.repoRef(repo.upstreamUrl ?? "");
+    const pushedSha = this.stepOutput(taskId, "push_pr")?.pushedSha;
+    if (
+      !eligible(task) ||
+      this.deps.lock.holder()?.taskId !== taskId ||
+      !upstream ||
+      task.prNumber === null ||
+      typeof pushedSha !== "string"
+    ) {
+      throw new EngineeringTaskError("invalid_state");
+    }
+    if (this.protectedBranches(task.repositoryId).includes(parent)) {
+      throw new EngineeringTaskError("protected_branch");
+    }
+    const prNumber = task.prNumber;
+    let status: PrStatus;
+    try {
+      status = await this.deps.prs.prStatus({ upstream, number: prNumber });
+    } catch {
+      throw new EngineeringTaskError("pr_status_failed");
+    }
+    if (status.state !== "OPEN") throw new EngineeringTaskError("state_changed");
+    if (status.headSha !== pushedSha) throw new EngineeringTaskError("pr_head_moved");
+    if (
+      status.checks === "failing" ||
+      (status.checks === "pending" && status.mergeable !== "MERGEABLE")
+    ) {
+      throw new EngineeringTaskError("checks_failing");
+    }
+    const checkedAt = this.deps.clock.now().toISOString();
+    this.deps.db.transaction(
+      (tx) => {
+        const fresh = this.store.get(tx, taskId);
+        if (!fresh || !eligible(fresh) || fresh.prNumber !== prNumber) {
+          throw new EngineeringTaskError("invalid_state");
+        }
+        this.requestStep(
+          tx,
+          taskId,
+          "merge_pr",
+          "engineering.merge_pr",
+          "high",
+          {
+            taskId,
+            parentBranch: parent,
+            prNumber,
+            prUrl: fresh.prUrl ?? task.prUrl ?? "",
+            status: { ...status, checkedAt },
+            pushedSha,
+            ...this.deployNotice(fresh),
+          },
+          { prNumber },
+        );
+        this.audit(tx, "engineering.merge_rerequested", taskId, "ok", { prNumber });
+      },
+      { behavior: "immediate" },
+    );
   }
 
   // ---- E8: branch -----------------------------------------------------------------------------

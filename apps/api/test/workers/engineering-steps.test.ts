@@ -22,6 +22,8 @@ import {
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock, newId } from "@synapse/shared";
 import { and, eq, sql } from "drizzle-orm";
+import { Hono } from "hono";
+import type { Container } from "../../src/container";
 import { ApprovalEngine } from "../../src/core/approvals/approvals";
 import { AuditLogger } from "../../src/core/audit/audit";
 import { SettingsService } from "../../src/core/config/settings";
@@ -54,6 +56,7 @@ import {
   EngineeringTaskError,
   EngineeringTaskStore,
 } from "../../src/modules/engineering-tasks/store";
+import { engineeringRoutes } from "../../src/routes/engineering";
 import { registerStepJob, sweepRunScratch } from "../../src/workers/engineering/steps";
 import { type RemoteRepoFixture, remoteRepoFixture } from "../fixtures/engineering";
 import { git, tempDir } from "../fixtures/git-repo";
@@ -105,7 +108,8 @@ if (sub === "pr view") {
   const { base } = JSON.parse(readFileSync(d + "/pr.json", "utf8"));
   const r = Bun.spawnSync(["git", "--git-dir", cfg.origin, "rev-parse", "refs/heads/" + base]);
   const headRefOid = r.stdout.toString().trim();
-  process.stdout.write(JSON.stringify({ number: 7, url: "u", state: "OPEN", mergeable: "MERGEABLE", statusCheckRollup: [{ status: "COMPLETED", conclusion: cfg.conclusion ?? "SUCCESS" }], headRefOid }));
+  const rollup = cfg.checks === "none" ? [] : [{ status: cfg.checkStatus ?? "COMPLETED", conclusion: cfg.checkStatus ? "" : (cfg.conclusion ?? "SUCCESS") }];
+  process.stdout.write(JSON.stringify({ number: 7, url: "u", state: cfg.state ?? "OPEN", mergeable: cfg.mergeable ?? "MERGEABLE", statusCheckRollup: rollup, headRefOid: cfg.headRefOid ?? headRefOid }));
 }
 process.exit(0);
 `,
@@ -1754,5 +1758,231 @@ describe("startup sweep of run scratch (fix round 1)", () => {
       errors.mockRestore();
       chmodSync(locked, 0o755);
     }
+  });
+});
+
+describe("approval text edits and merge re-request (F2.1, F3.2)", () => {
+  const setGh = (extra: Record<string, unknown>) =>
+    writeFileSync(join(ghDir, "cfg.json"), JSON.stringify({ origin: fx.origin, ...extra }));
+  const api = () =>
+    engineeringRoutes({
+      engineering: service,
+      engineeringSteps: steps,
+      engineeringLock: lock,
+    } as unknown as Container);
+  const put = async (taskId: string, approvalId: string, body: unknown) => {
+    const res = await api().request(`/api/engineering/tasks/${taskId}/approvals/${approvalId}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+  const retry = async (taskId: string) => {
+    const res = await api().request(`/api/engineering/tasks/${taskId}/retry-merge`, {
+      method: "POST",
+    });
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+  const payloadOf = (id: string) => approvalRow(id)?.payload as Record<string, unknown>;
+  const editAudits = () =>
+    db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "engineering.approval_edited"))
+      .all();
+
+  test("commit: the edited message is stored, audited by field name only, and committed verbatim", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    const text = "Fix add\n\nTask: t1 EDIT-MARKER-5e";
+    const r = await put(id, a.id, { commitMessage: text });
+    expect(r.status).toBe(200);
+    expect((r.body.payload as { message: string }).message).toBe(text);
+    expect(payloadOf(a.id).message).toBe(text);
+    const rows = editAudits();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.approvalId).toBe(a.id);
+    expect(rows[0]?.details).toEqual({ taskId: id, fields: ["commitMessage"] });
+    expect(auditDump()).not.toContain("EDIT-MARKER-5e");
+    expect(eventDump()).not.toContain("EDIT-MARKER-5e");
+    expect((await approve("engineering.commit")).outcome.status).toBe("executed");
+    expect(git(repo, "log", "-1", "--format=%B", `${taskRow(id)?.taskBranch}`)).toContain(
+      "EDIT-MARKER-5e",
+    );
+  });
+
+  test("wrong field, empty edit, unknown approval", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    const before = payloadOf(a.id).message;
+    expect((await put(id, a.id, { prTitle: "x" })).body).toEqual({ error: "invalid_input" });
+    expect((await put(id, a.id, {})).status).toBe(400);
+    expect((await put(id, a.id, { commitMessage: "ok", extra: 1 })).status).toBe(400);
+    expect(await put(id, "nope", { commitMessage: "ok" })).toEqual({
+      status: 404,
+      body: { error: "not_found" },
+    });
+    expect(await put("other-task", a.id, { commitMessage: "ok" })).toEqual({
+      status: 404,
+      body: { error: "not_found" },
+    });
+    expect(payloadOf(a.id).message).toBe(before);
+    expect(editAudits()).toHaveLength(0);
+  });
+
+  test("text git or argv cannot take is 400 invalid_text and the payload is unchanged", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    const before = payloadOf(a.id).message;
+    for (const bad of [
+      "   ",
+      "   \nbody",
+      "Fix\u0000",
+      "Fix\r\nx",
+      "a".repeat(201),
+      "a".repeat(5001),
+    ]) {
+      const r = await put(id, a.id, { commitMessage: bad });
+      expect(r).toEqual({ status: 400, body: { error: "invalid_text" } });
+    }
+    expect(payloadOf(a.id).message).toBe(before);
+    expect(editAudits()).toHaveLength(0);
+  });
+
+  test("after Approve the edit is 409 not_pending and the payload is unchanged", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    const before = payloadOf(a.id).message;
+    approvals.approve(a.id);
+    expect(await put(id, a.id, { commitMessage: "Fix add" })).toEqual({
+      status: 409,
+      body: { error: "not_pending" },
+    });
+    expect(payloadOf(a.id).message).toBe(before);
+  });
+
+  test("a card left open after the task moved on is 409 not_pending", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    await approve("engineering.commit");
+    expect((await put(id, a.id, { commitMessage: "late" })).body).toEqual({ error: "not_pending" });
+    // Pending approval, but the task left awaiting_approval.
+    const b = pendingOf("engineering.merge_local") as Approval;
+    db.update(schema.engineeringTasks)
+      .set({ status: "needs_attention" })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+    expect((await put(id, b.id, { commitMessage: "x" })).body).toEqual({ error: "invalid_input" });
+    const row = db.select().from(schema.approvals).where(eq(schema.approvals.id, a.id)).get();
+    expect(row?.status).not.toBe("pending");
+  });
+
+  test("push_pr: title and a 20000-character body reach createPr", async () => {
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    const a = pendingOf("engineering.push_pr") as Approval;
+    const body = "b".repeat(20000);
+    expect((await put(id, a.id, { commitMessage: "x" })).status).toBe(400);
+    expect((await put(id, a.id, { prTitle: "Fix add", prBody: body })).status).toBe(200);
+    expect((await put(id, a.id, { prTitle: "a\nb" })).body).toEqual({ error: "invalid_text" });
+    expect((await put(id, a.id, { prBody: "b".repeat(20001) })).body).toEqual({
+      error: "invalid_text",
+    });
+    expect((await approve("engineering.push_pr")).outcome.status).toBe("executed");
+    const create = ghCalls().find((c) => c[0] === "pr" && c[1] === "create") as string[];
+    expect(create[create.indexOf("--title") + 1]).toBe("Fix add");
+    expect(create[create.indexOf("--body") + 1]).toBe(body);
+    expect(auditDump()).not.toContain("bbbbbbbbbb");
+  });
+
+  /** A task parked at merge_pr / checks_failing through a failing revalidation. */
+  async function checksFailing(): Promise<{ id: string; pushedSha: string }> {
+    const id = await developed();
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    await approve("engineering.push_pr");
+    const pushedSha = (
+      (pendingOf("engineering.merge_pr") as Approval).payload as {
+        pushedSha: string;
+      }
+    ).pushedSha;
+    setGh({ conclusion: "FAILURE" });
+    expect((await approve("engineering.merge_pr")).outcome.status).toBe("skipped");
+    expect(taskRow(id)?.failure).toBe("checks_failing");
+    return { id, pushedSha };
+  }
+
+  test("retry-merge: passing checks request a fresh merge_pr approval", async () => {
+    const { id } = await checksFailing();
+    setGh({});
+    clock.advance(60_000);
+    const r = await retry(id);
+    expect(r.status).toBe(200);
+    expect(r.body.status).toBe("awaiting_approval");
+    expect(taskRow(id)?.currentStep).toBe("merge_pr");
+    expect(taskRow(id)?.failure).toBeNull();
+    const a = pendingOf("engineering.merge_pr") as Approval;
+    expect(a.riskLevel).toBe("high");
+    expect((a.payload as { status: { checks: string } }).status.checks).toBe("passing");
+    expect(stepRow(id, "merge_pr")?.approvalId).toBe(a.id);
+    expect(auditDump()).toContain("engineering.merge_rerequested");
+    // The fresh approval executes (merge goes through).
+    expect((await approve("engineering.merge_pr")).outcome.status).toBe("executed");
+  });
+
+  test("retry-merge: pending but mergeable is allowed; pending and not mergeable is not", async () => {
+    const { id } = await checksFailing();
+    setGh({ checkStatus: "IN_PROGRESS", mergeable: "UNKNOWN" });
+    expect((await retry(id)).body).toEqual({ error: "checks_failing" });
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    setGh({ checkStatus: "IN_PROGRESS" });
+    expect((await retry(id)).status).toBe(200);
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+  });
+
+  test("retry-merge: still failing is 409 checks_failing and nothing changes", async () => {
+    const { id } = await checksFailing();
+    const stepBefore = JSON.stringify(stepRow(id, "merge_pr"));
+    expect(await retry(id)).toEqual({ status: 409, body: { error: "checks_failing" } });
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("checks_failing");
+    expect(JSON.stringify(stepRow(id, "merge_pr"))).toBe(stepBefore);
+    expect(approvals.listPending()).toEqual([]);
+  });
+
+  test("retry-merge: a moved head, a closed or merged PR and a gh failure are fixed 409s", async () => {
+    const { id } = await checksFailing();
+    const cases: [Record<string, unknown>, string][] = [
+      [{ headRefOid: "0".repeat(40) }, "pr_head_moved"],
+      [{ state: "MERGED" }, "state_changed"],
+      [{ state: "CLOSED" }, "state_changed"],
+      [{ fail: "pr view" }, "pr_status_failed"],
+    ];
+    for (const [cfg, code] of cases) {
+      setGh(cfg);
+      expect(await retry(id)).toEqual({ status: 409, body: { error: code } });
+      expect(taskRow(id)?.status).toBe("needs_attention");
+      expect(approvals.listPending()).toEqual([]);
+    }
+  });
+
+  test("retry-merge: any other step or reason is 400 invalid_state; an unknown task is 404", async () => {
+    const id = await developed();
+    expect(await retry(id)).toEqual({ status: 400, body: { error: "invalid_state" } });
+    await approve("engineering.commit");
+    await approve("engineering.merge_local");
+    await approve("engineering.push_pr");
+    expect((await retry(id)).body).toEqual({ error: "invalid_state" });
+    expect((await retry("nope")).status).toBe(404);
+  });
+
+  test("retry-merge: a protected parent is 400 protected_branch", async () => {
+    const { id } = await checksFailing();
+    setGh({});
+    protectMain();
+    expect(await retry(id)).toEqual({ status: 400, body: { error: "protected_branch" } });
+    expect(approvals.listPending()).toEqual([]);
   });
 });
