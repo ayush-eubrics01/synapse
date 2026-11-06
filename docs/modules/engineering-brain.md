@@ -61,7 +61,7 @@ Other calls: `PUT /api/repos/:id` (every field optional; `environments` replaces
 
 ### Provider (C3)
 
-`LocalGitProvider` (`integrations/repository/local-git.ts`) implements the `RepositoryProvider` port (`checkPath`, `inspect`). It runs git through `execFile`-style argv spawns (no shell, `-C <dir>`, `core.fsmonitor=false`, no prompts, no optional locks, 10 s timeout, stderr discarded). `inspect` returns the top level, current branch, head sha, remotes, `upstreamPushDisabled` (push URL `no_push`, `DISABLED` or empty), and local and remote branches. Remote URLs have userinfo stripped before they are stored or returned. `environmentCandidates` is pure and picks branch names matching stage, staging, prod, production, main, master, develop, dev or release.
+`LocalGitProvider` (`integrations/repository/local-git.ts`) implements the `RepositoryProvider` port (`checkPath`, `inspect`). It runs git through the hardened runner `integrations/repository/git.ts` (Phase 10 E17): argv spawns (no shell, `-C <dir>`, `cwd /`), `-c core.fsmonitor=false -c core.hooksPath=/dev/null -c credential.interactive=never`, no prompts, no optional locks, a minimal env (PATH, HOME, plus SSH_AUTH_SOCK, XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS when set), a 60 s timeout (120 s for push, fetch, pull and ls-remote), stderr discarded. `inspect` returns the top level, current branch, head sha, remotes, `upstreamPushDisabled` (push URL `no_push`, `DISABLED` or empty), and local and remote branches. Remote URLs have userinfo stripped before they are stored or returned. `environmentCandidates` is pure and picks branch names matching stage, staging, prod, production, main, master, develop, dev or release.
 
 ### Environment flags
 

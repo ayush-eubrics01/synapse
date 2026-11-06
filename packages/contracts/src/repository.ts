@@ -81,3 +81,166 @@ export function environmentCandidates(
     .sort()
     .map((b) => ({ name: b, branch: b }));
 }
+
+/*
+ * ---------------------------------------------------------------------------------------------
+ * Git workflow for engineering tasks (Phase 10, E7, E8, E10–E13, E15, E17; ADR-030, ADR-035).
+ * The adapter (`LocalGitWorkflow`) runs every git command through the hardened runner: argv
+ * only, `-C <registered realpath>`, hooks and fsmonitor off, no credential prompts, a timeout.
+ * It never pushes anywhere but `origin`, never passes `--force` and never resolves a conflict.
+ * ---------------------------------------------------------------------------------------------
+ */
+
+/** E7 preflight failures (fixed codes; each one sets the task to `needs_attention`). */
+export const GIT_PREFLIGHT_REASONS = [
+  "not_a_repository",
+  "merge_in_progress",
+  "dirty_tree",
+  "missing_remote",
+  "upstream_push_enabled",
+  "parent_missing_origin",
+  "parent_missing_upstream",
+] as const;
+export type GitPreflightReason = (typeof GIT_PREFLIGHT_REASONS)[number];
+
+/**
+ * Fixed error codes thrown by a `GitWorkflow` as `GitWorkflowError`. Messages carry the code
+ * only: never a path, a branch name, a URL or git's stderr.
+ */
+export const GIT_WORKFLOW_ERROR_CODES = [
+  /** A git command failed (non-zero exit) for a reason with no more specific code. */
+  "git_failed",
+  /** A git command hit its timeout and was killed. */
+  "git_timeout",
+  /** A fetch from `origin` or `upstream` failed (network, auth, missing ref). */
+  "fetch_failed",
+  /** `git push origin <parent>` was rejected or failed. */
+  "push_failed",
+  /** A branch name is not a safe, valid ref name. */
+  "invalid_ref",
+  /** The task branch already exists locally. */
+  "branch_exists",
+  /** A branch that must exist (parent, task branch, return branch) does not. */
+  "branch_missing",
+  /** A required remote (`origin`, `upstream`) is missing. */
+  "missing_remote",
+  /** The working tree is not clean where a clean tree is required. */
+  "dirty_tree",
+  /** commitAll: the diff no longer matches the hash shown in the approval. */
+  "diff_changed",
+  /** commitAll: the diff touches `.git/`, a path outside the repo, or an outward symlink. */
+  "unsafe_change",
+  /** commitAll: there is nothing to commit. */
+  "nothing_to_commit",
+  /** pushParent: the parent is a protected branch (ADR-035). */
+  "protected_branch",
+  /** pushParent: the origin push URL is the upstream repository (hard rule 13). */
+  "push_target_is_upstream",
+] as const;
+export type GitWorkflowErrorCode = (typeof GIT_WORKFLOW_ERROR_CODES)[number];
+
+export class GitWorkflowError extends Error {
+  constructor(readonly code: GitWorkflowErrorCode) {
+    super(code);
+    this.name = "GitWorkflowError";
+  }
+}
+
+export type GitPreflightResult = { ok: true } | { ok: false; reason: GitPreflightReason };
+
+export interface GitDiffFile {
+  /** Repo-relative path, as git reports it. */
+  path: string;
+  /** Lines added and removed; both 0 for a binary file. */
+  added: number;
+  removed: number;
+}
+
+/** Cap on `GitDiffSummary.diffText`, in bytes (E10). */
+export const GIT_DIFF_TEXT_MAX_BYTES = 200 * 1024;
+
+export interface GitDiffSummary {
+  /** Every changed path (tracked and untracked) against HEAD, sorted by path. */
+  files: GitDiffFile[];
+  /**
+   * sha256 over HEAD and the content and mode of every changed path. Any edit, addition,
+   * deletion or mode change gives a different hash; staging does not. commitAll re-checks it.
+   */
+  hash: string;
+  /**
+   * True when a path is under `.git/` (any `.git` segment), contains `..`, resolves outside the
+   * repo realpath, is a symlink whose target resolves outside the repo (or into `.git`), or is an
+   * embedded repository; or when the git directory differs from `gitDirBaseline`.
+   */
+  unsafe: boolean;
+  /** The plain-text diff (tracked plus new files), cut at GIT_DIFF_TEXT_MAX_BYTES. */
+  diffText: string;
+  truncated: boolean;
+}
+
+export interface GitDiffOptions {
+  /**
+   * A `gitDirFingerprint` taken before the develop run. git status never reports files inside
+   * `.git/`, so a write there (hooks, config) is caught only by comparing fingerprints.
+   */
+  gitDirBaseline?: string;
+}
+
+export interface GitPushOptions {
+  /** Branches of protected environments: never pushed (ADR-035). */
+  protectedBranches: readonly string[];
+  /** The registered (credential-stripped) upstream fetch URL. */
+  upstreamUrl: string | null;
+}
+
+export interface GitCommitSummary {
+  sha: string;
+  subject: string;
+}
+
+export interface GitWorkflow {
+  /** E7: deterministic checks before a task starts. `parent` must exist on origin and upstream. */
+  preflight(
+    repo: string,
+    parent: string,
+    opts?: { allowUpstreamPush?: boolean },
+  ): Promise<GitPreflightResult>;
+  /** The checked-out branch, or null when HEAD is detached. */
+  currentBranch(repo: string): Promise<string | null>;
+  /**
+   * E8: fetch the parent from origin and upstream, fast-forward the local parent to
+   * `origin/<parent>` only when that is a fast-forward, then `git switch -c <taskBranch> <parent>`.
+   */
+  createTaskBranch(repo: string, parent: string, taskBranch: string): Promise<{ baseSha: string }>;
+  /** A hash of the git directory (config, hooks, info, refs, index; not objects). */
+  gitDirFingerprint(repo: string): Promise<string>;
+  /** E10: the working tree's changes against HEAD. Read-only. */
+  diffSummary(repo: string, opts?: GitDiffOptions): Promise<GitDiffSummary>;
+  /** E10: `git add -A` and `git commit -m <message>`, only when the hash still matches. */
+  commitAll(repo: string, message: string, expectedHash: string): Promise<{ sha: string }>;
+  /**
+   * E11: switch to the parent and merge `origin/<parent>` then `upstream/<parent>`, fast-forward
+   * when possible, otherwise a merge commit. Any conflict is aborted and reported.
+   */
+  updateParent(repo: string, parent: string): Promise<{ ok: true } | { ok: false; conflict: true }>;
+  /** E12: `git merge --no-ff <taskBranch>` into the parent; a conflict is aborted and reported. */
+  mergeLocal(
+    repo: string,
+    parent: string,
+    taskBranch: string,
+  ): Promise<{ ok: true; sha: string } | { ok: false; conflict: true }>;
+  /** E13: `git push origin <parent>` (never upstream, never forced). */
+  pushParent(repo: string, parent: string, opts: GitPushOptions): Promise<{ ok: true }>;
+  /** Commits on the local parent that `origin/<parent>` lacks, newest first. */
+  commitsAhead(repo: string, parent: string): Promise<GitCommitSummary[]>;
+  /**
+   * E15: with a clean tree, switch to `returnTo` and delete the task branch (only when merged
+   * into another local branch, unless `force`). A dirty tree is left exactly as it is.
+   */
+  cleanup(
+    repo: string,
+    taskBranch: string,
+    returnTo: string,
+    opts: { force: boolean },
+  ): Promise<{ ok: true; deleted: boolean } | { ok: false; dirty: true }>;
+}
