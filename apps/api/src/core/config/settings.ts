@@ -1,4 +1,9 @@
-import { flagSeveritySchema, type NewDomainEvent, urgencyLevelSchema } from "@synapse/contracts";
+import {
+  flagSeveritySchema,
+  jiraScopeJqlSchema,
+  type NewDomainEvent,
+  urgencyLevelSchema,
+} from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { eq } from "drizzle-orm";
@@ -64,14 +69,8 @@ const settingSchemas = {
     .regex(/^[0-9a-fA-F-]{8,64}$/)
     .nullable()
     .default(null),
-  "jira.scope.jql": z
-    .string()
-    .min(1)
-    .max(500)
-    .refine((v) => !/[\r\n]/.test(v), "no newlines")
-    // The code wraps the scope in parentheses and appends its own ordering.
-    .refine((v) => !/\border\s+by\b/i.test(v), "no ORDER BY")
-    .default("assignee = currentUser() AND updated >= -60d"),
+  // No newline, no ORDER BY, balanced parentheses and quotes (the code wraps it as `(<scope>)`).
+  "jira.scope.jql": jiraScopeJqlSchema.default("assignee = currentUser() AND updated >= -60d"),
   "jira.excludedProjects": z.array(jiraProjectKeySchema).default([]),
   "jira.sync.intervalMinutes": z.number().int().positive().default(15),
   "jira.reconcile.hours": z.number().int().positive().default(24),
@@ -83,6 +82,9 @@ const settingSchemas = {
   // a page must stay small: 20 issues with the fixed field list is ~49 KB (measured 2026-11-06).
   "jira.pageSize": z.number().int().min(1).max(30).default(20),
   "jira.maxPagesPerRun": z.number().int().positive().default(6),
+  // A page chain (one sync or reconcile across continuations) longer than this fails as
+  // parse_failed: a connector that never ends its pages must not run Claude without bound.
+  "jira.maxPagesPerChain": z.number().int().min(1).max(500).default(50),
   "system.lastHeartbeatAt": z.string().nullable().default(null),
   "orchestrator.quota.fiveHour.soft": z.number().min(0).max(1).default(0.6),
   "orchestrator.quota.fiveHour.hard": z.number().min(0).max(1).default(0.85),

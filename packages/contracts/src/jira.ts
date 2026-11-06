@@ -16,6 +16,40 @@ export const JIRA_FIELDS = [
   "updated",
 ] as const;
 
+/**
+ * True when every `(` outside a double-quoted string has its `)` and every quote is closed (a
+ * backslash escapes the next character inside a string). The code wraps the scope as `(<scope>)`
+ * and appends its own clauses, so an unbalanced scope (`a) OR (b`) or an open string could escape
+ * that wrapping and swallow the project exclusion.
+ */
+export function jqlBalanced(jql: string): boolean {
+  let depth = 0;
+  let quoted = false;
+  for (let i = 0; i < jql.length; i++) {
+    const ch = jql[i];
+    if (quoted) {
+      if (ch === "\\") i++;
+      else if (ch === '"') quoted = false;
+    } else if (ch === '"') quoted = true;
+    else if (ch === "(") depth++;
+    else if (ch === ")" && --depth < 0) return false;
+  }
+  return depth === 0 && !quoted;
+}
+
+/**
+ * The user's scope JQL (`jira.scope.jql`, `PUT /api/jira/settings`). Messages are fixed: a
+ * validation error never echoes the scope.
+ */
+export const jiraScopeJqlSchema = z
+  .string()
+  .min(1)
+  .max(500)
+  .refine((v) => !/[\r\n]/.test(v), "no newlines")
+  // The code wraps the scope in parentheses and appends its own ordering.
+  .refine((v) => !/\border\s+by\b/i.test(v), "no ORDER BY")
+  .refine(jqlBalanced, "unbalanced parentheses or quotes");
+
 export const jiraStatusCategorySchema = z.enum(["new", "indeterminate", "done"]);
 export type JiraStatusCategory = z.infer<typeof jiraStatusCategorySchema>;
 

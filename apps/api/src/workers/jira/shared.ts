@@ -49,9 +49,39 @@ export function gate(settings: SettingsService): { skipped: string } | { cloudId
   return { cloudId };
 }
 
+const classify = (stream: JiraStream, err: unknown): ClassifiedError =>
+  err instanceof JobError ? err.classified : { kind: "unknown", message: FAILED[stream] };
+
 /**
- * Records the failure on `stream` (kind and a fixed message) and rethrows. Pauses (quota, auth)
- * are not failures: nothing is recorded (R53). A non-JobError becomes `unknown` with the fixed
+ * Records a failure on `stream`: `lastError` (kind and a fixed message), status `error` and
+ * `collection.failed`. Pauses (quota, auth) are not failures: nothing is recorded (R53).
+ */
+function record(
+  deps: Pick<JiraJobDeps, "db" | "sync" | "events">,
+  stream: JiraStream,
+  e: ClassifiedError,
+): void {
+  if (retryDecision(e.kind) === "defer") return;
+  deps.db.transaction(
+    (tx) => {
+      deps.sync.update(tx, stream, {
+        status: "error",
+        lastError: { kind: e.kind, message: FAILED[stream] },
+      });
+      deps.events.publish(tx, {
+        type: "collection.failed",
+        aggregateType: "integration",
+        aggregateId: stream,
+        correlationId: stream,
+        payload: { stream, kind: e.kind },
+      });
+    },
+    { behavior: "immediate" },
+  );
+}
+
+/**
+ * Records the failure on `stream` and rethrows. A non-JobError becomes `unknown` with the fixed
  * message, so no stray text reaches the job's stored error either.
  */
 export function fail(
@@ -59,48 +89,54 @@ export function fail(
   stream: JiraStream,
   err: unknown,
 ): never {
-  const e: ClassifiedError =
-    err instanceof JobError ? err.classified : { kind: "unknown", message: FAILED[stream] };
-  if (retryDecision(e.kind) !== "defer") {
-    deps.db.transaction(
-      (tx) => {
-        deps.sync.update(tx, stream, { lastError: { kind: e.kind, message: FAILED[stream] } });
-        deps.events.publish(tx, {
-          type: "collection.failed",
-          aggregateType: "integration",
-          aggregateId: stream,
-          correlationId: stream,
-          payload: { stream, kind: e.kind },
-        });
-      },
-      { behavior: "immediate" },
-    );
-  }
+  const e = classify(stream, err);
+  record(deps, stream, e);
   if (err instanceof JobError) throw err;
   throw new JobError(e);
 }
+
+/** A failure worth resuming from the last good page: it may pass on its own (retry or pause). */
+const resumable = (e: ClassifiedError): boolean => {
+  const d = retryDecision(e.kind);
+  return d === "retry" || d === "defer";
+};
 
 export interface PageRun {
   pages: number;
   totals: Totals;
   keys: string[];
   maxUpdated: string | null;
-  /** Set when more pages remain after this run's budget. */
+  /** The token after the last stored page; set when more pages remain (or a resume is due). */
   nextPageToken: string | null;
+  /** The chain's generation is no longer current: the caller must commit nothing. */
+  superseded: boolean;
+  /**
+   * A resumable failure after at least one page of this run was stored. It is already recorded;
+   * the caller queues a continuation from `nextPageToken` instead of restarting the chain.
+   */
+  failed: ClassifiedError | null;
 }
 
 /**
  * Fetches pages sequentially (one collector run each) up to `maxPages`, storing each as it
- * arrives. A failure records `lastError` on `stream` and rethrows; pages already stored stay
- * (upserts are idempotent), and the caller commits nothing.
+ * arrives. Before each store it checks the chain's generation and stops, storing nothing more,
+ * once it is superseded. A failure records `lastError` on `stream`; pages already stored stay
+ * (upserts are idempotent) and the caller commits nothing. A retryable failure after a stored
+ * page returns `failed` (resume from the last good token); otherwise it rethrows.
+ *
+ * Bounds: a page whose next token equals the token that produced it, or a chain that would need
+ * more than `jira.maxPagesPerChain` pages, fails as `parse_failed`. Neither is resumed.
  */
 export async function runPages(
   deps: JiraJobDeps,
   stream: JiraStream,
   args: {
+    generation: string;
     cloudId: string;
     jql: string;
     nextPageToken: string | null;
+    /** Pages the chain stored before this run. */
+    pagesSoFar: number;
     maxPages: number;
     setScope: boolean;
     signal: AbortSignal;
@@ -112,9 +148,14 @@ export async function runPages(
     keys: [],
     maxUpdated: null,
     nextPageToken: args.nextPageToken,
+    superseded: false,
+    failed: null,
   };
   const maxResults = deps.settings.get("jira.pageSize");
+  const maxChain = deps.settings.get("jira.maxPagesPerChain");
+  const current = () => deps.sync.get(stream).generation === args.generation;
   do {
+    const token = out.nextPageToken;
     let page: Awaited<ReturnType<JiraJobDeps["source"]["searchPage"]>>;
     try {
       page = await deps.source.searchPage(
@@ -122,12 +163,27 @@ export async function runPages(
           cloudId: args.cloudId,
           jql: args.jql,
           maxResults,
-          ...(out.nextPageToken !== null ? { nextPageToken: out.nextPageToken } : {}),
+          ...(token !== null ? { nextPageToken: token } : {}),
         },
         args.signal,
       );
     } catch (err) {
+      // A superseded chain's failure is not the stream's failure.
+      if (!current()) return { ...out, superseded: true };
+      const e = classify(stream, err);
+      if (out.pages > 0 && resumable(e)) {
+        record(deps, stream, e);
+        return { ...out, failed: e };
+      }
       return fail(deps, stream, err);
+    }
+    if (!current()) return { ...out, superseded: true };
+    if (page.nextPageToken !== null && page.nextPageToken === token) {
+      return fail(
+        deps,
+        stream,
+        new JobError({ kind: "parse_failed", message: "jira page token repeated" }),
+      );
     }
     const r = deps.store.upsertPage(page.issues, { setScope: args.setScope });
     out.pages++;
@@ -135,10 +191,15 @@ export async function runPages(
     out.totals.duplicates += r.updated + r.unchanged;
     out.totals.rejected += r.dropped;
     out.keys.push(...r.keys);
-    if (r.maxUpdated !== null && (out.maxUpdated === null || r.maxUpdated > out.maxUpdated)) {
-      out.maxUpdated = r.maxUpdated;
-    }
+    out.maxUpdated = maxIso(out.maxUpdated, r.maxUpdated);
     out.nextPageToken = page.nextPageToken;
+    if (out.nextPageToken !== null && args.pagesSoFar + out.pages >= maxChain) {
+      return fail(
+        deps,
+        stream,
+        new JobError({ kind: "parse_failed", message: "jira page chain too long" }),
+      );
+    }
   } while (out.nextPageToken !== null && out.pages < args.maxPages);
   return out;
 }

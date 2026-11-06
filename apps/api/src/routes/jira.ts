@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { jiraIssueViewKindSchema } from "@synapse/contracts";
+import { jiraIssueViewKindSchema, jiraScopeJqlSchema } from "@synapse/contracts";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { Container } from "../container";
@@ -11,13 +11,8 @@ const PROJECT_KEY = /^[A-Z][A-Z0-9_]+$/;
 const settingsBody = z
   .object({
     enabled: z.boolean(),
-    scopeJql: z
-      .string()
-      .min(1)
-      .max(500)
-      .refine((v) => !/[\r\n]/.test(v), "no newlines")
-      // The code wraps the scope in parentheses and appends its own ordering.
-      .refine((v) => !/\border\s+by\b/i.test(v), "no ORDER BY"),
+    // The same rules as the setting: no newline, no ORDER BY, balanced parentheses and quotes.
+    scopeJql: jiraScopeJqlSchema,
     excludedProjects: z.array(z.string().regex(PROJECT_KEY)),
   })
   .partial()

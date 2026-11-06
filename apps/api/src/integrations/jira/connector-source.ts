@@ -139,12 +139,46 @@ export class JiraConnectorSource {
     const [only] = results;
     if (!only) throw incomplete("no jira tool result");
     if (results.length > 1) throw incomplete("unexpected number of jira tool results");
-    if (only.isError) throw incomplete("jira tool returned an error");
     if (!inputMatches(only.input, expected, tolerated)) {
       throw incomplete("jira tool call did not match the requested arguments");
     }
+    // The CLI swaps a result it finds too large for a notice. Retrying the same page gets the same
+    // notice, so this parks for a person (lower jira.pageSize) instead of looping.
+    if (isOversizedNotice(only.content)) {
+      throw new JobError({ kind: "output_too_large", message: "jira tool output too large" });
+    }
+    if (only.isError) throw incomplete("jira tool returned an error");
     return only;
   }
+}
+
+/** The text of a tool result: the raw string, or the joined MCP text blocks it encodes. */
+function resultText(content: string): string {
+  try {
+    const v: unknown = JSON.parse(content);
+    if (
+      Array.isArray(v) &&
+      v.every((b) => b && typeof b === "object" && (b as { type?: unknown }).type === "text")
+    ) {
+      return v.map((b) => String((b as { text?: unknown }).text ?? "")).join("");
+    }
+  } catch {
+    // Not JSON: the raw string is the text.
+  }
+  return content;
+}
+
+/**
+ * Claude Code's replacements for an oversized MCP result (measured 2026-11-06): an
+ * `Error: result (N characters) exceeds maximum allowed tokens...` notice, or, past
+ * `MAX_MCP_OUTPUT_TOKENS`, a `<persisted-output>` block.
+ */
+export function isOversizedNotice(content: string): boolean {
+  const t = resultText(content).trimStart();
+  return (
+    (t.startsWith("Error: result (") && t.includes("exceeds maximum allowed tokens")) ||
+    t.startsWith("<persisted-output>")
+  );
 }
 
 function parseFailed(): JobError {

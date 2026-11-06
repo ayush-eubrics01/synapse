@@ -184,6 +184,52 @@ describe("JiraConnectorSource.searchPage", () => {
     expect((await source.searchPage(args, signal)).issues).toHaveLength(1);
   });
 
+  const oversized: [string, string, boolean][] = [
+    [
+      "token-limit notice",
+      "Error: result (119,482 characters) exceeds maximum allowed tokens. Output has been saved to /tmp/x.txt SYNTH-TEXT",
+      false,
+    ],
+    [
+      "token-limit notice flagged as an error",
+      "Error: result (119,482 characters) exceeds maximum allowed tokens. SYNTH-TEXT",
+      true,
+    ],
+    [
+      "persisted-output notice",
+      "<persisted-output>saved to /tmp/x SYNTH-TEXT</persisted-output>",
+      false,
+    ],
+    [
+      "notice in MCP text blocks",
+      JSON.stringify([{ type: "text", text: "<persisted-output>SYNTH-TEXT" }]),
+      false,
+    ],
+  ];
+  for (const [name, content, isError] of oversized) {
+    test(`CLI oversized-output notice is output_too_large: ${name}`, async () => {
+      const { source } = setup([tr(JIRA_TOOL_SEARCH, sent(), content, isError)]);
+      const e = await failure(source.searchPage(args, signal));
+      expect(e.classified.kind).toBe("output_too_large");
+      expect(e.message).toBe("jira tool output too large");
+      expect(JSON.stringify(e.classified)).not.toContain("SYNTH-TEXT");
+    });
+  }
+
+  test("an Error: result notice without the token-limit phrase stays parse_failed", async () => {
+    const { source } = setup([tr(JIRA_TOOL_SEARCH, sent(), "Error: result (1 characters) odd")]);
+    const e = await failure(source.searchPage(args, signal));
+    expect(e.classified.kind).toBe("parse_failed");
+  });
+
+  test("an oversized notice for mismatched arguments is still incomplete_ai_output", async () => {
+    const { source } = setup([
+      tr(JIRA_TOOL_SEARCH, sent({ maxResults: 100 }), "<persisted-output>x"),
+    ]);
+    const e = await failure(source.searchPage(args, signal));
+    expect(e.classified.kind).toBe("incomplete_ai_output");
+  });
+
   test("parse failure becomes parse_failed without content", async () => {
     const { source } = setup([tr(JIRA_TOOL_SEARCH, sent(), '{"secret":"SYNTH-TEXT"}')]);
     const e = await failure(source.searchPage(args, signal));

@@ -214,7 +214,7 @@ describe("sync", () => {
     expect(sync.get("jira.issues").lastSuccessAt).toBeNull();
     const cont = jobs("jira.sync_incremental");
     expect(cont).toHaveLength(1);
-    expect(cont[0]?.input).toMatchObject({ nextPageToken: "tok-2", page: 2 });
+    expect(cont[0]?.input).toMatchObject({ nextPageToken: "tok-2", pagesSoFar: 2 });
 
     await runPending("jira.sync_incremental");
     expect(searches).toHaveLength(3);
@@ -224,7 +224,26 @@ describe("sync", () => {
     expect(jobs("jira.sync_incremental").filter((j) => j.status === "PENDING")).toHaveLength(0);
   });
 
-  test("a page failure leaves the checkpoint unchanged and records lastError (kind only)", async () => {
+  test("a first-page failure leaves the checkpoint unchanged, records lastError (kind only) and status error", async () => {
+    db.transaction((tx) =>
+      sync.update(tx, "jira.issues", { checkpoint: "2026-11-06T11:40:00.000Z" }),
+    );
+    pages.push(
+      boom(new JobError({ kind: "incomplete_ai_output", message: "summary text DEMO secret" })),
+    );
+    await expect(run("jira.sync_incremental")).rejects.toBeInstanceOf(JobError);
+    const s = sync.get("jira.issues");
+    expect(s.checkpoint).toBe("2026-11-06T11:40:00.000Z");
+    expect(s.status).toBe("error");
+    expect(s.lastError?.kind).toBe("incomplete_ai_output");
+    expect(JSON.stringify(s.lastError)).not.toContain("secret");
+    expect(evts("collection.failed").map((e) => e.payload)).toEqual([
+      { stream: "jira.issues", kind: "incomplete_ai_output" },
+    ]);
+    expect(jobs()).toHaveLength(0);
+  });
+
+  test("a failure after a completed page resumes from the last good token; success clears the error", async () => {
     db.transaction((tx) =>
       sync.update(tx, "jira.issues", { checkpoint: "2026-11-06T11:40:00.000Z" }),
     );
@@ -232,14 +251,117 @@ describe("sync", () => {
       page([issue(1, { updatedAt: "2026-11-06T11:59:00.000Z" })], "tok-1"),
       boom(new JobError({ kind: "incomplete_ai_output", message: "summary text DEMO secret" })),
     );
-    await expect(run("jira.sync_incremental")).rejects.toBeInstanceOf(JobError);
+    const out = await run("jira.sync_incremental");
+    expect(out).toMatchObject({ pages: 1, resumed: true, kind: "incomplete_ai_output" });
     const s = sync.get("jira.issues");
+    // The failure is recorded; the checkpoint is not committed.
     expect(s.checkpoint).toBe("2026-11-06T11:40:00.000Z");
+    expect(s.status).toBe("error");
     expect(s.lastError?.kind).toBe("incomplete_ai_output");
-    expect(JSON.stringify(s.lastError)).not.toContain("secret");
-    expect(evts("collection.failed").map((e) => e.payload)).toEqual([
-      { stream: "jira.issues", kind: "incomplete_ai_output" },
-    ]);
+    expect(evts("collection.failed")).toHaveLength(1);
+    const cont = jobs("jira.sync_incremental");
+    expect(cont).toHaveLength(1);
+    expect(cont[0]?.input).toMatchObject({
+      generation: s.generation,
+      nextPageToken: "tok-1",
+      pagesSoFar: 1,
+      maxUpdated: "2026-11-06T11:59:00.000Z",
+    });
+
+    pages.push(page([issue(2, { updatedAt: "2026-11-06T11:58:00.000Z" })]));
+    expect(await runPending("jira.sync_incremental")).toMatchObject({ complete: true });
+    expect(searches[2]?.nextPageToken).toBe("tok-1");
+    const after = sync.get("jira.issues");
+    expect(after.checkpoint).toBe("2026-11-06T11:59:00.000Z");
+    expect(after.status).toBe("idle");
+    expect(after.lastError).toBeNull();
+  });
+
+  test("a resume after a rate limit waits until retryAfter", async () => {
+    pages.push(
+      page([issue(1)], "tok-1"),
+      boom(
+        new JobError({
+          kind: "rate_limited",
+          message: "x",
+          retryAfter: "2026-11-06T12:05:00.000Z",
+        }),
+      ),
+    );
+    expect(await run("jira.sync_incremental")).toMatchObject({ resumed: true });
+    expect(jobs("jira.sync_incremental")[0]?.runAfter).toBe("2026-11-06T12:05:00.000Z");
+  });
+
+  test("a needs-attention failure after a completed page is not resumed", async () => {
+    pages.push(
+      page([issue(1)], "tok-1"),
+      boom(new JobError({ kind: "output_too_large", message: "x" })),
+    );
+    await expect(run("jira.sync_incremental")).rejects.toMatchObject({
+      classified: { kind: "output_too_large" },
+    });
+    expect(sync.get("jira.issues").lastError?.kind).toBe("output_too_large");
+    expect(jobs()).toHaveLength(0);
+  });
+
+  test("a page whose next token equals the token that produced it fails as parse_failed; nothing committed", async () => {
+    settings.set("jira.maxPagesPerRun", 5);
+    pages.push(page([issue(1)], "tok-1"), page([issue(2)], "tok-1"), page([issue(3)]));
+    const err = (await run("jira.sync_incremental").catch((e) => e)) as JobError;
+    expect(err).toBeInstanceOf(JobError);
+    expect(err.classified.kind).toBe("parse_failed");
+    expect(searches).toHaveLength(2);
+    expect(row("DEMO-2")).toBeUndefined();
+    const s = sync.get("jira.issues");
+    expect(s.checkpoint).toBeNull();
+    expect(s.lastSuccessAt).toBeNull();
+    expect(s.lastError).toEqual({ kind: "parse_failed", message: "jira sync failed" });
+    expect(jobs()).toHaveLength(0);
+  });
+
+  test("a continuation whose first page repeats its own token fails as parse_failed", async () => {
+    settings.set("jira.maxPagesPerRun", 1);
+    pages.push(page([issue(1)], "tok-1"), page([issue(2)], "tok-1"));
+    await run("jira.sync_incremental");
+    await expect(runPending("jira.sync_incremental")).rejects.toMatchObject({
+      classified: { kind: "parse_failed" },
+    });
+    expect(sync.get("jira.issues").checkpoint).toBeNull();
+    expect(jobs("jira.sync_incremental").filter((j) => j.status === "PENDING")).toHaveLength(0);
+  });
+
+  test("a chain longer than jira.maxPagesPerChain fails as parse_failed; nothing committed", async () => {
+    expect(settings.get("jira.maxPagesPerChain")).toBe(50);
+    settings.set("jira.maxPagesPerChain", 3);
+    settings.set("jira.maxPagesPerRun", 2);
+    pages.push(
+      page([issue(1)], "tok-1"),
+      page([issue(2)], "tok-2"),
+      page([issue(3)], "tok-3"),
+      page([issue(4)]),
+    );
+    expect(await run("jira.sync_incremental")).toMatchObject({ complete: false });
+    expect(jobs("jira.sync_incremental")[0]?.input).toMatchObject({ pagesSoFar: 2 });
+    await expect(runPending("jira.sync_incremental")).rejects.toMatchObject({
+      classified: { kind: "parse_failed" },
+    });
+    // Page 3 was the last one allowed; page 4 is never requested.
+    expect(searches).toHaveLength(3);
+    const s = sync.get("jira.issues");
+    expect(s.checkpoint).toBeNull();
+    expect(s.lastError?.kind).toBe("parse_failed");
+    expect(jobs("jira.sync_incremental").filter((j) => j.status === "PENDING")).toHaveLength(0);
+  });
+
+  test("a chain of exactly jira.maxPagesPerChain pages completes", async () => {
+    settings.set("jira.maxPagesPerChain", 2);
+    pages.push(page([issue(1)], "tok-1"), page([issue(2)]));
+    expect(await run("jira.sync_incremental")).toMatchObject({ complete: true });
+  });
+
+  test("jira.maxPagesPerChain is bounded 1..500", () => {
+    expect(() => settings.set("jira.maxPagesPerChain", 0)).toThrow();
+    expect(() => settings.set("jira.maxPagesPerChain", 501)).toThrow();
   });
 
   test("a non-JobError failure is recorded as unknown with a fixed message", async () => {
@@ -265,6 +387,19 @@ describe("sync", () => {
     db.transaction((tx) => sync.update(tx, "jira.issues", { generation: "newer" }));
     expect(await runPending("jira.sync_incremental")).toEqual({ skipped: "superseded" });
     expect(searches).toHaveLength(1);
+  });
+
+  test("a chain superseded mid-run stops before storing the next page", async () => {
+    settings.set("jira.maxPagesPerRun", 3);
+    pages.push(page([issue(1)], "tok-1"), async () => {
+      db.transaction((tx) => sync.update(tx, "jira.issues", { generation: "newer" }));
+      return { issues: [issue(2)], nextPageToken: "tok-2", total: null };
+    });
+    expect(await run("jira.sync_incremental")).toMatchObject({ superseded: true });
+    expect(row("DEMO-1")).toBeDefined();
+    expect(row("DEMO-2")).toBeUndefined();
+    expect(searches).toHaveLength(2);
+    expect(jobs()).toHaveLength(0);
   });
 
   test("a scope reset during a run stops that run from committing its checkpoint", async () => {
@@ -325,18 +460,43 @@ describe("reconcile", () => {
     expect(sync.get("jira.reconcile").lastSuccessAt).toBe("2026-11-06T12:00:00.000Z");
   });
 
-  test("a run failing on page 2 changes no flags", async () => {
+  test("a run failing on page 2 changes no flags and resumes from page 2 with the keys seen", async () => {
     seed();
     pages.push(
       page([issue(3, { updatedAt: "2026-11-06T11:00:00.000Z" })], "tok-1"),
       boom(new JobError({ kind: "transient_network", message: "x" })),
     );
-    await expect(run("jira.reconcile")).rejects.toBeInstanceOf(JobError);
+    expect(await run("jira.reconcile")).toMatchObject({ resumed: true });
     expect(row("DEMO-1")?.inScope).toBe(true);
     expect(row("DEMO-2")?.inScope).toBe(true);
     expect(row("DEMO-3")?.inScope).toBe(false);
-    expect(sync.get("jira.reconcile").lastError?.kind).toBe("transient_network");
-    expect(sync.get("jira.reconcile").lastSuccessAt).toBeNull();
+    const s = sync.get("jira.reconcile");
+    expect(s.lastError?.kind).toBe("transient_network");
+    expect(s.status).toBe("error");
+    expect(s.lastSuccessAt).toBeNull();
+    expect(jobs("jira.reconcile")[0]?.input).toMatchObject({
+      nextPageToken: "tok-1",
+      pagesSoFar: 1,
+      seen: ["DEMO-3"],
+    });
+    pages.push(page([issue(1)]));
+    await runPending("jira.reconcile");
+    expect(row("DEMO-1")?.inScope).toBe(true);
+    expect(row("DEMO-2")?.inScope).toBe(false);
+    expect(row("DEMO-3")?.inScope).toBe(true);
+    expect(sync.get("jira.reconcile")).toMatchObject({ status: "idle", lastError: null });
+  });
+
+  test("a reconcile longer than jira.maxPagesPerChain changes no flags", async () => {
+    seed();
+    settings.set("jira.maxPagesPerChain", 1);
+    pages.push(page([issue(1)], "tok-1"));
+    await expect(run("jira.reconcile")).rejects.toMatchObject({
+      classified: { kind: "parse_failed" },
+    });
+    expect(row("DEMO-2")?.inScope).toBe(true);
+    expect(row("DEMO-3")?.inScope).toBe(false);
+    expect(sync.get("jira.reconcile").lastError?.kind).toBe("parse_failed");
   });
 
   test("a superseded reconcile changes no flags", async () => {

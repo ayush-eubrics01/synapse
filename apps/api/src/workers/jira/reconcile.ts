@@ -14,7 +14,8 @@ const continuation = z
     cloudId: z.string().min(1),
     jql: z.string().min(1),
     nextPageToken: z.string().min(1),
-    page: z.number().int().positive(),
+    /** Pages the chain has stored so far (bounded by `jira.maxPagesPerChain`). */
+    pagesSoFar: z.number().int().positive(),
     /** Issue keys seen so far (keys only, no text). */
     seen: z.array(z.string().min(1)),
     totals: z.object({
@@ -53,7 +54,7 @@ export function reconcileHandler(deps: JiraJobDeps) {
               settings.get("jira.excludedProjects"),
             ),
             nextPageToken: "",
-            page: 0,
+            pagesSoFar: 0,
             seen: [],
             totals: { inserted: 0, duplicates: 0, rejected: 0 },
           };
@@ -70,14 +71,17 @@ export function reconcileHandler(deps: JiraJobDeps) {
     }
 
     const run = await runPages(deps, STREAM, {
+      generation: state.generation,
       cloudId: state.cloudId,
       jql: state.jql,
       nextPageToken: state.nextPageToken === "" ? null : state.nextPageToken,
+      pagesSoFar: state.pagesSoFar,
       maxPages: settings.get("jira.maxPagesPerRun"),
       setScope: false,
       signal: ctx.signal,
     });
-    const page = state.page + run.pages;
+    if (run.superseded) return { pages: run.pages, superseded: true };
+    const pagesSoFar = state.pagesSoFar + run.pages;
     const seen = [...new Set([...state.seen, ...run.keys])];
     const sum = addTotals(state.totals, run.totals);
 
@@ -86,19 +90,23 @@ export function reconcileHandler(deps: JiraJobDeps) {
         const cur = sync.get(STREAM, tx);
         if (cur.generation !== state.generation) return { pages: run.pages, superseded: true };
         if (run.nextPageToken !== null) {
+          // More pages, or a resumable failure: continue from the last good token.
           const next: Continuation = {
             ...state,
             nextPageToken: run.nextPageToken,
-            page,
+            pagesSoFar,
             seen,
             totals: sum,
           };
           queue.enqueue(tx, {
             type: JIRA_JOB.reconcile,
             input: next,
-            idempotencyKey: `${JIRA_JOB.reconcile}:${state.generation}:${page}`,
+            idempotencyKey: `${JIRA_JOB.reconcile}:${state.generation}:${pagesSoFar}`,
+            ...(run.failed?.retryAfter ? { runAfter: run.failed.retryAfter } : {}),
           });
-          return { pages: run.pages, complete: false };
+          return run.failed
+            ? { pages: run.pages, resumed: true, kind: run.failed.kind }
+            : { pages: run.pages, complete: false };
         }
         const scope = store.markScope(seen, state.startedAt, tx);
         store.refreshAttention(tx);
@@ -108,7 +116,7 @@ export function reconcileHandler(deps: JiraJobDeps) {
           aggregateType: "integration",
           aggregateId: STREAM,
           correlationId: STREAM,
-          payload: { stream: STREAM, pages: page, ...sum },
+          payload: { stream: STREAM, pages: pagesSoFar, ...sum },
         });
         return { pages: run.pages, complete: true, ...scope };
       },

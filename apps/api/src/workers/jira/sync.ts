@@ -19,7 +19,8 @@ const continuation = z
     cloudId: z.string().min(1),
     jql: z.string().min(1),
     nextPageToken: z.string().min(1),
-    page: z.number().int().positive(),
+    /** Pages the chain has stored so far (bounded by `jira.maxPagesPerChain`). */
+    pagesSoFar: z.number().int().positive(),
     maxUpdated: z.string().nullable(),
     totals,
   })
@@ -31,7 +32,8 @@ type Continuation = z.infer<typeof continuation>;
  * a new generation; pages run sequentially up to `maxPagesPerRun`, and a remainder is queued as a
  * continuation carrying `nextPageToken`. The checkpoint (max `updated` seen, never moving back) is
  * committed only after the last page, and only while the generation is current: a scope change or
- * a newer run supersedes the chain.
+ * a newer run supersedes the chain. A retryable failure after a stored page queues a continuation
+ * from the last good token (the failure is still recorded); chains are bounded (see `runPages`).
  */
 export function syncHandler(deps: JiraJobDeps) {
   const { db, clock, settings, sync, store, queue, events } = deps;
@@ -56,7 +58,7 @@ export function syncHandler(deps: JiraJobDeps) {
               minutes,
             ),
             nextPageToken: "",
-            page: 0,
+            pagesSoFar: 0,
             maxUpdated: null,
             totals: { inserted: 0, duplicates: 0, rejected: 0 },
           };
@@ -73,14 +75,17 @@ export function syncHandler(deps: JiraJobDeps) {
     }
 
     const run = await runPages(deps, STREAM, {
+      generation: state.generation,
       cloudId: state.cloudId,
       jql: state.jql,
       nextPageToken: state.nextPageToken === "" ? null : state.nextPageToken,
+      pagesSoFar: state.pagesSoFar,
       maxPages: settings.get("jira.maxPagesPerRun"),
       setScope: true,
       signal: ctx.signal,
     });
-    const page = state.page + run.pages;
+    if (run.superseded) return { pages: run.pages, superseded: true };
+    const pagesSoFar = state.pagesSoFar + run.pages;
     const maxUpdated = maxIso(state.maxUpdated, run.maxUpdated);
     const sum = addTotals(state.totals, run.totals);
 
@@ -89,19 +94,23 @@ export function syncHandler(deps: JiraJobDeps) {
         const cur = sync.get(STREAM, tx);
         if (cur.generation !== state.generation) return { pages: run.pages, superseded: true };
         if (run.nextPageToken !== null) {
+          // More pages, or a resumable failure: continue from the last good token.
           const next: Continuation = {
             ...state,
             nextPageToken: run.nextPageToken,
-            page,
+            pagesSoFar,
             maxUpdated,
             totals: sum,
           };
           queue.enqueue(tx, {
             type: JIRA_JOB.sync,
             input: next,
-            idempotencyKey: `${JIRA_JOB.sync}:${state.generation}:${page}`,
+            idempotencyKey: `${JIRA_JOB.sync}:${state.generation}:${pagesSoFar}`,
+            ...(run.failed?.retryAfter ? { runAfter: run.failed.retryAfter } : {}),
           });
-          return { pages: run.pages, complete: false };
+          return run.failed
+            ? { pages: run.pages, resumed: true, kind: run.failed.kind }
+            : { pages: run.pages, complete: false };
         }
         sync.update(tx, STREAM, {
           checkpoint: maxIso(cur.checkpoint, maxUpdated),
@@ -115,7 +124,7 @@ export function syncHandler(deps: JiraJobDeps) {
           aggregateType: "integration",
           aggregateId: STREAM,
           correlationId: STREAM,
-          payload: { stream: STREAM, pages: page, ...sum },
+          payload: { stream: STREAM, pages: pagesSoFar, ...sum },
         });
         return { pages: run.pages, complete: true };
       },

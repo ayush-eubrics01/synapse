@@ -151,6 +151,37 @@ describe("jira routes", () => {
     expect(c.settings.get("jira.scope.jql")).toBe("assignee = currentUser() AND updated >= -60d");
   });
 
+  test("PUT settings rejects unbalanced parentheses and unterminated quotes", async () => {
+    for (const jql of [
+      "assignee = currentUser()) OR (project = OTHER",
+      "(assignee = currentUser()",
+      "assignee = currentUser())",
+      ") OR (",
+      'summary ~ "open',
+    ]) {
+      expect((await put({ scopeJql: jql })).status).toBe(400);
+    }
+    expect(c.settings.get("jira.scope.jql")).toBe("assignee = currentUser() AND updated >= -60d");
+  });
+
+  test("parentheses inside double-quoted strings are ignored", async () => {
+    for (const jql of [
+      'summary ~ "a (b" AND assignee = currentUser()',
+      'summary ~ "x) OR (y"',
+      'summary ~ "say \\"(\\" twice" AND (status = Open)',
+    ]) {
+      const r = await put({ scopeJql: jql });
+      expect(r.status).toBe(200);
+      expect(c.settings.get("jira.scope.jql")).toBe(jql);
+    }
+  });
+
+  test("the settings schema itself rejects unbalanced parentheses", () => {
+    expect(() => c.settings.set("jira.scope.jql", "a = b) OR (c = d")).toThrow();
+    expect(() => c.settings.set("jira.scope.jql", "a in (b")).toThrow();
+    c.settings.set("jira.scope.jql", "project in (A, B) AND (status = Open OR status = Done)");
+  });
+
   test("the settings schema itself rejects ORDER BY", () => {
     expect(() => c.settings.set("jira.scope.jql", "project = DEMO order by key")).toThrow();
     // A field merely named like it is fine.
