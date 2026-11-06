@@ -33,12 +33,14 @@ export interface InboxProps {
   /** Code answers (Phase 10b C5): hidden when absent. */
   codeAnswers?: {
     repositories: RepositoryView[];
-    tick: number;
+    tick: { n: number; messageId: string | null };
     /** The answer the user chose to reply with; it replaces the composer until sent or discarded. */
     draft: { codeAnswerId: string; draft: string; useAnyway: boolean } | null;
     onUseAsReply: (v: CodeAnswerView, useAnyway: boolean) => void;
     onSend: (codeAnswerId: string, text: string, useAnyway: boolean) => void;
     onDiscard: () => void;
+    /** An answer was dismissed: a draft made from it is dropped. */
+    onDismissed: (codeAnswerId: string) => void;
   };
   handlers: Pick<NeedsYouHandlers, "trackCommitment" | "rejectCommitment" | "urgentReply"> &
     Partial<Pick<NeedsYouHandlers, "createTaskFromSlack">>;
@@ -94,6 +96,7 @@ export function Inbox(p: InboxProps) {
                       repositories: p.codeAnswers.repositories,
                       tick: p.codeAnswers.tick,
                       onUseAsReply: p.codeAnswers.onUseAsReply,
+                      onDismissed: p.codeAnswers.onDismissed,
                     }
                   }
                 />

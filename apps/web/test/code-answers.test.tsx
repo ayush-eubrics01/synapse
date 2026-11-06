@@ -46,7 +46,7 @@ const panel = (o: Partial<Parameters<typeof CodeAnswerPanel>[0]> = {}) =>
       messageId="m1"
       count={1}
       repositories={[repo({ id: "r1", name: "demo-app" })]}
-      tick={0}
+      tick={{ n: 0, messageId: null }}
       onUseAsReply={noop}
       initialViews={[view()]}
       {...o}
@@ -204,7 +204,8 @@ const inbox = (draft: NonNullable<InboxProps["codeAnswers"]>["draft"]) => {
       handlers={{ trackCommitment: noop, rejectCommitment: noop, urgentReply: noop }}
       codeAnswers={{
         repositories: [repo({ id: "r1" })],
-        tick: 0,
+        tick: { n: 0, messageId: null },
+        onDismissed: noop,
         draft,
         onUseAsReply: noop,
         onSend: noop,
@@ -230,4 +231,33 @@ test("the code-answer composer without a send handler cannot request approval", 
     <Composer state={{ mode: "code_answer", codeAnswerId: "ca1", draft: "x" }} onReply={noop} />,
   );
   expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Request approval to send/);
+});
+
+test("event message id parsing and readable send errors", async () => {
+  const { codeAnswerEventMessageId, codeAnswerErrorText } = await import("../lib/code-answers");
+  const { ApiError } = await import("../lib/api");
+  expect(codeAnswerEventMessageId(JSON.stringify({ payload: { messageId: "m1" } }))).toBe("m1");
+  expect(codeAnswerEventMessageId(JSON.stringify({ messageId: "m2" }))).toBe("m2");
+  expect(codeAnswerEventMessageId("not json")).toBeNull();
+  expect(codeAnswerEventMessageId("{}")).toBeNull();
+  const text = codeAnswerErrorText(
+    new ApiError("POST /x failed with 409", 409, "invalid_state"),
+    "x",
+  );
+  expect(text).not.toContain("POST");
+  expect(codeAnswerErrorText(new Error("boom"), "fallback")).toBe("fallback");
+});
+
+test("duplicate evidence entries render without key collisions", () => {
+  const html = panel({
+    initialViews: [
+      view({
+        evidence: [
+          { path: "a.ts", line: 1 },
+          { path: "a.ts", line: 1 },
+        ],
+      }),
+    ],
+  });
+  expect(html.match(/<li>a\.ts:1<\/li>/g)).toHaveLength(2);
 });

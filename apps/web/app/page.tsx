@@ -88,6 +88,7 @@ import {
   updateMilestone,
 } from "../lib/api";
 import { brainPaletteItems, projectRowId } from "../lib/brain";
+import { codeAnswerErrorText, codeAnswerEventMessageId } from "../lib/code-answers";
 import { trailingDebounce } from "../lib/debounce";
 import { engineeringErrorText, isTerminal, lockText } from "../lib/engineering";
 import { conversationTitle, filterConversations, type InboxFilter } from "../lib/inbox";
@@ -252,7 +253,10 @@ export default function Dashboard() {
     draft: string;
     useAnyway: boolean;
   } | null>(null);
-  const [codeAnswerTick, setCodeAnswerTick] = useState(0);
+  const [codeAnswerTick, setCodeAnswerTick] = useState<{ n: number; messageId: string | null }>({
+    n: 0,
+    messageId: null,
+  });
   const [projectDetails, setProjectDetails] = useState<ProjectDetail[]>([]);
   const [claudeActivity, setClaudeActivity] = useState<ClaudeActivityView | null>(null);
   const [claudeSettings, setClaudeSettings] = useState<ClaudeSettingsDto | null>(null);
@@ -463,7 +467,10 @@ export default function Dashboard() {
     source.onmessage = () => debounced.call();
     // Events are named (`event: <type>`), so onmessage alone would miss them.
     for (const t of LIVE_EVENT_TYPES) source.addEventListener(t, () => debounced.call());
-    source.addEventListener("code_answer.status_changed", () => setCodeAnswerTick((n) => n + 1));
+    source.addEventListener("code_answer.status_changed", (e) => {
+      const messageId = codeAnswerEventMessageId((e as MessageEvent).data);
+      setCodeAnswerTick((t) => ({ n: t.n + 1, messageId }));
+    });
     return () => {
       debounced.cancel();
       source.close();
@@ -482,7 +489,7 @@ export default function Dashboard() {
       setCodeDraft(null);
       toast.show("Approval request created · nothing is sent until you approve");
     } catch (e) {
-      setActionError(String(e));
+      setActionError(codeAnswerErrorText(e, "Could not request approval for that answer"));
     }
     await refresh();
   };
@@ -863,6 +870,7 @@ export default function Dashboard() {
                   setCodeDraft({ codeAnswerId: v.id, draft: v.answer ?? "", useAnyway }),
                 onSend: (id, text, useAnyway) => void sendCodeAnswerDraft(id, text, useAnyway),
                 onDiscard: () => setCodeDraft(null),
+                onDismissed: (id) => setCodeDraft((d) => (d?.codeAnswerId === id ? null : d)),
               }}
             />
           </section>

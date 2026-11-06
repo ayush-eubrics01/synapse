@@ -1,7 +1,7 @@
 "use client";
 
 import type { CodeAnswerView, RepositoryView } from "@synapse/contracts";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { dismissCodeAnswer, getCodeAnswers, requestCodeAnswer } from "../../../lib/api";
 import {
   canUseAsReply,
@@ -16,10 +16,12 @@ import { useToast } from "../ui/Toasts";
 /** What the thread needs to offer code answers; absent, the action is hidden. */
 export interface CodeAnswersContext {
   repositories: RepositoryView[];
-  /** Bumped on every `code_answer.status_changed` event, so open panels refetch. */
-  tick: number;
+  /** Bumped on every `code_answer.status_changed` event; `messageId` is null when the event names none. */
+  tick: { n: number; messageId: string | null };
   /** Fills the composer with the answer; `useAnyway` is the user's acknowledgement of an injection flag. */
   onUseAsReply: (v: CodeAnswerView, useAnyway: boolean) => void;
+  /** Called after an answer is dismissed, so a draft made from it can be dropped. */
+  onDismissed?: (codeAnswerId: string) => void;
 }
 
 export interface CodeAnswerPanelViewProps {
@@ -74,8 +76,9 @@ function Answer({
       )}
       {showsAnswer && v.evidence.length > 0 && (
         <ul className="syn-codeanswer-evidence" aria-label="Evidence">
-          {v.evidence.map((e) => (
-            <li key={formatEvidence(e)}>{formatEvidence(e)}</li>
+          {v.evidence.map((e, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: the same path:line can repeat
+            <li key={`${i}:${formatEvidence(e)}`}>{formatEvidence(e)}</li>
           ))}
         </ul>
       )}
@@ -168,7 +171,11 @@ export function CodeAnswerPanel(p: CodeAnswerPanelProps) {
     new Set(p.initialAcknowledged ?? []),
   );
   const wanted = p.count > 0 || asked;
-  const { messageId, tick } = p;
+  const { messageId } = p;
+  // Only an event for this message (or one naming none) re-runs the fetch.
+  const seen = useRef(0);
+  if (p.tick.messageId === null || p.tick.messageId === messageId) seen.current = p.tick.n;
+  const relevantTick = seen.current;
 
   const load = useCallback(async () => {
     try {
@@ -178,10 +185,10 @@ export function CodeAnswerPanel(p: CodeAnswerPanelProps) {
     }
   }, [messageId]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` re-runs the fetch on each status event
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `relevantTick` re-runs the fetch on each status event for this message
   useEffect(() => {
     if (wanted) void load();
-  }, [wanted, load, tick]);
+  }, [wanted, load, relevantTick]);
 
   if (p.repositories.length === 0) return null;
   return (
@@ -207,7 +214,10 @@ export function CodeAnswerPanel(p: CodeAnswerPanelProps) {
       }}
       onDismiss={(id) => {
         dismissCodeAnswer(id)
-          .then(load)
+          .then(() => {
+            p.onDismissed?.(id);
+            return load();
+          })
           .catch(() => toast.show("Could not dismiss that answer"));
       }}
     />

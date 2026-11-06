@@ -264,4 +264,30 @@ describe("code answer routes", () => {
     ).json()) as ConversationThread;
     expect(none.messages[0]?.codeAnswerCount).toBe(0);
   });
+
+  test("a held row without an outgoing sends; a held row with an outgoing is refused", async () => {
+    const id = await ready();
+    setStatus(id, "held");
+    const ok = await post(`/api/code-answers/${id}/send`, { text: "reply" });
+    expect(ok.status).toBe(200);
+    expect(rows()[0]?.status).toBe("sent");
+    const { outgoingId } = (await ok.json()) as { outgoingId: string };
+
+    setStatus(id, "failed");
+    const other = await ready();
+    setStatus(other, "held", { outgoingId });
+    const refused = await post(`/api/code-answers/${other}/send`, { text: "reply" });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: "invalid_state" });
+    expect(c.db.select().from(schema.outgoingMessages).all()).toHaveLength(1);
+  });
+
+  test("dismiss works from held and unverified", async () => {
+    for (const status of ["held", "unverified"] as const) {
+      const id = await ready();
+      setStatus(id, status);
+      expect((await post(`/api/code-answers/${id}/dismiss`)).status).toBe(204);
+      expect(rows().find((r) => r.id === id)?.status).toBe("dismissed");
+    }
+  });
 });

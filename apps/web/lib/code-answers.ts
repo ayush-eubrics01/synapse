@@ -48,12 +48,32 @@ const TRIGGER_ERRORS: Record<string, string> = {
   already_running: "An answer is already being prepared for this message",
   already_answered: "This message already has an answer. Dismiss it to ask again",
   invalid_repository: "That repository is no longer registered",
-  not_found: "That message no longer exists",
+  not_found: "That message or answer no longer exists",
+  invalid_state: "That answer can no longer be used. Refresh and try again",
+  injection_unacknowledged: "Use anyway first: this answer has a suspected injection",
+  invalid_text: "The reply must be between 1 and 4000 characters",
 };
 
-/** A friendly text for a refused trigger; fixed codes only. */
-export function codeAnswerErrorText(e: unknown): string {
+/** A friendly text for a refused trigger or send; fixed codes only, never the raw error. */
+export function codeAnswerErrorText(
+  e: unknown,
+  fallback = "Could not start the code answer",
+): string {
   if (e instanceof ApiError && e.code && TRIGGER_ERRORS[e.code])
     return TRIGGER_ERRORS[e.code] as string;
-  return "Could not start the code answer";
+  return fallback;
+}
+
+/** The `code_answer.status_changed` event's message id, or null when the payload names none. */
+export function codeAnswerEventMessageId(data: unknown): string | null {
+  try {
+    const d = (typeof data === "string" ? JSON.parse(data) : data) as {
+      messageId?: unknown;
+      payload?: { messageId?: unknown };
+    } | null;
+    const id = d?.payload?.messageId ?? d?.messageId;
+    return typeof id === "string" ? id : null;
+  } catch {
+    return null;
+  }
 }
