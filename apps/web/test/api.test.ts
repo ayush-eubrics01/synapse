@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import {
+  acceptSuggestion,
   confirmSlackIdentity,
   decideApproval,
+  discardRecommendation,
+  evaluatePerson,
+  getCandidates,
   getClaudeRuns,
   getClaudeStatus,
   getHealth,
@@ -9,10 +13,13 @@ import {
   getJobs,
   getPeople,
   getPersonFlags,
+  getPersonProfile,
+  getRecommendations,
   getSecurityFlags,
   getSlackIdentity,
   getSlackStatus,
   getUrgent,
+  retryApply,
   reviewFlag,
   setPersonPriority,
   setUrgentStatus,
@@ -128,4 +135,34 @@ test("urgency, security, people and identity API URLs", async () => {
   expect(id.calls.map((x) => x.url)).toEqual(["/api/slack/identity", "/api/slack/identity"]);
   expect(id.calls[1]?.init?.method).toBe("PUT");
   expect(body(id.calls[1] as Call)).toEqual({ selfUserId: "U1" });
+});
+
+test("people profile calls hit the expected endpoints", async () => {
+  const f = fake(200, { queued: true });
+  await getCandidates(10, f.impl);
+  await getRecommendations(f.impl);
+  await getPersonProfile("U1", f.impl);
+  await evaluatePerson("U1", f.impl);
+  await acceptSuggestion("r 1", f.impl);
+  await retryApply("r1", f.impl);
+  await discardRecommendation("r1", f.impl);
+  expect(f.calls.map((c) => `${c.init?.method ?? "GET"} ${c.url}`)).toEqual([
+    "GET /api/people/candidates?limit=10",
+    "GET /api/people/recommendations?status=pending",
+    "GET /api/people/U1/profile",
+    "POST /api/people/U1/evaluate",
+    "POST /api/people/recommendations/r%201/accept-suggestion",
+    "POST /api/people/recommendations/r1/retry-apply",
+    "POST /api/people/recommendations/r1/discard",
+  ]);
+});
+
+test("evaluatePerson returns a refusal as data and a 409 retry as an error", async () => {
+  const refused = fake(202, { queued: false, reason: "identity_required" });
+  expect(await evaluatePerson("U1", refused.impl)).toEqual({
+    queued: false,
+    reason: "identity_required",
+  });
+  const conflict = fake(409, { error: "apply retry not allowed" });
+  await expect(retryApply("r1", conflict.impl)).rejects.toThrow("409: apply retry not allowed");
 });

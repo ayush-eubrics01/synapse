@@ -114,6 +114,7 @@ bun scripts/setup/check-env.ts # read-only env check (bun >= 1.4.4, claude on se
 bun scripts/dev/claude-smoke.ts [--no-tools|--deny-check]  # real Claude run on a temp DB; spends a tiny amount of Claude quota — run deliberately
 bun scripts/dev/slack-smoke.ts [--pages N]  # reads real Slack via Claude on a temp DB, spends a little quota, prints counts only (never message text); run deliberately. N is 1..3, default 1
 bun scripts/dev/urgency-smoke.ts [--pages N]  # collects real Slack via Claude on a temp DB, screens, runs one urgency.assess; spends a little quota, reads real Slack, prints counts only (never message text); run deliberately. N is 1..3, default 1
+bun scripts/dev/people-smoke.ts [--pages N] [--self Uxxxx]  # collects real Slack on a temp DB, ranks contacts, runs one haiku people.generate_initial_profile for the top candidate; spends a little quota (one haiku run), reads real Slack, prints counts only (never names, ids or text); with no --self and no identity suggestion it prints `identity: none` and exits 0; run deliberately
 ```
 
 Setup commands that change the system. **Ask the user for approval before running any of these:**

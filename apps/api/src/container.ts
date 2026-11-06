@@ -6,6 +6,7 @@ import type { AIProvider, DesktopNotifier } from "@synapse/contracts";
 import { type Db, openDatabase, runMigrations } from "@synapse/database";
 import { type Clock, newId, systemClock } from "@synapse/shared";
 import { ApprovalEngine } from "./core/approvals/approvals";
+import { registerApprovalExecution } from "./core/approvals/execution";
 import { AuditLogger } from "./core/audit/audit";
 import { type AppConfig, resolveHome } from "./core/config/config";
 import { SettingsService } from "./core/config/settings";
@@ -45,10 +46,16 @@ import { ScreeningService } from "./modules/inbox/screening-service";
 import { InboxStore } from "./modules/inbox/store";
 import { SyncStateService } from "./modules/inbox/sync-state";
 import { UrgentInbox } from "./modules/inbox/urgent";
+import { ContactDiscovery } from "./modules/people/discovery";
+import { ProfileService } from "./modules/people/profiles";
+import { ProfileRecommendations } from "./modules/people/recommendations";
 import { PeopleService } from "./modules/people/service";
+import { TemporaryContacts } from "./modules/people/temporary";
+import { PeopleViews } from "./modules/people/views";
 import { SecurityFlagsService } from "./modules/security-flags/service";
+import { registerPeopleJobs } from "./workers/people";
 import { registerSlackJobs } from "./workers/slack";
-import { registerUrgencyJobs } from "./workers/urgency";
+import { registerUrgencyJobs, responseGuidelinesLookup } from "./workers/urgency";
 
 export interface Container {
   config: AppConfig;
@@ -76,6 +83,11 @@ export interface Container {
   urgent: UrgentInbox;
   sync: SyncStateService;
   people: PeopleService;
+  /** Ranked contact candidates. */
+  discovery: ContactDiscovery;
+  profiles: ProfileRecommendations;
+  profileStore: ProfileService;
+  peopleViews: PeopleViews;
   securityFlags: SecurityFlagsService;
   /** Run by startup recovery and the reaper (main.ts), so core never imports workers. */
   recoverySweeps: RecoverySweep[];
@@ -207,6 +219,11 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   dispatcher.subscribe("message.received", "inbox.screening", (event, tx) =>
     screening.handle(event, tx),
   );
+  const discovery = new ContactDiscovery({ db, clock, settings });
+  const temporary = new TemporaryContacts({ db, clock, settings, events, queue });
+  dispatcher.subscribe("message.received", "people.temporary", (event, tx) =>
+    temporary.handle(event, tx),
+  );
   const slack = registerSlackJobs({
     db,
     clock,
@@ -220,6 +237,31 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     scheduler,
     handlers,
   });
+  registerApprovalExecution({ dispatcher, queue, engine: approvals, handlers });
+  const profiles = new ProfileRecommendations({
+    db,
+    clock,
+    settings,
+    events,
+    queue,
+    approvals,
+    people,
+  });
+  const profileStore = new ProfileService({ db, clock, events, audit });
+  profileStore.register(approvals, dispatcher);
+  const peopleViews = new PeopleViews({ db, clock, settings, people, discovery, profileStore });
+  registerPeopleJobs({
+    db,
+    clock,
+    settings,
+    scheduler,
+    queue,
+    temporary,
+    recommendations: profiles,
+    orchestrator,
+    securityFlags,
+    handlers,
+  });
   const urgency = registerUrgencyJobs({
     db,
     clock,
@@ -230,6 +272,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     orchestrator,
     securityFlags,
     handlers,
+    guidelinesFor: responseGuidelinesLookup(db, (id) => profileStore.getResponseGuidelines(id)),
   });
 
   const health = new HealthService({
@@ -272,6 +315,10 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     urgent,
     sync,
     people,
+    discovery,
+    profiles,
+    profileStore,
+    peopleViews,
     securityFlags,
     handlers,
     recoverySweeps: [{ name: "urgency.assess", run: urgency.recoverySweep }],

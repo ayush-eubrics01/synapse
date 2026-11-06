@@ -15,6 +15,12 @@ export interface FlagRule {
 export const HIDDEN_CHAR_CLASS =
   "[\\u00AD\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u2069\\uFEFF\\u{E0000}-\\u{E007F}]";
 
+/**
+ * Version the starter set is stored under. Bump it with EVERY change to STARTER_RULES: init()
+ * inserts the set as this version and activates it unless a higher (custom) version is active.
+ */
+export const STARTER_RULES_VERSION = 1;
+
 export const STARTER_RULES: FlagRule[] = [
   {
     id: "override.ignore_instructions",

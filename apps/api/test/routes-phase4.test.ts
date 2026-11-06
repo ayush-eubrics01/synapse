@@ -233,7 +233,7 @@ test("security flags: grouped list, person history, review sets status", async (
   ).toBe(400);
 });
 
-test("people: list, PUT priority validates and replaces", async () => {
+test("people: list, PUT priority validates and patches", async () => {
   seed("1700000100.000100");
   const list = (await (await req("/api/people")).json()) as { slackUserId: string }[];
   expect(list.map((p) => p.slackUserId)).toContain("U1");
@@ -254,8 +254,10 @@ test("people: list, PUT priority validates and replaces", async () => {
   await send("PUT", "/api/people/U1/priority", { priority: "high" });
   expect(c.people.getPriorityBySlackUser("U1")).toEqual({
     priority: "high",
-    extraAttention: false,
+    extraAttention: true,
   });
+  await send("PUT", "/api/people/U1/priority", { priority: "high", extraAttention: false });
+  expect(c.people.getPriorityBySlackUser("U1").extraAttention).toBe(false);
 });
 
 test("slack identity: GET reports null, PUT unknown id is 400, known id is 200", async () => {

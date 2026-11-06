@@ -599,3 +599,41 @@ test("detector: excerpt window never splits a surrogate pair", () => {
   const first = f?.excerpt.charCodeAt(0) ?? 0;
   expect(first >= 0xdc00 && first <= 0xdfff).toBe(false);
 });
+
+test("init: a starter bumped above the active version is inserted and becomes active", () => {
+  const bumped = STARTER_RULES.slice(0, 2);
+  svc.init({ version: 2, rules: bumped });
+  const rows = db.select().from(schema.securityFlagRules).all();
+  expect(rows.map((r) => [r.version, r.active]).sort()).toEqual([
+    [1, false],
+    [2, true],
+  ]);
+  expect(svc.activeRules().version).toBe(2);
+  expect(svc.activeRules().rules.map((r) => r.id)).toEqual(bumped.map((r) => r.id));
+  svc.init({ version: 2, rules: bumped });
+  expect(db.select().from(schema.securityFlagRules).all()).toHaveLength(2);
+});
+
+test("init: a custom version above the starter version stays active", () => {
+  db.update(schema.securityFlagRules).set({ active: false }).run();
+  db.insert(schema.securityFlagRules)
+    .values({
+      id: "custom5",
+      version: 5,
+      rules: STARTER_RULES.slice(0, 1),
+      active: true,
+      createdAt: clock.now().toISOString(),
+    })
+    .run();
+  svc.init({ version: 2, rules: STARTER_RULES });
+  const rows = db.select().from(schema.securityFlagRules).all();
+  expect(rows.find((r) => r.version === 5)?.active).toBe(true);
+  expect(rows.find((r) => r.version === 2)?.active).toBe(false);
+  expect(svc.activeRules().version).toBe(5);
+});
+
+test("init: the default starter version is idempotent", () => {
+  svc.init();
+  svc.init();
+  expect(db.select().from(schema.securityFlagRules).all()).toHaveLength(1);
+});

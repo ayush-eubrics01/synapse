@@ -79,6 +79,18 @@ test("settings default on empty db", () => {
   expect(settings.get("system.lastHeartbeatAt")).toBeNull();
 });
 
+test("people memory settings have the Phase 5 defaults", () => {
+  const { settings } = setup();
+  expect(settings.get("people.update.intervalSeconds")).toBe(86400);
+  expect(settings.get("people.temporaryContact.ttlDays")).toBe(30);
+  expect(settings.get("people.recommendation.minConfidence")).toBe("medium");
+  expect(settings.get("people.models.initial")).toBe("sonnet");
+  expect(settings.get("people.models.update")).toBe("haiku");
+  expect(settings.get("people.history.days")).toBe(90);
+  expect(settings.get("people.history.maxMessages")).toBe(150);
+  expect(settings.get("people.unknown.minMessages")).toBe(3);
+});
+
 test("set then get round-trips and emits one settings.changed", () => {
   const { db, settings } = setup();
   settings.set("jobs.maxAttempts", 5);

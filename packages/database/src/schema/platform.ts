@@ -367,6 +367,8 @@ export const people = sqliteTable("people", {
   slackUserId: text("slack_user_id").notNull().unique(),
   name: text("name"),
   email: text("email"),
+  title: text("title"),
+  team: text("team"),
   createdAt: text("created_at").notNull(),
 });
 
@@ -440,4 +442,85 @@ export const messageDrafts = sqliteTable(
     contentExpiredAt: text("content_expired_at"),
   },
   (t) => [uniqueIndex("message_drafts_message_id_kind_uq").on(t.messageId, t.kind)],
+);
+
+export const temporaryContacts = sqliteTable("temporary_contacts", {
+  id: id(),
+  slackUserId: text("slack_user_id").notNull().unique(),
+  firstSeenAt: text("first_seen_at").notNull(),
+  lastSeenAt: text("last_seen_at").notNull(),
+  messageCount: integer("message_count").notNull().default(0),
+  expiresAt: text("expires_at").notNull(),
+  profileAssessment: json("profile_assessment"),
+  assessedAt: text("assessed_at"),
+});
+
+export const peopleProfiles = sqliteTable("people_profiles", {
+  id: id(),
+  personId: text("person_id")
+    .notNull()
+    .unique()
+    .references(() => people.id),
+  currentVersion: integer("current_version").notNull(),
+  content: json("content").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const peopleProfileRecommendations = sqliteTable(
+  "people_profile_recommendations",
+  {
+    id: id(),
+    personId: text("person_id")
+      .notNull()
+      .references(() => people.id),
+    kind: text("kind", { enum: ["initial", "update", "suggest_evaluation"] }).notNull(),
+    baseVersion: integer("base_version"),
+    content: json("content"),
+    observationHash: text("observation_hash"),
+    status: text("status", {
+      enum: ["pending", "approved", "rejected", "expired", "superseded", "applied"],
+    }).notNull(),
+    approvalId: text("approval_id").references(() => approvals.id),
+    claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
+    reason: text("reason"),
+    createdAt: text("created_at").notNull(),
+    decidedAt: text("decided_at"),
+  },
+  (t) => [index("people_profile_recommendations_person_id_status_idx").on(t.personId, t.status)],
+);
+
+export const peopleProfileVersions = sqliteTable(
+  "people_profile_versions",
+  {
+    id: id(),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => peopleProfiles.id),
+    version: integer("version").notNull(),
+    content: json("content").notNull(),
+    recommendationId: text("recommendation_id")
+      .notNull()
+      .references(() => peopleProfileRecommendations.id),
+    approvalId: text("approval_id").references(() => approvals.id),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [uniqueIndex("people_profile_versions_profile_id_version_uq").on(t.profileId, t.version)],
+);
+
+export const peopleProfileEvidence = sqliteTable(
+  "people_profile_evidence",
+  {
+    id: id(),
+    recommendationId: text("recommendation_id").references(() => peopleProfileRecommendations.id),
+    versionId: text("version_id").references(() => peopleProfileVersions.id),
+    observationKey: text("observation_key").notNull(),
+    messageId: text("message_id").references(() => slackMessages.id, { onDelete: "set null" }),
+    sourceExternalRef: text("source_external_ref").notNull(),
+    confidence: text("confidence", { enum: ["low", "medium", "high"] }).notNull(),
+    observedAt: text("observed_at").notNull(),
+  },
+  (t) => [
+    index("people_profile_evidence_version_id_idx").on(t.versionId),
+    index("people_profile_evidence_recommendation_id_idx").on(t.recommendationId),
+  ],
 );

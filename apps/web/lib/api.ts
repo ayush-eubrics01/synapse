@@ -1,4 +1,17 @@
-import type { Approval, HealthReport, Job } from "@synapse/contracts";
+import type {
+  Approval,
+  CandidatesResponse,
+  EvaluateResult,
+  FlagStatus,
+  GroupedFlags,
+  HealthReport,
+  Job,
+  PersonDetail,
+  PersonFlag,
+  RecommendationView,
+  UrgencyStatus,
+  UrgentItem,
+} from "@synapse/contracts";
 
 async function request<T>(
   url: string,
@@ -148,26 +161,9 @@ export function skipUnreadablePage(
   return request("/api/slack/incremental/skip", { method: "POST" }, fetchImpl);
 }
 
-export type UrgencyStatusDto = "new" | "acknowledged" | "in_progress" | "resolved" | "dismissed";
+export type UrgencyStatusDto = UrgencyStatus;
 
-export interface UrgentItemDto {
-  messageId: string;
-  level: "critical" | "high" | "medium" | "low";
-  reason: string;
-  status: UrgencyStatusDto;
-  /** Computed by the server; the UI shows exactly these buttons. */
-  allowedTransitions: UrgencyStatusDto[];
-  assessed: boolean;
-  fallback: boolean;
-  /** A follow-up in a thread that was already notified: no popup and no draft of its own. */
-  coalesced: boolean;
-  sender: { id: string; name: string | null };
-  conversation: { id: string; name: string | null; type: string };
-  sentAt: string;
-  text: string | null;
-  permalink: string | null;
-  draft: { text: string | null; confidence: number } | null;
-}
+export type UrgentItemDto = UrgentItem;
 
 export function getUrgent(
   status: "open" | "all" = "open",
@@ -192,31 +188,11 @@ export function setUrgentStatus(
   );
 }
 
-export interface GroupedFlagsDto {
-  slackUserId: string;
-  name: string;
-  openCount: number;
-  maxSeverity: "info" | "warning" | "high";
-  latestOpenId: string | null;
-  latest: {
-    id: string;
-    excerpt: string;
-    detector: string;
-    createdAt: string;
-    permalink: string | null;
-  };
-}
+export type GroupedFlagsDto = GroupedFlags;
 
-export interface SecurityFlagDto {
-  id: string;
-  severity: "info" | "warning" | "high";
-  status: "open" | "acknowledged" | "contacted" | "dismissed";
-  detector: string;
-  excerpt: string;
-  createdAt: string;
-}
+export type SecurityFlagDto = PersonFlag;
 
-export type FlagReviewStatus = "acknowledged" | "contacted" | "dismissed";
+export type FlagReviewStatus = Exclude<FlagStatus, "open">;
 
 export function getSecurityFlags(
   includeReviewed = false,
@@ -304,6 +280,81 @@ export function confirmSlackIdentity(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ selfUserId }),
     },
+    fetchImpl,
+  );
+}
+
+export function getCandidates(
+  limit = 50,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CandidatesResponse> {
+  return request(`/api/people/candidates?limit=${limit}`, undefined, fetchImpl);
+}
+
+export function getRecommendations(fetchImpl: typeof fetch = fetch): Promise<RecommendationView[]> {
+  return request("/api/people/recommendations?status=pending", undefined, fetchImpl);
+}
+
+export function getPersonProfile(
+  slackUserId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<PersonDetail> {
+  return request(`/api/people/${encodeURIComponent(slackUserId)}/profile`, undefined, fetchImpl);
+}
+
+/** 202 with `{queued, reason?}`: a refusal (identity, pending, already run) is data, not an error. */
+export function evaluatePerson(
+  slackUserId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EvaluateResult> {
+  return request(
+    `/api/people/${encodeURIComponent(slackUserId)}/evaluate`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export function acceptSuggestion(
+  recommendationId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EvaluateResult> {
+  return request(
+    `/api/people/recommendations/${encodeURIComponent(recommendationId)}/accept-suggestion`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export function dismissSuggestion(
+  recommendationId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ dismissed: boolean }> {
+  return request(
+    `/api/people/recommendations/${encodeURIComponent(recommendationId)}/dismiss`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+/** R6: removes a stuck recommendation; 409 when it is not stuck. */
+export function discardRecommendation(
+  recommendationId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ discarded: boolean }> {
+  return request(
+    `/api/people/recommendations/${encodeURIComponent(recommendationId)}/discard`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export function retryApply(
+  recommendationId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ approvalId: string }> {
+  return request(
+    `/api/people/recommendations/${encodeURIComponent(recommendationId)}/retry-apply`,
+    { method: "POST" },
     fetchImpl,
   );
 }

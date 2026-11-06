@@ -23,6 +23,10 @@ const DOMAIN_EVENTS = [
   "security.injection_suspected",
   "security.flag_reviewed",
   "urgency.status_changed",
+  "person.discovered",
+  "person.profile_recommendation_created",
+  "person.profile_approved",
+  "person.recommendation_decided",
 ] as const satisfies readonly EventType[];
 
 // LiveBus-only messages: job settles (worker) and notifications (NotificationService).

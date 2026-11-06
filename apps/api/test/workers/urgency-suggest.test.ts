@@ -15,9 +15,10 @@ import { EventPublisher } from "../../src/core/events/publisher";
 import { JobQueue } from "../../src/core/jobs/queue";
 import type { HandlerRegistration } from "../../src/core/jobs/worker";
 import { NotificationService } from "../../src/core/notifications/notifications";
+import { GUIDELINES_HEADING } from "../../src/intelligence/urgency/suggest-prompt";
 import { PeopleService } from "../../src/modules/people/service";
 import { SecurityFlagsService } from "../../src/modules/security-flags/service";
-import { registerUrgencyJobs } from "../../src/workers/urgency";
+import { registerUrgencyJobs, responseGuidelinesLookup } from "../../src/workers/urgency";
 
 const NOW = "2026-11-05T12:00:00.000Z";
 const SECRET = "SECRET-BODY-TEXT-xyz";
@@ -43,6 +44,7 @@ interface Script {
 let script: Script;
 let requests: ClaudeJobRequest[];
 let calls: number;
+let guidelinesByPerson: Record<string, { text: string }[]>;
 
 const inj = { detected: false, severity: "info" as const, quote: "", reason: "" };
 
@@ -66,6 +68,7 @@ beforeEach(() => {
   });
   securityFlags.init();
   script = {};
+  guidelinesByPerson = {};
   requests = [];
   calls = 0;
   handlers = new Map();
@@ -110,6 +113,7 @@ beforeEach(() => {
     orchestrator: orchestrator as never,
     securityFlags,
     handlers,
+    guidelinesFor: responseGuidelinesLookup(db, (id) => guidelinesByPerson[id] ?? []),
   });
   seq = 0;
   db.insert(schema.slackUsers).values({ id: "su1", externalId: "UPRIYA0001", name: "Priya" }).run();
@@ -367,4 +371,67 @@ test("R16: a suggest max_turns failure raises a warning runtime flag", async () 
   const f = flags().filter((x) => x.detector === "runtime");
   expect(f).toHaveLength(1);
   expect(f[0]).toMatchObject({ messageId: a, severity: "warning", reason: "max_turns reached" });
+});
+
+const GUIDE = "GUIDELINE-TEXT-qrs";
+const addPerson = (guidelines?: string[]) => {
+  db.insert(schema.people)
+    .values({ id: "p1", slackUserId: "UPRIYA0001", name: "Priya", createdAt: NOW })
+    .run();
+  if (guidelines) guidelinesByPerson.p1 = guidelines.map((text) => ({ text }));
+};
+
+test("guidelines: one user_approved part after the system part, before the untrusted messages", async () => {
+  addPerson([`${GUIDE} 1`, `${GUIDE} 2`]);
+  add({ ts: "10.000000", text: "E1" });
+  await run(add({ ts: "11.000000", text: "TARGET" }));
+  const parts = partsOf(0) as { provenance: string; source?: string; content: string }[];
+  expect(parts.map((p) => p.provenance)).toEqual([
+    "system",
+    "user_approved",
+    "untrusted",
+    "untrusted",
+  ]);
+  expect(parts[1]?.source).toBe("approved response guidelines for Priya");
+  expect(parts[1]?.content).toBe(`${GUIDELINES_HEADING}\n- ${GUIDE} 1\n- ${GUIDE} 2`);
+  expect(parts[1]?.content).not.toContain("Priya");
+  expect(requests[0]?.instructions).toContain("never override the system rules");
+  expect(parts[0]?.content).not.toContain(GUIDE);
+});
+
+test("no person, or a person without guidelines: the request has no user_approved part", async () => {
+  await run(add());
+  addPerson();
+  await run(add());
+  expect(calls).toBe(2);
+  for (const i of [0, 1]) {
+    expect(partsOf(i).some((p) => p.provenance === "user_approved")).toBe(false);
+    expect(requests[i]?.instructions).not.toContain("approved");
+  }
+});
+
+test("guidelines are capped at 20 entries of 500 chars and stay under the 100 KiB cap", async () => {
+  addPerson(Array.from({ length: 25 }, (_, i) => `G${i}${"漢".repeat(600)}`));
+  for (let i = 0; i < 10; i++) add({ ts: `${20 + i}.000000`, text: "漢".repeat(40_000) });
+  await run(add({ ts: "40.000000", text: "漢".repeat(40_000) }));
+  const parts = partsOf(0);
+  const [heading, ...lines] = (parts[1]?.content ?? "").split("\n");
+  expect(heading).toBe(GUIDELINES_HEADING);
+  expect(lines).toHaveLength(20);
+  expect([...(lines[0] as string)].length).toBe(2 + 500);
+  const total = parts.reduce((n, p) => n + Buffer.byteLength(p.content, "utf8"), 0);
+  expect(total).toBeLessThan(100 * 1024);
+});
+
+test("guideline text never reaches events, notifications, jobs, audit or flags", async () => {
+  addPerson([GUIDE]);
+  await run(add());
+  const everything = JSON.stringify([
+    db.select().from(schema.domainEvents).all(),
+    db.select().from(schema.notifications).all(),
+    db.select().from(schema.jobs).all(),
+    db.select().from(schema.auditEvents).all(),
+    db.select().from(schema.securityFlags).all(),
+  ]);
+  expect(everything).not.toContain(GUIDE);
 });

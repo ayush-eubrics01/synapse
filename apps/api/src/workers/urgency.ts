@@ -25,7 +25,7 @@ import {
 } from "../intelligence/urgency/suggest-prompt";
 import { renderExcerpt } from "../modules/security-flags/detector";
 import type { SecurityFlagsService } from "../modules/security-flags/service";
-import { createRunHelpers, wrapFailure } from "./urgency-shared";
+import { createRunHelpers, safely, wrapFailure } from "./intelligence-shared";
 
 const { slackMessages, slackConversations, slackUsers, messageDrafts, jobs } = schema;
 
@@ -39,6 +39,8 @@ export interface UrgencyJobDeps {
   orchestrator: Pick<ClaudeOrchestrator, "run">;
   securityFlags: SecurityFlagsService;
   handlers: Map<string, HandlerRegistration>;
+  /** Approved response guidelines of the person with this Slack user id; null without a profile. */
+  guidelinesFor?: (slackUserId: string) => { name: string; texts: string[] } | null;
 }
 
 const ASSESS_TIMEOUT_MS = 360_000;
@@ -59,16 +61,33 @@ interface BatchRow extends AssessBatchItem {
 const conversationLabel = (type: "im" | "mpim" | "channel", name: string | null, ref: string) =>
   type === "im" ? "a DM" : type === "mpim" ? "a group DM" : `#${name ?? ref}`;
 
-/** Flag bookkeeping on a failure path must never replace the original error. */
-const safely = (fn: () => void) => {
-  try {
-    fn();
-  } catch {
-    console.error("urgency: runtime flag recording failed");
-  }
-};
-
 const isUrgent = (l: UrgencyLevel): l is "critical" | "high" => l === "critical" || l === "high";
+
+/**
+ * Looks the sender up as a person (`people.slack_user_id`); null when there is no person or the
+ * profile has no response guidelines.
+ */
+export function responseGuidelinesLookup(
+  db: Db,
+  getGuidelines: (personId: string) => { text: string }[],
+): NonNullable<UrgencyJobDeps["guidelinesFor"]> {
+  return (slackUserId) => {
+    const person = db
+      .select({ id: schema.people.id, name: schema.people.name })
+      .from(schema.people)
+      .where(eq(schema.people.slackUserId, slackUserId))
+      .get();
+    if (!person) return null;
+    const texts = getGuidelines(person.id).map((o) => o.text);
+    if (texts.length === 0) return null;
+    const user = db
+      .select({ name: slackUsers.name })
+      .from(slackUsers)
+      .where(eq(slackUsers.externalId, slackUserId))
+      .get();
+    return { name: user?.name ?? person.name ?? slackUserId, texts };
+  };
+}
 
 export function registerUrgencyJobs(deps: UrgencyJobDeps): {
   recoverySweep: (tx: Tx) => void;
@@ -528,6 +547,7 @@ export function registerUrgencyJobs(deps: UrgencyJobDeps): {
         context,
         job.id,
         settings.get("urgency.suggest.model"),
+        deps.guidelinesFor?.(target.senderRef) ?? null,
       );
       const result = await orchestrator.run(req, ctx.signal);
       ran = true;

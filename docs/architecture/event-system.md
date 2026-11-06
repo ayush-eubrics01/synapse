@@ -40,9 +40,10 @@ Events that are purely for live UI updates (SSE) may skip the outbox and are mar
 | `message.urgent_detected` | inbox | notifications, dashboard | Critical/High after assessment |
 | `collection.completed` | inbox / jira-tracking | health, dashboard | Payload `{ stream, pages, inserted, duplicates, rejected }`. Per collector run |
 | `collection.failed` | inbox / jira-tracking | health, notifications | Payload `{ stream, kind: ErrorKind }`. Classified error |
-| `person.discovered` | people | people (temporary contact) | Unknown sender seen |
+| `person.discovered` | people | people (temporary contact) | Unknown sender who interacts with the user seen |
 | `person.profile_recommendation_created` | people | approvals, dashboard | |
 | `person.profile_approved` | people | urgency (priority refresh) | |
+| `person.recommendation_decided` | people | dashboard | Payload `{ recommendationId, status }`; `rejected` covers rejected, revoked, dismissed and discarded |
 | `commitment.detected` | commitments | approvals | AI-extracted, pending review |
 | `commitment.approved` | commitments | followups scheduler | |
 | `commitment.overdue` | commitments | notifications, followups | |
