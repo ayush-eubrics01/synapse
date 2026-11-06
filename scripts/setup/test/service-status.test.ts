@@ -95,7 +95,7 @@ test("only read-only commands run", async () => {
 });
 
 test('resolveUser falls back to the OS account when USER is unset or empty, never ""', () => {
-  expect(resolveUser({ USER: "ayush" }, () => "os")).toBe("ayush");
+  expect(resolveUser({ USER: "demo-user" }, () => "os")).toBe("demo-user");
   expect(resolveUser({}, () => "os")).toBe("os");
   expect(resolveUser({ USER: "" }, () => "os")).toBe("os");
   expect(
