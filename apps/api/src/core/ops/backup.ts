@@ -132,14 +132,21 @@ export class BackupService {
     return out.map((o) => o.entry);
   }
 
-  lastAttempt(): { ok: boolean; at: string } | null {
+  lastAttempt(): { ok: boolean; at: string; code: string | null } | null {
     const row = this.d.db
-      .select({ action: schema.auditEvents.action, at: schema.auditEvents.occurredAt })
+      .select({
+        action: schema.auditEvents.action,
+        at: schema.auditEvents.occurredAt,
+        details: schema.auditEvents.details,
+      })
       .from(schema.auditEvents)
       .where(inArray(schema.auditEvents.action, ["ops.backup_created", "ops.backup_failed"]))
       .orderBy(desc(schema.auditEvents.occurredAt), sql`rowid desc`)
       .get();
-    return row ? { ok: row.action === "ops.backup_created", at: row.at } : null;
+    if (!row) return null;
+    const ok = row.action === "ops.backup_created";
+    const code = (row.details as { code?: unknown } | null)?.code;
+    return { ok, at: row.at, code: !ok && typeof code === "string" ? code : null };
   }
 
   private attempt(keep: number): BackupResult {

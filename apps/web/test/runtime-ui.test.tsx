@@ -3,6 +3,8 @@ import type { BackupEntry, RuntimeView } from "@synapse/contracts";
 import { renderToString } from "react-dom/server";
 import { RuntimePanel } from "../app/components/system/RuntimePanel";
 import type { SettingsDto } from "../lib/api";
+import { ApiError } from "../lib/api";
+import { backupStartMessage } from "../lib/backup";
 import { formatBytes } from "../lib/format";
 
 const NOW = new Date("2026-11-07T12:00:00Z");
@@ -17,6 +19,7 @@ const runtime = (o: Partial<RuntimeView> = {}): RuntimeView => ({
   dataDirFreeBytes: 42 * GIB,
   lastBackup: { name: "synapse-20261107-030000.db", createdAt: "2026-11-07T03:00:00.000Z" },
   backupCount: 1,
+  lastBackupAttempt: { ok: true, at: "2026-11-07T03:00:00.000Z", code: null },
   queue: { pending: 4, running: 1, retry: 2, needsAttention: 3, oldestPendingAgeSeconds: 300 },
   retention: {
     at: "2026-11-07T03:05:00.000Z",
@@ -106,4 +109,22 @@ test("formatBytes", () => {
   expect(formatBytes(512)).toBe("512 B");
   expect(formatBytes(1536)).toBe("1.5 KiB");
   expect(formatBytes(5 * GIB)).toBe("5.0 GiB");
+});
+
+test("a failed last backup attempt shows its fixed code; a successful one shows nothing", () => {
+  const failed = render({
+    runtime: runtime({
+      lastBackupAttempt: { ok: false, at: "2026-11-07T03:00:00.000Z", code: "insufficient_space" },
+    }),
+  });
+  expect(failed).toContain("The last backup failed (insufficient_space)");
+  expect(render()).not.toContain("The last backup failed");
+});
+
+test("backup start messages: 409 is already running, anything else is a generic failure", () => {
+  expect(backupStartMessage(new ApiError("x", 409, "already_running"))).toBe(
+    "A backup is already running",
+  );
+  expect(backupStartMessage(new ApiError("x", 500))).toBe("Couldn't start the backup");
+  expect(backupStartMessage(new TypeError("network"))).toBe("Couldn't start the backup");
 });

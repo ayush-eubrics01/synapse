@@ -22,6 +22,7 @@ const KEYS = [
   "dataDirFreeBytes",
   "dbBytes",
   "lastBackup",
+  "lastBackupAttempt",
   "memoryRssBytes",
   "queue",
   "retention",
@@ -69,6 +70,7 @@ test("runtime view has exactly the RuntimeView keys and the measured values", as
   expect(v.dataDirFreeBytes).toBe(42 * GIB);
   expect(v.lastBackup).toBeNull();
   expect(v.backupCount).toBe(0);
+  expect(v.lastBackupAttempt).toBeNull();
   expect(v.retention).toBeNull();
   expect(v.dbBytes as number).toBeGreaterThan(0);
   expect(v.memoryRssBytes as number).toBeGreaterThan(0);
@@ -125,6 +127,7 @@ test("a backup shows as the last backup and the retention summary is passed thro
   const v = await get();
   expect(v.lastBackup?.name).toMatch(BACKUP_NAME_RE);
   expect(v.backupCount).toBe(1);
+  expect(v.lastBackupAttempt).toMatchObject({ ok: true, code: null });
   expect(v.retention).toEqual(summary);
 });
 
@@ -141,4 +144,16 @@ test("readVersion appends a valid short sha, ignores anything else, and is null 
     }),
   ).toBe("0.0.0");
   expect(await readVersion(join(root, "missing"), async () => "abc1234")).toBeNull();
+});
+
+test("a failed backup is the last attempt with its fixed code", async () => {
+  c.audit.record(c.db, {
+    actor: "system",
+    module: "ops",
+    action: "ops.backup_failed",
+    result: "failed",
+    details: { code: "vacuum_failed" },
+  });
+  const v = await get();
+  expect(v.lastBackupAttempt).toMatchObject({ ok: false, code: "vacuum_failed" });
 });

@@ -45,7 +45,7 @@ export interface RuntimeDeps {
   dbPath: string;
   dataDir: string;
   diskFree: (path: string) => number | null;
-  backup: Pick<BackupService, "list">;
+  backup: Pick<BackupService, "list" | "lastAttempt">;
   version: Promise<string | null>;
 }
 
@@ -84,6 +84,7 @@ export class RuntimeService {
       dataDirFreeBytes: this.d.diskFree(this.d.dataDir),
       lastBackup: backups[0] ? { name: backups[0].name, createdAt: backups[0].createdAt } : null,
       backupCount: backups.length,
+      lastBackupAttempt: this.d.backup.lastAttempt(),
       queue: {
         pending: counts.get("PENDING") ?? 0,
         running: counts.get("RUNNING") ?? 0,

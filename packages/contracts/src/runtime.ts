@@ -36,6 +36,8 @@ export interface RuntimeView {
   dataDirFreeBytes: number | null;
   lastBackup: { name: string; createdAt: string } | null;
   backupCount: number;
+  /** The newest backup attempt from the audit log; `code` is the fixed failure code. */
+  lastBackupAttempt: { ok: boolean; at: string; code: string | null } | null;
   queue: {
     pending: number;
     running: number;

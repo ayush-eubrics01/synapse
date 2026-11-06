@@ -113,6 +113,7 @@ import {
   updateLayout,
   updateMilestone,
 } from "../lib/api";
+import { backupStartMessage } from "../lib/backup";
 import { brainPaletteItems, projectRowId } from "../lib/brain";
 import { codeAnswerErrorText, codeAnswerEventMessageId } from "../lib/code-answers";
 import { trailingDebounce } from "../lib/debounce";
@@ -327,6 +328,7 @@ export default function Dashboard() {
   const [claudeSettings, setClaudeSettings] = useState<SettingsDto | null>(null);
   const [runtime, setRuntime] = useState<RuntimeView | null>(null);
   const [backups, setBackups] = useState<BackupEntry[]>([]);
+  const [settingsReset, setSettingsReset] = useState(0);
   const [backupPending, setBackupPending] = useState(false);
   const [engineeringTasks, setEngineeringTasks] = useState<EngineeringTaskView[]>([]);
   const [engineeringDetails, setEngineeringDetails] = useState<
@@ -1013,11 +1015,6 @@ export default function Dashboard() {
     { id: "act-theme", label: "Toggle theme", group: "action", run: toggleTheme },
   ];
 
-  // The latest backup job's own status, not the click, says whether a backup failed.
-  const latestBackupJob = jobs
-    .filter((j) => j.type === "ops.backup")
-    .reduce<Job | null>((a, j) => (a === null || j.createdAt > a.createdAt ? j : a), null);
-  const lastBackupFailed = latestBackupJob?.status === "FAILED";
   const sectionBodies: Record<DashboardSectionId, ReactNode> = {
     triage: (
       <>
@@ -1189,7 +1186,6 @@ export default function Dashboard() {
           settings={claudeSettings}
           now={now}
           backupPending={backupPending}
-          lastBackupFailed={lastBackupFailed}
           onBackupNow={() => {
             setBackupPending(true);
             void startBackup()
@@ -1197,20 +1193,16 @@ export default function Dashboard() {
                 toast.show("Backup started");
                 void refresh();
               })
-              .catch((e: unknown) =>
-                toast.show(
-                  e instanceof ApiError && e.status === 409
-                    ? "A backup is already running"
-                    : "Couldn't start the backup",
-                ),
-              )
+              .catch((e: unknown) => toast.show(backupStartMessage(e)))
               .finally(() => setBackupPending(false));
           }}
+          resetKey={settingsReset}
           onSetting={(key, value) => {
             void putSettings({ [key]: value })
               .then(setClaudeSettings)
               .catch(() => {
                 toast.show("Could not save that setting");
+                setSettingsReset((n) => n + 1);
                 void refresh();
               });
           }}

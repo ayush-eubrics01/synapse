@@ -44,8 +44,8 @@ export interface RuntimePanelProps {
   onBackupNow: () => void;
   backupPending: boolean;
   onSetting: (key: OpsKey, value: boolean | number) => void;
-  /** The latest backup job ended FAILED: read from the job, never assumed from the click. */
-  lastBackupFailed?: boolean;
+  /** Bumped when a save is rejected, so the inputs drop the rejected text and show the stored value. */
+  resetKey?: number;
 }
 
 /** Operational numbers, backups, retention and the R7 settings. Values come from the API as is. */
@@ -57,7 +57,7 @@ export function RuntimePanel({
   onBackupNow,
   backupPending,
   onSetting,
-  lastBackupFailed = false,
+  resetKey = 0,
 }: RuntimePanelProps) {
   const r = runtime;
   return (
@@ -109,9 +109,9 @@ export function RuntimePanel({
           Back up now
         </button>
       </div>
-      {lastBackupFailed ? (
+      {r?.lastBackupAttempt?.ok === false ? (
         <p className="syn-runtime-error" role="alert">
-          The last backup failed. See the jobs list.
+          {`The last backup failed (${r.lastBackupAttempt.code ?? "unexpected"}). See the jobs list.`}
         </p>
       ) : null}
       {backups.length === 0 ? (
@@ -144,7 +144,7 @@ export function RuntimePanel({
                 {n.label}
               </label>
               <input
-                key={String(settings[n.key])}
+                key={`${settings[n.key]}-${resetKey}`}
                 id={`syn-set-${n.key}`}
                 type="number"
                 min={n.min}
