@@ -10,10 +10,10 @@ This list amends the phase plan in `pre-project-concept-document/concept.md`. Wh
 | 3 | Slack collector | Done |
 | 4 | Urgency engine and inbox | Done |
 | 5 | People Memory | Built; PR #6 open for merge |
-| 6 | Commitments, follow-ups and approved sending | Built; PR open (stacked on Phase 5) |
-| 6b | Away-mode auto-replies (ADR-033) and the return digest | Built; PR open (stacked on Phase 7). Module doc: `docs/modules/auto-reply.md`. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-6b-followups.md` |
-| 7 | **Design revamp** | Built; PR open (stacked on Phase 6). Inserted at the user's request (2026-11-06), before the Jira integration. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-7-followups.md` |
-| 8 | Jira integration | Planned. Was Phase 7 |
+| 6 | Commitments, follow-ups and approved sending | Done (merged; PR #7/#9) |
+| 6b | Away-mode auto-replies (ADR-033) and the return digest | Done (merged; PR #11). Module doc: `docs/modules/auto-reply.md`. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-6b-followups.md` |
+| 7 | **Design revamp** | Done (merged; PR #8/#9). Inserted at the user's request (2026-11-06), before the Jira integration. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-7-followups.md` |
+| 8 | Jira integration | PR open. Read-only tracking; module doc: `docs/modules/jira.md`. Follow-ups: `docs/superpowers/plans/2026-11-06-phase-8-followups.md`. Was Phase 7 |
 | 9 | Engineering Brain | Planned. Was Phase 8 |
 | 10 | Engineering automation | Planned. Was Phase 9 |
 | 11 | Dashboard customisation and runtime hardening | Planned. Was Phase 10 |

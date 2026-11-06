@@ -253,42 +253,47 @@ interface MessageSink {
 
 Text lives only in `outgoing_messages.text` and the route responses. Audit rows, events, notifications, follow-up history, logs and thrown messages carry ids and fixed reasons.
 
-## 3. Issue source (`IssueSource`)
+## 3. Issue source (`JiraIssueSource`)
+
+As built in Phase 8 (read-only), in `packages/contracts/src/jira.ts`. The earlier draft (`IssueSource` with capabilities, health, `getIssue`, `getComments` and a rich `SourceIssue`) was not built; those return with the deferred items (comments, writes).
 
 ```typescript
-interface IssueSource {
-  getCapabilities(): Promise<IntegrationCapability[]>;
-  getHealth(): Promise<IntegrationHealth>;
-  searchIssues(query: IssueQuery): Promise<IssuePage>;
-  getIssue(issueKey: string): Promise<SourceIssue>;
-  getComments(issueKey: string): Promise<SourceIssueComment[]>;
+interface JiraIssueSource {
+  resolveCloudId(signal: AbortSignal): Promise<{ id: string; url: string; name: string }[]>;
+  searchPage(
+    args: { cloudId: string; jql: string; maxResults: number; nextPageToken?: string },
+    signal: AbortSignal,
+  ): Promise<{ issues: SourceIssue[]; nextPageToken: string | null; total: number | null }>;
 }
 
-interface IssueQuery {
-  jql: string;                   // e.g. assignee = currentUser() AND updated >= "<checkpoint>"
-  fields: string[];              // must include duedate explicitly
-  cursor?: string;               // pageInfo.endCursor
-  maxResults: number;
-}
-
+// Zod: sourceIssueSchema. Timestamps are UTC ISO instants.
 interface SourceIssue {
-  key: string;                   // e.g. PROJ-123
-  id: string;
+  key: string;            // e.g. PROJ-123
+  jiraId: string;
   projectKey: string;
-  summary: string;
-  status: string;
-  priority?: string;
-  assigneeId?: string;
-  reporterId?: string;
-  dueDate?: string;
+  summary: string;        // untrusted text (ADR-032)
+  statusName: string;
+  statusCategory: 'new' | 'indeterminate' | 'done';
+  priority: string | null;
+  issueType: string;
   labels: string[];
+  dueDate: string | null; // YYYY-MM-DD
   createdAt: string;
   updatedAt: string;
-  url: string;
+  webUrl: string;
 }
 ```
 
-Jira connector rules: resolve `cloudId` once with `getAccessibleAtlassianResources` and store it in `integrations`. Collect via `searchJiraIssuesUsingJql`. Writes (`IssueSink`: comment, transition, edit) require approval.
+Rules:
+
+- One call is one collector run: `resolveCloudId` runs `mcp__claude_ai_Atlassian__getAccessibleAtlassianResources`; `searchPage` runs `mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql` with the fields in `JIRA_FIELDS` (`summary, status, priority, issuetype, project, labels, duedate, created, updated`), one page per run (haiku, `maxTurns: 4`, allowed tools `[tool, ToolSearch]`).
+- Only the raw `tool_result` is parsed (ADR-026). It must be the single result for that tool, not an error, and its `tool_use` input must equal the requested arguments (`fields` as a set; only `responseContentFormat: "markdown"`, `actionSource: "model_tool_call"` and, for search, `searchResultMode: "issues"` may be added by the connector). A mismatch or missing result is `incomplete_ai_output`; a shape mismatch is `parse_failed`.
+- A tool error that looks like a rate limit is `rate_limited` through `integrations/rate-limit.ts` (`throwIfRateLimited`, shared with Slack).
+- The next page passes `nextPageToken = pageInfo.endCursor`. `total` is always `null` (the adapter never requests a count).
+- The cloudId is stored in the `jira.cloudId` setting after exactly one site is found.
+- Read models: `JiraIssueView` (a `SourceIssue` plus `attention`, `inScope`, `slackMentions`), `JiraStatusDto`, `JiraIssueViewKind` (`attention|open|done|all`).
+- Events: `jira.issue_updated {key}`, `jira.issue_attention {key, attention}`.
+- Writes (`IssueSink`: comment, transition, edit) are deferred; they will require approval.
 
 ## 4. Repository provider (`RepositoryProvider`)
 
