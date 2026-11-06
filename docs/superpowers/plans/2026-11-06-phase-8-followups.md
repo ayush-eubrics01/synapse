@@ -25,3 +25,4 @@ Run by the controller on 2026-11-06 against the real connector, with the user's 
 - **After the fix:** `sites: 1`, `issues: 20`, `hasNextPage: true`, `statusCategory: new=6 indeterminate=7 done=7`, `projects: 1`.
   - The argument check and the parser passed on real data.
 - **Follow-up (done in the final-review fix wave):** the adapter detects the CLI's oversized-output notice and reports it as `output_too_large` (parked as needs-attention, never retried into a loop); the web shows "Jira page too large — lower jira.pageSize".
+- Project move edge: if the new key already sits on a stale row with a different jira_id, that row is updated and the old-key row keeps the same jira_id until the next reconcile takes it out of scope (no crash; jira_id is not unique).

@@ -305,6 +305,29 @@ describe("sync", () => {
     expect(after.lastError).toBeNull();
   });
 
+  test("an abandoned (aborted) run never resumes: the worker already settled the job", async () => {
+    const ac = new AbortController();
+    pages.push(page([issue(1)], "tok-1"), async () => {
+      ac.abort();
+      throw new JobError({ kind: "timeout", message: "aborted" });
+    });
+    const h = handlers.get("jira.sync_incremental");
+    if (!h) throw new Error("no handler");
+    await h
+      .handler(
+        {
+          id: "job-abort",
+          type: "jira.sync_incremental",
+          input: null,
+          attempts: 1,
+          maxAttempts: 3,
+        } as unknown as Job,
+        { ...ctx, signal: ac.signal } as never,
+      )
+      .catch(() => undefined);
+    expect(jobs("jira.sync_incremental")).toHaveLength(0);
+  });
+
   test("a resume after a rate limit waits until retryAfter", async () => {
     pages.push(
       page([issue(1)], "tok-1"),

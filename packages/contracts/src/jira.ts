@@ -17,24 +17,25 @@ export const JIRA_FIELDS = [
 ] as const;
 
 /**
- * True when every `(` outside a double-quoted string has its `)` and every quote is closed (a
+ * True when every `(` outside a quoted string has its `)` and every quote is closed (a
  * backslash escapes the next character inside a string). The code wraps the scope as `(<scope>)`
  * and appends its own clauses, so an unbalanced scope (`a) OR (b`) or an open string could escape
  * that wrapping and swallow the project exclusion.
  */
 export function jqlBalanced(jql: string): boolean {
   let depth = 0;
-  let quoted = false;
+  // JQL strings use double or single quotes; parentheses inside either kind don't count.
+  let quote: string | null = null;
   for (let i = 0; i < jql.length; i++) {
     const ch = jql[i];
-    if (quoted) {
+    if (quote !== null) {
       if (ch === "\\") i++;
-      else if (ch === '"') quoted = false;
-    } else if (ch === '"') quoted = true;
+      else if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") quote = ch;
     else if (ch === "(") depth++;
     else if (ch === ")" && --depth < 0) return false;
   }
-  return depth === 0 && !quoted;
+  return depth === 0 && quote === null;
 }
 
 /**

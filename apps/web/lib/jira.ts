@@ -77,22 +77,23 @@ export function dueLabel(
 
 /**
  * The server's `jqlBalanced` (packages/contracts/src/jira.ts), mirrored so the web bundle does not
- * pull in the contracts runtime: parentheses balance outside double-quoted strings, and every
+ * pull in the contracts runtime: parentheses balance outside quoted strings, and every
  * string is closed (a backslash escapes the next character inside one).
  */
 function jqlBalanced(jql: string): boolean {
   let depth = 0;
-  let quoted = false;
+  // JQL strings use double or single quotes; parentheses inside either kind don't count.
+  let quote: string | null = null;
   for (let i = 0; i < jql.length; i++) {
     const ch = jql[i];
-    if (quoted) {
+    if (quote !== null) {
       if (ch === "\\") i++;
-      else if (ch === '"') quoted = false;
-    } else if (ch === '"') quoted = true;
+      else if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") quote = ch;
     else if (ch === "(") depth++;
     else if (ch === ")" && --depth < 0) return false;
   }
-  return depth === 0 && !quoted;
+  return depth === 0 && quote === null;
 }
 
 /** Fixed hints for status `lastError` values a person must act on; other kinds show as they are. */

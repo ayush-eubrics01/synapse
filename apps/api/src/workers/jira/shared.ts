@@ -171,7 +171,9 @@ export async function runPages(
       // A superseded chain's failure is not the stream's failure.
       if (!current()) return { ...out, superseded: true };
       const e = classify(stream, err);
-      if (out.pages > 0 && resumable(e)) {
+      // An aborted signal means the worker already settled this job (timeout, lost lease,
+      // shutdown) and may retry it itself: resuming here would start a second chain.
+      if (out.pages > 0 && resumable(e) && !args.signal.aborted) {
         record(deps, stream, e);
         return { ...out, failed: e };
       }

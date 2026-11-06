@@ -168,6 +168,8 @@ describe("jira routes", () => {
       "assignee = currentUser())",
       ") OR (",
       'summary ~ "open',
+      "a = '(' ) OR (b = 2 OR c = ')'",
+      "summary ~ 'open",
     ]) {
       expect((await put({ scopeJql: jql })).status).toBe(400);
     }
@@ -179,6 +181,7 @@ describe("jira routes", () => {
       'summary ~ "a (b" AND assignee = currentUser()',
       'summary ~ "x) OR (y"',
       'summary ~ "say \\"(\\" twice" AND (status = Open)',
+      "summary ~ 'a (b' AND assignee = currentUser()",
     ]) {
       const r = await put({ scopeJql: jql });
       expect(r.status).toBe(200);
