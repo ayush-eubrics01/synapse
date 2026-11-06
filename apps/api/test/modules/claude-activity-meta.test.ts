@@ -70,6 +70,13 @@ describe("extractSessionMeta", () => {
     expect(extractSessionMeta({ type: "user", aiTitle: "Demo title" })).toBeNull();
   });
 
+  test("title cut never leaves a lone surrogate", () => {
+    const title = `${"a".repeat(199)}\u{1F600}tail`;
+    const cut = extractSessionMeta({ type: "ai-title", aiTitle: title })?.aiTitle ?? "";
+    expect(cut).toBe("a".repeat(199));
+    expect(cut.isWellFormed()).toBe(true);
+  });
+
   test("pr only from valid pr-link lines", () => {
     const ok = {
       type: "pr-link",
@@ -106,6 +113,12 @@ describe("extractSessionMeta", () => {
     });
     expect(extractSessionMeta({ cwd: "relative/path" })).toBeNull();
     expect(extractSessionMeta({ timestamp: "not a date" })).toBeNull();
+    for (const bad of ["1", "Nov 6", "2026-11-06", "6 Nov 2026 10:00 UTC"]) {
+      expect(extractSessionMeta({ timestamp: bad })).toBeNull();
+    }
+    expect(extractSessionMeta({ timestamp: "2026-11-06T11:00:00+01:00" })?.timestamp).toBe(
+      "2026-11-06T10:00:00.000Z",
+    );
     expect(extractSessionMeta({ gitBranch: "b".repeat(256) })).toBeNull();
   });
 
@@ -138,6 +151,12 @@ describe("splitCompleteLines", () => {
       oversized: 0,
     });
   });
+  test("multi-byte characters count in bytes", () => {
+    const r = splitCompleteLines(enc("h\u00e9\u{1F600}\nz\n\u00e9"), 100);
+    expect(r.lines).toEqual(["h\u00e9\u{1F600}", "z"]);
+    expect(r.consumed).toBe(1 + 2 + 4 + 1 + 1 + 1);
+    expect(splitCompleteLines(enc("\u00e9\u00e9\u00e9\n"), 5).oversized).toBe(1);
+  });
   test("oversized line is consumed unparsed", () => {
     const big = "x".repeat(MAX_LINE_BYTES + (MAX_LINE_BYTES >> 1));
     const r = splitCompleteLines(enc(`${big}\nok\n`), MAX_LINE_BYTES);
@@ -160,6 +179,24 @@ describe("splitCompleteLines", () => {
 
 describe("foldMeta", () => {
   const now = Date.parse("2026-11-06T12:00:00.000Z");
+  test("a duplicate PR url keeps the first-seen seenAt and branch", () => {
+    const pr = {
+      url: "https://github.com/demo-org/demo-app/pull/7",
+      number: 7,
+      repository: "demo-org/demo-app",
+    };
+    const acc = foldMeta(
+      null,
+      [
+        { gitBranch: "feature-x" },
+        { pr, timestamp: "2026-11-06T10:00:00.000Z" },
+        { gitBranch: "main" },
+        { pr, timestamp: "2026-11-06T11:00:00.000Z" },
+      ],
+      now,
+    );
+    expect(acc.prs).toEqual([{ ...pr, seenAt: "2026-11-06T10:00:00.000Z", branch: "feature-x" }]);
+  });
   test("first cwd wins, last branch wins", () => {
     const acc = foldMeta(
       null,

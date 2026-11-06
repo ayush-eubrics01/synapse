@@ -8,6 +8,7 @@ import {
   listCandidateFiles,
   ProjectsDirUnreadable,
   readNewLines,
+  SessionFileUnreadable,
 } from "../../src/modules/claude-activity/scanner";
 import { encodeProjectDir } from "../../src/modules/claude-activity/session-meta";
 import { sessionLine, writeSession } from "../fixtures/claude-sessions";
@@ -130,6 +131,42 @@ describe("readNewLines", () => {
     const r2 = await readNewLines(fileOf(path, Bun.file(path).size), r.consumedTo);
     expect(r2.deltas).toEqual([{ aiTitle: "Demo title" }]);
     expect(r2.consumedTo).toBe(Bun.file(path).size);
+  });
+
+  test("a file deleted after listing throws a path-free error", async () => {
+    const root = projects();
+    const path = writeSession(root, ID, [sessionLine("user")]);
+    const size = Bun.file(path).size;
+    rmSync(path);
+    const err = await readNewLines(fileOf(path, size), 0).catch((e) => e);
+    expect(err).toBeInstanceOf(SessionFileUnreadable);
+    expect(err.code).toBe("ENOENT");
+    expect(err.message).not.toContain(root);
+  });
+
+  test("a file that became a symlink is not followed", async () => {
+    const root = projects();
+    const outside = writeSession(projects(), "t", [sessionLine("user", { cwd: "/x" })]);
+    const path = join(root, `${ID}.jsonl`);
+    symlinkSync(outside, path);
+    const err = await readNewLines(fileOf(path, Bun.file(outside).size), 0).catch((e) => e);
+    expect(err).toBeInstanceOf(SessionFileUnreadable);
+  });
+
+  test("the tail of a consumed oversized line is skipped, not parsed", async () => {
+    const root = projects();
+    const first = `${"x".repeat(5)}`;
+    const path = join(root, `${ID}.jsonl`);
+    const tail = `ZZZ"}\n${sessionLine("ai-title", { aiTitle: "Demo title" })}\n`;
+    writeFileSync(path, first + tail);
+    // offset 5: previous byte is "x", not a newline
+    const r = await readNewLines(fileOf(path, Bun.file(path).size), 5);
+    expect(r.parseErrors).toBe(0);
+    expect(r.deltas).toEqual([{ aiTitle: "Demo title" }]);
+    // tail with no newline at all is consumed whole
+    writeFileSync(path, `${first}ZZZ`);
+    const r2 = await readNewLines(fileOf(path, Bun.file(path).size), 5);
+    expect(r2).toMatchObject({ lines: 0, parseErrors: 0, consumedTo: 8 });
   });
 
   test("nothing new reads nothing", async () => {

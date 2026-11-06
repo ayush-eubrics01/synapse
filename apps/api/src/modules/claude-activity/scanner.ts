@@ -3,6 +3,7 @@
  * `*.jsonl` files in directories that encode a registered repository path, never follows
  * symlinks, and never logs or throws file content or paths.
  */
+import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
 import {
@@ -45,7 +46,7 @@ export const defaultFsOps: FsOps = {
   },
   realpath: (p) => realpath(p),
   async readRange(p, offset, length) {
-    const fh = await open(p, "r");
+    const fh = await open(p, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const buf = Buffer.alloc(length);
       const { bytesRead } = await fh.read(buf, 0, length, offset);
@@ -60,6 +61,16 @@ export class ProjectsDirUnreadable extends Error {
   constructor() {
     super("Claude projects directory is not readable");
     this.name = "ProjectsDirUnreadable";
+  }
+}
+
+/** A session file could not be read; carries only an fs error code, never a path. */
+export class SessionFileUnreadable extends Error {
+  readonly code: string;
+  constructor(code: string) {
+    super(`Session file could not be read (${code})`);
+    this.name = "SessionFileUnreadable";
+    this.code = code;
   }
 }
 
@@ -133,8 +144,33 @@ export async function readNewLines(
   oversized: number;
 }> {
   const want = Math.min(MAX_CHUNK_BYTES, Math.max(0, file.size - fromOffset));
-  const chunk = want > 0 ? await fs.readRange(file.path, fromOffset, want) : new Uint8Array(0);
-  const split = splitCompleteLines(chunk, MAX_LINE_BYTES);
+  // Read one byte before the offset: if it is not a newline, the offset is inside a line
+  // whose head was consumed as oversized, so skip to the next line start.
+  const back = fromOffset > 0 ? 1 : 0;
+  let chunk: Uint8Array = new Uint8Array(0);
+  if (want > 0) {
+    try {
+      chunk = await fs.readRange(file.path, fromOffset - back, want + back);
+    } catch (e) {
+      throw new SessionFileUnreadable(
+        typeof errCode(e) === "string" ? (errCode(e) as string) : "UNKNOWN",
+      );
+    }
+  }
+  let startRel = 0;
+  let skipAll = false;
+  if (back === 1 && chunk.length > 0 && chunk[0] !== 0x0a) {
+    const nl = chunk.indexOf(0x0a, 1);
+    if (nl === -1) skipAll = true;
+    else startRel = nl + 1;
+  } else if (back === 1) {
+    startRel = 1;
+  }
+  const base = fromOffset - back;
+  const split = skipAll
+    ? { lines: [] as string[], consumed: chunk.length - startRel, oversized: 0 }
+    : splitCompleteLines(chunk.subarray(startRel), MAX_LINE_BYTES);
+  const consumedTo = skipAll ? base + chunk.length : base + startRel + split.consumed;
   const deltas: SessionMetaDelta[] = [];
   let known = 0;
   let parseErrors = 0;
@@ -153,7 +189,7 @@ export async function readNewLines(
   }
   return {
     deltas,
-    consumedTo: fromOffset + split.consumed,
+    consumedTo,
     lines: split.lines.length,
     known,
     parseErrors,

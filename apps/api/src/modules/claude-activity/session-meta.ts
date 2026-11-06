@@ -18,6 +18,8 @@ export interface SessionMetaDelta {
   pr?: { url: string; number: number; repository: string };
 }
 
+const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+
 function str(v: unknown, max: number): string | undefined {
   return typeof v === "string" && v.length > 0 && v.length <= max ? v : undefined;
 }
@@ -36,10 +38,16 @@ export function extractSessionMeta(line: unknown): SessionMetaDelta | null {
   const entrypoint = str(src.entrypoint, 50);
   if (entrypoint) out.entrypoint = entrypoint;
   const ts = str(src.timestamp, 64);
-  if (ts && !Number.isNaN(Date.parse(ts))) out.timestamp = ts;
+  if (ts && ISO_8601.test(ts)) {
+    const ms = Date.parse(ts);
+    if (!Number.isNaN(ms)) out.timestamp = new Date(ms).toISOString();
+  }
 
   if (src.type === "ai-title" && typeof src.aiTitle === "string" && src.aiTitle.length > 0) {
-    out.aiTitle = src.aiTitle.slice(0, 200);
+    let title = src.aiTitle.slice(0, 200);
+    const last = title.charCodeAt(title.length - 1);
+    if (last >= 0xd800 && last <= 0xdbff) title = title.slice(0, -1);
+    out.aiTitle = title;
   }
   if (src.type === "pr-link") {
     const url = str(src.prUrl, 500);
@@ -152,10 +160,9 @@ export function foldMeta(
       }
     }
     if (d.pr) {
-      const entry = { ...d.pr, seenAt, branch: acc.gitBranch };
-      const i = acc.prs.findIndex((p) => p.url === d.pr?.url);
-      if (i >= 0) acc.prs[i] = entry;
-      else acc.prs.push(entry);
+      const url = d.pr.url;
+      if (!acc.prs.some((p) => p.url === url))
+        acc.prs.push({ ...d.pr, seenAt, branch: acc.gitBranch });
     }
   }
   return acc;
