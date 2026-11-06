@@ -108,6 +108,7 @@ Produce a short plan naming: relevant modules, contracts used or changed, databa
 bun install                    # install all workspaces
 bun run check                  # typecheck (tsc -b) + lint (biome) + tests
 bun test                       # run all tests
+bun run dev                    # API + web together ([api]/[web] prefixed output; Ctrl+C stops both)
 bun run --cwd apps/api dev     # API on 127.0.0.1:7400
 bun run --cwd apps/web dev     # web on 127.0.0.1:7401
 bun scripts/setup/check-env.ts # read-only env check (bun >= 1.4.4, claude on service PATH, linger)

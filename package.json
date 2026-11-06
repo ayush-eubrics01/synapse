@@ -11,6 +11,7 @@
     "packages/*"
   ],
   "scripts": {
+    "dev": "bun scripts/dev/start.ts",
     "typecheck": "bunx --bun tsc -b && bunx --bun tsc -p apps/web --noEmit",
     "lint": "bunx --bun biome check .",
     "test": "bun test",
