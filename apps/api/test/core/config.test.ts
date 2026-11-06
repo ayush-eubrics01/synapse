@@ -210,3 +210,30 @@ test("auto-reply settings have the Phase 6b defaults", () => {
   expect(() => settings.set("autoReply.allowedKinds", ["bogus"] as never)).toThrow();
   expect(() => settings.set("autoReply.minConfidence", 2)).toThrow();
 });
+
+test("jira settings defaults", () => {
+  const { settings } = setup();
+  expect(settings.get("jira.enabled")).toBe(false);
+  expect(settings.get("jira.cloudId")).toBeNull();
+  expect(settings.get("jira.scope.jql")).toBe("assignee = currentUser() AND updated >= -60d");
+  expect(settings.get("jira.excludedProjects")).toEqual([]);
+  expect(settings.get("jira.sync.intervalMinutes")).toBe(15);
+  expect(settings.get("jira.reconcile.hours")).toBe(24);
+  expect(settings.get("jira.windowDays")).toBe(60);
+  expect(settings.get("jira.stale.days")).toBe(5);
+  expect(settings.get("jira.dueSoon.days")).toBe(2);
+  expect(settings.get("jira.blockedStatuses")).toEqual([]);
+  expect(settings.get("jira.pageSize")).toBe(50);
+  expect(settings.get("jira.maxPagesPerRun")).toBe(4);
+});
+
+test("jira settings validation", () => {
+  const { settings } = setup();
+  expect(() => settings.set("jira.excludedProjects", ["bad key"])).toThrow();
+  expect(() => settings.set("jira.scope.jql", "a\nb")).toThrow();
+  expect(() => settings.set("jira.scope.jql", "x".repeat(501))).toThrow();
+  expect(() => settings.set("jira.cloudId", "not a uuid!")).toThrow();
+  settings.set("jira.excludedProjects", ["SKIP"]);
+  settings.set("jira.cloudId", "00000000-0000-4000-8000-000000000000");
+  expect(settings.get("jira.excludedProjects")).toEqual(["SKIP"]);
+});

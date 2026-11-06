@@ -716,3 +716,31 @@ export const autoReplies = sqliteTable(
     index("auto_replies_outgoing_idx").on(t.outgoingId),
   ],
 );
+
+export const jiraIssues = sqliteTable(
+  "jira_issues",
+  {
+    key: text("key").primaryKey(),
+    jiraId: text("jira_id").notNull(),
+    projectKey: text("project_key").notNull(),
+    summary: text("summary").notNull(),
+    statusName: text("status_name").notNull(),
+    statusCategory: text("status_category", { enum: ["new", "indeterminate", "done"] }).notNull(),
+    priority: text("priority"),
+    issueType: text("issue_type").notNull(),
+    labels: json("labels").$type<string[]>().notNull(),
+    dueDate: text("due_date"),
+    jiraCreatedAt: text("jira_created_at").notNull(),
+    jiraUpdatedAt: text("jira_updated_at").notNull(),
+    webUrl: text("web_url").notNull(),
+    inScope: bool("in_scope").notNull(),
+    firstSeenAt: text("first_seen_at").notNull(),
+    lastSeenAt: text("last_seen_at").notNull(),
+    attention: text("attention", { enum: ["overdue", "blocked", "due_soon", "stale"] }),
+    attentionSince: text("attention_since"),
+  },
+  (t) => [
+    index("jira_issues_scope_category_idx").on(t.inScope, t.statusCategory),
+    index("jira_issues_updated_idx").on(t.jiraUpdatedAt),
+  ],
+);

@@ -14,6 +14,8 @@ const keywordRuleSchema = z.object({
   signal: z.boolean(),
 });
 
+const jiraProjectKeySchema = z.string().regex(/^[A-Z][A-Z0-9_]+$/);
+
 const settingSchemas = {
   "slack.selfUserId": z
     .string()
@@ -56,6 +58,27 @@ const settingSchemas = {
   "autoReply.minConfidence": z.number().min(0).max(1).default(0.75),
   // M8: an auto-send not started this long after its decision is cancelled as `stale`.
   "autoReply.maxSendDelayMinutes": z.number().int().positive().default(15),
+  "jira.enabled": z.boolean().default(false),
+  "jira.cloudId": z
+    .string()
+    .regex(/^[0-9a-fA-F-]{8,64}$/)
+    .nullable()
+    .default(null),
+  "jira.scope.jql": z
+    .string()
+    .min(1)
+    .max(500)
+    .refine((v) => !/[\r\n]/.test(v), "no newlines")
+    .default("assignee = currentUser() AND updated >= -60d"),
+  "jira.excludedProjects": z.array(jiraProjectKeySchema).default([]),
+  "jira.sync.intervalMinutes": z.number().int().positive().default(15),
+  "jira.reconcile.hours": z.number().int().positive().default(24),
+  "jira.windowDays": z.number().int().positive().default(60),
+  "jira.stale.days": z.number().int().positive().default(5),
+  "jira.dueSoon.days": z.number().int().nonnegative().default(2),
+  "jira.blockedStatuses": z.array(z.string().min(1)).default([]),
+  "jira.pageSize": z.number().int().min(1).max(100).default(50),
+  "jira.maxPagesPerRun": z.number().int().positive().default(4),
   "system.lastHeartbeatAt": z.string().nullable().default(null),
   "orchestrator.quota.fiveHour.soft": z.number().min(0).max(1).default(0.6),
   "orchestrator.quota.fiveHour.hard": z.number().min(0).max(1).default(0.85),
