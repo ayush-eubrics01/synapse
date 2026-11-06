@@ -1,8 +1,9 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -52,7 +53,7 @@ import {
   EngineeringTaskError,
   EngineeringTaskStore,
 } from "../../src/modules/engineering-tasks/store";
-import { registerStepJob } from "../../src/workers/engineering/steps";
+import { registerStepJob, sweepRunScratch } from "../../src/workers/engineering/steps";
 import { type RemoteRepoFixture, remoteRepoFixture } from "../fixtures/engineering";
 import { git, tempDir } from "../fixtures/git-repo";
 
@@ -590,6 +591,87 @@ describe("develop sandbox (ADR-040)", () => {
     expect(taskRow(id)?.failure).toBe("timeout");
     expect(seen).toHaveLength(1);
     expect(existsSync(runDir(seen[0] as string))).toBe(false);
+  });
+
+  test("a cleanup failure never replaces the run's result (fix round 1)", async () => {
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    let locked = "";
+    const edit = editingRun();
+    reply = (req) => {
+      locked = join(req.sandbox?.tmpDir as string, "locked");
+      mkdirSync(join(locked, "inner"), { recursive: true });
+      chmodSync(locked, 0o000);
+      return edit(req);
+    };
+    try {
+      const id = await developed();
+      expect(taskRow(id)?.status).toBe("awaiting_approval");
+      expect(errors.mock.calls).toEqual([["engineering.step: run scratch cleanup failed"]]);
+    } finally {
+      errors.mockRestore();
+      chmodSync(locked, 0o755);
+    }
+  });
+
+  test("a cleanup failure never replaces the run's error (fix round 1)", async () => {
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    let locked = "";
+    reply = (req) => {
+      locked = join(req.sandbox?.tmpDir as string, "locked");
+      mkdirSync(join(locked, "inner"), { recursive: true });
+      chmodSync(locked, 0o000);
+      throw new JobError({ kind: "timeout", message: "timed out" });
+    };
+    try {
+      const id = await developed();
+      expect(taskRow(id)?.failure).toBe("timeout");
+      expect(errors.mock.calls).toEqual([["engineering.step: run scratch cleanup failed"]]);
+    } finally {
+      errors.mockRestore();
+      chmodSync(locked, 0o755);
+    }
+  });
+
+  test("a repository inside a home deny entry is refused (repo_in_masked_path, fix round 1)", async () => {
+    // A second fixture whose repository lives under `<home>/.config`.
+    const home = scratch();
+    mkdirSync(join(home, ".config"));
+    const fx2 = remoteRepoFixture(join(home, ".config"));
+    const registry2 = new RepositoryRegistry({
+      db,
+      clock,
+      audit,
+      events,
+      provider: new LocalGitProvider({ home: fx2.home }),
+    });
+    const view = await registry2.register({
+      path: fx2.repo,
+      name: "demo",
+      trackedBranch: "main",
+      environments: [],
+      jiraProjectKeys: [],
+    });
+    repoId = view.id;
+    repo = fx2.repo;
+    handlers.delete(STEP_JOB);
+    registerStepJob({
+      db,
+      settings,
+      steps,
+      handlers,
+      orchestrator: {
+        run: async (req: ClaudeJobRequest) => {
+          requests.push(req);
+          return reply(req);
+        },
+      },
+      sandbox: { scratchDir: sandboxScratch, home, protectedDirs: [], maskedRoots: [] },
+    });
+    const id = await developed();
+    expect(requests).toHaveLength(0);
+    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("repo_in_masked_path");
+    expect(leaseRow()).toBeUndefined();
   });
 
   test("a repository in a masked path is refused before any run (repo_in_masked_path)", async () => {
@@ -1472,5 +1554,42 @@ describe("final review fixes", () => {
     expect(head(fx.origin, "main")).toBe(originBefore);
     expect(git(elsewhere, "for-each-ref")).toBe("");
     expect(ghCalls().some((c) => c[1] === "create")).toBe(false);
+  });
+});
+
+describe("startup sweep of run scratch (fix round 1)", () => {
+  test("leftover run dirs are removed; the runs dir stays", () => {
+    const dir = scratch();
+    mkdirSync(join(dir, "runs", "a", "tmp"), { recursive: true });
+    writeFileSync(join(dir, "runs", "a", "tmp", "f"), "x");
+    mkdirSync(join(dir, "runs", "b"));
+    writeFileSync(join(dir, "runs", "stray-file"), "x");
+    writeFileSync(join(dir, "keep.txt"), "x");
+    sweepRunScratch(dir);
+    expect(readdirSync(join(dir, "runs"))).toEqual([]);
+    expect(existsSync(join(dir, "keep.txt"))).toBe(true);
+  });
+
+  test("a missing runs dir is a no-op", () => {
+    const dir = scratch();
+    expect(() => sweepRunScratch(dir)).not.toThrow();
+    expect(existsSync(join(dir, "runs"))).toBe(false);
+  });
+
+  test("best effort: one undeletable entry logs a fixed line and the rest go", () => {
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    const dir = scratch();
+    const locked = join(dir, "runs", "a", "locked");
+    mkdirSync(join(locked, "inner"), { recursive: true });
+    mkdirSync(join(dir, "runs", "b"));
+    chmodSync(locked, 0o000);
+    try {
+      expect(() => sweepRunScratch(dir)).not.toThrow();
+      expect(readdirSync(join(dir, "runs"))).toEqual(["a"]);
+      expect(errors.mock.calls).toEqual([["engineering.step: run scratch sweep failed"]]);
+    } finally {
+      errors.mockRestore();
+      chmodSync(locked, 0o755);
+    }
   });
 });

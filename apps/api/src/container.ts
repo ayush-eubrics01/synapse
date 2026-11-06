@@ -109,7 +109,7 @@ import { registerCodeAnswerJob } from "./workers/code-answer/generate";
 import { registerCommitmentJobs } from "./workers/commitments";
 import { registerInvestigateJob } from "./workers/engineering/investigate";
 import { registerPickupJobs } from "./workers/engineering/pickup";
-import { registerStepJob } from "./workers/engineering/steps";
+import { registerStepJob, sweepRunScratch } from "./workers/engineering/steps";
 import { createRunHelpers } from "./workers/intelligence-shared";
 import { registerJiraJobs } from "./workers/jira";
 import { registerOpsJobs } from "./workers/ops";
@@ -695,6 +695,8 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
       ...(deps.sandboxMaskedRoots ? { maskedRoots: deps.sandboxMaskedRoots } : {}),
     },
   });
+  // Startup: no engineering step runs in this process yet, so every run dir is a leftover.
+  sweepRunScratch(scratchDir);
   const diskFree = deps.diskFree ?? defaultDiskFree;
   const startedAt = clock.now();
   const backup = new BackupService({

@@ -77,9 +77,10 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *  M. sandbox (ADR-040), after L: an engineering run that grants any Bash must carry `sandbox`
  *     (SANDBOX_REQUIRED_REASON), so its test command runs with no network, writes only inside the
  *     repository and the credentials and sockets masked. A non-engineering run must not carry one.
- *     `tmpDir` and every `denyRead` entry must satisfy isSafeAbsolutePath, and `tmpDir` must be
- *     neither equal to nor an ancestor of a `denyRead` entry or of SANDBOX_MASKED_ROOTS (its
- *     `allowRead` would re-expose it). Last of all
+ *     `denyRead` must be non-empty; `tmpDir` and every `denyRead` entry must satisfy
+ *     isSafeAbsolutePath; `tmpDir` must be neither equal to nor an ancestor of a `denyRead` entry
+ *     or of SANDBOX_MASKED_ROOTS, nor equal to or under `/run` or `/var/run` (its `allowRead`
+ *     would re-expose them). Last of all
  * Tool names are normalised (specifier stripped) before classification.
  */
 export function validateRequest(
@@ -257,6 +258,7 @@ export function validateRequest(
     }
   } else {
     if (profile !== "engineering") return fail("sandbox is for engineering runs only");
+    if (sandbox.denyRead.length === 0) return fail("sandbox denyRead must not be empty");
     if (![sandbox.tmpDir, ...sandbox.denyRead].every(isSafeAbsolutePath)) {
       return fail("sandbox paths must be absolute paths of safe characters");
     }
@@ -264,6 +266,10 @@ export function validateRequest(
     const masks = [...sandbox.denyRead, ...SANDBOX_MASKED_ROOTS].map((e) => e.replace(/\/+$/, ""));
     if (masks.some((e) => e === tmp || e.startsWith(`${tmp}/`))) {
       return fail("sandbox tmpDir must not contain a masked path");
+    }
+    // Under /run or /var/run, allowRead would re-expose sockets (SSH agent, rootless Docker).
+    if (["/run", "/var/run"].some((r) => tmp === r || tmp.startsWith(`${r}/`))) {
+      return fail("sandbox tmpDir must not be under /run or /var/run");
     }
   }
 

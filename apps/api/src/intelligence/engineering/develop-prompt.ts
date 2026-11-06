@@ -77,11 +77,15 @@ export const SANDBOX_HOME_DENY: readonly string[] = [
 const stripSlashes = (p: string) => p.replace(/\/+$/, "");
 const atOrUnder = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
 
+const homeEntries = (home: string) => SANDBOX_HOME_DENY.map((rel) => stripSlashes(join(home, rel)));
+
 /**
  * The sandbox `denyRead` list (F1.3): each SANDBOX_HOME_DENY entry under `home`, then
- * `protectedDirs`. An entry equal to the repository or containing it is dropped, since masking it
- * would hide the code under test (Review Focus 1); the others stay. Trailing slashes are stripped
- * and duplicates dropped in first-seen order. Pure.
+ * `protectedDirs`. Home entries are always kept: a repository at or inside one is refused
+ * (`repoInHomeMask`), never unmasked with its whole directory. A protected dir equal to the
+ * repository or containing it is dropped, since masking it would hide the code under test (Review
+ * Focus 1); entries inside the repository stay masked. Trailing slashes are stripped and
+ * duplicates dropped in first-seen order. Pure.
  */
 export function sandboxDenyRead(
   home: string,
@@ -89,13 +93,18 @@ export function sandboxDenyRead(
   repoRoot: string,
 ): string[] {
   const repo = stripSlashes(repoRoot);
-  const all = [...SANDBOX_HOME_DENY.map((rel) => join(home, rel)), ...protectedDirs];
-  const out: string[] = [];
-  for (const e of all.map(stripSlashes)) {
-    if (atOrUnder(repo, e) || out.includes(e)) continue;
-    out.push(e);
-  }
-  return out;
+  const kept = protectedDirs.map(stripSlashes).filter((e) => !atOrUnder(repo, e));
+  return [...new Set([...homeEntries(home), ...kept])];
+}
+
+/**
+ * True when the repository is at or inside a SANDBOX_HOME_DENY entry under `home` (a dotfile repo
+ * under `~/.config`, say). Develop refuses it (`repo_in_masked_path`): unmasking the entry would
+ * expose every credential in that directory. Pure.
+ */
+export function repoInHomeMask(home: string, repoRoot: string): boolean {
+  const repo = stripSlashes(repoRoot);
+  return homeEntries(home).some((e) => atOrUnder(repo, e));
 }
 
 /** The fixed develop failure (and `JobError` message) for a repository in a masked path. */

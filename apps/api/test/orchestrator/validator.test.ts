@@ -632,6 +632,20 @@ describe("rule M: engineering Bash requires the sandbox (ADR-040)", () => {
       v(eng({ sandbox: { tmpDir: "/home/u/.s/tmp", denyRead: ["/home/u/.s/tmp2"] } })),
     ).toEqual({ ok: true });
   });
+  test("a tmpDir equal to or under /run or /var/run fails (fix round 1)", () => {
+    const UNDER = "sandbox tmpDir must not be under /run or /var/run";
+    for (const tmpDir of ["/run/user/1000", "/run/user/1000/", "/var/run/x/tmp", "/run/x"]) {
+      expect(reason(v(eng({ sandbox: { ...SANDBOX, tmpDir } })))).toBe(UNDER);
+    }
+    // Siblings with a shared prefix are fine.
+    expect(v(eng({ sandbox: { ...SANDBOX, tmpDir: "/runner/x/tmp" } }))).toEqual({ ok: true });
+    expect(v(eng({ sandbox: { ...SANDBOX, tmpDir: "/var/running/tmp" } }))).toEqual({ ok: true });
+  });
+  test("an empty denyRead fails (fix round 1)", () => {
+    expect(reason(v(eng({ sandbox: { ...SANDBOX, denyRead: [] } })))).toBe(
+      "sandbox denyRead must not be empty",
+    );
+  });
   test("rule M runs last: an earlier rule's reason wins", () => {
     expect(reason(v(eng({ allowed: [...FILES, "Bash(curl x:*)"] })))).toBe(
       "write tools must be scoped to the working directory",

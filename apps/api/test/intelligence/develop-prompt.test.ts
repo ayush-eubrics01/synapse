@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildDevelopRequest,
+  repoInHomeMask,
   repoInMaskedPath,
   SANDBOX_HOME_DENY,
   sandboxDenyRead,
@@ -52,9 +53,18 @@ describe("sandboxDenyRead (F1.3)", () => {
     expect(sandboxDenyRead(HOME, [DATA, BACKUPS], REPO)).toEqual([...HOME_ENTRIES, DATA, BACKUPS]);
   });
 
-  test("a repository inside a masked dir drops only that entry (Review Focus 1)", () => {
-    const out = sandboxDenyRead(HOME, [DATA, BACKUPS], "/home/u/.docker/demo");
-    expect(out).toEqual([...HOME_ENTRIES.filter((e) => e !== "/home/u/.docker"), DATA, BACKUPS]);
+  test("a home entry is never dropped, even when it contains the repository (fix round 1)", () => {
+    // Such a repository is refused (repoInHomeMask), never unmasked with its whole directory.
+    expect(sandboxDenyRead(HOME, [DATA, BACKUPS], "/home/u/.docker/demo")).toEqual([
+      ...HOME_ENTRIES,
+      DATA,
+      BACKUPS,
+    ]);
+    expect(sandboxDenyRead(HOME, [], "/home/u/.config")).toEqual(HOME_ENTRIES);
+  });
+
+  test("entries inside the repository stay masked", () => {
+    expect(sandboxDenyRead(HOME, [DATA], HOME)).toEqual([...HOME_ENTRIES, DATA]);
   });
 
   test("a repository equal to a protected dir drops that entry", () => {
@@ -100,6 +110,25 @@ describe("repoInMaskedPath (controller ruling)", () => {
   test("the roots can be given", () => {
     expect(repoInMaskedPath("/tmp/demo", [])).toBe(false);
     expect(repoInMaskedPath("/srv/x/demo", ["/srv/x"])).toBe(true);
+  });
+});
+
+describe("repoInHomeMask (fix round 1 ruling)", () => {
+  test("a repository at or inside a home deny entry is masked", () => {
+    for (const p of [
+      "/home/u/.config/nvim",
+      "/home/u/.claude",
+      "/home/u/.docker/demo/",
+      "/home/u/.cargo/credentials/x",
+    ]) {
+      expect(repoInHomeMask(HOME, p)).toBe(true);
+      expect(repoInHomeMask(`${HOME}/`, p)).toBe(true);
+    }
+  });
+  test("other repositories are not, including shared prefixes and home itself", () => {
+    for (const p of [REPO, "/home/u/.configx/demo", "/home/u/.cargo/demo", HOME, DATA]) {
+      expect(repoInHomeMask(HOME, p)).toBe(false);
+    }
   });
 });
 

@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { type Job, JobError, SANDBOX_MASKED_ROOTS } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
@@ -9,6 +9,7 @@ import type { ClaudeOrchestrator } from "../../core/orchestrator/orchestrator";
 import {
   buildDevelopRequest,
   REPO_IN_MASKED_PATH,
+  repoInHomeMask,
   repoInMaskedPath,
 } from "../../intelligence/engineering/develop-prompt";
 import { STEP_JOB } from "../../modules/engineering-tasks/lock";
@@ -42,6 +43,28 @@ export interface StepJobDeps {
     protectedDirs: string[];
     maskedRoots?: readonly string[];
   };
+}
+
+/**
+ * Removes leftover `<scratchDir>/runs/*` entries (develop runs whose process was killed before its
+ * `finally` ran). Called once at API start, when no engineering step runs in this process. Best
+ * effort: an entry that cannot be removed logs one fixed line and the others still go.
+ */
+export function sweepRunScratch(scratchDir: string): void {
+  const runs = join(scratchDir, "runs");
+  let entries: string[];
+  try {
+    entries = readdirSync(runs);
+  } catch {
+    return; // no runs dir yet
+  }
+  for (const e of entries) {
+    try {
+      rmSync(join(runs, e), { recursive: true, force: true });
+    } catch {
+      console.error("engineering.step: run scratch sweep failed");
+    }
+  }
 }
 
 /**
@@ -81,8 +104,13 @@ export function registerStepJob(deps: StepJobDeps): void {
         return steps.runDevelop(taskId, {
           run: async (t) => {
             const sandboxed = settings.get("engineering.sandbox.enabled");
-            if (sandboxed && repoInMaskedPath(t.localPath, maskedRoots)) {
-              // Refused before any run: the sandbox would hide the repository from itself.
+            if (
+              sandboxed &&
+              (repoInMaskedPath(t.localPath, maskedRoots) ||
+                repoInHomeMask(sandbox.home, t.localPath))
+            ) {
+              // Refused before any run: the sandbox would hide the repository from itself, or
+              // unmasking it would expose a whole credential directory.
               throw new JobError({ kind: "invalid_input", message: REPO_IN_MASKED_PATH });
             }
             const runScratch = join(sandbox.scratchDir, "runs", job.id);
@@ -110,7 +138,12 @@ export function registerStepJob(deps: StepJobDeps): void {
               );
             } finally {
               // Also after a throw, timeout or abort: stale run dirs must not fill the data dir.
-              rmSync(runScratch, { recursive: true, force: true });
+              // A failure never replaces the run's result or error; the startup sweep retries.
+              try {
+                rmSync(runScratch, { recursive: true, force: true });
+              } catch {
+                console.error("engineering.step: run scratch cleanup failed");
+              }
             }
           },
           runId: () => latestRunId(job.id),
