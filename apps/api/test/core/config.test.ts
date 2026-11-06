@@ -5,7 +5,7 @@ import { type DbOrTx, openDatabase, runMigrations, schema } from "@synapse/datab
 import { FakeClock, isoNow, newId } from "@synapse/shared";
 import { eq } from "drizzle-orm";
 import { loadConfig, resolveHome } from "../../src/core/config/config";
-import { SettingsService } from "../../src/core/config/settings";
+import { SettingsService, USER_EDITABLE_SETTINGS } from "../../src/core/config/settings";
 
 function setup() {
   const { db } = openDatabase(":memory:");
@@ -260,4 +260,29 @@ test("engineering settings defaults and bounds", () => {
   expect(settings.get("engineering.lock.ttlMinutes")).toBe(10);
   expect(() => settings.set("engineering.model", "gpt" as never)).toThrow();
   expect(() => settings.set("engineering.lock.ttlMinutes", 0)).toThrow();
+});
+
+test("phase 10b settings: defaults and bounds", () => {
+  const { settings } = setup();
+  expect(settings.get("claudeActivity.enabled")).toBe(true);
+  expect(settings.get("claudeActivity.projectsDir")).toBeNull();
+  expect(settings.get("claudeActivity.scanIntervalSeconds")).toBe(120);
+  expect(settings.get("claudeActivity.activeWindowMinutes")).toBe(10);
+  expect(settings.get("claudeActivity.yieldWhenActive")).toBe(true);
+  expect(settings.get("claudeActivity.yieldEngineering")).toBe(false);
+  expect(settings.get("claudeActivity.staleBranchDays")).toBe(3);
+  expect(settings.get("claudeActivity.openPrReminderDays")).toBe(3);
+  expect(settings.get("claudeActivity.lastActiveState")).toBe(false);
+  expect(settings.get("claudeActivity.reminders.lastRunDate")).toBeNull();
+  expect(settings.get("codeAnswer.model")).toBe("sonnet");
+  expect(settings.get("codeAnswer.maxTurns")).toBe(16);
+  expect(settings.get("codeAnswer.timeoutMinutes")).toBe(5);
+  expect(settings.get("codeAnswer.away.enabled")).toBe(true);
+  expect(settings.get("codeAnswer.away.autoSend")).toBe(false);
+  expect(settings.get("codeAnswer.away.maxRunsPerDay")).toBe(10);
+  expect(() => settings.set("codeAnswer.maxTurns", 31)).toThrow();
+  expect(() => settings.set("claudeActivity.projectsDir", "relative/dir")).toThrow();
+  expect(USER_EDITABLE_SETTINGS).not.toContain("claudeActivity.projectsDir");
+  expect(USER_EDITABLE_SETTINGS).not.toContain("claudeActivity.scanIntervalSeconds");
+  expect(USER_EDITABLE_SETTINGS).toContain("codeAnswer.away.autoSend");
 });

@@ -39,6 +39,8 @@ const DOMAIN_EVENTS = [
   "autoreply.sent",
   "autoreply.held",
   "away.changed",
+  "claude_session.activity_changed",
+  "code_answer.status_changed",
   "jira.issue_updated",
   "jira.issue_attention",
   "repo.registered",

@@ -93,6 +93,24 @@ const settingSchemas = {
   "engineering.develop.maxTurns": z.number().int().min(1).max(50).default(50),
   "engineering.develop.timeoutMinutes": z.number().int().min(1).max(120).default(30),
   "engineering.lock.ttlMinutes": z.number().int().min(1).max(120).default(10),
+  "claudeActivity.enabled": z.boolean().default(true),
+  // null: resolved at startup (~/.claude/projects). Tests point it at a temp dir.
+  "claudeActivity.projectsDir": z.string().startsWith("/").nullable().default(null),
+  "claudeActivity.scanIntervalSeconds": z.number().int().min(30).max(3600).default(120),
+  "claudeActivity.activeWindowMinutes": z.number().int().min(1).max(120).default(10),
+  "claudeActivity.yieldWhenActive": z.boolean().default(true),
+  "claudeActivity.yieldEngineering": z.boolean().default(false),
+  "claudeActivity.staleBranchDays": z.number().int().min(1).max(60).default(3),
+  "claudeActivity.openPrReminderDays": z.number().int().min(1).max(60).default(3),
+  // Internal state, not user-editable.
+  "claudeActivity.lastActiveState": z.boolean().default(false),
+  "claudeActivity.reminders.lastRunDate": z.string().nullable().default(null),
+  "codeAnswer.model": z.enum(["haiku", "sonnet", "opus"]).default("sonnet"),
+  "codeAnswer.maxTurns": z.number().int().min(1).max(30).default(16),
+  "codeAnswer.timeoutMinutes": z.number().int().min(1).max(30).default(5),
+  "codeAnswer.away.enabled": z.boolean().default(true),
+  "codeAnswer.away.autoSend": z.boolean().default(false),
+  "codeAnswer.away.maxRunsPerDay": z.number().int().min(0).max(100).default(10),
   "brain.upcoming.days": z.number().int().positive().default(30),
   "system.lastHeartbeatAt": z.string().nullable().default(null),
   "orchestrator.quota.fiveHour.soft": z.number().min(0).max(1).default(0.6),
@@ -135,6 +153,23 @@ const settingSchemas = {
 };
 
 export type SettingKey = keyof typeof settingSchemas;
+/** Phase 10b keys the settings API may change: every new key except the test-only and internal ones. */
+export const USER_EDITABLE_SETTINGS = [
+  "claudeActivity.enabled",
+  "claudeActivity.activeWindowMinutes",
+  "claudeActivity.yieldWhenActive",
+  "claudeActivity.yieldEngineering",
+  "claudeActivity.staleBranchDays",
+  "claudeActivity.openPrReminderDays",
+  "codeAnswer.model",
+  "codeAnswer.maxTurns",
+  "codeAnswer.timeoutMinutes",
+  "codeAnswer.away.enabled",
+  "codeAnswer.away.autoSend",
+  "codeAnswer.away.maxRunsPerDay",
+] as const satisfies readonly SettingKey[];
+export type UserEditableKey = (typeof USER_EDITABLE_SETTINGS)[number];
+
 export type SettingValue<K extends SettingKey> = z.output<(typeof settingSchemas)[K]>;
 
 export type PublishSettingsChanged = (tx: DbOrTx, e: NewDomainEvent<"settings.changed">) => string;

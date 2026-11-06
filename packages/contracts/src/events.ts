@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { holdReasonSchema } from "./auto-reply";
 import { factStatusSchema } from "./brain";
+import { codeAnswerStatusSchema } from "./code-answers";
 import {
   engineeringStepSchema,
   engineeringStepStatusSchema,
@@ -84,6 +85,15 @@ export const eventCatalog = {
   "autoreply.sent": z.object({ autoReplyId: z.string() }),
   "autoreply.held": z.object({ autoReplyId: z.string(), reason: holdReasonSchema }),
   "away.changed": z.object({ on: z.boolean() }),
+  "claude_session.activity_changed": z.object({
+    active: z.boolean(),
+    lastActiveAt: z.string().nullable(),
+  }),
+  "code_answer.status_changed": z.object({
+    codeAnswerId: z.string(),
+    messageId: z.string(),
+    status: codeAnswerStatusSchema,
+  }),
   "jira.issue_updated": z.object({ key: z.string() }),
   "jira.issue_attention": z.object({ key: z.string(), attention: jiraAttentionSchema }),
   "repo.registered": z.object({ repositoryId: z.string() }),
