@@ -16,6 +16,12 @@ const { engineeringTasks, engineeringTaskSteps } = schema;
 
 export type TaskRow = typeof engineeringTasks.$inferSelect;
 export type StepRow = typeof engineeringTaskSteps.$inferSelect;
+/** Backoff after `failures` consecutive retryable pickup failures: 1 min, doubling, max 30 min. */
+export function pickupBackoffMs(failures: number): number {
+  const minutes = Math.min(30, 2 ** Math.max(0, failures - 1));
+  return minutes * 60_000;
+}
+
 type TaskPatch = Partial<Omit<TaskRow, "id" | "status" | "createdAt" | "updatedAt">>;
 
 export const ENGINEERING_TASK_ERROR_CODES = [
@@ -301,20 +307,29 @@ export class EngineeringTaskStore {
       .sort((a, b) => STEP_ORDER.indexOf(a.step) - STEP_ORDER.indexOf(b.step));
   }
 
-  /** E6: the next task to pick up: highest priority, then oldest. */
+  /**
+   * E6: the next task to pick up: highest priority, then oldest. A task whose last pickup failed
+   * (`lastPickupError`) is skipped until `updatedAt` plus its backoff: 1 minute after the first
+   * failure, doubling per consecutive failure, capped at 30 minutes.
+   */
   nextQueued(tx: DbOrTx): TaskRow | null {
+    const now = Date.parse(isoNow(this.deps.clock));
+    const rows = tx
+      .select()
+      .from(engineeringTasks)
+      .where(eq(engineeringTasks.status, "queued"))
+      .orderBy(
+        desc(engineeringTasks.priority),
+        asc(engineeringTasks.createdAt),
+        sql`${engineeringTasks}.rowid asc`,
+      )
+      .all();
     return (
-      tx
-        .select()
-        .from(engineeringTasks)
-        .where(eq(engineeringTasks.status, "queued"))
-        .orderBy(
-          desc(engineeringTasks.priority),
-          asc(engineeringTasks.createdAt),
-          sql`${engineeringTasks}.rowid asc`,
-        )
-        .limit(1)
-        .get() ?? null
+      rows.find(
+        (r) =>
+          r.lastPickupError === null ||
+          Date.parse(r.updatedAt) + pickupBackoffMs(r.pickupFailures) <= now,
+      ) ?? null
     );
   }
 

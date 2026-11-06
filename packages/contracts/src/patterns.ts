@@ -54,8 +54,10 @@ const RUNNER_RULES: Record<string, (rest: string[]) => boolean> = {
  * `npx vitest|jest|mocha|playwright|ava …`, `pytest …`, `python|python3 -m pytest|unittest …`,
  * `uv run pytest …` or `uv run python -m pytest|unittest …`, `make` with only `test*`/`check*`
  * targets and `-j`/`-k`/`-s` flags, `go|cargo|deno test …`. Any `-c`, `-e`, `--eval`, `exec`, `x`,
- * `dlx`, `pip`, `install` or `add` word is refused. This narrows what the model is granted; the
- * test suite itself is still repository code (security-model §3.1).
+ * `dlx`, `pip`, `install` or `add` word is refused. These rules constrain the user-confirmed
+ * prefix only: the `Bash(<cmd>:*)` grant still lets the model append arguments at run time. That
+ * is accepted (security-model §3.1) because the model can already edit the test code, which is
+ * repository code.
  */
 export function isSafeTestCommand(cmd: string): boolean {
   if (!TEST_COMMAND_RE.test(cmd)) return false;

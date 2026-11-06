@@ -905,6 +905,8 @@ export const engineeringTasks = sqliteTable(
     failure: text("failure"),
     /** I1: last retryable pickup failure (`fetch_failed`, `git_timeout`); null after a pickup. */
     lastPickupError: text("last_pickup_error"),
+    /** Consecutive retryable pickup failures (drives the backoff); reset to 0 on a pickup. */
+    pickupFailures: integer("pickup_failures").notNull().default(0),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },

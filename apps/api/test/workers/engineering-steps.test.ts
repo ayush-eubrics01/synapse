@@ -1297,7 +1297,8 @@ describe("final review fixes", () => {
     expect(stepRow(id, "merge_pr")?.output).toMatchObject({
       merged: true,
       outcome: "merged_after_cancel",
-      mergeSha: pushedSha,
+      mergeSha: null, // gh reported no merge commit: the PR head is kept apart
+      prHeadSha: pushedSha,
     });
     expect(stepRow(id, "cleanup")?.status).toBe("done");
     expect(leaseRow()).toBeUndefined();

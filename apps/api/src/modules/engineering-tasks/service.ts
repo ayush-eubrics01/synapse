@@ -98,6 +98,9 @@ export interface InvestigationSummary {
   unclear: number;
 }
 
+/** Most queued tasks one tick will try before giving up (each failing one backs off). */
+const PICKUP_MAX_TRIES = 20;
+
 export type PickupResult =
   | { pickedUp: string }
   | { needsAttention: string; reason: string }
@@ -486,6 +489,22 @@ export class EngineeringTaskService {
    * `branch` and enqueues the step job.
    */
   async pickupNext(): Promise<PickupResult> {
+    // A deferred task backs off (nextQueued skips it), so the next eligible task, possibly in
+    // another repository, is tried in the same tick instead of being blocked behind it.
+    let firstDeferred: PickupResult | null = null;
+    for (let i = 0; i < PICKUP_MAX_TRIES; i++) {
+      const r = await this.pickupOne();
+      if ("deferred" in r) {
+        firstDeferred ??= r;
+        continue;
+      }
+      if ("skipped" in r && r.skipped === "nothing_queued" && firstDeferred) return firstDeferred;
+      return r;
+    }
+    return firstDeferred ?? { skipped: "nothing_queued" };
+  }
+
+  private async pickupOne(): Promise<PickupResult> {
     const { db, lock } = this.deps;
     if (lock.holder()) return { skipped: "lock_held" };
     const task = this.store.nextQueued(db);
@@ -497,16 +516,22 @@ export class EngineeringTaskService {
       db.transaction(
         (tx) => {
           if (this.store.get(tx, task.id)?.status !== "queued") return; // cancelled meanwhile
-          this.store.update(tx, task.id, { lastPickupError: reason });
-          this.deps.audit.record(tx, {
-            actor: "system",
-            module: MODULE,
-            action: "engineering.pickup_deferred",
-            workerProfile: "engineering",
-            targetRef: task.id,
-            result: "deferred",
-            details: { taskId: task.id, reason },
+          this.store.update(tx, task.id, {
+            lastPickupError: reason,
+            pickupFailures: task.pickupFailures + 1,
           });
+          // One audit row per distinct error, not one per retry.
+          if (task.lastPickupError !== reason) {
+            this.deps.audit.record(tx, {
+              actor: "system",
+              module: MODULE,
+              action: "engineering.pickup_deferred",
+              workerProfile: "engineering",
+              targetRef: task.id,
+              result: "deferred",
+              details: { taskId: task.id, reason },
+            });
+          }
         },
         { behavior: "immediate" },
       );
@@ -521,7 +546,7 @@ export class EngineeringTaskService {
               tx,
               task.id,
               "needs_attention",
-              { failure: reason, lastPickupError: null },
+              { failure: reason, lastPickupError: null, pickupFailures: 0 },
               ["queued"],
             );
           } catch (e) {
@@ -551,7 +576,7 @@ export class EngineeringTaskService {
             tx,
             task.id,
             "in_progress",
-            { currentStep: "branch", failure: null, lastPickupError: null },
+            { currentStep: "branch", failure: null, lastPickupError: null, pickupFailures: 0 },
             ["queued"],
           );
           this.enqueueStep(tx, task.id, "branch");

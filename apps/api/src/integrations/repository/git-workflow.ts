@@ -108,6 +108,31 @@ export function ownerRepo(key: string): string | null {
   return parts.length >= 2 ? parts.slice(-2).join("/") : null;
 }
 
+/** The host of a non-`file:` remote key, or null for local paths. */
+function remoteHost(key: string): string | null {
+  if (key.startsWith("file:")) return null;
+  return key.split("/")[0] ?? null;
+}
+
+/**
+ * M10: does push URL `url` point at the registered origin? Same `owner/repo`, and for non-`file:`
+ * URLs the same host too. remoteKey already lower-cases the host and unifies `ssh://git@h/...`,
+ * `git@h:...` and `https://h/...`. An ssh host alias (`~/.ssh/config` Host) is not the real host,
+ * so it counts as a mismatch (origin_changed); users with host aliases will see this.
+ */
+export function sameOriginRemote(url: string, expectedUrl: string | null): boolean {
+  const k = remoteKey(url);
+  const expected = expectedUrl === null ? null : remoteKey(expectedUrl);
+  if (!k || !expected) return false;
+  if (k === expected) return true;
+  const or = ownerRepo(k);
+  if (or === null || or !== ownerRepo(expected)) return false;
+  // A `file:` push URL has no host to compare (test fixtures map a registered GitHub URL to a
+  // local bare repository); only network URLs must match the registered host.
+  const host = remoteHost(k);
+  return host === null || host === remoteHost(expected);
+}
+
 /**
  * Per-call config for every merge: no `branch.<parent>.mergeOptions` (it could add `-Xtheirs`
  * and silently resolve a conflict), no rerere replaying a recorded resolution, no submodule
@@ -525,14 +550,7 @@ export class LocalGitWorkflow implements GitWorkflow {
     }
     if (opts.expectedOriginUrl !== undefined) {
       // The effective URLs (insteadOf/pushInsteadOf expanded) must all be the registered origin.
-      const expected = opts.expectedOriginUrl === null ? null : remoteKey(opts.expectedOriginUrl);
-      const expectedRepo = expected === null ? null : ownerRepo(expected);
-      const isOrigin = (u: string) => {
-        const k = remoteKey(u);
-        if (!k || !expected) return false;
-        const or = ownerRepo(k);
-        return k === expected || (or !== null && or === expectedRepo);
-      };
+      const isOrigin = (u: string) => sameOriginRemote(u, opts.expectedOriginUrl ?? null);
       if (pushUrls.length === 0 || !pushUrls.every(isOrigin)) {
         throw new GitWorkflowError("origin_changed");
       }

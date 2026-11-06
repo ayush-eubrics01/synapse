@@ -18,7 +18,11 @@ import {
   gitInvocation,
   spawnGit,
 } from "../../src/integrations/repository/git";
-import { LocalGitWorkflow, remoteKey } from "../../src/integrations/repository/git-workflow";
+import {
+  LocalGitWorkflow,
+  remoteKey,
+  sameOriginRemote,
+} from "../../src/integrations/repository/git-workflow";
 import { git, tempDir } from "../fixtures/git-repo";
 
 const roots: string[] = [];
@@ -1104,5 +1108,33 @@ describe("final review: local-only checks, cleanup fallbacks, origin check", () 
     expect(
       await f.wf.pushParent(f.repo, "stage", opts(`FILE://${f.origin.replace(/\.git$/, "")}`)),
     ).toEqual({ ok: true });
+  });
+});
+
+describe("origin host check (M10)", () => {
+  test("same owner/repo on another host is refused; ssh vs https on github.com is the same host", () => {
+    const expected = "https://github.com/acme/app.git";
+    expect(sameOriginRemote("https://evil.example/acme/app.git", expected)).toBe(false);
+    expect(sameOriginRemote("git@evil.example:acme/app.git", expected)).toBe(false);
+    // An ssh host alias is not github.com: refused (documented).
+    expect(sameOriginRemote("git@gh-work:acme/app.git", expected)).toBe(false);
+    expect(sameOriginRemote("ssh://git@github.com/acme/app.git", expected)).toBe(true);
+    expect(sameOriginRemote("git@github.com:acme/app.git", expected)).toBe(true);
+    expect(sameOriginRemote("https://GitHub.com/Acme/App", expected)).toBe(true);
+    expect(sameOriginRemote("https://github.com/acme/other", expected)).toBe(false);
+  });
+
+  test("pushParent refuses a push URL on another host with the same owner/repo", async () => {
+    const f = setup();
+    git(f.repo, "switch", "-q", "-c", "stage", "origin/stage");
+    git(f.repo, "remote", "set-url", "--push", "origin", "https://evil.example/acme/app.git");
+    const code = await codeOf(
+      f.wf.pushParent(f.repo, "stage", {
+        protectedBranches: [],
+        upstreamUrl: `file://${f.upstream}`,
+        expectedOriginUrl: "https://github.com/acme/app.git",
+      }),
+    );
+    expect(code).toBe("origin_changed");
   });
 });

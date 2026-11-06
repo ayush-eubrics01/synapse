@@ -26,7 +26,11 @@ import {
   PICKUP_JOB,
   STEP_JOB,
 } from "../../src/modules/engineering-tasks/service";
-import { ALLOWED_TRANSITIONS, canTransition } from "../../src/modules/engineering-tasks/store";
+import {
+  ALLOWED_TRANSITIONS,
+  canTransition,
+  pickupBackoffMs,
+} from "../../src/modules/engineering-tasks/store";
 import { registerPickupJobs } from "../../src/workers/engineering/pickup";
 import { remoteRepoFixture } from "../fixtures/engineering";
 import { git, tempDir } from "../fixtures/git-repo";
@@ -864,6 +868,8 @@ describe("final review: network-independent recovery and retryable pickup (I1)",
     expect(auditDump()).toContain("engineering.pickup_deferred");
     // The network is back: the next tick picks it up and clears the error.
     renameSync(away, origin);
+    expect(await handler(PICKUP_JOB)).toEqual({ skipped: "nothing_queued" }); // backing off
+    clock.advance(60_000);
     expect(await handler(PICKUP_JOB)).toEqual({ pickedUp: id });
     expect(service.get(id)?.lastPickupError).toBeNull();
     expect(taskRow(id)?.status).toBe("in_progress");
@@ -890,6 +896,7 @@ describe("final review: network-independent recovery and retryable pickup (I1)",
     expect(taskRow(id)?.status).toBe("queued");
     expect(taskRow(id)?.lastPickupError).toBe("git_timeout");
     expect(leaseRow()).toBeUndefined();
+    clock.advance(60_000); // the task backs off after a deferral
     const missing = new EngineeringTaskService({
       db,
       clock,
@@ -1015,5 +1022,116 @@ describe("final review: unregister guard (M4)", () => {
     service.cancel(id);
     registry.unregister(repoId);
     expect(repoRow()).toBeUndefined();
+  });
+});
+
+describe("pickup retry fairness and backoff", () => {
+  const failingFor = (badPath: string) =>
+    new EngineeringTaskService({
+      db,
+      clock,
+      events,
+      audit,
+      queue,
+      provider: new LocalGitProvider({ home: repo }),
+      registry,
+      lock,
+      git: {
+        preflight: async (path: string) => {
+          if (path === badPath) throw new GitWorkflowError("git_timeout");
+          return { ok: true };
+        },
+      } as never,
+    });
+  const deferredAudits = () =>
+    db
+      .select()
+      .from(schema.auditEvents)
+      .all()
+      .filter((a) => a.action === "engineering.pickup_deferred").length;
+
+  async function secondRepoTask(): Promise<string> {
+    const fx = remoteRepoFixture(scratch());
+    const v2 = await registry.register({
+      path: fx.repo,
+      name: "app2",
+      trackedBranch: "main",
+      environments: [
+        { name: "prod", branch: "prod", protected: true, autoDeploysOnMerge: true },
+        { name: "stage", branch: "stage", protected: false, autoDeploysOnMerge: true },
+      ],
+      jiraProjectKeys: ["DEMO"],
+    });
+    const t = service.create({ repositoryId: v2.id, title: "Other repo", draftDescription: "x" });
+    db.update(schema.engineeringTasks)
+      .set({ status: "planned", approvedDescription: "x", plan: PLAN })
+      .where(eq(schema.engineeringTasks.id, t.id))
+      .run();
+    await service.approvePlan(t.id, approval());
+    return t.id;
+  }
+
+  test("a permanently failing task does not block a second queued task in another repo", async () => {
+    const stuck = await queuedTask("Stuck", 5);
+    const other = await secondRepoTask();
+    const svc = failingFor(repo);
+    expect(await svc.pickupNext()).toEqual({ pickedUp: other });
+    expect(taskRow(stuck)?.status).toBe("queued");
+    expect(taskRow(stuck)?.lastPickupError).toBe("git_timeout");
+    expect(taskRow(other)?.status).toBe("in_progress");
+  });
+
+  test("the backoff grows 1, 2, 4 minutes and a task is skipped until it elapses", async () => {
+    const id = await queuedTask();
+    const svc = failingFor(repo);
+    expect(await svc.pickupNext()).toEqual({ deferred: id, reason: "git_timeout" });
+    expect(taskRow(id)?.pickupFailures).toBe(1);
+    clock.advance(59_000);
+    expect(await svc.pickupNext()).toEqual({ skipped: "nothing_queued" });
+    clock.advance(1_000);
+    expect(await svc.pickupNext()).toEqual({ deferred: id, reason: "git_timeout" });
+    expect(taskRow(id)?.pickupFailures).toBe(2);
+    clock.advance(119_000);
+    expect(await svc.pickupNext()).toEqual({ skipped: "nothing_queued" });
+    clock.advance(1_000);
+    expect(await svc.pickupNext()).toEqual({ deferred: id, reason: "git_timeout" });
+    expect(taskRow(id)?.pickupFailures).toBe(3);
+    expect(pickupBackoffMs(1)).toBe(60_000);
+    expect(pickupBackoffMs(3)).toBe(240_000);
+    expect(pickupBackoffMs(50)).toBe(30 * 60_000);
+  });
+
+  test("the audit row is written once per distinct error, and a pickup clears the counter", async () => {
+    const id = await queuedTask();
+    const svc = failingFor(repo);
+    await svc.pickupNext();
+    clock.advance(60_000);
+    await svc.pickupNext();
+    clock.advance(120_000);
+    await svc.pickupNext();
+    expect(deferredAudits()).toBe(1);
+    // A different error code is a new audit row.
+    const other = new EngineeringTaskService({
+      db,
+      clock,
+      events,
+      audit,
+      queue,
+      provider: new LocalGitProvider({ home: repo }),
+      registry,
+      lock,
+      git: {
+        preflight: async () => {
+          throw new GitWorkflowError("fetch_failed");
+        },
+      } as never,
+    });
+    clock.advance(240_000);
+    await other.pickupNext();
+    expect(deferredAudits()).toBe(2);
+    clock.advance(30 * 60_000);
+    expect(await service.pickupNext()).toEqual({ pickedUp: id });
+    expect(taskRow(id)?.lastPickupError).toBeNull();
+    expect(taskRow(id)?.pickupFailures).toBe(0);
   });
 });

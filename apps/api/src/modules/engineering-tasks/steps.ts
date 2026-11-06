@@ -692,7 +692,7 @@ export class EngineeringStepService {
       throw new Error(codeOf(e));
     }
     const out = { merged: merged.merged, ...(merged.sha ? { sha: merged.sha } : {}) };
-    if (merged.merged && this.mergedAfterCancel(task.id, out, merged.sha ?? pushedSha)) {
+    if (merged.merged && this.mergedAfterCancel(task.id, out, merged.sha ?? null, pushedSha)) {
       this.#cleanupWanted.add(task.id);
       return { merged: true };
     }
@@ -709,18 +709,26 @@ export class EngineeringStepService {
   /**
    * M5: the PR merged although the task was cancelled while gh ran. The merge is the truth: the
    * task becomes `completed` with `merged_after_cancel` in `failure` and on the step output, plus
-   * the merge commit (gh's, else the PR head that merged). False when the task was not cancelled.
+   * the merge commit when gh reported one (`mergeSha`). gh does not always return it: then
+   * `mergeSha` stays null and the PR head that merged is recorded as `prHeadSha`, never passed
+   * off as the merge commit. False when the task was not cancelled.
    */
   private mergedAfterCancel(
     taskId: string,
     out: Record<string, unknown>,
-    mergeSha: string,
+    mergeSha: string | null,
+    prHeadSha: string,
   ): boolean {
     return this.deps.db.transaction(
       (tx) => {
         if (this.store.get(tx, taskId)?.status !== "cancelled") return false;
         this.store.upsertStep(tx, taskId, "merge_pr", "done", {
-          output: { ...out, outcome: "merged_after_cancel", mergeSha },
+          output: {
+            ...out,
+            outcome: "merged_after_cancel",
+            mergeSha,
+            ...(mergeSha === null ? { prHeadSha } : {}),
+          },
         });
         this.store.transition(
           tx,
