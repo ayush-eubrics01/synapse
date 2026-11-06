@@ -54,6 +54,8 @@ const settingSchemas = {
   "autoReply.maxPerPersonPerDay": z.number().int().positive().default(3),
   "autoReply.minMinutesBetweenInThread": z.number().int().nonnegative().default(30),
   "autoReply.minConfidence": z.number().min(0).max(1).default(0.75),
+  // M8: an auto-send not started this long after its decision is cancelled as `stale`.
+  "autoReply.maxSendDelayMinutes": z.number().int().positive().default(15),
   "system.lastHeartbeatAt": z.string().nullable().default(null),
   "orchestrator.quota.fiveHour.soft": z.number().min(0).max(1).default(0.6),
   "orchestrator.quota.fiveHour.hard": z.number().min(0).max(1).default(0.85),

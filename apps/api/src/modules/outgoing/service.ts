@@ -9,7 +9,7 @@ import {
 } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
-import { and, eq, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, ne, or } from "drizzle-orm";
 import { z } from "zod";
 import type { ApprovalEngine } from "../../core/approvals/approvals";
 import { APPROVAL_EXECUTE_JOB, registerIntegrationExecutor } from "../../core/approvals/execution";
@@ -57,8 +57,8 @@ const AUTO_SEND_MODULE = "auto-reply";
 type Row = typeof schema.outgoingMessages.$inferSelect;
 type AutoReplyRow = typeof schema.autoReplies.$inferSelect;
 type AuthorisedBy = NonNullable<SendMessageCommand["authorisedBy"]>;
-/** A13 and the permission gate: why a policy auto-send may no longer go out. */
-type AutoSendBlock = "away_off" | "policy_disabled";
+/** A13, the permission gate and M8 staleness: why a policy auto-send may no longer go out. */
+type AutoSendBlock = "away_off" | "policy_disabled" | "stale";
 export type OutgoingStatus = Row["status"];
 type FollowupStatus = (typeof schema.followups.$inferSelect)["status"];
 export type ResolveDecision = "mark_sent" | "resend" | "discard";
@@ -191,7 +191,8 @@ export type SendFailure =
   | "invalid_payload"
   | "not_found"
   | "cancelled_away_off"
-  | "cancelled_policy_disabled";
+  | "cancelled_policy_disabled"
+  | "cancelled_stale";
 
 export class OutgoingSendError extends Error {
   constructor(readonly failure: SendFailure) {
@@ -695,6 +696,28 @@ export class OutgoingService {
   }
 
   /**
+   * Retention (final review, item 6): blanks the text of `sent` and `failed` messages created more
+   * than `olderThanDays` ago (the column is NOT NULL, so it becomes ''). Other statuses may still
+   * be sent, verified or resent, so they are never touched. Returns the number cleared.
+   */
+  expireText(olderThanDays: number): number {
+    const { db, clock } = this.deps;
+    const cutoff = new Date(clock.now().getTime() - olderThanDays * 86_400_000).toISOString();
+    return db
+      .update(outgoingMessages)
+      .set({ text: "" })
+      .where(
+        and(
+          inArray(outgoingMessages.status, ["sent", "failed"]),
+          lt(outgoingMessages.createdAt, cutoff),
+          ne(outgoingMessages.text, ""),
+        ),
+      )
+      .returning({ id: outgoingMessages.id })
+      .all().length;
+  }
+
+  /**
    * Recovery sweep (startup and reaper): a message left `sending` for over SENDING_STALE_MS lost its
    * executor or its outcome. It may have been sent, so it goes to the user and is verified.
    */
@@ -983,16 +1006,23 @@ export class OutgoingService {
     return tx.select().from(autoReplies).where(eq(autoReplies.outgoingId, outgoingId)).get();
   }
 
-  /** A13 plus the permission gate; null while the auto-send may still go out. */
+  /**
+   * A13 plus the permission gate, plus M8: more than `autoReply.maxSendDelayMinutes` since the
+   * decision (an unparseable time counts as stale). Null while the auto-send may still go out.
+   */
   private autoSendBlock(tx: DbOrTx, ar: AutoReplyRow): AutoSendBlock | null {
-    if (!this.deps.settings.get("autoReply.awayMode")) return "away_off";
+    const { settings, approvals, clock } = this.deps;
+    if (!settings.get("autoReply.awayMode")) return "away_off";
     const open = tx
       .select({ id: awaySessions.id })
       .from(awaySessions)
       .where(isNull(awaySessions.endedAt))
       .get();
     if (open?.id !== ar.sessionId) return "away_off";
-    if (!this.deps.approvals.policyGateOpen("slack.auto_reply")) return "policy_disabled";
+    if (!approvals.policyGateOpen("slack.auto_reply")) return "policy_disabled";
+    const waited = clock.now().getTime() - Date.parse(ar.createdAt);
+    const max = settings.get("autoReply.maxSendDelayMinutes") * 60_000;
+    if (!(waited <= max)) return "stale";
     return null;
   }
 

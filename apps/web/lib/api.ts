@@ -62,6 +62,8 @@ async function request<T>(
       res.status,
     );
   }
+  // No Content has no body to parse.
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
@@ -577,8 +579,9 @@ export function getAwayDigest(fetchImpl: typeof fetch = fetch): Promise<AwayDige
 export function dismissAwayDigest(
   sessionId: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ dismissed: boolean }> {
-  return request(
+): Promise<void> {
+  // The route answers 204 (no body).
+  return request<void>(
     `/api/away/digest/${encodeURIComponent(sessionId)}/dismiss`,
     { method: "POST" },
     fetchImpl,

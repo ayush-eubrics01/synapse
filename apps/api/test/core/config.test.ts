@@ -206,6 +206,7 @@ test("auto-reply settings have the Phase 6b defaults", () => {
   expect(settings.get("autoReply.maxPerPersonPerDay")).toBe(3);
   expect(settings.get("autoReply.minMinutesBetweenInThread")).toBe(30);
   expect(settings.get("autoReply.minConfidence")).toBe(0.75);
+  expect(settings.get("autoReply.maxSendDelayMinutes")).toBe(15);
   expect(() => settings.set("autoReply.allowedKinds", ["bogus"] as never)).toThrow();
   expect(() => settings.set("autoReply.minConfidence", 2)).toThrow();
 });

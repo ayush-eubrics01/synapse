@@ -251,10 +251,15 @@ test("away API URLs", async () => {
   const d = fake(200, null);
   expect(await getAwayDigest(d.impl)).toBeNull();
   expect(d.calls[0]?.url).toBe("/api/away/digest");
-  const x = fake(200, { dismissed: true });
-  await dismissAwayDigest("S 1", x.impl);
-  expect(x.calls[0]?.url).toBe("/api/away/digest/S%201/dismiss");
-  expect(x.calls[0]?.init?.method).toBe("POST");
+  // The route answers 204 with no body: no JSON parse, no throw, resolves undefined.
+  const calls: Call[] = [];
+  const noContent = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    return new Response(null, { status: 204 });
+  }) as unknown as typeof fetch;
+  expect(await dismissAwayDigest("S 1", noContent)).toBeUndefined();
+  expect(calls[0]?.url).toBe("/api/away/digest/S%201/dismiss");
+  expect(calls[0]?.init?.method).toBe("POST");
   const bad = fake(500, { error: "boom" });
   await expect(setAway(true, bad.impl)).rejects.toThrow("failed with 500");
 });

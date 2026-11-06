@@ -275,19 +275,6 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
       selfUserId: () => settings.get("slack.selfUserId"),
       runIdForJob: createRunHelpers(db, securityFlags).runIdBefore,
     });
-  const slack = registerSlackJobs({
-    db,
-    clock,
-    source: slackSource,
-    store: inbox,
-    sync,
-    queue,
-    settings,
-    events,
-    audit,
-    scheduler,
-    handlers,
-  });
   registerApprovalExecution({ dispatcher, queue, engine: approvals, handlers, settings });
   const outgoing = new OutgoingService({
     db,
@@ -360,6 +347,24 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   dispatcher.subscribe("followup.sent", "commitments.followup_sent", (event, tx) =>
     followupService.onFollowupSent(event, tx),
   );
+  const slack = registerSlackJobs({
+    db,
+    clock,
+    source: slackSource,
+    store: inbox,
+    sync,
+    queue,
+    settings,
+    events,
+    audit,
+    scheduler,
+    handlers,
+    textRetention: {
+      autoReplyText: (days) => autoReply.expireText(days),
+      outgoingText: (days) => outgoing.expireText(days),
+      followupDrafts: (days) => followupService.expireDrafts(days),
+    },
+  });
   const postSend = new PostSendSuggestions({
     settings,
     people,

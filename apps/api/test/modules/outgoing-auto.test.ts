@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   JobError,
   type MessageSink,
@@ -755,4 +755,79 @@ test("I2: a new away session opened while waiting cancels the send", async () =>
   expect(s.sink.sends).toHaveLength(0);
   expect(s.out(outgoingId)?.failure).toBe("cancelled_away_off");
   expect(s.ar()?.reason).toBe("away_off");
+});
+
+describe("M8: an auto-send that waited too long is cancelled as stale", () => {
+  const MIN = 60_000;
+  const expectStale = (
+    s: ReturnType<typeof setup>,
+    outgoingId: string,
+    approvalId: string,
+    approvalStatus: "revoked" | "failed",
+  ) => {
+    expect(s.sink.sends).toHaveLength(0);
+    expect(s.out(outgoingId)?.status).toBe("failed");
+    expect(s.out(outgoingId)?.failure).toBe("cancelled_stale");
+    expect(s.approval(approvalId)?.status).toBe(approvalStatus);
+    expect(s.ar()?.decision).toBe("held");
+    expect(s.ar()?.reason).toBe("stale");
+    expect(s.ar()?.text).toBeNull();
+    expect(s.eventsOf("autoreply.held").map((e) => e.payload)).toEqual([
+      { autoReplyId: "ar1", reason: "stale" },
+    ]);
+    expect(s.eventsOf("autoreply.sent")).toHaveLength(0);
+    s.expectNoContent();
+  };
+
+  test("the setting defaults to 15 minutes", () => {
+    expect(setup().settings.get("autoReply.maxSendDelayMinutes")).toBe(15);
+  });
+
+  test("revalidate: more than the maximum after the decision revokes and holds stale", async () => {
+    const s = setup();
+    s.autoReply("ar1", { followupId: "f1" });
+    const { outgoingId, approvalId } = s.requestAuto({ followupId: "f1" });
+    s.clock.advance(15 * MIN + 1);
+    await s.run();
+    expectStale(s, outgoingId, approvalId, "revoked");
+    const f = s.db.select().from(schema.followups).where(eq(schema.followups.id, "f1")).get();
+    expect(f?.status).toBe("draft");
+  });
+
+  test("exactly the maximum still sends", async () => {
+    const s = setup();
+    s.autoReply();
+    s.requestAuto();
+    s.clock.advance(15 * MIN);
+    await s.run();
+    expect(s.sink.sends).toHaveLength(1);
+    expect(s.ar()?.decision).toBe("sent");
+  });
+
+  test("claim: stale after revalidate passed still cancels; the approval fails", async () => {
+    const s = setup();
+    s.autoReply();
+    const { outgoingId, approvalId } = s.requestAuto();
+    s.clock.advance(10 * MIN);
+    const realGet = s.settings.get.bind(s.settings);
+    let reads = 0;
+    // Revalidate reads 15 (10 min is fine); the claim reads 5 (10 min is too long).
+    s.settings.get = ((key: Parameters<typeof realGet>[0]) => {
+      if (key === "autoReply.maxSendDelayMinutes") return ++reads === 1 ? 15 : 5;
+      return realGet(key);
+    }) as typeof s.settings.get;
+    await s.run();
+    expect(reads).toBe(2);
+    expectStale(s, outgoingId, approvalId, "failed");
+  });
+
+  test("beforeSpawn: going stale while waiting for a slot cancels before spawn", async () => {
+    const s = setup();
+    s.autoReply();
+    const { outgoingId, approvalId } = s.requestAuto();
+    s.sink.whileWaiting = () => s.clock.advance(16 * MIN);
+    await s.run();
+    expect(s.sink.calls).toHaveLength(1);
+    expectStale(s, outgoingId, approvalId, "failed");
+  });
 });

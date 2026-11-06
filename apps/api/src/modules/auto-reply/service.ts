@@ -378,6 +378,21 @@ export class AutoReplyService {
     return s?.endedAt != null;
   }
 
+  /**
+   * Retention (final review, item 6): clears `auto_replies.text` on rows created more than
+   * `olderThanDays` ago. Run by the Slack content-retention job. Returns the number cleared.
+   */
+  expireText(olderThanDays: number): number {
+    const { db, clock } = this.deps;
+    const cutoff = new Date(clock.now().getTime() - olderThanDays * DAY_MS).toISOString();
+    return db
+      .update(autoReplies)
+      .set({ text: null })
+      .where(and(lt(autoReplies.createdAt, cutoff), isNotNull(autoReplies.text)))
+      .returning({ id: autoReplies.id })
+      .all().length;
+  }
+
   private resolve(tx: DbOrTx, trigger: Trigger): Resolved {
     const session = this.openSession(tx);
     if (!session) return { skip: "away_off" };
