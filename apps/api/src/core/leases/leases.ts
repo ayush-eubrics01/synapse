@@ -66,6 +66,25 @@ export class LeaseService {
     return rows.length > 0;
   }
 
+  /**
+   * Shutdown: deletes the leases held by `holder` or by `${holder}:*`. The `engineering` lease is
+   * never released here (ADR-030 and E6: that lock outlives restarts).
+   */
+  releaseHeldBy(holder: string): number {
+    const escaped = holder.replace(/[\\%_]/g, "\\$&");
+    const rows = this.db
+      .delete(leases)
+      .where(
+        and(
+          sql`${leases.name} <> 'engineering'`,
+          sql`(${leases.holder} = ${holder} OR ${leases.holder} LIKE ${`${escaped}:%`} ESCAPE '\\')`,
+        ),
+      )
+      .returning({ name: leases.name })
+      .all();
+    return rows.length;
+  }
+
   get(name: string): Lease | null {
     return this.db.select().from(leases).where(eq(leases.name, name)).get() ?? null;
   }

@@ -39,8 +39,9 @@ export function sidebarItems(
   counts: DashboardOverview["counts"] | null,
   needsYou: number,
   waitingConversations = 0,
+  hidden: ReadonlySet<string> = new Set(),
 ): NavItem[] {
-  return [
+  const items: NavItem[] = [
     { id: "overview", label: "Overview" },
     { id: "triage", label: "Needs you", count: needsYou, hot: needsYou > 0 },
     { id: "inbox", label: "Inbox", count: waitingConversations },
@@ -51,4 +52,5 @@ export function sidebarItems(
     { id: "people", label: "People", count: counts?.peopleToEvaluate ?? 0 },
     { id: "system", label: "System" },
   ];
+  return items.filter((i) => !hidden.has(i.id));
 }

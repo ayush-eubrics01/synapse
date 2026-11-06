@@ -1,6 +1,6 @@
 # Dashboard module
 
-Read-only aggregates for the web dashboard. No writes, no AI, no external calls. The web page that uses them is described in `web-dashboard.md`. Code: `apps/api/src/modules/dashboard/`, route `apps/api/src/routes/dashboard.ts`, contract `packages/contracts/src/dashboard.ts`.
+Read-only aggregates for the web dashboard, plus (Phase 11) the user's saved dashboard layouts. The aggregates make no writes; the layouts are the only thing this module writes (its own `dashboard_layouts` table). No AI, no external calls. The web page that uses them is described in `web-dashboard.md`. Code: `apps/api/src/modules/dashboard/`, route `apps/api/src/routes/dashboard.ts`, contract `packages/contracts/src/dashboard.ts`.
 
 ## Endpoints
 
@@ -33,3 +33,39 @@ Stages are always `collect`, `screen`, `assess`, `surface`, labelled Collect, Sc
 ## Health hints (`health-hints.ts`)
 
 `HEALTH_LABELS` and `HEALTH_HINTS` are static maps keyed by check name. `health.issues` lists only checks that are not ok, each with its label and hint (`null` when the check has no hint).
+
+## Layouts (Phase 11, ADR-023)
+
+The page's sections are the widgets. The user's arrangement is stored in `dashboard_layouts` (migration 0021: `id`, `name`, `is_active`, `layout` json, `created_at`, `updated_at`; unique on `lower(name)`; a partial unique index allows one active row). Code: `modules/dashboard/layout.ts` (pure), `modules/dashboard/layouts.ts` (`DashboardLayoutService`), route `routes/dashboard-layouts.ts`, contract `packages/contracts/src/dashboard-layout.ts`.
+
+### Endpoints
+
+| Endpoint | Result |
+|---|---|
+| `GET /api/dashboard/layouts` | `{ active: DashboardLayoutView, layouts: [{id, name, isActive, updatedAt}] }` |
+| `POST /api/dashboard/layouts {name, fromId?}` | 201, the new layout, copied from `fromId` or the active one |
+| `PUT /api/dashboard/layouts/:id {name?, layout?}` | the stored (normalised) layout; at least one field is required |
+| `POST /api/dashboard/layouts/:id/activate` | the activated layout |
+| `POST /api/dashboard/layouts/:id/reset` | the layout replaced by the default, name kept |
+| `DELETE /api/dashboard/layouts/:id` | 204 |
+
+Error bodies are `{ "error": "<code>" }`, nothing else. 400 `invalid_name` (name not 1-40 characters after trimming, or a malformed create body), 400 `invalid_layout` (a PUT with neither field, or a layout that fails the request schema), 404 `not_found`, 409 `name_taken` (names are unique ignoring case), 409 `limit_reached` (at most 10 layouts), 409 `active_layout` (deleting the active one), 409 `last_layout` (deleting the only one; checked first).
+
+### `normaliseLayout(input)`
+
+Pure, backend only. The shape is `{ version: 1, sections: [{ id, visible, collapsed, width: "full" | "half" }] }`; ids come from `DASHBOARD_SECTION_IDS` (every section except `overview`, which is always first and always shown).
+
+- Input that fails the request schema (corrupt or hand-edited stored rows included) becomes the default layout.
+- Unknown ids are dropped; a duplicate keeps its first occurrence.
+- Missing ids are appended with their defaults, in registry order, so a section added later appears for a user with an older stored layout.
+- `triage` (Needs you) is forced `visible: true` and `collapsed: false`. A request that tries otherwise is normalised, not refused, so a pending approval can never be hidden.
+
+The stored `layout` column is read as raw text, so unparseable JSON cannot throw: it is normalised to the default on read.
+
+### Default seeding and `list()`
+
+The default layout is the Phase 7 order: `triage` and `running` half width, everything else full width. `list()` runs in one immediate transaction. With no rows it creates "Default" and makes it active. With rows but none active (for example the active row was deleted by hand) it re-activates the most recently updated one and audits that. Both audit as actor `system`.
+
+### Audit and events
+
+Every write is audited as `dashboard.layout_created`, `_updated`, `_activated`, `_reset` or `_deleted` (module `dashboard`, details `{ layoutId }` only, never names or layout content), in the same transaction as the change. The same transaction publishes `dashboard.layout_changed {layoutId}` (aggregate `dashboard_layout`). The event has no consumer today; the web refetches on its own SSE refresh.

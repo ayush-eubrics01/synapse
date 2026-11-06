@@ -2,6 +2,7 @@ import type {
   Approval,
   ApprovalView,
   AwayDigest,
+  BackupEntry,
   CandidatesResponse,
   ClaudeActivityView,
   CodeAnswerView,
@@ -10,6 +11,9 @@ import type {
   CommitmentView,
   ConversationSummary,
   ConversationThread,
+  DashboardLayout,
+  DashboardLayoutsResponse,
+  DashboardLayoutView,
   DashboardOverview,
   EngineeringTaskCreateInput,
   EngineeringTaskDetail,
@@ -38,6 +42,7 @@ import type {
   RepositoryRegisterInput,
   RepositoryUpdateInput,
   RepositoryView,
+  RuntimeView,
   UpcomingMilestone,
   UrgencyStatus,
   UrgentItem,
@@ -139,7 +144,8 @@ export interface ClaudeRun {
     cacheCreation: number | null;
   };
   costUsdEquivalent: number | null;
-  permissionDenialCount: number;
+  /** null once the run was compacted by retention. */
+  permissionDenialCount: number | null;
   errorKind: string | null;
   startedAt: string;
   finishedAt: string | null;
@@ -194,14 +200,27 @@ export interface ClaudeSettingsDto {
 }
 export type ClaudeSettingsKey = keyof ClaudeSettingsDto;
 
-export function getSettings(fetchImpl: typeof fetch = fetch): Promise<ClaudeSettingsDto> {
+/** Phase 11 operations keys exposed by `GET/PUT /api/settings`. */
+export interface OpsSettingsDto {
+  "ops.backup.enabled": boolean;
+  "ops.backup.hour": number;
+  "ops.backup.keep": number;
+  "ops.disk.warnFreeGiB": number;
+  "retention.jobsDays": number;
+  "retention.notificationsDays": number;
+  "retention.claudeRunsDays": number;
+  "retention.auditDays": number;
+}
+export type SettingsDto = ClaudeSettingsDto & OpsSettingsDto;
+
+export function getSettings(fetchImpl: typeof fetch = fetch): Promise<SettingsDto> {
   return request("/api/settings", undefined, fetchImpl);
 }
 
 export function putSettings(
-  changes: Partial<ClaudeSettingsDto>,
+  changes: Partial<SettingsDto>,
   fetchImpl: typeof fetch = fetch,
-): Promise<ClaudeSettingsDto> {
+): Promise<SettingsDto> {
   return request(
     "/api/settings",
     {
@@ -984,4 +1003,68 @@ export function sendCodeAnswer(
     { text, useAnyway },
     fetchImpl,
   );
+}
+
+/** Dashboard layouts (Phase 11, D5). The API normalises; the page renders what it returns. */
+export function getLayouts(fetchImpl: typeof fetch = fetch): Promise<DashboardLayoutsResponse> {
+  return request("/api/dashboard/layouts", undefined, fetchImpl);
+}
+
+export function createLayout(
+  name: string,
+  fromId?: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DashboardLayoutView> {
+  return send("POST", "/api/dashboard/layouts", { name, fromId }, fetchImpl);
+}
+
+export function updateLayout(
+  id: string,
+  patch: { name?: string; layout?: DashboardLayout },
+  fetchImpl: typeof fetch = fetch,
+): Promise<DashboardLayoutView> {
+  return send("PUT", `/api/dashboard/layouts/${encodeURIComponent(id)}`, patch, fetchImpl);
+}
+
+export function activateLayout(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DashboardLayoutView> {
+  return request(
+    `/api/dashboard/layouts/${encodeURIComponent(id)}/activate`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export function resetLayout(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DashboardLayoutView> {
+  return request(
+    `/api/dashboard/layouts/${encodeURIComponent(id)}/reset`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
+export async function deleteLayout(id: string, fetchImpl: typeof fetch = fetch): Promise<void> {
+  await request<void>(
+    `/api/dashboard/layouts/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+    fetchImpl,
+  );
+}
+
+export function getRuntime(fetchImpl: typeof fetch = fetch): Promise<RuntimeView> {
+  return request("/api/system/runtime", undefined, fetchImpl);
+}
+
+export function getBackups(fetchImpl: typeof fetch = fetch): Promise<BackupEntry[]> {
+  return request("/api/system/backups", undefined, fetchImpl);
+}
+
+/** 202 with the job id; 409 (`already_running`) when a manual backup is already queued or running. */
+export function startBackup(fetchImpl: typeof fetch = fetch): Promise<{ jobId: string }> {
+  return request("/api/system/backups", { method: "POST" }, fetchImpl, [202]);
 }

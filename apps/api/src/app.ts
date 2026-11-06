@@ -11,6 +11,7 @@ import { claudeActivityRoutes } from "./routes/claude-activity";
 import { codeAnswerRoutes } from "./routes/code-answers";
 import { commitmentRoutes } from "./routes/commitments";
 import { dashboardRoutes } from "./routes/dashboard";
+import { dashboardLayoutRoutes } from "./routes/dashboard-layouts";
 import { engineeringRoutes } from "./routes/engineering";
 import { healthRoutes } from "./routes/health";
 import { inboxRoutes } from "./routes/inbox";
@@ -23,6 +24,7 @@ import { securityRoutes } from "./routes/security";
 import { settingsRoutes } from "./routes/settings";
 import { slackRoutes } from "./routes/slack";
 import { streamRoutes } from "./routes/stream";
+import { systemRoutes } from "./routes/system";
 import { urgentRoutes } from "./routes/urgent";
 
 export function createApp(c: Container): Hono {
@@ -48,6 +50,8 @@ export function createApp(c: Container): Hono {
   app.route("/", brainRoutes(c));
   app.route("/", engineeringRoutes(c));
   app.route("/", dashboardRoutes(c));
+  app.route("/", dashboardLayoutRoutes(c));
+  app.route("/", systemRoutes(c));
   app.route("/", streamRoutes(c));
   app.onError((err, ctx) => {
     if (err instanceof InvalidApprovalTransition) {

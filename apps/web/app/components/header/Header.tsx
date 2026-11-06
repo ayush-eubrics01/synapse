@@ -18,6 +18,9 @@ export interface HeaderProps {
   /** Turns away mode on or off; the switch shows the server state, so it only moves after a refresh. */
   onToggleAway: (on: boolean) => void;
   backfillStarted: boolean;
+  /** Customise mode is on (spec D5). */
+  customising: boolean;
+  onToggleCustomise: () => void;
   /** Increment to open the health popover from outside (palette action). */
   openHealthSignal?: number;
   /** Tests only: render the popover open. */
@@ -31,6 +34,8 @@ export function Header({
   onOpenPalette,
   onToggleAway,
   backfillStarted,
+  customising,
+  onToggleCustomise,
   openHealthSignal = 0,
   initiallyOpen = false,
 }: HeaderProps) {
@@ -73,6 +78,14 @@ export function Header({
             disabled={overview === null}
           />
         </span>
+        <button
+          type="button"
+          className="syn-btn syn-btn--secondary syn-btn--md"
+          aria-pressed={customising}
+          onClick={onToggleCustomise}
+        >
+          {customising ? "Done" : "Customise"}
+        </button>
         <HealthPill
           health={overview?.health ?? null}
           failure={failure}

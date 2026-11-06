@@ -7,10 +7,17 @@ import {
   recoverOnStartup,
   recoverOrphanRuns,
 } from "./core/recovery/recovery";
+import { createShutdown } from "./core/system/shutdown";
 import { NotifySendNotifier } from "./infrastructure/notifier";
+import { PRIVATE_FILES_LOG_LINE, securePrivateFiles } from "./infrastructure/private-files";
 
 const config = loadConfig(process.env);
+// R1: new files are private; existing data files are tightened before anything opens them.
+process.umask(0o077);
+const filePermissions = securePrivateFiles(config.dbPath);
+if (!filePermissions.ok) console.error(PRIVATE_FILES_LOG_LINE);
 const c = createContainer(config, {
+  filePermissions,
   testHandlers: process.env.SYNAPSE_TEST_HANDLERS === "1",
   notifier: new NotifySendNotifier(),
 });
@@ -42,6 +49,8 @@ recoverOnStartup({
   sweeps: c.recoverySweeps,
 });
 recoverOrphanRuns(c.db, c.clock);
+// R4: the result feeds the `database` health check; a failure is reported there, not fatal here.
+c.integrity.check();
 // E6: the engineering lease is never released by core recovery. Settled here, before the worker
 // and the scheduler start, so no step or pickup runs against a tree that a crash left half-changed.
 try {
@@ -79,19 +88,16 @@ const intervals = [
 ];
 c.worker.start();
 
-let shuttingDown = false;
-async function shutdown(): Promise<void> {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  for (const i of intervals) clearInterval(i);
-  try {
-    await c.worker.stop(10_000);
-    server.stop();
-    c.sqlite.close();
-  } catch (e) {
-    console.error("shutdown failed:", e instanceof Error ? e.message : String(e));
-  }
-  process.exit(0);
-}
-process.on("SIGTERM", () => void shutdown());
-process.on("SIGINT", () => void shutdown());
+const shutdown = createShutdown({
+  intervals,
+  worker: c.worker,
+  releaseLeases: () => {
+    c.queue.expireLeasesOwnedBy(c.workerId);
+    c.leases.releaseHeldBy(c.workerId);
+  },
+  server,
+  sqlite: c.sqlite,
+  exit: (code) => process.exit(code),
+});
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));

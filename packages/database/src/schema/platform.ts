@@ -76,46 +76,58 @@ export const jobs = sqliteTable(
   ],
 );
 
-export const claudeRuns = sqliteTable("claude_runs", {
-  id: id(),
-  jobId: text("job_id").references(() => jobs.id),
-  workerProfile: text("worker_profile").notNull(),
-  model: text("model"),
-  status: text("status").notNull(),
-  numTurns: integer("num_turns"),
-  durationMs: integer("duration_ms"),
-  inputTokens: integer("input_tokens"),
-  outputTokens: integer("output_tokens"),
-  cacheReadTokens: integer("cache_read_tokens"),
-  cacheCreationTokens: integer("cache_creation_tokens"),
-  costUsdEquivalent: real("cost_usd_equivalent"),
-  permissionDenials: json("permission_denials"),
-  error: json("error"),
-  startedAt: text("started_at").notNull(),
-  finishedAt: text("finished_at"),
-});
+export const claudeRuns = sqliteTable(
+  "claude_runs",
+  {
+    id: id(),
+    jobId: text("job_id").references(() => jobs.id),
+    workerProfile: text("worker_profile").notNull(),
+    model: text("model"),
+    status: text("status").notNull(),
+    numTurns: integer("num_turns"),
+    durationMs: integer("duration_ms"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    cacheReadTokens: integer("cache_read_tokens"),
+    cacheCreationTokens: integer("cache_creation_tokens"),
+    costUsdEquivalent: real("cost_usd_equivalent"),
+    permissionDenials: json("permission_denials"),
+    error: json("error"),
+    startedAt: text("started_at").notNull(),
+    finishedAt: text("finished_at"),
+  },
+  (t) => [index("claude_runs_job_id_idx").on(t.jobId)],
+);
 
-export const jobAttempts = sqliteTable("job_attempts", {
-  id: id(),
-  jobId: text("job_id")
-    .notNull()
-    .references(() => jobs.id),
-  attempt: integer("attempt").notNull(),
-  startedAt: text("started_at").notNull(),
-  finishedAt: text("finished_at"),
-  status: text("status").notNull(),
-  error: json("error"),
-  claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
-});
+export const jobAttempts = sqliteTable(
+  "job_attempts",
+  {
+    id: id(),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => jobs.id),
+    attempt: integer("attempt").notNull(),
+    startedAt: text("started_at").notNull(),
+    finishedAt: text("finished_at"),
+    status: text("status").notNull(),
+    error: json("error"),
+    claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
+  },
+  (t) => [index("job_attempts_job_id_idx").on(t.jobId)],
+);
 
-export const jobCheckpoints = sqliteTable("job_checkpoints", {
-  id: id(),
-  jobId: text("job_id")
-    .notNull()
-    .references(() => jobs.id),
-  checkpoint: json("checkpoint").notNull(),
-  updatedAt: text("updated_at").notNull(),
-});
+export const jobCheckpoints = sqliteTable(
+  "job_checkpoints",
+  {
+    id: id(),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => jobs.id),
+    checkpoint: json("checkpoint").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [index("job_checkpoints_job_id_idx").on(t.jobId)],
+);
 
 export const leases = sqliteTable("leases", {
   name: text("name").primaryKey(),
@@ -156,7 +168,10 @@ export const eventConsumptions = sqliteTable(
     lastError: json("last_error"),
     nextAttemptAt: text("next_attempt_at"),
   },
-  (t) => [uniqueIndex("event_consumptions_consumer_event_id_uq").on(t.consumer, t.eventId)],
+  (t) => [
+    uniqueIndex("event_consumptions_consumer_event_id_uq").on(t.consumer, t.eventId),
+    index("event_consumptions_event_id_idx").on(t.eventId),
+  ],
 );
 
 export const approvals = sqliteTable(
@@ -1024,5 +1039,22 @@ export const codeAnswers = sqliteTable(
     uniqueIndex("code_answers_live_uq")
       .on(t.messageId, t.repositoryId, t.trigger)
       .where(sql`${t.status} not in ('failed','dismissed')`),
+  ],
+);
+
+/** Named dashboard layouts (D1): at most one active, names unique ignoring case. */
+export const dashboardLayouts = sqliteTable(
+  "dashboard_layouts",
+  {
+    id: id(),
+    name: text("name").notNull(),
+    isActive: bool("is_active").notNull().default(false),
+    layout: json("layout").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("dashboard_layouts_name_uq").on(sql`lower(${t.name})`),
+    uniqueIndex("dashboard_layouts_active_uq").on(sql`(1)`).where(sql`${t.isActive} = 1`),
   ],
 );

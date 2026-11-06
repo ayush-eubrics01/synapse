@@ -176,3 +176,31 @@ test("events check is degraded while any consumer has failed an event", async ()
   consumption("b", "e2", "failed");
   expect(await check()).toEqual({ status: "degraded", detail: "2 failed event consumption(s)" });
 });
+
+test("database check goes down when the last quick_check failed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "synapse-health-"));
+  try {
+    const { sqlite } = openDatabase(join(dir, "t.db"));
+    const at = "2026-11-07T12:00:00.000Z";
+    expect(await databaseCheck(sqlite, { last: () => ({ result: "failed", at }) })()).toEqual({
+      status: "down",
+      detail: "quick_check failed",
+    });
+    expect(await databaseCheck(sqlite, { last: () => ({ result: "ok", at }) })()).toEqual({
+      status: "ok",
+    });
+    expect(await databaseCheck(sqlite, { last: () => null })()).toEqual({ status: "ok" });
+    sqlite.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed quick_check is down even when the database is not in WAL mode", async () => {
+  const { sqlite } = openDatabase(":memory:");
+  const at = "2026-11-07T12:00:00.000Z";
+  expect(await databaseCheck(sqlite, { last: () => ({ result: "failed", at }) })()).toEqual({
+    status: "down",
+    detail: "quick_check failed",
+  });
+});

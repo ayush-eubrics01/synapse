@@ -60,6 +60,8 @@ const render = (
       onOpenPalette={() => {}}
       onToggleAway={() => {}}
       backfillStarted
+      customising={false}
+      onToggleCustomise={() => {}}
       initiallyOpen={initiallyOpen}
     />,
   );

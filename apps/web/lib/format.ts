@@ -88,3 +88,16 @@ export function conversationLabel(c: { name: string | null; id: string; type: st
   if (c.name === null) return c.id;
   return c.type === "channel" ? `#${c.name}` : c.name;
 }
+
+/** Binary units, one decimal from KiB: 0 -> "0 B", 1536 -> "1.5 KiB". */
+export function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 1024) return `${Math.max(0, Math.round(n || 0))} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(1)} ${units[i]}`;
+}

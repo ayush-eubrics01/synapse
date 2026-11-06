@@ -12,6 +12,9 @@ export const HEALTH_LABELS: Record<string, string> = {
   "screening-rules": "Screening rules",
   "desktop-notifier": "Desktop notifications",
   claude_activity: "Claude Code activity",
+  file_permissions: "Data file permissions",
+  backup: "Backups",
+  disk: "Disk space",
 };
 
 /** What to do about a failing check. A check with no entry has no hint. */
@@ -23,10 +26,16 @@ export const HEALTH_HINTS: Record<string, string> = {
   linger: "Run `loginctl enable-linger $USER` so services keep running after logout.",
   events: "An event consumer exhausted its retries. Check the API logs for the event type.",
   "desktop-notifier": "Install `notify-send` (libnotify) for desktop alerts.",
-  database: "SQLite isn't in WAL mode. Restart the API, which re-applies the pragmas.",
+  database:
+    "SQLite reported a problem (not in WAL mode, or the integrity check failed). Restart the API; if the integrity check still fails, stop the API and restore the latest backup with bun scripts/ops/restore.ts.",
   "security-rules": "A rule file failed to load. Check the API logs.",
   "screening-rules": "A rule file failed to load. Check the API logs.",
   claude_activity:
     "Observation of your Claude Code sessions is paused. Other features are unaffected; check the projects directory is readable, or that Claude Code was updated.",
+  file_permissions:
+    "Synapse's data files are readable by other users; run chmod 700 on the data directory",
+  backup:
+    "The daily backup is missing or failed. Check free space in the backup directory, then use Back up now in System.",
+  disk: "Free space is low where Synapse keeps its data. Delete old files or move backups with SYNAPSE_BACKUP_DIR.",
   bun: "Upgrade Bun to 1.4.4 or newer.",
 };

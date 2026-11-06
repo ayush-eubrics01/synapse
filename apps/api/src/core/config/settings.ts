@@ -2,6 +2,7 @@ import {
   flagSeveritySchema,
   jiraScopeJqlSchema,
   type NewDomainEvent,
+  retentionSummarySchema,
   urgencyLevelSchema,
 } from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
@@ -149,13 +150,26 @@ const settingSchemas = {
   "commitments.models.draft": z.string().min(1).default("haiku"),
   "outgoing.verify.delaySeconds": z.number().int().positive().default(120),
   "outgoing.verify.maxAttempts": z.number().int().positive().default(5),
+  // Phase 11 operations (R7).
+  "ops.backup.enabled": z.boolean().default(true),
+  "ops.backup.hour": z.number().int().min(0).max(23).default(3),
+  "ops.backup.keep": z.number().int().min(1).max(60).default(7),
+  "ops.disk.warnFreeGiB": z.number().int().min(1).max(100).default(5),
+  "retention.jobsDays": z.number().int().min(7).max(365).default(30),
+  "retention.notificationsDays": z.number().int().min(7).max(365).default(30),
+  "retention.claudeRunsDays": z.number().int().min(14).max(730).default(90),
+  "retention.auditDays": z.number().int().min(90).max(3650).default(365),
+  // Internal state, not user-editable. null: resolved at startup (<data dir>/backups).
+  "ops.backup.dir": z.string().startsWith("/").nullable().default(null),
+  "ops.backup.lastRunDate": z.string().nullable().default(null),
+  "ops.retention.lastRun": retentionSummarySchema.nullable().default(null),
   "auth.lastExpiryWarningAt": z.string().nullable().default(null),
   "auth.pausedAt": z.string().nullable().default(null),
   "auth.pausedRefreshExpiresAt": z.string().nullable().default(null),
 };
 
 export type SettingKey = keyof typeof settingSchemas;
-/** Phase 10b keys the settings API may change: every new key except the test-only and internal ones. */
+/** Keys the settings API may change: the Phase 10b and Phase 11 keys except the test-only and internal ones. */
 export const USER_EDITABLE_SETTINGS = [
   "claudeActivity.enabled",
   "claudeActivity.activeWindowMinutes",
@@ -169,6 +183,14 @@ export const USER_EDITABLE_SETTINGS = [
   "codeAnswer.away.enabled",
   "codeAnswer.away.autoSend",
   "codeAnswer.away.maxRunsPerDay",
+  "ops.backup.enabled",
+  "ops.backup.hour",
+  "ops.backup.keep",
+  "ops.disk.warnFreeGiB",
+  "retention.jobsDays",
+  "retention.notificationsDays",
+  "retention.claudeRunsDays",
+  "retention.auditDays",
 ] as const satisfies readonly SettingKey[];
 export type UserEditableKey = (typeof USER_EDITABLE_SETTINGS)[number];
 

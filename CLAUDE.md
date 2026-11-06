@@ -114,6 +114,7 @@ bun run dev                    # API + web together ([api]/[web] prefixed output
 bun run --cwd apps/api dev     # API on 127.0.0.1:7400
 bun run --cwd apps/web dev     # web on 127.0.0.1:7401
 bun scripts/setup/check-env.ts # read-only env check (bun >= 1.4.4, claude on service PATH, linger)
+bun scripts/setup/service-status.ts  # read-only: is-active, is-enabled and linger per unit, plus the API health status; prints no journal content
 bun scripts/dev/claude-smoke.ts [--no-tools|--deny-check]  # real Claude run on a temp DB; spends a tiny amount of Claude quota — run deliberately
 bun scripts/dev/slack-smoke.ts [--pages N]  # reads real Slack via Claude on a temp DB, spends a little quota, prints counts only (never message text); run deliberately. N is 1..3, default 1
 bun scripts/dev/urgency-smoke.ts [--pages N]  # collects real Slack via Claude on a temp DB, screens, runs one urgency.assess; spends a little quota, reads real Slack, prints counts only (never message text); run deliberately. N is 1..3, default 1
@@ -134,4 +135,7 @@ Setup commands that change the system. **Ask the user for approval before runnin
 bun scripts/setup/install-services.ts   # writes ~/.config/systemd/user/synapse-{api,web}.service, prints the next commands
 loginctl enable-linger "$USER"          # keep user services running after logout
 systemctl --user daemon-reload && systemctl --user enable --now synapse-api synapse-web
+bun scripts/ops/restore.ts <backup-file> --yes   # REPLACES the live database with a backup (refuses while the API runs, or when the database is busy, the backup is corrupt or the backup has unknown migrations); the old files are kept as synapse.db.before-restore-<ts>
 ```
+
+Backups live in `<data dir>/backups` (or `SYNAPSE_BACKUP_DIR`, an absolute path outside the repository). The daily `ops.backup` job writes them; restoring one is the command above and is never done from the web.

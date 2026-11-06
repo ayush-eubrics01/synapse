@@ -185,3 +185,25 @@ test("sidebarItems shows the Needs-you card count and marks it hot", () => {
   expect(two?.count).toBe(2);
   expect(sidebarItems(counts, 0).find((i) => i.id === "triage")?.hot).toBe(false);
 });
+
+test("sidebarItems leaves out hidden sections and keeps the other counts", () => {
+  const counts = {
+    urgent: 0,
+    approvals: 0,
+    outgoingAttention: 0,
+    redFlags: 0,
+    commitmentsToReview: 3,
+    followupDrafts: 0,
+    profileRecommendations: 0,
+    peopleToEvaluate: 5,
+    conversations: 0,
+    jiraAttention: 2,
+    brainReview: 0,
+    engineeringAwaiting: 0,
+  };
+  const all = sidebarItems(counts, 1);
+  const items = sidebarItems(counts, 1, 0, new Set(["jira"]));
+  expect(items.some((i) => i.id === "jira")).toBe(false);
+  expect(items).toEqual(all.filter((i) => i.id !== "jira"));
+  expect(sidebarItems(null, 0, 0, new Set(["jira"])).some((i) => i.id === "jira")).toBe(false);
+});

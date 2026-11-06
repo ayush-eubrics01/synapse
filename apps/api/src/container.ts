@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, statfsSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type {
@@ -13,19 +13,22 @@ import { type Clock, newId, systemClock } from "@synapse/shared";
 import { ApprovalEngine } from "./core/approvals/approvals";
 import { registerApprovalExecution } from "./core/approvals/execution";
 import { AuditLogger } from "./core/audit/audit";
-import { type AppConfig, resolveHome } from "./core/config/config";
+import { type AppConfig, checkBackupDir, REPO_ROOT, resolveHome } from "./core/config/config";
 import { SettingsService } from "./core/config/settings";
 import { OutboxDispatcher } from "./core/events/dispatcher";
 import { LiveBus } from "./core/events/live-bus";
 import { EventPublisher } from "./core/events/publisher";
 import {
   authCheck,
+  backupCheck,
   bunVersionCheck,
   claudeActivityCheck,
   claudeCheck,
   databaseCheck,
   desktopNotifierCheck,
+  diskCheck,
   eventsCheck,
+  filePermissionsCheck,
   heartbeatCheck,
   jobsCheck,
   lingerCheck,
@@ -38,6 +41,10 @@ import { type HandlerRegistration, JobWorker } from "./core/jobs/worker";
 import { LeaseService } from "./core/leases/leases";
 import { ModuleRegistry } from "./core/module-registry/registry";
 import { NotificationService } from "./core/notifications/notifications";
+import { BackupService } from "./core/ops/backup";
+import { DatabaseIntegrity } from "./core/ops/integrity";
+import { RetentionService } from "./core/ops/retention";
+import { RuntimeService, readVersion } from "./core/ops/runtime";
 import { AuthMonitor } from "./core/orchestrator/auth";
 import { ClaudeOrchestrator } from "./core/orchestrator/orchestrator";
 import { PermissionManager } from "./core/permissions/permissions";
@@ -45,6 +52,11 @@ import type { RecoverySweep } from "./core/recovery/recovery";
 import { SchedulerService } from "./core/scheduler/scheduler";
 import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "./core/system/heartbeat";
 import { NoopDesktopNotifier, type NotifierHealth } from "./infrastructure/notifier";
+import {
+  defaultBackupDir,
+  isDedicatedDataDir,
+  type PrivateFilesResult,
+} from "./infrastructure/private-files";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadUserSettings } from "./integrations/claude-code/settings-override";
 import { GitHubCliProvider } from "./integrations/github/gh-cli";
@@ -63,6 +75,7 @@ import { FollowupService } from "./modules/commitments/followups";
 import { CommitmentLifecycle } from "./modules/commitments/lifecycle";
 import { StallService } from "./modules/commitments/stall";
 import { CommitmentStore } from "./modules/commitments/store";
+import { DashboardLayoutService } from "./modules/dashboard/layouts";
 import { DashboardService } from "./modules/dashboard/service";
 import type { InspectionService } from "./modules/engineering-brain/inspection";
 import { RepositoryRegistry } from "./modules/engineering-brain/registry";
@@ -99,6 +112,7 @@ import { registerPickupJobs } from "./workers/engineering/pickup";
 import { registerStepJob } from "./workers/engineering/steps";
 import { createRunHelpers } from "./workers/intelligence-shared";
 import { registerJiraJobs } from "./workers/jira";
+import { registerOpsJobs } from "./workers/ops";
 import { registerOutgoingJobs } from "./workers/outgoing";
 import { registerPeopleJobs } from "./workers/people";
 import { registerSlackJobs } from "./workers/slack";
@@ -115,6 +129,7 @@ export interface Container {
   live: LiveBus;
   queue: JobQueue;
   worker: JobWorker;
+  workerId: string;
   leases: LeaseService;
   scheduler: SchedulerService;
   settings: SettingsService;
@@ -126,6 +141,11 @@ export interface Container {
   auth: AuthMonitor;
   orchestrator: ClaudeOrchestrator;
   health: HealthService;
+  backup: BackupService;
+  integrity: DatabaseIntegrity;
+  retention: RetentionService;
+  runtime: RuntimeService;
+  startedAt: Date;
   /** Claude Code session observation (Phase 10b, ADR-036). */
   claudeActivity: ClaudeActivityService;
   inbox: InboxStore;
@@ -156,6 +176,7 @@ export interface Container {
   /** Job handler registry; the urgency smoke script runs one handler directly. */
   handlers: ReadonlyMap<string, HandlerRegistration>;
   dashboard: DashboardService;
+  dashboardLayouts: DashboardLayoutService;
   /** Read-only Jira tracking (Phase 8): status, issue views, manual sync and scope settings. */
   jira: JiraService;
   /** Repository registry (Phase 9, ADR-035): propose, register, edit and unregister. */
@@ -188,6 +209,12 @@ export interface ContainerDeps {
   notifier?: DesktopNotifier & NotifierHealth;
   /** Replaces the Claude Code projects dir that the activity scanner reads (tests inject a temp dir). */
   claudeProjectsDir?: string;
+  /** Result of securePrivateFiles from main.ts; defaults to ok. */
+  filePermissions?: PrivateFilesResult;
+  /** Overrides the backup directory (tests inject a temp dir). */
+  backupDir?: string;
+  /** Free bytes at a path, or null when unknown. Defaults to statfs. */
+  diskFree?: (path: string) => number | null;
 }
 
 const CORE_MODULES = [
@@ -203,6 +230,15 @@ const CORE_MODULES = [
   "health",
   "system",
 ];
+
+function defaultDiskFree(p: string): number | null {
+  try {
+    const s = statfsSync(p);
+    return Number(s.bavail) * Number(s.bsize);
+  } catch {
+    return null;
+  }
+}
 
 async function runCommand(cmd: string[]): Promise<string> {
   const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "ignore" });
@@ -241,8 +277,9 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   }
   scheduler.upsert(HEARTBEAT_SCHEDULE);
 
+  const workerId = `${hostname()}-${process.pid}-${newId()}`;
   const worker = new JobWorker(queue, handlers, {
-    workerId: `${hostname()}-${process.pid}-${newId()}`,
+    workerId,
     concurrency: config.workerConcurrency,
     onSettled: (job) => live.publish({ type: "job.updated", data: job }),
   });
@@ -629,8 +666,49 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   registerStepJob({ db, settings, orchestrator, steps: engineeringSteps, handlers });
   registerPickupJobs({ service: engineering, lock: engineeringLock, scheduler, handlers });
 
+  const dataDir = config.dbPath === ":memory:" ? scratchDir : dirname(config.dbPath);
+  const explicitBackupDir = deps.backupDir ?? config.backupDir ?? settings.get("ops.backup.dir");
+  const backupDir =
+    explicitBackupDir ??
+    (config.dbPath === ":memory:"
+      ? join(scratchDir, "backups")
+      : defaultBackupDir(config.dbPath, { home }));
+  if (explicitBackupDir !== null && checkBackupDir(explicitBackupDir) !== "ok") {
+    throw new Error("ops.backup.dir must be an absolute path outside the repository");
+  }
+  const diskFree = deps.diskFree ?? defaultDiskFree;
+  const startedAt = clock.now();
+  const backup = new BackupService({
+    db,
+    sqlite,
+    clock,
+    audit,
+    dir: backupDir,
+    checkDir: explicitBackupDir !== null,
+    chmodDir:
+      explicitBackupDir === null &&
+      (config.dbPath === ":memory:" || isDedicatedDataDir(config.dbPath, { home })),
+    dbPath: config.dbPath,
+    diskFree,
+  });
+  const integrity = new DatabaseIntegrity(sqlite, clock);
+  const runtime = new RuntimeService({
+    db,
+    sqlite,
+    clock,
+    settings,
+    startedAt,
+    dbPath: config.dbPath,
+    dataDir,
+    diskFree,
+    backup,
+    version: readVersion(REPO_ROOT, run),
+  });
+  const retention = new RetentionService({ db, sqlite, clock, settings, audit, integrity });
+  registerOpsJobs({ db, handlers, scheduler, queue, settings, clock, backup, retention });
+
   const health = new HealthService({
-    database: databaseCheck(sqlite),
+    database: databaseCheck(sqlite, integrity),
     jobs: jobsCheck(db, clock),
     events: eventsCheck(db),
     heartbeat: heartbeatCheck(settings, clock),
@@ -642,8 +720,14 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     "screening-rules": screeningRulesCheck(screening),
     "desktop-notifier": desktopNotifierCheck(notifier),
     claude_activity: claudeActivityCheck(claudeActivity),
+    backup: backupCheck({ settings, backup, clock, startedAt }),
+    disk: diskCheck({ settings, diskFree, dataDir }),
+    file_permissions: filePermissionsCheck(
+      deps.filePermissions ?? { ok: true, changed: 0, failed: 0 },
+    ),
   });
 
+  const dashboardLayouts = new DashboardLayoutService({ db, clock, audit, events });
   const dashboard = new DashboardService({
     db,
     clock,
@@ -672,6 +756,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     live,
     queue,
     worker,
+    workerId,
     leases,
     scheduler,
     settings,
@@ -683,6 +768,11 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     auth,
     orchestrator,
     health,
+    backup,
+    integrity,
+    retention,
+    runtime,
+    startedAt,
     claudeActivity,
     inbox,
     conversations,
@@ -702,6 +792,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     commitmentLifecycle,
     followups: followupService,
     dashboard,
+    dashboardLayouts,
     jira,
     repositories,
     inspections,

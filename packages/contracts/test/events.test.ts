@@ -60,6 +60,7 @@ test("catalog covers the Phase 1 and 2 events", () => {
       "engineering.task_status_changed",
       "engineering.step_changed",
       "engineering.lock_changed",
+      "dashboard.layout_changed",
     ].sort(),
   );
   expect(parseEventPayload("settings.changed", { key: "k" })).toEqual({ key: "k" });

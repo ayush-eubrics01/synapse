@@ -42,6 +42,7 @@ Rules:
 | `notifications` | In-app + desktop notifications via adapter | `NotificationService` |
 | `health` | Liveness, readiness, integration health, auth expiry checks | `HealthService` |
 | `orchestrator` | All Claude Code execution: queueing, concurrency, quota gate, budgets, timeouts, cancellation, run log | `ClaudeOrchestrator` |
+| `ops` | Operational safety: verified backups (`BackupService`), operational retention (`RetentionService`), `PRAGMA quick_check` (`DatabaseIntegrity`), the numbers behind the runtime panel (`RuntimeService`). Writes no domain data; retention deletes only the rows listed in `database-design.md`, and backups read the database through `VACUUM INTO` | `BackupService`, `RetentionService`, `DatabaseIntegrity`, `RuntimeService` |
 | `module-registry` | Registered modules, enabled state, declared dependencies | `ModuleRegistry` |
 
 ## Domain modules (`apps/api/src/modules`)
@@ -58,7 +59,7 @@ Rules:
 | `security-flags` | `security_flags`, `security_flag_rules` | `message.received`, intelligence results, `claude.job_*` | `security.*` |
 | `claude-activity` | `claude_sessions`, `claude_session_prs` | `~/.claude/projects` session metadata (read-only, registered repos only, whitelisted fields), `repositories` (read), settings `claudeActivity.*`, notifications, `PullRequestProvider.view` (read-only) for the open-PR reminder. Implements the `UserActivitySignal` port; core never imports it | `claude_session.activity_changed` |
 | `code-answers` | `code_answers` | `slack_messages` (read), `repositories`, `projects` and approved `project_facts` (read), the orchestrator (only through the `code_answer.generate` worker, `reader` profile), `AutoReplyService.codeAnswerPreCheck`, `OutgoingService.requestSend`, `PeopleService` (priority), settings `codeAnswer.*` | `code_answer.status_changed` |
-| `dashboard` | `dashboard_*` tables | read APIs of other modules | — |
+| `dashboard` | `dashboard_layouts` | read APIs of other modules | `dashboard.layout_changed` |
 | `settings` | user-facing settings over `app_settings` | `ConfigService` | `settings.changed` |
 
 `auto-reply` never imports adapters or the orchestrator, and never sends: it asks `OutgoingService` for a policy-approved send, which runs through the approval engine and `SlackSender`. `AUTO_REPLY_TAG` lives in `packages/contracts` so the module, the outgoing service and the web share one constant.

@@ -2,9 +2,12 @@ import { expect, test } from "bun:test";
 import {
   ApiError,
   acceptSuggestion,
+  activateLayout,
   classifyOverviewFailure,
   confirmSlackIdentity,
+  createLayout,
   decideApproval,
+  deleteLayout,
   discardRecommendation,
   dismissAwayDigest,
   evaluatePerson,
@@ -17,6 +20,7 @@ import {
   getHealth,
   getInboxMessages,
   getJobs,
+  getLayouts,
   getOverview,
   getPeople,
   getPersonFlags,
@@ -27,12 +31,14 @@ import {
   getSlackStatus,
   getThread,
   getUrgent,
+  resetLayout,
   retryApply,
   reviewFlag,
   setAway,
   setPersonPriority,
   setUrgentStatus,
   startBackfill,
+  updateLayout,
 } from "../lib/api";
 
 type Call = { url: string; init?: RequestInit };
@@ -262,4 +268,37 @@ test("away API URLs", async () => {
   expect(calls[0]?.init?.method).toBe("POST");
   const bad = fake(500, { error: "boom" });
   await expect(setAway(true, bad.impl)).rejects.toThrow("failed with 500");
+});
+
+test("layout API URLs, methods and error codes", async () => {
+  const g = fake(200, {});
+  await getLayouts(g.impl);
+  expect(g.calls[0]?.url).toBe("/api/dashboard/layouts");
+  const c = fake(201, {});
+  await createLayout("Focus", "L1", c.impl);
+  expect(c.calls[0]?.init?.method).toBe("POST");
+  expect(JSON.parse(String(c.calls[0]?.init?.body))).toEqual({ name: "Focus", fromId: "L1" });
+  const u = fake(200, {});
+  await updateLayout("L 1", { name: "Deep" }, u.impl);
+  expect(u.calls[0]?.url).toBe("/api/dashboard/layouts/L%201");
+  expect(u.calls[0]?.init?.method).toBe("PUT");
+  const a = fake(200, {});
+  await activateLayout("L1", a.impl);
+  await resetLayout("L1", a.impl);
+  expect(a.calls.map((x) => x.url)).toEqual([
+    "/api/dashboard/layouts/L1/activate",
+    "/api/dashboard/layouts/L1/reset",
+  ]);
+  const calls: Call[] = [];
+  const noContent = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    return new Response(null, { status: 204 });
+  }) as unknown as typeof fetch;
+  expect(await deleteLayout("L2", noContent)).toBeUndefined();
+  expect(calls[0]?.init?.method).toBe("DELETE");
+  const bad = fake(409, { error: "active_layout" });
+  await expect(deleteLayout("L1", bad.impl)).rejects.toMatchObject({
+    status: 409,
+    code: "active_layout",
+  });
 });

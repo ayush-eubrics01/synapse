@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDatabase, runMigrations } from "../src/index.ts";
+import { knownMigrationHashes, openDatabase, runMigrations } from "../src/index.ts";
 
 const repoRoot = join(import.meta.dir, "../../..");
 
@@ -65,4 +65,16 @@ test("second connection waits instead of SQLITE_BUSY", async () => {
     { cwd: repoRoot },
   );
   expect(await proc.exited).toBe(0);
+});
+
+test("knownMigrationHashes matches the journal and the stored hashes", () => {
+  const { readMigrationFiles } = require("drizzle-orm/migrator");
+  const folder = join(import.meta.dir, "../migrations");
+  const known = knownMigrationHashes();
+  expect(known.size).toBe(readMigrationFiles({ migrationsFolder: folder }).length);
+  const { db, sqlite } = openDatabase(tmpDbPath());
+  runMigrations(db);
+  const stored = sqlite.query("select hash from __drizzle_migrations").all() as { hash: string }[];
+  expect(stored.length).toBe(known.size);
+  for (const r of stored) expect(known.has(r.hash)).toBe(true);
 });

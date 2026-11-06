@@ -61,6 +61,20 @@ export class JobQueue {
   }
 
   /**
+   * Shutdown: expires the leases of this worker's RUNNING jobs so startup recovery reclaims them
+   * at once, under its existing external-write rules.
+   */
+  expireLeasesOwnedBy(workerId: string): number {
+    const now = this.clock.now().toISOString();
+    const escaped = workerId.replace(/[\\%_]/g, "\\$&");
+    return this.db.all<{ id: string }>(
+      sql`UPDATE jobs SET lease_expires_at = ${now}
+            WHERE status = 'RUNNING' AND lease_owner LIKE ${`${escaped}:%`} ESCAPE '\\'
+            RETURNING id`,
+    ).length;
+  }
+
+  /**
    * Leases the next job to `workerId`. The lease owner is a per-claim token
    * (`${workerId}:${newId()}`, returned as `job.leaseOwner`), so a stale holder cannot act on a
    * job its own worker later re-claims.
