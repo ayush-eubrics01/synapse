@@ -1,5 +1,10 @@
-import { expect, test } from "bun:test";
-import { claudeJobRequestSchema, parseEventPayload, workerProfileSchema } from "../src/index.ts";
+import { describe, expect, test } from "bun:test";
+import {
+  claudeJobRequestSchema,
+  parseEventPayload,
+  SANDBOX_MASKED_ROOTS,
+  workerProfileSchema,
+} from "../src/index.ts";
 
 const valid = {
   workerProfile: "collector",
@@ -44,4 +49,37 @@ test("workerProfileSchema accepts the reader profile (C1)", () => {
     true,
   );
   expect(workerProfileSchema.safeParse("writer").success).toBe(false);
+});
+
+describe("sandbox (F1.1, ADR-040)", () => {
+  const SANDBOX = { tmpDir: "/home/u/s/runs/j1/tmp", denyRead: ["/home/u/.ssh"] };
+  const eng = { ...valid, workerProfile: "engineering", priorityClass: "engineering" };
+
+  test("claudeJobRequestSchema accepts a sandbox", () => {
+    const r = claudeJobRequestSchema.safeParse({ ...eng, sandbox: SANDBOX });
+    expect(r.success).toBe(true);
+    expect(r.data?.sandbox).toEqual(SANDBOX);
+  });
+
+  test("an extra key, a string denyRead and 65 entries are rejected", () => {
+    for (const sandbox of [
+      { ...SANDBOX, extra: true },
+      { ...SANDBOX, denyRead: "x" },
+      { ...SANDBOX, denyRead: Array.from({ length: 65 }, (_, i) => `/home/u/d${i}`) },
+      { ...SANDBOX, tmpDir: "" },
+      { ...SANDBOX, denyRead: [""] },
+    ]) {
+      expect(claudeJobRequestSchema.safeParse({ ...eng, sandbox }).success).toBe(false);
+    }
+    expect(
+      claudeJobRequestSchema.safeParse({
+        ...eng,
+        sandbox: { ...SANDBOX, denyRead: Array.from({ length: 64 }, (_, i) => `/home/u/d${i}`) },
+      }).success,
+    ).toBe(true);
+  });
+
+  test("the masked roots are the three the sandbox settings list", () => {
+    expect([...SANDBOX_MASKED_ROOTS]).toEqual(["/run", "/var/run", "/tmp"]);
+  });
 });

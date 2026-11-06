@@ -9,12 +9,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type {
-  AIExecutionResult,
-  Approval,
-  ClaudeJobRequest,
-  Operation,
-  RawToolResult,
+import {
+  type AIExecutionResult,
+  type Approval,
+  type ClaudeJobRequest,
+  JobError,
+  type Operation,
+  type RawToolResult,
 } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock, newId } from "@synapse/shared";
@@ -209,6 +210,8 @@ let repo: string;
 let repoId: string;
 let requests: ClaudeJobRequest[];
 let reply: (req: ClaudeJobRequest) => AIExecutionResult;
+/** The step worker's scratch dir: develop runs get `<it>/runs/<jobId>/tmp` (ADR-040). */
+let sandboxScratch: string;
 
 const taskRow = (id: string) =>
   db.select().from(schema.engineeringTasks).where(eq(schema.engineeringTasks.id, id)).get();
@@ -433,6 +436,7 @@ beforeEach(async () => {
   steps.register(approvals, dispatcher);
   requests = [];
   reply = editingRun();
+  sandboxScratch = scratch();
   registerStepJob({
     db,
     settings,
@@ -443,6 +447,13 @@ beforeEach(async () => {
         requests.push(req);
         return reply(req);
       },
+    },
+    // The test repositories live under the OS temp dir, which the real sandbox masks.
+    sandbox: {
+      scratchDir: sandboxScratch,
+      home: fx.home,
+      protectedDirs: [join(sandboxScratch, "data")],
+      maskedRoots: [],
     },
   });
   rmSync(join(ghDir, "argv.log"), { force: true });
@@ -496,7 +507,16 @@ describe("develop request (E9)", () => {
     const req = buildDevelopRequest(
       { approvedDescription: APPROVED, plan: PLAN },
       { localPath: "/home/demo/app", testCommand: "bun test" },
-      { model: "sonnet", maxTurns: 60, timeoutMinutes: 30 },
+      {
+        model: "sonnet",
+        maxTurns: 60,
+        timeoutMinutes: 30,
+        sandbox: {
+          tmpDir: "/home/demo/.local/share/synapse/scratch/runs/j1/tmp",
+          home: "/home/demo",
+          protectedDirs: ["/home/demo/.local/share/synapse"],
+        },
+      },
     );
     expect(req.maxTurns).toBe(50);
     const parts = req.parts ?? [];
@@ -514,11 +534,91 @@ describe("develop request (E9)", () => {
         maxTurns: req.maxTurns,
         timeoutMs: req.timeoutMs ?? 0,
         workingDirectory: req.workingDirectory ?? "",
+        ...(req.sandbox ? { sandbox: req.sandbox } : {}),
       },
       DEFAULT_KNOWN_SERVERS,
       { instructions: req.instructions, boundary: "BND" },
     );
     expect(r).toEqual({ ok: true });
+  });
+});
+
+describe("develop sandbox (ADR-040)", () => {
+  const runDir = (jobId: string) => join(sandboxScratch, "runs", jobId);
+
+  test("the develop request carries the per-run tmpDir and the deny list", async () => {
+    await developed();
+    const req = requests[0] as ClaudeJobRequest;
+    const jobId = req.jobId as string;
+    expect(jobId).toBeTruthy();
+    expect(req.sandbox?.tmpDir).toBe(join(runDir(jobId), "tmp"));
+    expect(req.sandbox?.denyRead).toContain(join(fx.home, ".ssh"));
+    expect(req.sandbox?.denyRead).toContain(join(sandboxScratch, "data"));
+  });
+
+  test("with the setting off the request has no sandbox", async () => {
+    settings.set("engineering.sandbox.enabled", false);
+    await developed();
+    expect(requests).toHaveLength(1);
+    expect("sandbox" in (requests[0] as ClaudeJobRequest)).toBe(false);
+  });
+
+  test("the run scratch is removed after a run that returns (Review Focus 5)", async () => {
+    const seen: string[] = [];
+    const edit = editingRun();
+    reply = (req) => {
+      const tmp = req.sandbox?.tmpDir as string;
+      mkdirSync(tmp, { recursive: true });
+      writeFileSync(join(tmp, "x"), "x");
+      seen.push(req.jobId as string);
+      return edit(req);
+    };
+    const id = await developed();
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+    expect(seen).toHaveLength(1);
+    expect(existsSync(runDir(seen[0] as string))).toBe(false);
+  });
+
+  test("the run scratch is removed after a run that throws (Review Focus 5)", async () => {
+    const seen: string[] = [];
+    reply = (req) => {
+      mkdirSync(req.sandbox?.tmpDir as string, { recursive: true });
+      seen.push(req.jobId as string);
+      throw new JobError({ kind: "timeout", message: "timed out" });
+    };
+    const id = await developed();
+    expect(taskRow(id)?.failure).toBe("timeout");
+    expect(seen).toHaveLength(1);
+    expect(existsSync(runDir(seen[0] as string))).toBe(false);
+  });
+
+  test("a repository in a masked path is refused before any run (repo_in_masked_path)", async () => {
+    handlers.delete(STEP_JOB);
+    registerStepJob({
+      db,
+      settings,
+      steps,
+      handlers,
+      orchestrator: {
+        run: async (req: ClaudeJobRequest) => {
+          requests.push(req);
+          return reply(req);
+        },
+      },
+      // The repository's parent stands in for /tmp (the default roots are tested in
+      // develop-prompt.test.ts).
+      sandbox: {
+        scratchDir: sandboxScratch,
+        home: fx.home,
+        protectedDirs: [],
+        maskedRoots: [join(repo, "..")],
+      },
+    });
+    const id = await developed();
+    expect(requests).toHaveLength(0);
+    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.failure).toBe("repo_in_masked_path");
+    expect(leaseRow()).toBeUndefined();
   });
 });
 

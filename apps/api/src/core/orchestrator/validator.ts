@@ -1,4 +1,9 @@
-import { type AIExecutionRequest, isSafeAbsolutePath, isSafeTestCommand } from "@synapse/contracts";
+import {
+  type AIExecutionRequest,
+  isSafeAbsolutePath,
+  isSafeTestCommand,
+  SANDBOX_MASKED_ROOTS,
+} from "@synapse/contracts";
 import { assemblePrompt } from "./prompt";
 import {
   BUILTIN_FS_READ,
@@ -22,6 +27,9 @@ const DENY_BUILTIN_RE = /^[A-Za-z][A-Za-z0-9_]*$/;
 const DENY_CONNECTOR_RE = /^mcp__[A-Za-z0-9_]+(__[A-Za-z0-9_]+)?$/;
 
 const fail = (reason: string): ValidationResult => ({ ok: false, reason });
+
+/** Rule M's reason when an engineering run grants Bash without a sandbox (ADR-040). */
+export const SANDBOX_REQUIRED_REASON = "engineering Bash requires the sandbox";
 
 /** Maximum prompt size in UTF-8 bytes (one argv entry; Linux caps a single argument at 128 KiB). */
 export const MAX_PROMPT_BYTES = 100 * 1024;
@@ -64,8 +72,14 @@ export const MAX_PROMPT_BYTES = 100 * 1024;
  *     for a reader): `Edit`/`Write`/`MultiEdit` must equal the same
  *     `Tool(/<wd>/**)`, and `Bash` only as exactly `Bash(<cmd>:*)` with `isSafeTestCommand(cmd)`
  *     (E5, E9); a bare Bash or any other specifier fails, and at most one Bash grant is allowed.
- *     Rule 0 admits a Bash specifier with spaces only in the `Bash(<safe chars>:*)` form. Last, so
- *     the other rules keep their order. Tools other than fs reads and writes are unaffected
+ *     Rule 0 admits a Bash specifier with spaces only in the `Bash(<safe chars>:*)` form. After K,
+ *     so the other rules keep their order. Tools other than fs reads and writes are unaffected
+ *  M. sandbox (ADR-040), after L: an engineering run that grants any Bash must carry `sandbox`
+ *     (SANDBOX_REQUIRED_REASON), so its test command runs with no network, writes only inside the
+ *     repository and the credentials and sockets masked. A non-engineering run must not carry one.
+ *     `tmpDir` and every `denyRead` entry must satisfy isSafeAbsolutePath, and `tmpDir` must be
+ *     neither equal to nor an ancestor of a `denyRead` entry or of SANDBOX_MASKED_ROOTS (its
+ *     `allowRead` would re-expose it). Last of all
  * Tool names are normalised (specifier stripped) before classification.
  */
 export function validateRequest(
@@ -232,6 +246,24 @@ export function validateRequest(
       } else {
         return fail(writeErr);
       }
+    }
+  }
+
+  // M
+  const sandbox = req.sandbox;
+  if (sandbox === undefined) {
+    if (profile === "engineering" && raw.some((t) => normalizeTool(t) === "Bash")) {
+      return fail(SANDBOX_REQUIRED_REASON);
+    }
+  } else {
+    if (profile !== "engineering") return fail("sandbox is for engineering runs only");
+    if (![sandbox.tmpDir, ...sandbox.denyRead].every(isSafeAbsolutePath)) {
+      return fail("sandbox paths must be absolute paths of safe characters");
+    }
+    const tmp = sandbox.tmpDir.replace(/\/+$/, "");
+    const masks = [...sandbox.denyRead, ...SANDBOX_MASKED_ROOTS].map((e) => e.replace(/\/+$/, ""));
+    if (masks.some((e) => e === tmp || e.startsWith(`${tmp}/`))) {
+      return fail("sandbox tmpDir must not contain a masked path");
     }
   }
 

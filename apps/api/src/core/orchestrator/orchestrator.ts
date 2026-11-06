@@ -298,6 +298,7 @@ export class ClaudeOrchestrator {
       workingDirectory: request.workingDirectory ?? this.deps.scratchDir,
       ...(request.expectedToolNames ? { expectedToolNames: request.expectedToolNames } : {}),
       ...(request.sendGuard ? { sendGuard: request.sendGuard } : {}),
+      ...(request.sandbox ? { sandbox: request.sandbox } : {}),
     };
 
     const verdict = validateRequest(execReq, knownServers, {

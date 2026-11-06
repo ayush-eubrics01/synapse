@@ -215,6 +215,11 @@ export interface ContainerDeps {
   backupDir?: string;
   /** Free bytes at a path, or null when unknown. Defaults to statfs. */
   diskFree?: (path: string) => number | null;
+  /**
+   * Replaces the paths a develop run's repository may not be under (default
+   * SANDBOX_MASKED_ROOTS). Tests only: their repositories live under the OS temp dir.
+   */
+  sandboxMaskedRoots?: readonly string[];
 }
 
 const CORE_MODULES = [
@@ -663,7 +668,6 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
       }
     },
   });
-  registerStepJob({ db, settings, orchestrator, steps: engineeringSteps, handlers });
   registerPickupJobs({ service: engineering, lock: engineeringLock, scheduler, handlers });
 
   const dataDir = config.dbPath === ":memory:" ? scratchDir : dirname(config.dbPath);
@@ -676,6 +680,21 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   if (explicitBackupDir !== null && checkBackupDir(explicitBackupDir) !== "ok") {
     throw new Error("ops.backup.dir must be an absolute path outside the repository");
   }
+  // ADR-040: develop runs get a per-run scratch under scratchDir; the data and backup dirs are
+  // masked in the sandbox along with the home credential dirs.
+  registerStepJob({
+    db,
+    settings,
+    orchestrator,
+    steps: engineeringSteps,
+    handlers,
+    sandbox: {
+      scratchDir,
+      home,
+      protectedDirs: [dataDir, backupDir],
+      ...(deps.sandboxMaskedRoots ? { maskedRoots: deps.sandboxMaskedRoots } : {}),
+    },
+  });
   const diskFree = deps.diskFree ?? defaultDiskFree;
   const startedAt = clock.now();
   const backup = new BackupService({

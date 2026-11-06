@@ -1,10 +1,16 @@
-import { type Job, JobError } from "@synapse/contracts";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
+import { type Job, JobError, SANDBOX_MASKED_ROOTS } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { desc, eq, sql } from "drizzle-orm";
 import type { SettingsService } from "../../core/config/settings";
 import type { HandlerRegistration, JobContext } from "../../core/jobs/worker";
 import type { ClaudeOrchestrator } from "../../core/orchestrator/orchestrator";
-import { buildDevelopRequest } from "../../intelligence/engineering/develop-prompt";
+import {
+  buildDevelopRequest,
+  REPO_IN_MASKED_PATH,
+  repoInMaskedPath,
+} from "../../intelligence/engineering/develop-prompt";
 import { STEP_JOB } from "../../modules/engineering-tasks/lock";
 import {
   type EngineeringStepService,
@@ -24,6 +30,18 @@ export interface StepJobDeps {
   orchestrator: Pick<ClaudeOrchestrator, "run">;
   steps: Pick<EngineeringStepService, "runBranch" | "runDevelop" | "runUpdateParent" | "cleanup">;
   handlers: Map<string, HandlerRegistration>;
+  /**
+   * ADR-040. Each develop run gets `<scratchDir>/runs/<jobId>`, removed when the run ends, with the
+   * sandbox `tmpDir` inside it. `home` and `protectedDirs` (the data and backup dirs) feed the
+   * deny list. `maskedRoots` defaults to SANDBOX_MASKED_ROOTS: a repository at or under one is
+   * refused (`repo_in_masked_path`). Tests, whose repositories live under the OS temp dir, pass [].
+   */
+  sandbox: {
+    scratchDir: string;
+    home: string;
+    protectedDirs: string[];
+    maskedRoots?: readonly string[];
+  };
 }
 
 /**
@@ -33,7 +51,8 @@ export interface StepJobDeps {
  * push_pr, merge_pr) run from their approval executors, not from here. Model text is never logged.
  */
 export function registerStepJob(deps: StepJobDeps): void {
-  const { db, settings, orchestrator, steps } = deps;
+  const { db, settings, orchestrator, steps, sandbox } = deps;
+  const maskedRoots = sandbox.maskedRoots ?? SANDBOX_MASKED_ROOTS;
 
   const latestRunId = (jobId: string): string | null =>
     db
@@ -60,20 +79,40 @@ export function registerStepJob(deps: StepJobDeps): void {
         return steps.cleanup(taskId);
       case "develop":
         return steps.runDevelop(taskId, {
-          run: (t) =>
-            orchestrator.run(
-              buildDevelopRequest(
-                { approvedDescription: t.approvedDescription, plan: t.plan },
-                { localPath: t.localPath, testCommand: t.testCommand },
-                {
-                  model: settings.get("engineering.model"),
-                  maxTurns: settings.get("engineering.develop.maxTurns"),
-                  timeoutMinutes: settings.get("engineering.develop.timeoutMinutes"),
-                },
-                job.id,
-              ),
-              ctx.signal,
-            ),
+          run: async (t) => {
+            const sandboxed = settings.get("engineering.sandbox.enabled");
+            if (sandboxed && repoInMaskedPath(t.localPath, maskedRoots)) {
+              // Refused before any run: the sandbox would hide the repository from itself.
+              throw new JobError({ kind: "invalid_input", message: REPO_IN_MASKED_PATH });
+            }
+            const runScratch = join(sandbox.scratchDir, "runs", job.id);
+            try {
+              return await orchestrator.run(
+                buildDevelopRequest(
+                  { approvedDescription: t.approvedDescription, plan: t.plan },
+                  { localPath: t.localPath, testCommand: t.testCommand },
+                  {
+                    model: settings.get("engineering.model"),
+                    maxTurns: settings.get("engineering.develop.maxTurns"),
+                    timeoutMinutes: settings.get("engineering.develop.timeoutMinutes"),
+                    // Off: no sandbox, so validator rule M refuses the run (never unsandboxed).
+                    sandbox: sandboxed
+                      ? {
+                          tmpDir: join(runScratch, "tmp"),
+                          home: sandbox.home,
+                          protectedDirs: sandbox.protectedDirs,
+                        }
+                      : null,
+                  },
+                  job.id,
+                ),
+                ctx.signal,
+              );
+            } finally {
+              // Also after a throw, timeout or abort: stale run dirs must not fill the data dir.
+              rmSync(runScratch, { recursive: true, force: true });
+            }
+          },
           runId: () => latestRunId(job.id),
         });
     }

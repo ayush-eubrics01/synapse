@@ -28,7 +28,11 @@ import type { AuditLogger } from "../../core/audit/audit";
 import type { OutboxDispatcher } from "../../core/events/dispatcher";
 import type { EventPublisher } from "../../core/events/publisher";
 import type { JobQueue } from "../../core/jobs/queue";
-import { parseDevelopReply, testResultFrom } from "../../intelligence/engineering/develop-prompt";
+import {
+  parseDevelopReply,
+  REPO_IN_MASKED_PATH,
+  testResultFrom,
+} from "../../intelligence/engineering/develop-prompt";
 import { type EngineeringLock, STEP_JOB } from "./lock";
 import {
   ACTIVE_STATUSES,
@@ -318,7 +322,14 @@ export class EngineeringStepService {
           this.mark(taskId, "develop", "pending", { claudeRunId: runner.runId() });
           throw err;
         }
-        const kind = stopKind(err) ?? (err instanceof JobError ? err.classified.kind : "unknown");
+        // The worker refuses a repository the sandbox would mask before any run (ADR-040).
+        const masked =
+          err instanceof JobError &&
+          err.classified.kind === "invalid_input" &&
+          err.classified.message === REPO_IN_MASKED_PATH;
+        const kind = masked
+          ? REPO_IN_MASKED_PATH
+          : (stopKind(err) ?? (err instanceof JobError ? err.classified.kind : "unknown"));
         return this.developFailed(ctx, kind, fingerprints, runner.runId());
       }
       return this.developDone(ctx, result, testCommand, fingerprints, runner.runId());

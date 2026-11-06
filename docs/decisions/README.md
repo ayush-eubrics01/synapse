@@ -72,3 +72,4 @@ File naming: `ADR/ADR-NNN-kebab-case-title.md`. Number sequentially; never reuse
 | ADR-037 | Keep the Claude Code Login Alive Without Repeated Re-Login | Accepted | [ADR-037-claude-auth-renewal.md](ADR/ADR-037-claude-auth-renewal.md) |
 | ADR-038 | Hono + TypeScript Backend (supersedes ADR-002) | Accepted | [ADR-038-hono-backend.md](ADR/ADR-038-hono-backend.md) |
 | ADR-039 | Bun as Runtime, Package Manager and Test Runner | Accepted | [ADR-039-bun-runtime.md](ADR/ADR-039-bun-runtime.md) |
+| ADR-040 | Sandboxed Test Commands in Develop Runs | Accepted | [ADR-040-sandboxed-test-commands.md](ADR/ADR-040-sandboxed-test-commands.md) |

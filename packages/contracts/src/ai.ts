@@ -27,6 +27,24 @@ export interface SendGuard {
   expectedInputSha256: string;
 }
 
+/**
+ * ADR-040: run the test command inside the Claude Code sandbox. The provider merges the fixed
+ * sandbox settings into `--settings`: `denyRead` is masked (followed by `SANDBOX_MASKED_ROOTS`),
+ * `tmpDir` is re-allowed, created 0700 before the spawn and set as the child's `TMPDIR`. Validator
+ * rule M requires it on any engineering run that grants Bash and forbids it on other profiles.
+ */
+export interface SandboxSpec {
+  tmpDir: string;
+  denyRead: string[];
+}
+
+/**
+ * The paths the sandbox always masks after the request's `denyRead` (F1.2): they hide the Docker
+ * socket, the runtime dir (SSH agent, D-Bus, Wayland), X11 and other sessions' temp files. A
+ * repository at or under one of them would be hidden from its own run.
+ */
+export const SANDBOX_MASKED_ROOTS = ["/run", "/var/run", "/tmp"] as const;
+
 /** What modules submit; the orchestrator fills the rest. */
 export interface ClaudeJobRequest {
   jobId?: string;
@@ -42,6 +60,7 @@ export interface ClaudeJobRequest {
   timeoutMs?: number;
   workingDirectory?: string;
   sendGuard?: SendGuard;
+  sandbox?: SandboxSpec;
 }
 
 /**
@@ -71,6 +90,7 @@ export interface AIExecutionRequest {
   workingDirectory: string;
   expectedToolNames?: string[];
   sendGuard?: SendGuard;
+  sandbox?: SandboxSpec;
 }
 
 export interface RawToolResult {
@@ -163,6 +183,11 @@ export const sendGuardSchema = z.object({
   expectedInputSha256: z.string().regex(/^[0-9a-f]{64}$/),
 });
 
+export const sandboxSpecSchema = z.strictObject({
+  tmpDir: z.string().min(1),
+  denyRead: z.array(z.string().min(1)).max(64),
+});
+
 export const claudeJobRequestSchema = z.object({
   jobId: z.string().optional(),
   workerProfile: workerProfileSchema,
@@ -177,4 +202,5 @@ export const claudeJobRequestSchema = z.object({
   timeoutMs: z.number().int().positive().optional(),
   workingDirectory: z.string().optional(),
   sendGuard: sendGuardSchema.optional(),
+  sandbox: sandboxSpecSchema.optional(),
 });

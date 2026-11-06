@@ -27,6 +27,7 @@ import {
   DEFAULT_SYSTEM_PROMPTS,
   UNSAFE_USER_SETTINGS_MESSAGE,
 } from "../../src/core/orchestrator/orchestrator";
+import { SANDBOX_REQUIRED_REASON } from "../../src/core/orchestrator/validator";
 import { recoverOrphanRuns } from "../../src/core/recovery/recovery";
 
 const START = "2026-11-05T12:00:00.000Z";
@@ -910,6 +911,41 @@ describe("beforeSpawn (Phase 6b I2)", () => {
     await first;
     expect((await second).classified.kind).toBe("quota_exhausted");
     expect(calls).toBe(0);
+  });
+});
+
+describe("sandbox (ADR-040, rule M)", () => {
+  const WD = "/home/u/projects/demo";
+  const SANDBOX = {
+    tmpDir: "/home/u/.local/share/synapse/scratch/runs/j1/tmp",
+    denyRead: ["/home/u/.ssh", "/home/u/.local/share/synapse"],
+  };
+  const develop = (over: Partial<ClaudeJobRequest> = {}) =>
+    req({
+      workerProfile: "engineering",
+      priorityClass: "engineering",
+      allowedTools: [`Read(/${WD}/**)`, `Edit(/${WD}/**)`, "Bash(bun test:*)"],
+      parts: [{ provenance: "user_approved", content: "Fix add" }],
+      workingDirectory: WD,
+      ...over,
+    });
+
+  test("a request's sandbox reaches the provider unchanged; absent stays absent", async () => {
+    await run(develop({ sandbox: SANDBOX }));
+    expect(provider.requests[0]?.sandbox).toEqual(SANDBOX);
+    await run(req());
+    expect("sandbox" in (provider.requests[1] ?? {})).toBe(false);
+  });
+
+  test("engineering Bash without a sandbox is refused before the provider", async () => {
+    const e = await fails(run(develop()));
+    expect(e.classified.kind).toBe("invalid_input");
+    expect(e.classified.message).toBe(SANDBOX_REQUIRED_REASON);
+    expect(provider.requests).toHaveLength(0);
+    const audit = db.select().from(schema.auditEvents).all();
+    expect(audit.map((a) => [a.action, a.details])).toEqual([
+      ["claude.request_rejected", { reason: SANDBOX_REQUIRED_REASON }],
+    ]);
   });
 });
 

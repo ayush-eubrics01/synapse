@@ -117,6 +117,8 @@ beforeEach(async () => {
         killGraceMs: 200,
       }),
       prs: new GitHubCliProvider({ binary: fakeGh }),
+      // The fixture repository lives under the OS temp dir, which the real sandbox masks.
+      sandboxMaskedRoots: [],
     },
   );
   app = createApp(c);
