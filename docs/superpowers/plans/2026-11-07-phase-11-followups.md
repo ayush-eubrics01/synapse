@@ -38,3 +38,4 @@ Items parked during Phase 11 (dashboard customisation and runtime hardening). No
 - **The instance-root prune walk is synchronous and unbounded.** It runs once at startup over `<cache>/synapse`.
 - **A tiny walk-to-`rm` race** in that prune: an entry touched between the age walk and the removal can still be deleted.
 - **Retention's `wal_checkpoint(TRUNCATE)` can block the event loop** for up to `busy_timeout` while a worker read snapshot is open; `PASSIVE` would avoid it.
+- **"Back up now" answers 409 while a scheduled backup tick is queued.** `backupJobLive` counts any live `ops.backup` job, including the 15-minute tick that is not due. With both worker slots busy the tick can wait for minutes. A sharper rule: manual jobs live, or a scheduled job running (the in-service guard already prevents a real overlap). The comment on `triggerBackup` in `apps/web/lib/api.ts` still says "manual backup".
