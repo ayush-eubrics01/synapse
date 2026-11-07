@@ -346,7 +346,7 @@ test("the sidebar footer shows the lock text and the nav has Engineering after P
       items={[]}
       active="overview"
       onGo={noop}
-      footer={{ api: "a", web: "w", lock: lockText({ held: false }) }}
+      footer={{ addresses: null, lock: lockText({ held: false }) }}
     />,
   );
   expect(free).toContain("free");
@@ -356,7 +356,7 @@ test("the sidebar footer shows the lock text and the nav has Engineering after P
         items={[]}
         active="overview"
         onGo={noop}
-        footer={{ api: "a", web: "w", lock: lockText({ held: true, taskTitle: "Fix it" }) }}
+        footer={{ addresses: null, lock: lockText({ held: true, taskTitle: "Fix it" }) }}
       />,
     ),
   );

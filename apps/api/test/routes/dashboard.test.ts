@@ -253,33 +253,42 @@ describe("GET /api/dashboard/overview", () => {
     expect((await overview()).counts.peopleToEvaluate).toBe(0);
   });
 
-  test("outgoingAttention counts needs_attention rows only", async () => {
+  test("outgoingAttention counts needs_attention and unverified sends, as the feed does", async () => {
     seed();
-    c.db
-      .insert(schema.approvals)
-      .values({
-        id: "a2",
-        action: "slack.send",
-        payload: {},
-        riskLevel: "high",
-        status: "executed",
-        idempotencyKey: "k2",
-        createdAt: NOW,
-      })
-      .run();
-    c.db
-      .insert(schema.outgoingMessages)
-      .values({
-        id: "o1",
-        approvalId: "a2",
-        conversationExternalId: "C0SYNTH01",
-        text: "invented",
-        status: "needs_attention",
-        createdAt: NOW,
-        updatedAt: NOW,
-      })
-      .run();
-    expect((await overview()).counts.outgoingAttention).toBe(1);
+    const rows: [string, string, string | null][] = [
+      ["o1", "needs_attention", null],
+      ["o2", "sent_unverified", "unverified"],
+      ["o3", "sent_unverified", null],
+      ["o4", "sent", null],
+    ];
+    for (const [id, status, failure] of rows) {
+      c.db
+        .insert(schema.approvals)
+        .values({
+          id: `a-${id}`,
+          action: "slack.send",
+          payload: {},
+          riskLevel: "high",
+          status: "executed",
+          idempotencyKey: `k-${id}`,
+          createdAt: NOW,
+        })
+        .run();
+      c.db
+        .insert(schema.outgoingMessages)
+        .values({
+          id,
+          approvalId: `a-${id}`,
+          conversationExternalId: "C0SYNTH01",
+          text: "invented",
+          status: status as "sent",
+          failure,
+          createdAt: NOW,
+          updatedAt: NOW,
+        })
+        .run();
+    }
+    expect((await overview()).counts.outgoingAttention).toBe(2);
   });
 
   test("health.issues lists only non-ok checks with label and hint", async () => {

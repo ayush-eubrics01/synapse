@@ -122,3 +122,8 @@ test("a stale layout fetch is dropped and edits wait for a layout switch", () =>
 test("the palette entry reflects the customise state", () => {
   expect(PAGE).toContain('customising ? "Done customising" : "Customise dashboard"');
 });
+
+test("page.tsx hard-codes no endpoint address; the footer comes from the runtime view", () => {
+  expect(PAGE).not.toContain("127.0.0.1:7400");
+  expect(PAGE).toContain("footerAddresses(runtime)");
+});

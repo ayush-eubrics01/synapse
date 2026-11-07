@@ -764,6 +764,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     diskFree,
     backup,
     version: readVersion(REPO_ROOT, run),
+    endpoints: { api: config.api, web: config.web },
   });
   const retention = new RetentionService({ db, sqlite, clock, settings, audit, integrity });
   registerOpsJobs({ db, handlers, scheduler, queue, settings, clock, backup, retention });

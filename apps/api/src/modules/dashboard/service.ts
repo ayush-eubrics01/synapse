@@ -1,7 +1,19 @@
 import type { DashboardOverview, HealthReport } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import type { Clock } from "@synapse/shared";
-import { and, count, countDistinct, eq, gte, inArray, isNotNull, lte, ne, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  countDistinct,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  lte,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { ApprovalEngine } from "../../core/approvals/approvals";
 import type { SettingsService } from "../../core/config/settings";
 import type { ClaudeActivityService } from "../claude-activity/service";
@@ -86,7 +98,15 @@ export class DashboardService {
           db
             .select({ n: count() })
             .from(schema.outgoingMessages)
-            .where(eq(schema.outgoingMessages.status, "needs_attention"))
+            .where(
+              or(
+                eq(schema.outgoingMessages.status, "needs_attention"),
+                and(
+                  eq(schema.outgoingMessages.status, "sent_unverified"),
+                  eq(schema.outgoingMessages.failure, "unverified"),
+                ),
+              ),
+            )
             .get()?.n ?? 0,
         redFlags,
         // The review filter also returns rejected rows; only pending ones can be accepted.

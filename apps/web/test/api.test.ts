@@ -97,6 +97,16 @@ test("classifyOverviewFailure: a thrown fetch is a network failure, an ApiError 
   expect(classifyOverviewFailure(new ApiError("x", 503))).toEqual({ kind: "http", status: 503 });
 });
 
+test("classifyOverviewFailure: a malformed 200 body is unexpected, not unreachable", async () => {
+  expect(classifyOverviewFailure(new TypeError("fetch failed"))).toEqual({ kind: "network" });
+  expect(classifyOverviewFailure(new ApiError("x", 500))).toEqual({ kind: "http", status: 500 });
+  expect(classifyOverviewFailure(new SyntaxError("bad json"))).toEqual({ kind: "unexpected" });
+  const bad = (async () => new Response("not json", { status: 200 })) as unknown as typeof fetch;
+  const rejected = await getOverview(bad).catch((e: unknown) => e);
+  expect(rejected).toBeInstanceOf(Error);
+  expect(classifyOverviewFailure(rejected)).toEqual({ kind: "unexpected" });
+});
+
 test("getJobs passes the limit; getHealth reads the report", async () => {
   const jobs = fake(200, []);
   await getJobs(20, jobs.impl);

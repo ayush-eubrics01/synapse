@@ -62,12 +62,23 @@ export class ApiError extends Error {
   }
 }
 
-/** Why the overview failed: the API could not be reached, or it answered with an HTTP error. */
-export type OverviewFailure = { kind: "network" } | { kind: "http"; status: number };
+/**
+ * Why the overview failed: the API could not be reached, it answered with an HTTP error, or it
+ * answered 200 with something that is not valid JSON.
+ */
+export type OverviewFailure =
+  | { kind: "network" }
+  | { kind: "http"; status: number }
+  | { kind: "unexpected" };
 
-/** An ApiError is an HTTP error; anything else (fetch throws a TypeError) means unreachable. */
+/**
+ * An ApiError is an HTTP error; a TypeError is what fetch throws when the API is unreachable;
+ * anything else (a SyntaxError from a malformed 200 body) is an unexpected response.
+ */
 export function classifyOverviewFailure(reason: unknown): OverviewFailure {
-  return reason instanceof ApiError ? { kind: "http", status: reason.status } : { kind: "network" };
+  if (reason instanceof ApiError) return { kind: "http", status: reason.status };
+  if (reason instanceof TypeError) return { kind: "network" };
+  return { kind: "unexpected" };
 }
 
 async function request<T>(

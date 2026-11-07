@@ -158,6 +158,16 @@ test("an HTTP error is not Unreachable: Overview unavailable, with the status in
   expect(html).toContain("Couldn&#x27;t load the overview.");
 });
 
+test("an unexpected response is neither Unreachable nor an HTTP error", () => {
+  const html = render(null, true, false, { kind: "unexpected" });
+  expect(html).toContain("Unexpected response");
+  expect(html).not.toContain("Unreachable");
+  expect(html).not.toContain("Can&#x27;t reach");
+  expect(html).toContain("Overview unavailable");
+  expect(html).toContain("syn-health-pill--degraded");
+  expect(html).toContain("Couldn&#x27;t load the overview.");
+});
+
 test("an HTTP error with a last good overview keeps it and says so", () => {
   const html = render(overview({ status: "ok", issues: [] }), false, false, {
     kind: "http",

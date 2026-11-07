@@ -120,6 +120,7 @@ import { codeAnswerErrorText, codeAnswerEventMessageId } from "../lib/code-answe
 import { trailingDebounce } from "../lib/debounce";
 import { clearDraft } from "../lib/drafts";
 import { engineeringErrorText, isTerminal, lockText, type TaskSource } from "../lib/engineering";
+import { footerAddresses } from "../lib/format";
 import { conversationTitle, filterConversations, type InboxFilter } from "../lib/inbox";
 import { jiraPaletteItems, jiraRowId } from "../lib/jira";
 import {
@@ -181,8 +182,6 @@ import { NeedsYou } from "./components/triage/NeedsYou";
 import { BACKFILL_CARD_ID } from "./components/triage/SetupCards";
 import { useNeedsYouActions } from "./components/triage/useNeedsYouActions";
 import { useToast } from "./components/ui/Toasts";
-
-const FOOTER = { api: "127.0.0.1:7400", web: ":7401" };
 
 /** Highlights the section in view (spec D1): the first one crossing the top 40% of the viewport. */
 function useActiveSection(
@@ -1314,7 +1313,7 @@ export default function Dashboard() {
           setActive(section);
           navigateTo(section);
         }}
-        footer={{ ...FOOTER, lock: lockText(overview?.engineeringLock) }}
+        footer={{ addresses: footerAddresses(runtime), lock: lockText(overview?.engineeringLock) }}
       />
       <main className="syn-main">
         <div className="syn-main-inner">

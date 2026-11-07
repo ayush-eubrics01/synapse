@@ -57,7 +57,7 @@ export function Header({
           ? overview
             ? "Can't reach the Synapse API. Showing the last data loaded."
             : "Can't reach the Synapse API."
-          : failure?.kind === "http"
+          : failure?.kind === "http" || failure?.kind === "unexpected"
             ? overview
               ? "Couldn't refresh the overview. Showing the last data loaded."
               : "Couldn't load the overview."

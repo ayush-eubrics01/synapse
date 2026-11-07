@@ -51,4 +51,6 @@ export interface RuntimeView {
     oldestPendingAgeSeconds: number | null;
   };
   retention: RetentionSummary | null;
+  /** Where the API and web listen, from the loaded config. */
+  endpoints: { api: { host: string; port: number }; web: { host: string; port: number } };
 }

@@ -56,7 +56,7 @@ Both are **systemd user services**. The API runs independently of the web servic
 | Disk (`disk`) | Free space in the data directory: `ok`; `degraded` below `ops.disk.warnFreeGiB` (5) or when unknown; `down` below 1 GiB |
 | File permissions (`file_permissions`) | `degraded` when the startup chmod failed for any path (hint: run chmod 700 on the data directory) |
 
-Every check reports `ok`, `degraded` or `down`. The overall status is the worst of them. Each new check has a label and a hint in `modules/dashboard/health-hints.ts`. `GET /api/system/runtime` returns `startedAt`, `uptimeSeconds`, `version` (package version plus git short sha, read once at startup, or null), `memoryRssBytes`, `dbBytes`, `walBytes`, `dataDirFreeBytes`, `lastBackup`, `backupCount`, `queue` counts and the retention last-run counts. The System section renders it as the Runtime panel.
+Every check reports `ok`, `degraded` or `down`. The overall status is the worst of them. Each new check has a label and a hint in `modules/dashboard/health-hints.ts`. `GET /api/system/runtime` returns `startedAt`, `uptimeSeconds`, `version` (package version plus git short sha, read once at startup, or null), `memoryRssBytes`, `dbBytes`, `walBytes`, `dataDirFreeBytes`, `lastBackup`, `backupCount`, `queue` counts and the retention last-run counts and `endpoints` (`api` and `web` host and port from the loaded config, which the web sidebar footer shows). The System section renders it as the Runtime panel.
 
 ## Claude execution runtime
 

@@ -1,3 +1,5 @@
+import type { RuntimeView } from "@synapse/contracts";
+
 export type TimeOfDay = "morning" | "afternoon" | "evening" | "late";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -100,4 +102,14 @@ export function formatBytes(n: number): string {
     i++;
   }
   return `${v.toFixed(1)} ${units[i]}`;
+}
+
+/** Sidebar footer addresses from the API's own config; null while the runtime view is unavailable. */
+export function footerAddresses(r: RuntimeView | null): { api: string; web: string } | null {
+  if (r === null) return null;
+  const { api, web } = r.endpoints;
+  return {
+    api: api.host.includes(":") ? `[${api.host}]:${api.port}` : `${api.host}:${api.port}`,
+    web: `:${web.port}`,
+  };
 }
