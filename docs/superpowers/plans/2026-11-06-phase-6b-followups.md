@@ -49,8 +49,8 @@ Phase 6b (away-mode auto-replies, ADR-033) is built. This file records the proof
 - A bad-payload revalidate strands the approval and row until expiry.
 - `revokeReason` is not filtered on the actor.
 - No test covers `recipient_mismatch` for the acknowledgement trigger.
-- No UI or route to tighten `slack.auto_reply` or change the `autoReply.*` settings (M3). Today's kill switch is away off. Add a settings surface.
-- The inbox reads `auto_replies` with raw SQL (M5, a module-boundary leak). Move it behind an auto-reply query.
+- ~~No UI or route to tighten `slack.auto_reply` or change the `autoReply.*` settings (M3). Today's kill switch is away off. Add a settings surface.~~ **Done in follow-ups batch 3.** A settings surface for `autoReply.*` was added.
+- ~~The inbox reads `auto_replies` with raw SQL (M5, a module-boundary leak). Move it behind an auto-reply query.~~ **Done in follow-ups batch 3.** The inbox reads auto replies through an auto-reply query.
 - After a user resends a message from needs attention, the digest still shows the original outgoing status (M7), not the resend's.
 - `outgoing_messages.text` is NOT NULL, so retention blanks it to `''` rather than nulling it. A later migration could make it nullable.
 

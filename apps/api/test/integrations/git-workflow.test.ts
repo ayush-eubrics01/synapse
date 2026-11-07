@@ -1303,3 +1303,68 @@ describe("origin host check (M10)", () => {
     expect(code).toBe("origin_changed");
   });
 });
+
+describe("fingerprint follows git config includes (K6.3)", () => {
+  test("include.path target: missing, present, changed", async () => {
+    const f = setup();
+    git(f.repo, "config", "include.path", "extra.cfg");
+    const a = await f.wf.configFingerprint(f.repo);
+    writeFileSync(join(f.repo, ".git", "extra.cfg"), "[core]\n\tpager = one\n");
+    const b = await f.wf.configFingerprint(f.repo);
+    expect(b).not.toBe(a);
+    writeFileSync(join(f.repo, ".git", "extra.cfg"), "[core]\n\tpager = two\n");
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(b);
+  });
+
+  test("global includeIf target changes the fingerprint and diffSummary reports git_dir_changed", async () => {
+    const f = setup();
+    writeFileSync(join(f.home, ".gitconfig"), '[includeIf "gitdir:/"]\n\tpath = ~/inc.cfg\n');
+    writeFileSync(join(f.home, "inc.cfg"), "[core]\n\tpager = one\n");
+    const base = await f.wf.gitDirFingerprint(f.repo);
+    const cfg = await f.wf.configFingerprint(f.repo);
+    writeFileSync(join(f.home, "inc.cfg"), "[core]\n\tpager = evil\n");
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(cfg);
+    expect((await f.wf.diffSummary(f.repo, { gitDirBaseline: base })).unsafeReasons).toEqual([
+      "git_dir_changed",
+    ]);
+  });
+
+  test("a cycle terminates with a stable fingerprint", async () => {
+    const f = setup();
+    git(f.repo, "config", "include.path", "extra.cfg");
+    writeFileSync(join(f.repo, ".git", "extra.cfg"), "[include]\n\tpath = b.cfg\n");
+    writeFileSync(join(f.repo, ".git", "b.cfg"), "[include]\n\tpath = extra.cfg\n");
+    const a = await f.wf.configFingerprint(f.repo);
+    expect(await f.wf.configFingerprint(f.repo)).toBe(a);
+  });
+
+  test("depth cap: level 5 is hashed, level 6 is not", async () => {
+    const f = setup();
+    const dir = join(f.repo, ".git");
+    git(f.repo, "config", "include.path", "c1.cfg");
+    for (let i = 1; i <= 7; i++) {
+      const next = i < 7 ? `[include]\n\tpath = c${i + 1}.cfg\n` : "";
+      writeFileSync(join(dir, `c${i}.cfg`), next);
+    }
+    const base = await f.wf.configFingerprint(f.repo);
+    writeFileSync(join(dir, "c6.cfg"), "[include]\n\tpath = c7.cfg\n# changed\n");
+    expect(await f.wf.configFingerprint(f.repo)).toBe(base);
+    writeFileSync(join(dir, "c5.cfg"), "[include]\n\tpath = c6.cfg\n# changed\n");
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(base);
+  });
+
+  test("an unreadable target gives a stable fingerprint", async () => {
+    if (process.getuid?.() === 0) return;
+    const f = setup();
+    git(f.repo, "config", "include.path", "extra.cfg");
+    const p = join(f.repo, ".git", "extra.cfg");
+    writeFileSync(p, "[core]\n\tpager = x\n");
+    chmodSync(p, 0);
+    try {
+      const a = await f.wf.configFingerprint(f.repo);
+      expect(await f.wf.configFingerprint(f.repo)).toBe(a);
+    } finally {
+      chmodSync(p, 0o644);
+    }
+  });
+});

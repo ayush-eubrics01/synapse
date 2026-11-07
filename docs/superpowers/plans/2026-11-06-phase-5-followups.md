@@ -46,7 +46,7 @@ All five items are done in Phase 6 (status column).
 
 ## Deferred minors (polish)
 
-- **Approvals:** bookkeeping-failure parking reuses the `parse_failed` error kind; add a dedicated needs-attention kind. The engine stores an executor's `e.message`, so executors must keep throwing content-free messages.
+- **Approvals:** bookkeeping-failure parking reuses the `parse_failed` error kind; add a dedicated needs-attention kind. ~~The engine stores an executor's `e.message`, so executors must keep throwing content-free messages.~~ **Done in follow-ups batch 3.** The engine no longer stores raw executor messages.
 - **People:**
   - The update baseline is the newest *cited* evidence, so one new message can re-send up to 150 messages; record the newest message seen.
   - Contacts whose messages have all expired are rescanned on every run.

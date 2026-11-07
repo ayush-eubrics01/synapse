@@ -26,6 +26,7 @@ import {
   type GitWorkflowErrorCode,
 } from "@synapse/contracts";
 import { type GitExec, type GitResult, lines, runGit } from "./git";
+import { INCLUDE_DEPTH_MAX, includeTargets } from "./git-includes";
 import { pushDisabled, stripCredentials } from "./local-git";
 import { existingSandboxPlaceholders, removeNewSandboxPlaceholders } from "./sandbox-placeholders";
 
@@ -346,16 +347,35 @@ export class LocalGitWorkflow implements GitWorkflow {
     const { gitDir, common } = this.gitDirs(repo);
     const h = createHash("sha256");
     const file = (label: string, path: string) => h.update(`${label}\0${fileMarker(path)}\0`);
-    file("config", join(common, "config"));
-    file("config.worktree", join(common, "config.worktree"));
-    if (gitDir !== common) file("worktree/config.worktree", join(gitDir, "config.worktree"));
+    // Config files: hash the file, then follow include.path / includeIf.*.path depth-first
+    // (cap INCLUDE_DEPTH_MAX, visited set, never runs git; ADR-040).
+    const configFile = (label: string, path: string, visited: Set<string>, depth = 0): void => {
+      file(label, path);
+      if (depth >= INCLUDE_DEPTH_MAX) return;
+      let text: string;
+      try {
+        text = readFileSync(path, "utf8");
+      } catch {
+        return;
+      }
+      includeTargets(text, path, this.opts.home).forEach((t, i) => {
+        h.update(`${label}>include${i}\0${t}\0${fileMarker(t)}\0`);
+        if (visited.has(t)) return;
+        visited.add(t);
+        configFile(`${label}>include${i}`, t, visited, depth + 1);
+      });
+    };
+    const cf = (label: string, path: string) => configFile(label, path, new Set([path]));
+    cf("config", join(common, "config"));
+    cf("config.worktree", join(common, "config.worktree"));
+    if (gitDir !== common) cf("worktree/config.worktree", join(gitDir, "config.worktree"));
     file("info/attributes", join(common, "info", "attributes"));
     h.update("hooks\0");
     this.walk(h, join(common, "hooks"), "", null);
-    file("global", join(this.opts.home, ".gitconfig"));
-    file("xdg/config", join(this.xdg, "git", "config"));
+    cf("global", join(this.opts.home, ".gitconfig"));
+    cf("xdg/config", join(this.xdg, "git", "config"));
     file("xdg/attributes", join(this.xdg, "git", "attributes"));
-    file("system", this.opts.systemConfig ?? "/etc/gitconfig");
+    cf("system", this.opts.systemConfig ?? "/etc/gitconfig");
     return h.digest("hex");
   }
 
