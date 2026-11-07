@@ -115,7 +115,7 @@ A cancelled send ends as outgoing `failed` with `cancelled_away_off`, `cancelled
 | `autoReply.maxSendDelayMinutes` | 15 | 1 to 15 |
 | `codeAnswer.away.enabled` / `autoSend` / `maxRunsPerDay` | `true` / `false` / 10 (Phase 10b; editable through `PUT /api/settings`, see `docs/modules/code-answers.md`) | see code-answers |
 
-The five `autoReply.*` limits are editable through `PUT /api/settings` and the Away replies card in the System section; each change is audited with the key only. `autoReply.maxPerPersonPerDay = 0` means no automatic replies (every automatic send is held as `daily_cap`). A code answer with `codeAnswer.away.autoSend` off is a user approval, not an unapproved send, so the cap does not apply to it (`maxPerDay` is infinite for it) and its review approval is still created.
+The five `autoReply.*` limits are editable through `PUT /api/settings` and the Away replies card in the System section; each change is audited with the key only. `autoReply.maxPerPersonPerDay = 0` means no automatic replies (every new decision is held as `daily_cap`; to also cancel replies already waiting to send, turn away mode off). A code answer with `codeAnswer.away.autoSend` off is a user approval, not an unapproved send, so the cap does not apply to it (`maxPerDay` is infinite for it) and its review approval is still created.
 
 Permission: `slack.auto_reply` defaults to `policy_gated`, which only `recordPolicyApproval` accepts. An override can tighten it (which holds auto-replies as `policy_disabled`) but never loosen it.
 

@@ -13,19 +13,28 @@ const KINDS: { kind: AutoReplyKind; label: string }[] = [
 type NumberKey = Exclude<keyof AwayReplySettingsDto, "autoReply.allowedKinds">;
 
 const NUMBERS: { key: NumberKey; label: string; min: number; max: number; step?: number }[] = [
-  { key: "autoReply.maxPerPersonPerDay", label: "Max replies per person per day", min: 0, max: 3 },
+  {
+    key: "autoReply.maxPerPersonPerDay",
+    label: "Replies per person per day (0 turns them off)",
+    min: 0,
+    max: 3,
+  },
   {
     key: "autoReply.minMinutesBetweenInThread",
-    label: "Min minutes between replies in a thread",
+    label: "Minutes between replies in a thread",
     min: 30,
     max: 1440,
   },
-  { key: "autoReply.minConfidence", label: "Min confidence", min: 0.75, max: 1, step: 0.05 },
-  { key: "autoReply.maxSendDelayMinutes", label: "Max send delay (minutes)", min: 1, max: 15 },
+  { key: "autoReply.minConfidence", label: "Minimum confidence", min: 0.75, max: 1, step: 0.05 },
+  {
+    key: "autoReply.maxSendDelayMinutes",
+    label: "Cancel a reply not sent within (minutes)",
+    min: 1,
+    max: 15,
+  },
 ];
 
-export const AWAY_REPLY_HINT =
-  "These limits can only be made stricter than the built-in away-reply rules. 0 replies per day turns automatic replies off; code answers still wait for your approval.";
+export const AWAY_REPLY_HINT = "These limits can only be made stricter than the defaults.";
 
 /** Away-mode auto-reply limits (ADR-033). Validation is the API's. */
 export function AwayReplySettings({

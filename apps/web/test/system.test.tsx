@@ -281,13 +281,13 @@ test("AwayReplySettings renders the card, four checked kinds, four numbers and t
     expect(html).toContain(l);
   expect((html.match(/checked=""/g) ?? []).length).toBe(4);
   for (const l of [
-    "Max replies per person per day",
-    "Min minutes between replies in a thread",
-    "Min confidence",
-    "Max send delay (minutes)",
+    "Replies per person per day (0 turns them off)",
+    "Minutes between replies in a thread",
+    "Minimum confidence",
+    "Cancel a reply not sent within (minutes)",
   ])
     expect(html).toContain(l);
-  expect(html).toContain("only be made stricter");
+  expect(html).toContain("These limits can only be made stricter than the defaults.");
   expect(html).toContain('min="0.75"');
   expect(html).toContain('max="1"');
 });
