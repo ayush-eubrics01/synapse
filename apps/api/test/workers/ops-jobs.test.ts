@@ -165,10 +165,12 @@ test("registerOpsJobs registers handler and schedule; manual runs even when disa
   expect(sch).toMatchObject({ backup: "disabled" });
 });
 
-test("backupJobLive sees any live ops.backup job, scheduled or manual", () => {
+test("backupJobLive: a queued scheduled job does not count, a manual one does", () => {
   const d = deps();
   expect(backupJobLive(db)).toBe(false);
   d.queue.enqueue(db, { type: OPS_BACKUP_JOB, input: null, idempotencyKey: "sched" });
+  expect(backupJobLive(db)).toBe(false);
+  d.queue.enqueue(db, { type: OPS_BACKUP_JOB, input: { manual: true }, idempotencyKey: "man" });
   expect(backupJobLive(db)).toBe(true);
 });
 

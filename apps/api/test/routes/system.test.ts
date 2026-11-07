@@ -49,6 +49,38 @@ test("POST enqueues a manual job; a second POST while pending is 409", async () 
   expect(await again.json()).toEqual({ error: "already_running" });
 });
 
+function seedJob(status: string, input: unknown) {
+  c.sqlite
+    .query(
+      "insert into jobs (id, type, status, priority, input, max_attempts, idempotency_key, run_after, created_at) values (?, 'ops.backup', ?, 100, ?, 3, ?, ?, ?)",
+    )
+    .run(
+      `j-${status}`,
+      status,
+      input === null ? null : JSON.stringify(input),
+      `k-${status}`,
+      "2026-11-07T00:00:00.000Z",
+      "2026-11-07T00:00:00.000Z",
+    );
+}
+
+test("a pending scheduled backup does not block Back up now", async () => {
+  seedJob("PENDING", null);
+  expect((await call("POST")).status).toBe(202);
+});
+
+test("a running scheduled backup blocks Back up now", async () => {
+  seedJob("RUNNING", null);
+  const res = await call("POST");
+  expect(res.status).toBe(409);
+  expect(await res.json()).toEqual({ error: "already_running" });
+});
+
+test("a manual backup in RETRY blocks Back up now", async () => {
+  seedJob("RETRY", { manual: true });
+  expect((await call("POST")).status).toBe(409);
+});
+
 test("GET lists backups", async () => {
   expect(await (await call("GET")).json()).toEqual([]);
   mkdirSync(join(root, "backups"), { recursive: true });

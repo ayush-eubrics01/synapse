@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -463,4 +463,20 @@ test("H4.5: a stored lastRun without the snapshot counts still parses", () => {
     { emit: false },
   );
   expect(() => settings.get("ops.retention.lastRun")).not.toThrow();
+});
+
+test("checkpoint is PASSIVE, never TRUNCATE", async () => {
+  const seen: string[] = [];
+  const orig = sqlite.exec.bind(sqlite);
+  const spy = spyOn(sqlite, "exec").mockImplementation(((q: string) => {
+    seen.push(q);
+    return orig(q);
+  }) as typeof sqlite.exec);
+  try {
+    await service().run("2026-11-07");
+  } finally {
+    spy.mockRestore();
+  }
+  expect(seen).toContain("pragma wal_checkpoint(PASSIVE)");
+  expect(seen.some((q) => /truncate/i.test(q))).toBe(false);
 });

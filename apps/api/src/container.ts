@@ -67,6 +67,7 @@ import {
   isDedicatedDataDir,
   type PrivateFilesResult,
 } from "./infrastructure/private-files";
+import { type CommandRunner, runCommand } from "./infrastructure/run-command";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadUserSettings } from "./integrations/claude-code/settings-override";
 import { GitHubCliProvider } from "./integrations/github/gh-cli";
@@ -211,7 +212,7 @@ export interface ContainerDeps {
   clock?: Clock;
   /** Replaces the real ClaudeCliProvider (tests inject a fake). */
   provider?: AIProvider;
-  run?: (cmd: string[]) => Promise<string>;
+  run?: CommandRunner;
   /** Resolves a binary on the service PATH (tests inject one; defaults to Bun.which). */
   which?: (bin: string) => string | null;
   /** Registers the `test.noop` job handler (set from SYNAPSE_TEST_HANDLERS by main.ts). */
@@ -264,13 +265,6 @@ function defaultDiskFree(p: string): number | null {
   } catch {
     return null;
   }
-}
-
-async function runCommand(cmd: string[]): Promise<string> {
-  const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "ignore" });
-  const out = await new Response(proc.stdout).text();
-  await proc.exited;
-  return out;
 }
 
 export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Container {

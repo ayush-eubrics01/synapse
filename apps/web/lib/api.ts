@@ -1126,7 +1126,7 @@ export function getBackups(fetchImpl: typeof fetch = fetch): Promise<BackupEntry
   return request("/api/system/backups", undefined, fetchImpl);
 }
 
-/** 202 with the job id; 409 (`already_running`) when a manual backup is already queued or running. */
+/** 202 with the job id; 409 (`already_running`) while a manual backup is queued or running, or a scheduled one is running. */
 export function startBackup(fetchImpl: typeof fetch = fetch): Promise<{ jobId: string }> {
   return request("/api/system/backups", { method: "POST" }, fetchImpl, [202]);
 }

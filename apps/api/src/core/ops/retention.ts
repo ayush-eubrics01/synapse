@@ -96,7 +96,7 @@ export class RetentionService {
     ]);
 
     const aborted = signal?.aborted === true;
-    this.d.sqlite.exec("pragma wal_checkpoint(TRUNCATE)");
+    this.d.sqlite.exec("pragma wal_checkpoint(PASSIVE)");
     this.d.sqlite.exec("pragma optimize");
     const quickCheck = await this.d.integrity.check();
 

@@ -19,6 +19,7 @@ import {
 import { HealthService } from "../../src/core/health/health";
 import { JobQueue } from "../../src/core/jobs/queue";
 import { HEARTBEAT_SCHEDULE, heartbeatHandler } from "../../src/core/system/heartbeat";
+import { CommandTimeoutError } from "../../src/infrastructure/run-command";
 
 let db: ReturnType<typeof openDatabase>["db"];
 let clock: FakeClock;
@@ -68,6 +69,16 @@ test("linger check", async () => {
       }, "bob")()
     ).status,
   ).toBe("down");
+});
+
+test("linger check times out as degraded and passes a 3 s timeout", async () => {
+  const seen: unknown[] = [];
+  const res = await lingerCheck(async (_cmd, opts) => {
+    seen.push(opts);
+    throw new CommandTimeoutError();
+  }, "bob")();
+  expect(res).toEqual({ status: "degraded", detail: "timeout" });
+  expect(seen).toEqual([{ timeoutMs: 3000 }]);
 });
 
 test("bun version compares numerically", async () => {
