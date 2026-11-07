@@ -22,6 +22,7 @@ import {
   JobError,
   type Operation,
   type RawToolResult,
+  SANDBOX_ROOT_MASKED_HINT,
 } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock, newId } from "@synapse/shared";
@@ -278,6 +279,18 @@ function hooked<T extends object>(target: T): T {
     },
   });
 }
+
+/** True when a PENDING `engineering.step` job for this task and step is queued. */
+const pendingStep = (taskId: string, step: string): boolean =>
+  db
+    .select()
+    .from(schema.jobs)
+    .where(and(eq(schema.jobs.type, STEP_JOB), eq(schema.jobs.status, "PENDING")))
+    .all()
+    .some((j) => {
+      const i = j.input as { taskId?: string; step?: string } | null;
+      return i?.taskId === taskId && i?.step === step;
+    });
 
 /** Runs queued `engineering.step` jobs in order until none is left. */
 async function drain(): Promise<void> {
@@ -707,13 +720,41 @@ describe("develop sandbox (ADR-040)", () => {
     });
     const id = await developed();
     expect(requests).toHaveLength(0);
-    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.status).toBe("needs_attention");
     expect(taskRow(id)?.failure).toBe("sandbox_path_too_long");
     const out = stepRow(id, "develop")?.output as Record<string, unknown>;
     expect(out.hint).toBe(SANDBOX_PATH_TOO_LONG_HINT);
     expect(SANDBOX_PATH_TOO_LONG_HINT).toContain("XDG_CACHE_HOME");
     expect(existsSync(root)).toBe(false);
-    expect(leaseRow()).toBeUndefined();
+    expect(leaseRow()).toBeDefined();
+    expect(pendingStep(id, "cleanup")).toBe(false);
+  });
+
+  test("a run root inside a masked path refuses the run: sandbox_root_masked, nothing created (H4.6)", async () => {
+    const root = join(fx.home, ".config", "c", "synapse", "abcd1234");
+    handlers.delete(STEP_JOB);
+    registerStepJob({
+      db,
+      settings,
+      steps,
+      handlers,
+      orchestrator: {
+        run: async (req: ClaudeJobRequest) => {
+          requests.push(req);
+          return reply(req);
+        },
+      },
+      sandbox: { runRoot: root, home: fx.home, protectedDirs: [], maskedRoots: [] },
+    });
+    const id = await developed();
+    expect(requests).toHaveLength(0);
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("sandbox_root_masked");
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.hint).toBe(SANDBOX_ROOT_MASKED_HINT);
+    expect(existsSync(root)).toBe(false);
+    expect(leaseRow()).toBeDefined();
+    expect(pendingStep(id, "cleanup")).toBe(false);
   });
 
   test("a sandbox init failure inside the Bash tool_result is sandbox_unavailable, not failed tests (fix round 2)", async () => {
@@ -838,14 +879,15 @@ describe("develop sandbox (ADR-040)", () => {
     expect(pendingOf("engineering.commit")).toBeUndefined();
   });
 
-  test("rule M's refusal surfaces as sandbox_disabled and releases the lock (F1.5)", async () => {
+  test("rule M's refusal surfaces as sandbox_disabled and keeps the lock (F1.5, H4.6)", async () => {
     reply = () => {
       throw new JobError({ kind: "invalid_input", message: SANDBOX_REQUIRED_REASON });
     };
     const id = await developed();
-    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.status).toBe("needs_attention");
     expect(taskRow(id)?.failure).toBe("sandbox_disabled");
-    expect(leaseRow()).toBeUndefined();
+    expect(leaseRow()).toBeDefined();
+    expect(pendingStep(id, "cleanup")).toBe(false);
   });
 
   test("sandbox denial text in a passing run does not flip testsPassed (F1.4)", () => {

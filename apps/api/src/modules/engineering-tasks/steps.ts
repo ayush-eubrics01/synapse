@@ -20,6 +20,8 @@ import {
   type PullRequestProvider,
   type RiskLevel,
   retryDecision,
+  SANDBOX_ROOT_MASKED,
+  SANDBOX_ROOT_MASKED_HINT,
   SANDBOX_TOOL_RESULT_RE,
   type TestRun,
   testResultLabel,
@@ -551,16 +553,43 @@ export class EngineeringStepService {
           err instanceof JobError &&
           err.classified.kind === "invalid_input" &&
           err.classified.message === SANDBOX_PATH_TOO_LONG;
+        // The run root is inside a masked path (H4.6).
+        const rootMasked =
+          err instanceof JobError &&
+          err.classified.kind === "invalid_input" &&
+          err.classified.message === SANDBOX_ROOT_MASKED;
+        // Sandbox refusals are environment problems the user fixes, then retries: the task and
+        // the lock stay (needs_attention), like sandbox_unavailable.
+        if (sandboxOff) {
+          return this.attention(
+            taskId,
+            "develop",
+            "sandbox_disabled",
+            { ...fp, failure: "sandbox_disabled" },
+            runner.runId(),
+          );
+        }
         if (tooLong) {
-          return this.developFailed(ctx, SANDBOX_PATH_TOO_LONG, fp, runner.runId(), {
-            hint: SANDBOX_PATH_TOO_LONG_HINT,
-          });
+          return this.attention(
+            taskId,
+            "develop",
+            SANDBOX_PATH_TOO_LONG,
+            { ...fp, failure: SANDBOX_PATH_TOO_LONG, hint: SANDBOX_PATH_TOO_LONG_HINT },
+            runner.runId(),
+          );
+        }
+        if (rootMasked) {
+          return this.attention(
+            taskId,
+            "develop",
+            SANDBOX_ROOT_MASKED,
+            { ...fp, failure: SANDBOX_ROOT_MASKED, hint: SANDBOX_ROOT_MASKED_HINT },
+            runner.runId(),
+          );
         }
         const kind = masked
           ? REPO_IN_MASKED_PATH
-          : sandboxOff
-            ? "sandbox_disabled"
-            : (stopKind(err) ?? (err instanceof JobError ? err.classified.kind : "unknown"));
+          : (stopKind(err) ?? (err instanceof JobError ? err.classified.kind : "unknown"));
         return this.developFailed(ctx, kind, fp, runner.runId());
       }
       return this.developDone(ctx, outcome.result, testCommand, fp, runner.runId());

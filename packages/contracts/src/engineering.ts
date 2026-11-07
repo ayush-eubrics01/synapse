@@ -27,6 +27,17 @@ export const engineeringTaskStatusSchema = z.enum([
 ]);
 export type EngineeringTaskStatus = z.infer<typeof engineeringTaskStatusSchema>;
 
+/**
+ * Develop `needs_attention` reasons a retry can resolve once the user fixes the environment
+ * (batch 2): the sandbox cannot start, is off, or its run root does not fit.
+ */
+export const DEVELOP_RETRY_REASONS = [
+  "sandbox_unavailable",
+  "sandbox_disabled",
+  "sandbox_path_too_long",
+  "sandbox_root_masked",
+] as const;
+
 export const engineeringStepSchema = z.enum([
   "investigate",
   "branch",

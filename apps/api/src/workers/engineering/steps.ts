@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { type Job, JobError, SANDBOX_MASKED_ROOTS } from "@synapse/contracts";
+import { type Job, JobError, SANDBOX_MASKED_ROOTS, SANDBOX_ROOT_MASKED } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { desc, eq, sql } from "drizzle-orm";
 import type { SettingsService } from "../../core/config/settings";
@@ -12,6 +12,7 @@ import {
   REPO_IN_MASKED_PATH,
   repoInDenyMask,
   repoInMaskedPath,
+  runRootMasked,
   SANDBOX_PATH_TOO_LONG,
 } from "../../intelligence/engineering/develop-prompt";
 import { STEP_JOB } from "../../modules/engineering-tasks/lock";
@@ -167,6 +168,13 @@ export function registerStepJob(deps: StepJobDeps): void {
               // Refused before any run: the sandbox would hide the repository from itself, or
               // unmasking it would expose a credential dir, synapse.db or the backups.
               throw new JobError({ kind: "invalid_input", message: REPO_IN_MASKED_PATH });
+            }
+            if (
+              sandboxed &&
+              runRootMasked(sandbox.runRoot, sandbox.home, sandbox.protectedDirs, maskedRoots)
+            ) {
+              // Every run's TMPDIR would be masked: refused before anything is created (H4.6).
+              throw new JobError({ kind: "invalid_input", message: SANDBOX_ROOT_MASKED });
             }
             // Off: no sandbox and no scratch; rule M refuses the run.
             const runScratch = sandboxed ? runScratchDir(sandbox.runRoot, job.id) : null;

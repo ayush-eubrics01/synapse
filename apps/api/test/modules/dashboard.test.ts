@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { HEALTH_HINTS, HEALTH_LABELS } from "../../src/modules/dashboard/health-hints";
+import { SANDBOX_ROOT_MASKED_HINT } from "@synapse/contracts";
+import { HEALTH_HINTS, HEALTH_LABELS, healthHint } from "../../src/modules/dashboard/health-hints";
 import { type PipelineInput, pipelineStages } from "../../src/modules/dashboard/pipeline";
 
 const NOW = new Date("2026-11-06T12:00:00.000Z");
@@ -130,5 +131,12 @@ describe("health hints", () => {
     );
     expect(HEALTH_HINTS.claude_settings).toContain("sandbox options");
     expect(HEALTH_HINTS.claude_settings).toContain("allow entries");
+  });
+
+  test("healthHint picks a detail-specific hint, else the check's hint (H4.6)", () => {
+    expect(healthHint("sandbox", "run_root_masked")).toBe(SANDBOX_ROOT_MASKED_HINT);
+    expect(healthHint("sandbox", "missing: socat")).toBe(HEALTH_HINTS.sandbox ?? null);
+    expect(healthHint("sandbox", null)).toBe(HEALTH_HINTS.sandbox ?? null);
+    expect(healthHint("unknown", null)).toBeNull();
   });
 });

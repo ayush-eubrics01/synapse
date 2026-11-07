@@ -1,3 +1,5 @@
+import { SANDBOX_ROOT_MASKED_HINT } from "@synapse/contracts";
+
 /** Plain-language names for health checks, keyed by check name. */
 export const HEALTH_LABELS: Record<string, string> = {
   database: "Database",
@@ -18,6 +20,12 @@ export const HEALTH_LABELS: Record<string, string> = {
   sandbox: "Test sandbox",
   claude_settings: "Claude Code settings",
 };
+
+/** The hint for a check's current detail: a detail-specific one first, else the check's own. */
+export function healthHint(check: string, detail: string | null): string | null {
+  if (check === "sandbox" && detail === "run_root_masked") return SANDBOX_ROOT_MASKED_HINT;
+  return HEALTH_HINTS[check] ?? null;
+}
 
 /** What to do about a failing check. A check with no entry has no hint. */
 export const HEALTH_HINTS: Record<string, string> = {

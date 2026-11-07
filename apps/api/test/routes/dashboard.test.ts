@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { AIProvider, DashboardOverview } from "@synapse/contracts";
+import { tmpdir } from "node:os";
+import {
+  type AIProvider,
+  type DashboardOverview,
+  SANDBOX_ROOT_MASKED_HINT,
+} from "@synapse/contracts";
 import { schema } from "@synapse/database";
 import { createApp } from "../../src/app";
 import { type Container, createContainer } from "../../src/container";
@@ -290,6 +295,25 @@ describe("GET /api/dashboard/overview", () => {
       hint: "Run `loginctl enable-linger $USER` so services keep running after logout.",
     });
     for (const i of o.health.issues) expect(i.status).not.toBe("ok");
+  });
+
+  test("a degraded sandbox with run_root_masked carries the XDG_CACHE_HOME hint (H4.6)", async () => {
+    c.sqlite.close();
+    c = createContainer(loadConfig({ SYNAPSE_DB_PATH: ":memory:" }), {
+      run: async () => "Linger=no",
+      provider: fakeProvider,
+      clock: { now: () => new Date(NOW) },
+      which: (b) => `/usr/bin/${b}`,
+      // The in-memory run root is `<scratch>-runs` under the OS temp dir: masked.
+      sandboxMaskedRoots: [tmpdir()],
+    });
+    app = createApp(c);
+    const issue = (await overview()).health.issues.find((i) => i.check === "sandbox");
+    expect(issue).toMatchObject({
+      status: "degraded",
+      detail: "run_root_masked",
+      hint: SANDBOX_ROOT_MASKED_HINT,
+    });
   });
 
   const job = (id: string, status: string, finishedAt: string | null, runAfter = NOW) =>

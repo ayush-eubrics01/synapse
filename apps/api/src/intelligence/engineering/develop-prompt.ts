@@ -131,6 +131,23 @@ export const SANDBOX_PATH_TOO_LONG_HINT =
   "The develop run's temp path is too long for the sandbox's sockets; set XDG_CACHE_HOME to a shorter path and restart the API";
 
 /**
+ * True when the run root is at or under a `sandboxDenyRead` entry or one of `roots`: every run's
+ * TMPDIR would then be masked (ADR-040, H4.6). Pure, apart from the realpath of existing paths.
+ */
+export function runRootMasked(
+  runRoot: string,
+  home: string,
+  protectedDirs: readonly string[],
+  roots: readonly string[] = SANDBOX_MASKED_ROOTS,
+): boolean {
+  const r = real(runRoot);
+  return (
+    sandboxDenyRead(home, protectedDirs).some((e) => atOrUnder(r, e)) ||
+    roots.some((m) => atOrUnder(r, stripSlashes(m)))
+  );
+}
+
+/**
  * True when the repository is at or under one of `roots` (default: the paths the sandbox always
  * masks). Such a repository would be hidden from its own sandboxed run, so develop refuses it
  * (`repo_in_masked_path`). `repoRoot` is the registered realpath.

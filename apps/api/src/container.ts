@@ -2,11 +2,12 @@ import type { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, statfsSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type {
-  AIProvider,
-  DesktopNotifier,
-  MessageSink,
-  PullRequestProvider,
+import {
+  type AIProvider,
+  type DesktopNotifier,
+  type MessageSink,
+  type PullRequestProvider,
+  SANDBOX_MASKED_ROOTS,
 } from "@synapse/contracts";
 import { type Db, openDatabase, runMigrations } from "@synapse/database";
 import { type Clock, newId, systemClock } from "@synapse/shared";
@@ -74,6 +75,7 @@ import { LocalGitWorkflow } from "./integrations/repository/git-workflow";
 import { LocalGitProvider } from "./integrations/repository/local-git";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
+import { runRootMasked } from "./intelligence/engineering/develop-prompt";
 import { AutoReplyService } from "./modules/auto-reply/service";
 import { WipReminders } from "./modules/claude-activity/reminders";
 import { ClaudeActivityService } from "./modules/claude-activity/service";
@@ -767,7 +769,17 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     bun: bunVersionCheck(),
     auth: authCheck(auth, clock),
     claude: claudeCheck(provider, clock),
-    sandbox: sandboxCheck({ settings, which }),
+    sandbox: sandboxCheck({
+      settings,
+      which,
+      runRootMasked: () =>
+        runRootMasked(
+          runRoot,
+          home,
+          [dataDir, backupDir],
+          deps.sandboxMaskedRoots ?? SANDBOX_MASKED_ROOTS,
+        ),
+    }),
     claude_settings: claudeSettingsCheck({
       provider,
       knownServers: () => settings.get("orchestrator.knownServers"),
