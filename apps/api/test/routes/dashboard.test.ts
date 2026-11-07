@@ -9,6 +9,7 @@ import { schema } from "@synapse/database";
 import { createApp } from "../../src/app";
 import { type Container, createContainer } from "../../src/container";
 import { loadConfig } from "../../src/core/config/config";
+import { resolveActions } from "../../src/modules/outgoing/urgent-reply";
 
 const fakeProvider: AIProvider = {
   execute: async () => {
@@ -289,6 +290,54 @@ describe("GET /api/dashboard/overview", () => {
         .run();
     }
     expect((await overview()).counts.outgoingAttention).toBe(2);
+  });
+
+  test("outgoingAttention matches the feed: every status x failure counts iff resolveActions is non-empty", async () => {
+    seed();
+    const statuses = [
+      "pending",
+      "sending",
+      "sent_unverified",
+      "sent",
+      "failed",
+      "needs_attention",
+    ] as const;
+    const failures = [null, "unverified", "other"];
+    let expected = 0;
+    let i = 0;
+    for (const status of statuses) {
+      for (const failure of failures) {
+        i += 1;
+        if (resolveActions(status, failure).length > 0) expected += 1;
+        c.db
+          .insert(schema.approvals)
+          .values({
+            id: `ax${i}`,
+            action: "slack.send",
+            payload: {},
+            riskLevel: "high",
+            status: "executed",
+            idempotencyKey: `kx${i}`,
+            createdAt: NOW,
+          })
+          .run();
+        c.db
+          .insert(schema.outgoingMessages)
+          .values({
+            id: `ox${i}`,
+            approvalId: `ax${i}`,
+            conversationExternalId: "C0SYNTH01",
+            text: "invented",
+            status,
+            failure,
+            createdAt: NOW,
+            updatedAt: NOW,
+          })
+          .run();
+      }
+    }
+    expect(expected).toBe(4);
+    expect((await overview()).counts.outgoingAttention).toBe(expected);
   });
 
   test("health.issues lists only non-ok checks with label and hint", async () => {

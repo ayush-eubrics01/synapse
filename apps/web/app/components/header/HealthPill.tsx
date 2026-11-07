@@ -96,7 +96,7 @@ export function HealthPill({ health, failure, open, onOpenChange }: HealthPillPr
             </p>
           ) : failure?.kind === "unexpected" ? (
             <p className="syn-health-pop-text">
-              The API answered, but the response could not be read. Check the API logs.
+              The API answered with something Synapse couldn't read. Check the API logs.
             </p>
           ) : failure ? (
             <p className="syn-health-pop-text">

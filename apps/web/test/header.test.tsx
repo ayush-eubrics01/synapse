@@ -165,6 +165,9 @@ test("an unexpected response is neither Unreachable nor an HTTP error", () => {
   expect(html).not.toContain("Can&#x27;t reach");
   expect(html).toContain("Overview unavailable");
   expect(html).toContain("syn-health-pill--degraded");
+  expect(html).toContain(
+    "The API answered with something Synapse couldn&#x27;t read. Check the API logs.",
+  );
   expect(html).toContain("Couldn&#x27;t load the overview.");
 });
 
