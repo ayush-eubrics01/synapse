@@ -846,3 +846,16 @@ test("R18 (1): at most one recover job per clock hour, so a crash loop cannot sp
   sweepNow();
   expect(jobsOf("urgency.assess")).toHaveLength(2);
 });
+
+test("K5.2: skipStale only marks stale rows inside the 7-day scan window", async () => {
+  settings.set("urgency.maxAgeHours", 24);
+  const day = 86_400_000;
+  const recent = add({ sentAt: new Date(Date.parse(NOW) - 2 * day).toISOString() });
+  const old = add({ sentAt: new Date(Date.parse(NOW) - 10 * day).toISOString() });
+  expect(await run()).toEqual({ assessed: 0 });
+  expect(msg(recent).screening.route).toBe("skip");
+  expect(msg(recent).screening.skipReason).toBe("too_old");
+  expect(msg(old).screening.route).toBe("assess");
+  expect(msg(old).screening.skipReason).toBeUndefined();
+  expect(calls).toBe(0);
+});

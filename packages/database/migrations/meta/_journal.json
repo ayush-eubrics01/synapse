@@ -162,6 +162,13 @@
       "when": 1793995666033,
       "tag": "0022_retention_fk_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1794028781847,
+      "tag": "0023_followups_batch_3",
+      "breakpoints": true
     }
   ]
 }

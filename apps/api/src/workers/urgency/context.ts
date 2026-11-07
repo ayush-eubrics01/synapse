@@ -15,6 +15,13 @@ import {
 
 const { slackMessages, slackConversations, slackUsers, jobs } = schema;
 
+/**
+ * K5.2: `skipStale` scans only `[cutoff - window, cutoff)`. Screening routes a message to `assess`
+ * only while it is fresh, so older pending rows exist only after a week without an assess run; they
+ * are never eligible (`eligibleWhere` needs `sentAt >= cutoff`), so leaving them is harmless.
+ */
+export const STALE_SCAN_WINDOW_MS = 7 * 86_400_000;
+
 /** The helpers both urgency jobs share: batch selection, screening state, notifications, recovery. */
 export function createUrgencyContext(deps: UrgencyJobDeps) {
   const { db, settings, events, queue, notifications, securityFlags } = deps;
@@ -40,10 +47,14 @@ export function createUrgencyContext(deps: UrgencyJobDeps) {
    * becomes `skip`/`too_old`: never assessed, never notified, no Claude run.
    */
   const skipStale = (tx: Tx) => {
+    const cutoff = cutoffIso();
+    const windowStart = new Date(Date.parse(cutoff) - STALE_SCAN_WINDOW_MS).toISOString();
     const stale = tx
       .select({ id: slackMessages.id })
       .from(slackMessages)
-      .where(sql`${slackMessages.sentAt} < ${cutoffIso()} and ${pendingAssess}`)
+      .where(
+        sql`${slackMessages.sentAt} >= ${windowStart} and ${slackMessages.sentAt} < ${cutoff} and ${pendingAssess}`,
+      )
       .all();
     for (const r of stale) mergeScreening(tx, r.id, { route: "skip", skipReason: "too_old" });
   };
