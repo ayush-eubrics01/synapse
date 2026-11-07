@@ -122,6 +122,8 @@ const REASONS: Record<string, string> = {
     "The test sandbox could not start. Install bubblewrap and socat (sudo apt install bubblewrap socat), then cancel this task and propose it again.",
   sandbox_path_too_long:
     "The sandbox temp path is too long. Set XDG_CACHE_HOME to a shorter path and restart Synapse.",
+  sandbox_root_masked:
+    "Set XDG_CACHE_HOME to a directory outside ~/.config and the other protected folders, then restart Synapse and try again.",
   repo_in_masked_path:
     "This repository is inside a folder the test sandbox hides (for example /tmp or ~/.config), so develop runs are refused.",
   sandbox_disabled: "Develop runs are disabled because the test sandbox is turned off.",

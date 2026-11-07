@@ -304,7 +304,7 @@ describe("GET /api/dashboard/overview", () => {
       provider: fakeProvider,
       clock: { now: () => new Date(NOW) },
       which: (b) => `/usr/bin/${b}`,
-      // The in-memory run root is `<scratch>-runs` under the OS temp dir: masked.
+      // The in-memory run root is `<scratch>-runs` under the OS temp dir, masked by this root.
       sandboxMaskedRoots: [tmpdir()],
     });
     app = createApp(c);

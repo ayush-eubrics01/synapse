@@ -181,6 +181,25 @@ describe("symlinked home and data dirs (final review)", () => {
   });
 });
 
+describe("runRootMasked with a symlinked home (H4.6)", () => {
+  test("a not-yet-existing run root under <link>/.config is masked", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "syn-")));
+    try {
+      const realHome = join(base, "real-home");
+      mkdirSync(join(realHome, ".config"), { recursive: true });
+      const linkHome = join(base, "link-home");
+      symlinkSync(realHome, linkHome);
+      const root = join(linkHome, ".config", "c", "synapse", "abcd1234");
+      expect(runRootMasked(root, linkHome, [], [])).toBe(true);
+      expect(runRootMasked(join(linkHome, ".cache", "synapse", "abcd1234"), linkHome, [], [])).toBe(
+        false,
+      );
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("runRootMasked (H4.6)", () => {
   test("true under a home deny entry or a protected dir, or a masked root", () => {
     expect(runRootMasked("/home/u/.config/c/synapse/abcd1234", "/home/u", [])).toBe(true);

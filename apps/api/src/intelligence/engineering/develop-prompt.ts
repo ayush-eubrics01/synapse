@@ -80,10 +80,19 @@ const atOrUnder = (path: string, dir: string) => path === dir || path.startsWith
 
 /** The realpath of `p` when it exists, else `p` (a symlinked home or data dir must compare and mask by its target). */
 const real = (p: string): string => {
-  try {
-    return stripSlashes(realpathSync(p));
-  } catch {
-    return stripSlashes(p);
+  // A path that does not exist yet (a run root before its first mkdir) resolves through its
+  // deepest existing ancestor, with the missing tail re-appended.
+  let head = stripSlashes(p);
+  let tail = "";
+  for (;;) {
+    try {
+      return stripSlashes(realpathSync(head)) + tail;
+    } catch {
+      const slash = head.lastIndexOf("/");
+      if (slash <= 0) return stripSlashes(p);
+      tail = head.slice(slash) + tail;
+      head = head.slice(0, slash);
+    }
   }
 };
 
