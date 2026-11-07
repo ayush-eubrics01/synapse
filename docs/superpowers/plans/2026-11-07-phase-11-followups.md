@@ -30,3 +30,11 @@ Items parked during Phase 11 (dashboard customisation and runtime hardening). No
 - **`list()` re-activates a layout when none is active** (for example after a manual database edit): the most recently updated row, audited as actor `system`.
 - **Other form fields still lose text on a remount.** Only the composer draft is kept. The engineering text edits (commit message, PR title and body), New task, Register repository, project notes, commitment edits, Jira setup and the recommendation reason are component-local state and are lost when a customise action remounts their section.
 - **`terminate()` cannot interrupt an in-flight native `VACUUM`.** When the backup worker times out, the process-side `terminate()` does not stop a `VACUUM INTO` already running in native code; the temporary file and its disk space are held until it finishes.
+
+## Final review of follow-ups batch 2 (parked)
+
+- **"Try again" after a mid-run `sandbox_unavailable` with edits always answers `changes_left`.** The button is still shown; the user must cancel and propose again.
+- **`runTmpTooLong` assumes the 8-hex scratch name.** A 12- or 16-hex fallback name can pass the pre-check and then be refused again; harmless.
+- **The instance-root prune walk is synchronous and unbounded.** It runs once at startup over `<cache>/synapse`.
+- **A tiny walk-to-`rm` race** in that prune: an entry touched between the age walk and the removal can still be deleted.
+- **Retention's `wal_checkpoint(TRUNCATE)` can block the event loop** for up to `busy_timeout` while a worker read snapshot is open; `PASSIVE` would avoid it.

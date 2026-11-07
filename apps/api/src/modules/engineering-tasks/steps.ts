@@ -255,6 +255,13 @@ function sandboxUnavailable(err: unknown): boolean {
  * logs or thrown messages: diff and test tail live in step outputs; paths, commits and PR text in
  * the approval payloads the user reviews.
  */
+/** Develop-retry reasons where the refusal came before any model run (no edits possible). */
+const PRE_RUN_RETRY_REASONS: readonly string[] = [
+  "sandbox_disabled",
+  "sandbox_path_too_long",
+  "sandbox_root_masked",
+];
+
 export class EngineeringStepService {
   private readonly store: EngineeringTaskStore;
   /** Tasks with a step or executor running in this process; cleanup waits for them. */
@@ -480,22 +487,30 @@ export class EngineeringStepService {
       );
     }
     const prior = this.stepOutput(taskId, "develop");
-    const baseline = typeof prior?.gitDirBaseline === "string" ? prior.gitDirBaseline : undefined;
-    try {
-      if (
-        baseline !== undefined &&
-        (await this.deps.git.gitDirFingerprint(ctx.path)) !== baseline
-      ) {
+    // The pre-run refusals stopped before any model ran, so no run could have edited git
+    // settings and the stored fingerprints say nothing about this retry; a fetch or a config
+    // tweak the user made meanwhile must not block it. `sandbox_unavailable` can follow a
+    // mid-run failure, so its fingerprints are compared and must exist (fail closed).
+    const preRun = PRE_RUN_RETRY_REASONS.includes(task.failure ?? "");
+    let baseline: string | undefined;
+    if (!preRun) {
+      const storedBase = prior?.gitDirBaseline;
+      const storedConfig = prior?.configFingerprint;
+      if (typeof storedBase !== "string" || typeof storedConfig !== "string") {
         throw new EngineeringTaskError("unsafe_change");
       }
-      if (
-        typeof prior?.configFingerprint === "string" &&
-        (await this.deps.git.configFingerprint(ctx.path)) !== prior.configFingerprint
-      ) {
+      baseline = storedBase;
+      let gitDirNow: string;
+      let configNow: string;
+      try {
+        gitDirNow = await this.deps.git.gitDirFingerprint(ctx.path);
+        configNow = await this.deps.git.configFingerprint(ctx.path);
+      } catch {
+        throw new EngineeringTaskError("git_failed");
+      }
+      if (gitDirNow !== storedBase || configNow !== storedConfig) {
         throw new EngineeringTaskError("unsafe_change");
       }
-    } catch (e) {
-      throw e instanceof EngineeringTaskError ? e : new EngineeringTaskError("unsafe_change");
     }
     try {
       const diff = await this.deps.git.diffSummary(
@@ -504,7 +519,7 @@ export class EngineeringStepService {
       );
       if (diff.unsafe || diff.files.length > 0) throw new EngineeringTaskError("changes_left");
     } catch (e) {
-      throw e instanceof EngineeringTaskError ? e : new EngineeringTaskError("unsafe_change");
+      throw e instanceof EngineeringTaskError ? e : new EngineeringTaskError("git_failed");
     }
     this.deps.db.transaction(
       (tx) => {

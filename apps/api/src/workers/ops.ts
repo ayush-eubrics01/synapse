@@ -44,6 +44,11 @@ export async function runBackupTick(
   const backup = settings.get("ops.backup.enabled")
     ? await deps.backup.run(settings.get("ops.backup.keep"))
     : "disabled";
+  // Another backup is in flight: nothing was attempted, so the date stays unrecorded and the
+  // next tick tries again.
+  if (typeof backup === "object" && !backup.ok && backup.failure === "already_running") {
+    return { date: due.date, backup };
+  }
   // Recorded whether it worked or not, so a failure does not retry on every 15-minute tick.
   settings.set("ops.backup.lastRunDate", due.date, { emit: false });
   // Retention follows the backup attempt (including a disabled one); the key makes it once a day.
@@ -57,7 +62,7 @@ export async function runBackupTick(
 
 export function backupJobLive(db: Db): boolean {
   const rows = db
-    .select({ input: schema.jobs.input })
+    .select({ id: schema.jobs.id })
     .from(schema.jobs)
     .where(
       and(
@@ -66,7 +71,7 @@ export function backupJobLive(db: Db): boolean {
       ),
     )
     .all();
-  return rows.some((r) => (r.input as { manual?: unknown } | null)?.manual === true);
+  return rows.length > 0;
 }
 
 export function registerOpsJobs(deps: OpsJobDeps): void {
@@ -79,6 +84,10 @@ export function registerOpsJobs(deps: OpsJobDeps): void {
         : await runBackupTick(deps);
       const failed =
         "ok" in out ? out : "backup" in out && typeof out.backup === "object" ? out.backup : null;
+      if (failed && !failed.ok && failed.failure === "already_running") {
+        // Not a failure: another backup is running. No alarm, no recorded date.
+        return { skipped: "already_running" };
+      }
       if (failed && !failed.ok) {
         // Fixed code only; non-retryable (the date is already recorded, so no 15-minute loop).
         throw new JobError({

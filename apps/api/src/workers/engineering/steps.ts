@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { type Job, JobError, SANDBOX_MASKED_ROOTS, SANDBOX_ROOT_MASKED } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { desc, eq, sql } from "drizzle-orm";
+import { defaultRunScratchRoot } from "../../core/config/config";
 import type { SettingsService } from "../../core/config/settings";
 import type { HandlerRegistration, JobContext } from "../../core/jobs/worker";
 import type { ClaudeOrchestrator } from "../../core/orchestrator/orchestrator";
@@ -120,6 +121,21 @@ function newestMtimeMs(p: string): number {
     for (const e of readdirSync(p)) newest = Math.max(newest, newestMtimeMs(join(p, e)));
   }
   return newest;
+}
+
+/**
+ * The base directory `pruneInstanceRoots` may walk at startup, or null: only a real instance base
+ * (`<cache>/synapse`, the default scratch root). An in-memory database and a run root under any
+ * other base (a test's, an override's) are never pruned.
+ */
+export function pruneBaseFor(
+  dbPath: string,
+  runRoot: string,
+  env: NodeJS.ProcessEnv,
+): string | null {
+  if (dbPath === ":memory:") return null;
+  const base = dirname(runRoot);
+  return base === defaultRunScratchRoot(env) ? base : null;
 }
 
 /**

@@ -127,7 +127,8 @@ const REASONS: Record<string, string> = {
   sandbox_root_masked: SANDBOX_ROOT_MASKED_HINT,
   repo_in_masked_path:
     "This repository is inside a folder the test sandbox hides (for example /tmp or ~/.config), so develop runs are refused.",
-  sandbox_disabled: "Develop runs are disabled because the test sandbox is turned off.",
+  sandbox_disabled:
+    "Develop runs are disabled because the test sandbox is turned off. Turn it on in Settings, then use Try again.",
   not_pending: "This approval was already decided or replaced.",
   invalid_text: "The text is empty, too long or has characters that can't be used.",
   merged_after_cancel:
@@ -651,7 +652,9 @@ const RETRY_DEVELOP_TEXT: Record<string, string> = {
   sandbox_disabled: "Turn the test sandbox on first.",
   sandbox_unavailable: "The test sandbox still can't start. Install bubblewrap and socat first.",
   sandbox_root_masked: "XDG_CACHE_HOME is still inside a protected folder.",
-  unsafe_change: "The failed run changed git settings; cancel this task.",
+  unsafe_change:
+    "The repository's git settings changed since the step stopped; cancel this task and propose it again.",
+  git_failed: "Git could not check the repository; try again in a moment.",
   changes_left: "The failed run left changes in the repository; cancel this task.",
   sandbox_path_too_long:
     "The temp path is still too long; shorten XDG_CACHE_HOME and restart Synapse.",

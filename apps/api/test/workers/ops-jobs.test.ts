@@ -165,13 +165,36 @@ test("registerOpsJobs registers handler and schedule; manual runs even when disa
   expect(sch).toMatchObject({ backup: "disabled" });
 });
 
-test("backupJobLive sees pending manual jobs only", () => {
+test("backupJobLive sees any live ops.backup job, scheduled or manual", () => {
   const d = deps();
   expect(backupJobLive(db)).toBe(false);
   d.queue.enqueue(db, { type: OPS_BACKUP_JOB, input: null, idempotencyKey: "sched" });
-  expect(backupJobLive(db)).toBe(false);
-  d.queue.enqueue(db, { type: OPS_BACKUP_JOB, input: { manual: true }, idempotencyKey: "m1" });
   expect(backupJobLive(db)).toBe(true);
+});
+
+test("an overlapping backup is not a failure: no throw, no audit, date not recorded, no retention", async () => {
+  const d = deps();
+  d.backup.run = async () => ({ ok: false, failure: "already_running" });
+  registerOpsJobs(d);
+  at = { date: "2026-11-07", hour: 4 };
+  const h = d.handlers.get(OPS_BACKUP_JOB)?.handler;
+  expect(await h?.({ input: { manual: true } } as never, {} as never)).toEqual({
+    skipped: "already_running",
+  });
+  expect(await h?.({ input: null } as never, {} as never)).toEqual({
+    skipped: "already_running",
+  });
+  expect(settings.get("ops.backup.lastRunDate")).not.toBe("2026-11-07");
+  expect(
+    db.select().from(schema.jobs).where(eq(schema.jobs.type, OPS_RETENTION_JOB)).all(),
+  ).toEqual([]);
+  expect(
+    db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "ops.backup_failed"))
+      .all(),
+  ).toEqual([]);
 });
 
 test("the backup tick enqueues ops.retention for the date, even when backup is disabled", async () => {

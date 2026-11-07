@@ -308,3 +308,17 @@ test("H4.1: a worker that crashes on load fails as unexpected, quickly", async (
   expect(Date.now() - t0).toBeLessThan(5_000);
   expect(readdirSync(dir).filter((n) => n.endsWith(".tmp"))).toEqual([]);
 });
+
+test("an overlapping run answers already_running and leaves the first run's temp and backup intact", async () => {
+  const s = svc();
+  const first = s.run(7);
+  const second = await s.run(7); // starts while the first awaits its worker
+  expect(second).toEqual({ ok: false, failure: "already_running" });
+  expect((await first).ok).toBe(true);
+  expect(readdirSync(dir).filter((n) => n.endsWith(".tmp"))).toEqual([]);
+  expect(readdirSync(dir)).toEqual([FIXED()]);
+  expect(audits("ops.backup_failed")).toEqual([]);
+  expect(audits("ops.backup_created")).toHaveLength(1);
+  // the guard is released afterwards
+  expect(await s.run(7)).toMatchObject({ ok: false, failure: "name_conflict" });
+});

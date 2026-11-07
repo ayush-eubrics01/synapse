@@ -228,7 +228,10 @@ test("a failed flush cancels the call and unlocks", async () => {
   const { gate, busy, spies, deps } = callSetup({ flush: async () => false });
   let ran = 0;
   const out = await runLayoutCall(deps, {
-    run: async () => (ran++, R),
+    run: async () => {
+      ran++;
+      return R;
+    },
     flushFirst: true,
     errorText,
   });
@@ -293,7 +296,10 @@ test("the gate is locked inside run, and a second call meanwhile is busy", async
     errorText,
   });
   const second = await runLayoutCall(deps, {
-    run: async () => (secondRan++, R),
+    run: async () => {
+      secondRan++;
+      return R;
+    },
     flushFirst: false,
     errorText,
   });

@@ -1,7 +1,6 @@
-import { dirname } from "node:path";
 import { createApp } from "./app";
 import { createContainer } from "./container";
-import { defaultRunScratchRoot, loadConfig } from "./core/config/config";
+import { loadConfig } from "./core/config/config";
 import {
   REAP_INTERVAL_MS,
   reapExpiredJobs,
@@ -11,7 +10,7 @@ import {
 import { createShutdown } from "./core/system/shutdown";
 import { NotifySendNotifier } from "./infrastructure/notifier";
 import { PRIVATE_FILES_LOG_LINE, securePrivateFiles } from "./infrastructure/private-files";
-import { pruneInstanceRoots, sweepRunScratch } from "./workers/engineering/steps";
+import { pruneBaseFor, pruneInstanceRoots, sweepRunScratch } from "./workers/engineering/steps";
 import { OPS_BACKUP_JOB } from "./workers/ops";
 
 const config = loadConfig(process.env);
@@ -57,8 +56,9 @@ recoverOrphanRuns(c.db, c.clock);
 sweepRunScratch(c.runRoot);
 // ADR-040: run roots of other instances (old data dirs, smokes) nothing touched for 7 days.
 // Only a real instance base (`<cache>/synapse`); an in-memory container's sibling dir is never one.
-if (config.dbPath !== ":memory:" && dirname(c.runRoot) === defaultRunScratchRoot(process.env)) {
-  const pruned = pruneInstanceRoots(dirname(c.runRoot), c.runRoot);
+const pruneBase = pruneBaseFor(config.dbPath, c.runRoot, process.env);
+if (pruneBase !== null) {
+  const pruned = pruneInstanceRoots(pruneBase, c.runRoot);
   console.log(`engineering.step: old run roots removed=${pruned.removed} kept=${pruned.kept}`);
 }
 // R4: the result feeds the `database` health check; a failure is reported there, not fatal here.
@@ -92,7 +92,11 @@ const reap = guarded("recovery.reap", () =>
 );
 
 // H4.2: the daily backup tick is due right after startup (coalesced; `dailyDue` decides).
-c.scheduler.runNow(OPS_BACKUP_JOB);
+try {
+  c.scheduler.runNow(OPS_BACKUP_JOB);
+} catch (e) {
+  console.error("backup tick at startup failed:", e instanceof Error ? e.name : "non-error");
+}
 tick();
 const intervals = [
   setInterval(tick, 5_000),

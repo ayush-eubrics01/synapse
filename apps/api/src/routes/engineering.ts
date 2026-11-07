@@ -47,6 +47,7 @@ const STATUS: Record<
   unsafe_change: 409,
   changes_left: 409,
   sandbox_path_too_long: 409,
+  git_failed: 409,
 };
 
 export function engineeringErrorResponse(e: EngineeringTaskError): {

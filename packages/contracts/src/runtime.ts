@@ -13,7 +13,8 @@ export type BackupFailureCode =
   | "timeout"
   | "name_conflict"
   | "dir_unavailable"
-  | "unexpected";
+  | "unexpected"
+  | "already_running";
 
 export const retentionSummarySchema = z.strictObject({
   at: z.string(),

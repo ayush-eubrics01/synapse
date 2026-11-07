@@ -431,7 +431,10 @@ test("retryDevelopErrorText maps the retry refusals", () => {
     "The test sandbox still can't start. Install bubblewrap and socat first.",
   );
   expect(e("sandbox_root_masked")).toBe("XDG_CACHE_HOME is still inside a protected folder.");
-  expect(e("unsafe_change")).toBe("The failed run changed git settings; cancel this task.");
+  expect(e("unsafe_change")).toBe(
+    "The repository's git settings changed since the step stopped; cancel this task and propose it again.",
+  );
+  expect(e("git_failed")).toBe("Git could not check the repository; try again in a moment.");
   expect(e("changes_left")).toBe(
     "The failed run left changes in the repository; cancel this task.",
   );

@@ -46,7 +46,7 @@ Behaviours worth knowing:
 - **Needs you is always visible.** It has no Hide or Collapse control, and the backend forces it back if a request tries.
 - **Navigation reveals.** Using the sidebar or the palette on a section that is hidden or collapsed shows or expands it temporarily, locally, without saving. The next layout load puts it back.
 - **Drafts survive customise actions.** Reply, code-answer and follow-up drafts survive customise actions and layout switches because they live in an in-memory store (`lib/drafts.ts`), lost on reload; other form fields do not survive a remount. The layout itself is never affected.
-- **Save and switch.** Edits are debounced 500 ms into one PUT. Switching, saving as new and resetting flush a pending save first; renaming and deleting do not. Two minor races are parked in the follow-ups file.
+- **Save and switch.** Edits are debounced 500 ms into one PUT. Switching, saving as new and resetting flush a pending save first; renaming and deleting do not.
 
 ## System Runtime panel (Phase 11, R5)
 

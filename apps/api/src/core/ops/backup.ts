@@ -86,8 +86,24 @@ export class BackupService {
     this.dir = d.dir;
   }
 
-  /** Never throws: every outcome is audited with a fixed code. */
+  private inFlight = false;
+
+  /**
+   * Never throws: every outcome is audited with a fixed code, except `already_running`: a second
+   * call while one is in flight touches nothing (the first run's temp file is not swept) and
+   * is not audited.
+   */
   async run(keep: number): Promise<BackupResult> {
+    if (this.inFlight) return { ok: false, failure: "already_running" };
+    this.inFlight = true;
+    try {
+      return await this.runOnce(keep);
+    } finally {
+      this.inFlight = false;
+    }
+  }
+
+  private async runOnce(keep: number): Promise<BackupResult> {
     let result: BackupResult;
     try {
       result = await this.attempt(keep);

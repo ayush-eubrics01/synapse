@@ -49,6 +49,7 @@ export const ENGINEERING_TASK_ERROR_CODES = [
   "unsafe_change",
   "changes_left",
   "sandbox_path_too_long",
+  "git_failed",
 ] as const;
 /** `registry_error:<RegistryErrorCode>` wraps a refusal of the repository registry. */
 export type EngineeringTaskErrorCode =

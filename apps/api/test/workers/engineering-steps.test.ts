@@ -18,6 +18,7 @@ import {
   type Approval,
   type ClaudeJobRequest,
   COMMIT_SUBJECT_MAX,
+  GitWorkflowError,
   isValidApprovalText,
   JobError,
   type Operation,
@@ -2308,6 +2309,63 @@ describe("retry the develop step (H3)", () => {
     set(out);
     writeFileSync(join(repo, "left.txt"), "x\n");
     expect(await code(id)).toBe("changes_left");
+    expect(developJobs(id)).toBe(0);
+    expect(taskRow(id)?.status).toBe("needs_attention");
+  });
+
+  const setOut = (id: string, o: Record<string, unknown>) =>
+    db
+      .update(schema.engineeringTaskSteps)
+      .set({ output: o })
+      .where(
+        and(
+          eq(schema.engineeringTaskSteps.taskId, id),
+          eq(schema.engineeringTaskSteps.step, "develop"),
+        ),
+      )
+      .run();
+  const setFailure = (id: string, failure: string) =>
+    db
+      .update(schema.engineeringTasks)
+      .set({ failure })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+
+  test("a pre-run refusal ignores changed stored fingerprints (no model ran)", async () => {
+    for (const reason of ["sandbox_disabled", "sandbox_path_too_long", "sandbox_root_masked"]) {
+      const id = await parked();
+      const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+      setOut(id, { ...out, gitDirBaseline: "stale", configFingerprint: "stale" });
+      setFailure(id, reason);
+      expect(await code(id)).toBe("ok");
+      expect(developJobs(id)).toBe(1);
+      service.cancel(id);
+      await drain();
+    }
+  });
+
+  test("sandbox_unavailable with a missing stored fingerprint fails closed", async () => {
+    const id = await parked();
+    const out = { ...(stepRow(id, "develop")?.output as Record<string, unknown>) };
+    setOut(id, { ...out, gitDirBaseline: undefined });
+    expect(await code(id)).toBe("unsafe_change");
+    setOut(id, { ...out, configFingerprint: 7 });
+    expect(await code(id)).toBe("unsafe_change");
+    setOut(id, {});
+    expect(await code(id)).toBe("unsafe_change");
+    expect(developJobs(id)).toBe(0);
+  });
+
+  test("a git error while checking is git_failed, not unsafe_change", async () => {
+    const id = await parked();
+    hooks.gitDirFingerprint = () => {
+      throw new GitWorkflowError("git_timeout");
+    };
+    expect(await code(id)).toBe("git_failed");
+    hooks.diffSummary = () => {
+      throw new GitWorkflowError("git_failed");
+    };
+    expect(await code(id)).toBe("git_failed");
     expect(developJobs(id)).toBe(0);
     expect(taskRow(id)?.status).toBe("needs_attention");
   });

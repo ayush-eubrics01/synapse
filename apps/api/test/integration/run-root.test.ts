@@ -16,7 +16,11 @@ import { dirname, join } from "node:path";
 import type { AIProvider } from "@synapse/contracts";
 import { createContainer } from "../../src/container";
 import { instanceRunRoot, loadConfig } from "../../src/core/config/config";
-import { pruneInstanceRoots, sweepRunScratch } from "../../src/workers/engineering/steps";
+import {
+  pruneBaseFor,
+  pruneInstanceRoots,
+  sweepRunScratch,
+} from "../../src/workers/engineering/steps";
 import { tempDir } from "../fixtures/git-repo";
 
 /**
@@ -190,10 +194,13 @@ test("H4.7: a symlinked base prunes nothing", () => {
   expect(existsSync(join(real, "aaaaaaaa"))).toBe(true);
 });
 
-test("H4.7: main.ts prunes only a real instance base, never for :memory:", () => {
-  const src = readFileSync(join(import.meta.dir, "../../src/main.ts"), "utf8");
-  expect(src).toContain('config.dbPath !== ":memory:"');
-  expect(src).toContain("dirname(c.runRoot) === defaultRunScratchRoot(process.env)");
+test("H4.7: pruneBaseFor allows only the default instance base, never :memory:", () => {
+  const env = { HOME: "/home/u" };
+  const base = "/home/u/.cache/synapse";
+  expect(pruneBaseFor(":memory:", join(base, "aaaaaaaa"), env)).toBeNull();
+  expect(pruneBaseFor("/home/u/d/synapse.db", "/tmp/x-runs", env)).toBeNull();
+  expect(pruneBaseFor("/home/u/d/synapse.db", join(base, "aaaaaaaa"), env)).toBe(base);
+  expect(pruneBaseFor("/home/u/d/synapse.db", "/home/u/other/aaaaaaaa", env)).toBeNull();
 });
 
 test("H4.7: main.ts prunes old run roots right after the startup sweep", () => {
