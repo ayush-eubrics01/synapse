@@ -84,6 +84,16 @@ export class RetentionService {
          where id in ${ids}`,
       ],
     );
+    const snapshotCutoff = cutoff(settings.get("retention.snapshotsDays"));
+    const newest = (t: string) =>
+      `select id from ${t} where observed_at < ?
+         and id <> (select id from ${t} order by observed_at desc, rowid desc limit 1) limit ?`;
+    const quotaSnapshots = await this.prune(newest("quota_snapshots"), snapshotCutoff, (ids) => [
+      `delete from quota_snapshots where id in ${ids}`,
+    ]);
+    const authSnapshots = await this.prune(newest("auth_snapshots"), snapshotCutoff, (ids) => [
+      `delete from auth_snapshots where id in ${ids}`,
+    ]);
 
     const aborted = signal?.aborted === true;
     this.d.sqlite.exec("pragma wal_checkpoint(TRUNCATE)");
@@ -99,6 +109,8 @@ export class RetentionService {
       audit,
       claudeRunsCompacted,
       quickCheck,
+      quotaSnapshots,
+      authSnapshots,
     };
     this.d.audit.record(this.d.db, {
       actor: "system",
@@ -112,6 +124,8 @@ export class RetentionService {
         audit,
         claudeRunsCompacted,
         quickCheck,
+        quotaSnapshots,
+        authSnapshots,
       },
     });
     if (!aborted) settings.set("ops.retention.lastRun", summary, { emit: false });

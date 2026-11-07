@@ -162,6 +162,7 @@ const settingSchemas = {
   "retention.notificationsDays": z.number().int().min(7).max(365).default(30),
   "retention.claudeRunsDays": z.number().int().min(14).max(730).default(90),
   "retention.auditDays": z.number().int().min(90).max(3650).default(365),
+  "retention.snapshotsDays": z.number().int().min(7).max(365).default(30),
   // Internal state, not user-editable. null: resolved at startup (<data dir>/backups).
   "ops.backup.dir": z.string().startsWith("/").nullable().default(null),
   "ops.backup.lastRunDate": z.string().nullable().default(null),
@@ -197,6 +198,7 @@ export const USER_EDITABLE_SETTINGS = [
   "retention.notificationsDays",
   "retention.claudeRunsDays",
   "retention.auditDays",
+  "retention.snapshotsDays",
   "engineering.sandbox.enabled",
 ] as const satisfies readonly SettingKey[];
 export type UserEditableKey = (typeof USER_EDITABLE_SETTINGS)[number];

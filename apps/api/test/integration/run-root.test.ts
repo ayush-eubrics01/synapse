@@ -1,10 +1,21 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AIProvider } from "@synapse/contracts";
 import { createContainer } from "../../src/container";
 import { instanceRunRoot, loadConfig } from "../../src/core/config/config";
-import { sweepRunScratch } from "../../src/workers/engineering/steps";
+import { pruneInstanceRoots, sweepRunScratch } from "../../src/workers/engineering/steps";
 import { tempDir } from "../fixtures/git-repo";
 
 /**
@@ -106,4 +117,48 @@ test("main.ts runs the backup tick right after bind, before the first tick()", (
   const firstTick = src.indexOf("\ntick();");
   expect(now).toBeGreaterThan(serve);
   expect(firstTick).toBeGreaterThan(now);
+});
+
+test("H4.7: pruneInstanceRoots removes only old 8-hex real directories", () => {
+  const base = mkdtempSync(join(tmpdir(), "syn-"));
+  const outside = mkdtempSync(join(tmpdir(), "syn-"));
+  roots.push(base, outside);
+  const old = new Date(Date.now() - 8 * 86_400_000);
+  const age = (p: string) => utimesSync(p, old, old);
+  const tree = (root: string) => {
+    mkdirSync(join(root, "r", "x"), { recursive: true });
+    writeFileSync(join(root, "r", "x", "f"), "1");
+    for (const p of [join(root, "r", "x", "f"), join(root, "r", "x"), join(root, "r"), root])
+      age(p);
+  };
+  tree(join(base, "aaaaaaaa"));
+  tree(join(base, "bbbbbbbb"));
+  writeFileSync(join(base, "bbbbbbbb", "r", "x", "new"), "1"); // touched now
+  tree(join(base, "eeeeeeee")); // the keep root
+  tree(join(outside, "target"));
+  symlinkSync(join(outside, "target"), join(base, "cccccccc"));
+  writeFileSync(join(base, "dddddddd"), "x");
+  age(join(base, "dddddddd"));
+  tree(join(base, "old-dir"));
+
+  const r = pruneInstanceRoots(base, join(base, "eeeeeeee"));
+  expect(r).toEqual({ removed: 1, kept: 3 });
+  expect(existsSync(join(base, "aaaaaaaa"))).toBe(false);
+  expect(existsSync(join(base, "bbbbbbbb", "r", "x", "new"))).toBe(true);
+  expect(existsSync(join(base, "eeeeeeee", "r", "x", "f"))).toBe(true);
+  expect(existsSync(join(outside, "target", "r", "x", "f"))).toBe(true);
+  expect(existsSync(join(base, "dddddddd"))).toBe(true);
+  expect(existsSync(join(base, "old-dir", "r", "x", "f"))).toBe(true);
+  expect(pruneInstanceRoots(join(base, "missing"), join(base, "eeeeeeee"))).toEqual({
+    removed: 0,
+    kept: 0,
+  });
+});
+
+test("H4.7: main.ts prunes old run roots right after the startup sweep", () => {
+  const src = readFileSync(join(import.meta.dir, "../../src/main.ts"), "utf8");
+  const sweep = src.indexOf("sweepRunScratch(c.runRoot)");
+  const prune = src.indexOf("pruneInstanceRoots(");
+  expect(sweep).toBeGreaterThan(-1);
+  expect(prune).toBeGreaterThan(sweep);
 });

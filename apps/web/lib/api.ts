@@ -212,6 +212,7 @@ export interface OpsSettingsDto {
   "retention.notificationsDays": number;
   "retention.claudeRunsDays": number;
   "retention.auditDays": number;
+  "retention.snapshotsDays": number;
 }
 export type SettingsDto = ClaudeSettingsDto & OpsSettingsDto;
 

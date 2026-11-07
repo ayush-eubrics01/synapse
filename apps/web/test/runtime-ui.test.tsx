@@ -45,6 +45,7 @@ const settings = {
   "retention.notificationsDays": 30,
   "retention.claudeRunsDays": 90,
   "retention.auditDays": 365,
+  "retention.snapshotsDays": 30,
 } as unknown as SettingsDto;
 const render = (o: Partial<Parameters<typeof RuntimePanel>[0]> = {}) =>
   renderToString(
@@ -127,4 +128,14 @@ test("backup start messages: 409 is already running, anything else is a generic 
   );
   expect(backupStartMessage(new ApiError("x", 500))).toBe("Couldn't start the backup");
   expect(backupStartMessage(new TypeError("network"))).toBe("Couldn't start the backup");
+});
+
+test("H4.3: the backups-off note shows only when automatic backups are off", () => {
+  const note = "Automatic backups are off; Back up now still makes one";
+  expect(render({ settings: { ...settings, "ops.backup.enabled": false } })).toContain(note);
+  expect(render()).not.toContain(note);
+});
+
+test("H4.5: the snapshot retention input renders", () => {
+  expect(render()).toContain("Keep quota and login snapshots (days)");
 });

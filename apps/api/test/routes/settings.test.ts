@@ -48,8 +48,16 @@ describe("settings routes", () => {
     expect(body).not.toHaveProperty("claudeActivity.lastActiveState");
     expect(body["ops.backup.enabled"]).toBe(true);
     expect(body["retention.auditDays"]).toBe(365);
+    expect(body["retention.snapshotsDays"]).toBe(30);
     expect(body).not.toHaveProperty("ops.backup.dir");
     expect(body["engineering.sandbox.enabled"]).toBe(true);
+  });
+
+  test("retention.snapshotsDays is bounded 7..365", async () => {
+    const bad = await put({ "retention.snapshotsDays": 6 });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error: string }).error).toBe("invalid_setting");
+    expect((await put({ "retention.snapshotsDays": 60 })).status).toBe(200);
   });
 
   test("the test sandbox setting can be turned off (ADR-040)", async () => {

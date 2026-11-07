@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { type Job, JobError, SANDBOX_MASKED_ROOTS, SANDBOX_ROOT_MASKED } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { desc, eq, sql } from "drizzle-orm";
@@ -108,6 +108,62 @@ export function sweepRunScratch(runRoot: string): void {
       console.error("engineering.step: run scratch sweep failed");
     }
   }
+}
+
+export const INSTANCE_ROOT_MAX_AGE_MS = 7 * 86_400_000;
+
+/** Newest lstat mtime of `p` and everything below it. Never follows a symlink. */
+function newestMtimeMs(p: string): number {
+  const st = lstatSync(p);
+  let newest = st.mtimeMs;
+  if (st.isDirectory()) {
+    for (const e of readdirSync(p)) newest = Math.max(newest, newestMtimeMs(join(p, e)));
+  }
+  return newest;
+}
+
+/**
+ * Removes old instance run roots (`<base>/<8 hex>`) left by other data dirs or smokes (ADR-040).
+ * Only a real directory (not a symlink) owned by this user, other than `keepRoot`, with nothing
+ * modified inside for `maxAgeMs`. Anything else counts as kept; errors are swallowed per entry.
+ */
+export function pruneInstanceRoots(
+  base: string,
+  keepRoot: string,
+  opts: { nowMs?: number; maxAgeMs?: number } = {},
+): { removed: number; kept: number } {
+  const nowMs = opts.nowMs ?? Date.now();
+  const maxAgeMs = opts.maxAgeMs ?? INSTANCE_ROOT_MAX_AGE_MS;
+  let entries: string[];
+  try {
+    entries = readdirSync(base);
+  } catch {
+    return { removed: 0, kept: 0 };
+  }
+  const uid = process.getuid?.();
+  const keepName = basename(keepRoot);
+  let removed = 0;
+  let kept = 0;
+  for (const e of entries) {
+    if (!/^[0-9a-f]{8}$/.test(e) || e === keepName) continue;
+    const dir = join(base, e);
+    try {
+      const st = lstatSync(dir);
+      if (!st.isDirectory() || (uid !== undefined && st.uid !== uid)) {
+        kept++;
+        continue;
+      }
+      if (nowMs - newestMtimeMs(dir) <= maxAgeMs) {
+        kept++;
+        continue;
+      }
+      rmSync(dir, { recursive: true, force: true });
+      removed++;
+    } catch {
+      kept++;
+    }
+  }
+  return { removed, kept };
 }
 
 /**

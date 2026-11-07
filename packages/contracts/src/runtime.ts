@@ -24,6 +24,9 @@ export const retentionSummarySchema = z.strictObject({
   audit: z.number().int(),
   claudeRunsCompacted: z.number().int(),
   quickCheck: z.enum(["ok", "failed"]),
+  // Optional so an older stored lastRun still parses.
+  quotaSnapshots: z.number().int().optional(),
+  authSnapshots: z.number().int().optional(),
 });
 export type RetentionSummary = z.infer<typeof retentionSummarySchema>;
 

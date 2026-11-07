@@ -3,6 +3,11 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
+/** A relative path would follow the cwd of whatever started the process; resolve it once here. */
+function absoluteDbPath(p: string): string {
+  return p === ":memory:" ? p : resolve(p);
+}
+
 export interface AppConfig {
   dbPath: string;
   api: { host: string; port: number };
@@ -118,7 +123,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     throw new Error("SYNAPSE_BACKUP_DIR must be an absolute path outside the repository");
   }
   return {
-    dbPath: env.SYNAPSE_DB_PATH || defaultDbPath(env),
+    dbPath: absoluteDbPath(env.SYNAPSE_DB_PATH || defaultDbPath(env)),
     api: { host: apiHost, port: parsePort("SYNAPSE_API_PORT", env.SYNAPSE_API_PORT, 7400) },
     web: { host: "127.0.0.1", port: parsePort("SYNAPSE_WEB_PORT", env.SYNAPSE_WEB_PORT, 7401) },
     workerConcurrency: 2,

@@ -118,9 +118,10 @@ Slack-content retention (180 days) is the separate job described in `database-de
 | `retention.notificationsDays` | 30 (7-365) |
 | `retention.claudeRunsDays` | 90 (14-730) |
 | `retention.auditDays` | 365 (90-3650) |
+| `retention.snapshotsDays` | 30 (7-365): `quota_snapshots` and `auth_snapshots` older than this are deleted; the newest row of each table is kept |
 | `SYNAPSE_BACKUP_DIR` (env) | `<data dir>/backups`; absolute, outside the repository. `ops.backup.dir` is the stored equivalent and is not editable from the web |
 
-The eight `ops.*` and `retention.*` keys above are in the settings API allowlist and the Runtime panel. `ops.backup.lastRunDate` and `ops.retention.lastRun` are internal.
+The nine `ops.*` and `retention.*` keys above are in the settings API allowlist and the Runtime panel. `ops.backup.lastRunDate` and `ops.retention.lastRun` are internal.
 
 The quota thresholds are starting values, to be tuned once real usage data exists. What each level allows is defined in `docs/modules/claude-orchestrator.md`.
 
@@ -132,3 +133,5 @@ The quota thresholds are starting values, to be tuned once real usage data exist
 - The engine's claim (`execution_started_at`) guarantees at-most-once execution, so a re-delivered event or re-run job never executes twice. An executor error is terminal: the approval becomes `failed` and the job completes without retry, because the side effect may have happened. Only bookkeeping failures surface as a job error, and they never carry the payload or result.
 - People profile recommendations (action `records.update`, target `people`) are applied by `ProfileService.apply` in one immediate transaction, so a failure leaves no partial version; its errors are content-free because the engine stores `e.message`. A skipped apply (stale base, superseded) ends as an executed approval with a skipped result. Because a failed approval is terminal, `retryApply` requests a fresh approval (`people.rec:<id>:<n>`) for the still-pending recommendation. See `docs/modules/people-memory.md`.
 - `approval.rejected` / `approval.expired` / `approval.revoked` get no generic consumer; modules subscribe through `dispatcher.subscribe`.
+
+**Database path and Runtime panel note.** A relative `SYNAPSE_DB_PATH` is resolved against the process cwd at config load (`:memory:` is unchanged), so every path derived from it, including the sandbox masks, is absolute. When `ops.backup.enabled` is off the Runtime panel says "Automatic backups are off; Back up now still makes one".

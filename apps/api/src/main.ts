@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { createApp } from "./app";
 import { createContainer } from "./container";
 import { loadConfig } from "./core/config/config";
@@ -10,7 +11,7 @@ import {
 import { createShutdown } from "./core/system/shutdown";
 import { NotifySendNotifier } from "./infrastructure/notifier";
 import { PRIVATE_FILES_LOG_LINE, securePrivateFiles } from "./infrastructure/private-files";
-import { sweepRunScratch } from "./workers/engineering/steps";
+import { pruneInstanceRoots, sweepRunScratch } from "./workers/engineering/steps";
 import { OPS_BACKUP_JOB } from "./workers/ops";
 
 const config = loadConfig(process.env);
@@ -54,6 +55,9 @@ recoverOrphanRuns(c.db, c.clock);
 // ADR-040: leftover develop-run dirs of a killed process. Here, never in createContainer, for the
 // same reason: it deletes runs a live process on the same data dir may be using.
 sweepRunScratch(c.runRoot);
+// ADR-040: run roots of other instances (old data dirs, smokes) nothing touched for 7 days.
+const pruned = pruneInstanceRoots(dirname(c.runRoot), c.runRoot);
+console.log(`engineering.step: old run roots removed=${pruned.removed} kept=${pruned.kept}`);
 // R4: the result feeds the `database` health check; a failure is reported there, not fatal here.
 void c.integrity.check();
 // E6: the engineering lease is never released by core recovery. Settled here, before the worker

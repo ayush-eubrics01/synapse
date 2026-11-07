@@ -16,6 +16,12 @@ const NUMBERS: { key: OpsKey; label: string; min: number; max: number }[] = [
   { key: "retention.notificationsDays", label: "Keep read notifications (days)", min: 7, max: 365 },
   { key: "retention.claudeRunsDays", label: "Keep Claude run detail (days)", min: 14, max: 730 },
   { key: "retention.auditDays", label: "Keep audit entries (days)", min: 90, max: 3650 },
+  {
+    key: "retention.snapshotsDays",
+    label: "Keep quota and login snapshots (days)",
+    min: 7,
+    max: 365,
+  },
 ];
 
 function uptime(seconds: number): string {
@@ -109,6 +115,9 @@ export function RuntimePanel({
           Back up now
         </button>
       </div>
+      {settings?.["ops.backup.enabled"] === false && (
+        <p className="syn-empty">Automatic backups are off; Back up now still makes one</p>
+      )}
       {r?.lastBackupAttempt?.ok === false ? (
         <p className="syn-runtime-error" role="alert">
           {`The last backup failed (${r.lastBackupAttempt.code ?? "unexpected"}). See the jobs list.`}

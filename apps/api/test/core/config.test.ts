@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { NewDomainEvent } from "@synapse/contracts";
 import { type DbOrTx, openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock, isoNow, newId } from "@synapse/shared";
@@ -381,4 +381,14 @@ test("checkBackupDir: dotted names and symlinks into the repo", () => {
   symlinkSync(repo, join(other, "link"));
   expect(checkBackupDir(join(other, "link", "not-yet", "b"), repo)).toBe("inside_repo");
   expect(checkBackupDir(join(other, "fresh", "b"), repo)).toBe("ok");
+});
+
+test("H4.4: a relative SYNAPSE_DB_PATH is resolved against the cwd", () => {
+  expect(loadConfig({ HOME: "/home/u", SYNAPSE_DB_PATH: "data/t.db" }).dbPath).toBe(
+    resolve(process.cwd(), "data/t.db"),
+  );
+  expect(loadConfig({ HOME: "/home/u", SYNAPSE_DB_PATH: ":memory:" }).dbPath).toBe(":memory:");
+  expect(loadConfig({ HOME: "/home/u", SYNAPSE_DB_PATH: "/home/u/x.db" }).dbPath).toBe(
+    "/home/u/x.db",
+  );
 });
