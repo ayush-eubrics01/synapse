@@ -2,6 +2,7 @@ import type { JiraIssueView, JiraIssueViewKind, JiraStatusDto } from "@synapse/c
 import { type Db, schema, type Tx } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { and, eq, inArray, isNull } from "drizzle-orm";
+import type { AuditLogger } from "../../core/audit/audit";
 import type { SettingsService } from "../../core/config/settings";
 import type { JobQueue } from "../../core/jobs/queue";
 import type { SyncStateService } from "../inbox/sync-state";
@@ -26,7 +27,16 @@ export class JiraDisabled extends Error {
   }
 }
 
+/** `updateSettings` with a `cloudId` the stored candidate list does not offer. Mapped to 400. */
+export class JiraUnknownSite extends Error {
+  constructor() {
+    super("unknown jira site");
+    this.name = "JiraUnknownSite";
+  }
+}
+
 export interface JiraSettingsPatch {
+  cloudId?: string;
   enabled?: boolean;
   scopeJql?: string;
   excludedProjects?: string[];
@@ -39,6 +49,7 @@ export interface JiraServiceDeps {
   sync: SyncStateService;
   store: JiraStore;
   queue: JobQueue;
+  audit: AuditLogger;
 }
 
 const LIVE = ["PENDING", "RETRY", "RUNNING"] as const;
@@ -67,6 +78,7 @@ export class JiraService {
             : err.kind,
       scopeJql: settings.get("jira.scope.jql"),
       excludedProjects: settings.get("jira.excludedProjects"),
+      sites: settings.get("jira.cloudId") === null ? settings.get("jira.cloudIdCandidates") : [],
     };
   }
 
@@ -102,12 +114,35 @@ export class JiraService {
    * supersedes running chains, takes newly excluded projects out of scope and queues a reconcile.
    */
   updateSettings(patch: JiraSettingsPatch): JiraStatusDto {
-    const { db, settings, sync, store } = this.deps;
+    const { db, settings, sync, store, audit } = this.deps;
     db.transaction(
       (tx) => {
         const wasEnabled = settings.get("jira.enabled");
         const oldScope = settings.get("jira.scope.jql");
         const oldExcluded = settings.get("jira.excludedProjects");
+        const oldCloudId = settings.get("jira.cloudId");
+        const candidates = settings.get("jira.cloudIdCandidates");
+        if (
+          patch.cloudId !== undefined &&
+          candidates.length > 0 &&
+          !candidates.some((c) => c.id === patch.cloudId)
+        ) {
+          throw new JiraUnknownSite();
+        }
+        const siteChanged = patch.cloudId !== undefined && patch.cloudId !== oldCloudId;
+        if (patch.cloudId !== undefined && siteChanged) {
+          settings.setIn(tx, "jira.cloudId", patch.cloudId);
+          settings.setIn(tx, "jira.cloudIdCandidates", [], { emit: false });
+          sync.update(tx, "jira.issues", { lastError: null });
+          // Keys only: a site name is never audited.
+          audit.record(tx, {
+            actor: "user",
+            module: "jira",
+            action: "settings.updated",
+            result: "ok",
+            details: { keys: ["jira.cloudId"] },
+          });
+        }
         if (patch.enabled !== undefined) settings.setIn(tx, "jira.enabled", patch.enabled);
         if (patch.scopeJql !== undefined) settings.setIn(tx, "jira.scope.jql", patch.scopeJql);
         if (patch.excludedProjects !== undefined) {
@@ -121,11 +156,18 @@ export class JiraService {
           JSON.stringify([...excluded].sort()) !== JSON.stringify([...oldExcluded].sort());
         const hasCloudId = settings.get("jira.cloudId") !== null;
 
-        if (scopeChanged || excludedChanged) {
+        const scopeReset = scopeChanged || excludedChanged || (siteChanged && oldCloudId !== null);
+        if (scopeReset) {
           sync.update(tx, "jira.issues", { checkpoint: null, generation: newId(), status: "idle" });
           sync.update(tx, "jira.reconcile", { generation: newId(), status: "idle" });
           if (excludedChanged) store.dropExcluded(tx, excluded);
           if (enabled && hasCloudId) this.enqueueOnce(tx, JIRA_JOB.reconcile, "settings", true);
+        }
+        if (siteChanged && enabled && wasEnabled) {
+          this.enqueueOnce(tx, JIRA_JOB.sync, "site");
+          if (sync.get("jira.issues", tx).checkpoint === null) {
+            this.enqueueOnce(tx, JIRA_JOB.reconcile, "site");
+          }
         }
         if (enabled && !wasEnabled) {
           if (hasCloudId) {

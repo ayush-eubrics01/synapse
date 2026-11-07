@@ -110,6 +110,7 @@ import {
   startBackup,
   type UrgentItemDto,
   unregisterRepository,
+  updateJiraSettings,
   updateLayout,
   updateMilestone,
 } from "../lib/api";
@@ -710,6 +711,20 @@ export default function Dashboard() {
     await refresh();
   };
 
+  const chooseJiraSite = async (id: string) => {
+    try {
+      await updateJiraSettings({ cloudId: id });
+      toast.show("Jira site saved");
+    } catch (e) {
+      toast.show(
+        e instanceof ApiError && e.code === "unknown_site"
+          ? "That site is no longer offered — use Sync now"
+          : "Couldn't save the Jira site",
+      );
+    }
+    await refresh();
+  };
+
   const removeRepository = async (id: string) => {
     try {
       await unregisterRepository(id);
@@ -1149,6 +1164,7 @@ export default function Dashboard() {
           onSync={feed.handlers.syncJira}
           onGoToSetup={() => goTo("triage")}
           onCreateTask={feed.handlers.createTaskFromJira}
+          onChooseSite={(id) => void chooseJiraSite(id)}
         />
       </>
     ),

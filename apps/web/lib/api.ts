@@ -683,6 +683,7 @@ export interface JiraSettingsDto {
   enabled?: boolean;
   scopeJql?: string;
   excludedProjects?: string[];
+  cloudId?: string;
 }
 
 export function getJiraStatus(fetchImpl: typeof fetch = fetch): Promise<JiraStatusDto> {

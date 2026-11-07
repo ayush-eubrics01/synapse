@@ -537,6 +537,7 @@ test("a Jira row offers Create task only when the handler is given", () => {
     lastError: null,
     scopeJql: "",
     excludedProjects: [] as string[],
+    sites: [] as { id: string; name: string }[],
   };
   const withHandler = renderToString(
     <JiraSection

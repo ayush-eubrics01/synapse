@@ -581,7 +581,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     settings,
     conversationLabel: (tx, conv) => participantLabel(tx, conv, settings.get("slack.selfUserId")),
   });
-  const jira = new JiraService({ db, clock, settings, sync, store: jiraStore, queue });
+  const jira = new JiraService({ db, clock, settings, sync, store: jiraStore, queue, audit });
   registerJiraJobs({
     db,
     clock,

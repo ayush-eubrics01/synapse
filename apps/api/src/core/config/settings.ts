@@ -70,6 +70,11 @@ const settingSchemas = {
     .regex(/^[0-9a-fA-F-]{8,64}$/)
     .nullable()
     .default(null),
+  // Internal (not user-editable): the sites the cloud-id resolver found while several existed.
+  "jira.cloudIdCandidates": z
+    .array(z.object({ id: z.string().regex(/^[0-9a-fA-F-]{8,64}$/), name: z.string().max(200) }))
+    .max(20)
+    .default([]),
   // No newline, no ORDER BY, balanced parentheses and quotes (the code wraps it as `(<scope>)`).
   "jira.scope.jql": jiraScopeJqlSchema.default("assignee = currentUser() AND updated >= -60d"),
   "jira.excludedProjects": z.array(jiraProjectKeySchema).default([]),

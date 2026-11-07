@@ -9,12 +9,14 @@ import {
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
 import { eq } from "drizzle-orm";
+import { AuditLogger } from "../../src/core/audit/audit";
 import { SettingsService } from "../../src/core/config/settings";
 import { EventPublisher } from "../../src/core/events/publisher";
 import { JobQueue } from "../../src/core/jobs/queue";
 import type { HandlerRegistration } from "../../src/core/jobs/worker";
 import { SchedulerService } from "../../src/core/scheduler/scheduler";
 import { SyncStateService } from "../../src/modules/inbox/sync-state";
+import { JiraService } from "../../src/modules/jira-tracking/service";
 import { JiraStore } from "../../src/modules/jira-tracking/store";
 import { registerJiraJobs } from "../../src/workers/jira";
 
@@ -29,6 +31,8 @@ let clock: FakeClock;
 let settings: SettingsService;
 let sync: SyncStateService;
 let store: JiraStore;
+let queue: JobQueue;
+let audit: AuditLogger;
 let handlers: Map<string, HandlerRegistration>;
 let searches: SearchArgs[];
 let resolves: number;
@@ -101,7 +105,8 @@ beforeEach(() => {
   const events = new EventPublisher(clock);
   settings = new SettingsService(db, clock, events.publish.bind(events));
   sync = new SyncStateService(db, clock);
-  const queue = new JobQueue(db, clock);
+  queue = new JobQueue(db, clock);
+  audit = new AuditLogger(clock);
   store = new JiraStore({ db, clock, events, settings, timeZone: "UTC" });
   handlers = new Map();
   searches = [];
@@ -601,6 +606,52 @@ describe("cloudId", () => {
     sites.push(async () => []);
     const err = (await run("jira.resolve_cloud_id").catch((e) => e)) as JobError;
     expect(err.classified).toMatchObject({ kind: "needs_attention", message: "no_sites" });
+  });
+
+  describe("candidate sites", () => {
+    const ID2 = "11111111-1111-4111-8111-111111111111";
+    const park = async () => (await run("jira.resolve_cloud_id").catch((e) => e)) as JobError;
+    const status = () =>
+      new JiraService({ db, clock, settings, sync, store, queue, audit }).status();
+
+    test("several sites are stored as { id, name } and exposed by status", async () => {
+      sites.push(async () => [
+        { id: CLOUD, url: "https://a.invalid", name: "Demo site" },
+        { id: ID2, url: "https://b.invalid", name: "Demo site 2" },
+      ]);
+      await park();
+      const both = [
+        { id: CLOUD, name: "Demo site" },
+        { id: ID2, name: "Demo site 2" },
+      ];
+      expect(settings.get("jira.cloudIdCandidates")).toEqual(both);
+      expect(status().sites).toEqual(both);
+      expect(status().lastError).toBe("multiple_sites");
+      expect(db.select().from(schema.auditEvents).all()).toHaveLength(0);
+    });
+
+    test("an invalid id is dropped; a long name is clipped to 200", async () => {
+      sites.push(async () => [
+        { id: "bad id!", url: "https://a.invalid", name: "Demo site" },
+        { id: CLOUD, url: "https://b.invalid", name: "x".repeat(250) },
+      ]);
+      await park();
+      expect(settings.get("jira.cloudIdCandidates")).toEqual([
+        { id: CLOUD, name: "x".repeat(200) },
+      ]);
+    });
+
+    test("zero sites stores an empty list; one site stores the id and an empty list", async () => {
+      settings.set("jira.cloudIdCandidates", [{ id: CLOUD, name: "Demo site" }]);
+      sites.push(async () => []);
+      await park();
+      expect(settings.get("jira.cloudIdCandidates")).toEqual([]);
+      settings.set("jira.cloudIdCandidates", [{ id: CLOUD, name: "Demo site" }]);
+      sites.push(async () => [{ id: CLOUD, url: "https://a.invalid", name: "Demo site" }]);
+      await run("jira.resolve_cloud_id");
+      expect(settings.get("jira.cloudId")).toBe(CLOUD);
+      expect(settings.get("jira.cloudIdCandidates")).toEqual([]);
+    });
   });
 
   test("already set: skipped without a run", async () => {
