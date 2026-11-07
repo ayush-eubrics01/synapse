@@ -758,7 +758,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     dbPath: config.dbPath,
     diskFree,
   });
-  const integrity = new DatabaseIntegrity(sqlite, clock);
+  const integrity = new DatabaseIntegrity(sqlite, clock, { dbPath: config.dbPath });
   const runtime = new RuntimeService({
     db,
     sqlite,

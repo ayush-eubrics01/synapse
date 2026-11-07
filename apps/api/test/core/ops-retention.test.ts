@@ -372,24 +372,39 @@ test("summary, setting and a counts-only audit row", async () => {
   expect(JSON.parse(rows[0]?.details ?? "{}")).toMatchObject({ jobs: 1, claudeRunsCompacted: 1 });
 });
 
-test("DatabaseIntegrity reports ok and remembers the last result", () => {
+test("DatabaseIntegrity reports ok and remembers the last result", async () => {
   const i = new DatabaseIntegrity(sqlite, clock);
   expect(i.last()).toBeNull();
-  expect(i.check()).toBe("ok");
+  expect(await i.check()).toBe("ok");
   expect(i.last()).toEqual({ result: "ok", at: NOW.toISOString() });
 });
 
-test("DatabaseIntegrity reports failed when quick_check does not return a single ok", () => {
+test("DatabaseIntegrity reports failed when quick_check does not return a single ok", async () => {
   const stub = {
     query: () => ({ all: () => [{ quick_check: "row 1 missing from index" }] }),
   } as unknown as Database;
   const i = new DatabaseIntegrity(stub, clock);
-  expect(i.check()).toBe("failed");
+  expect(await i.check()).toBe("failed");
   expect(i.last()?.result).toBe("failed");
   const throwing = {
     query: () => {
       throw new Error("disk image is malformed");
     },
   } as unknown as Database;
-  expect(new DatabaseIntegrity(throwing, clock).check()).toBe("failed");
+  expect(await new DatabaseIntegrity(throwing, clock).check()).toBe("failed");
+});
+
+test("H4.2: quick_check through the worker reads the file and reports ok", async () => {
+  const i = new DatabaseIntegrity(sqlite, clock, { dbPath: join(root, "synapse.db") });
+  expect(await i.check()).toBe("ok");
+  expect(i.last()?.result).toBe("ok");
+});
+
+test("H4.2: a hung worker times out as failed", async () => {
+  const i = new DatabaseIntegrity(sqlite, clock, {
+    dbPath: join(root, "synapse.db"),
+    worker: { url: new URL("../fixtures/hang-db-worker.ts", import.meta.url), timeoutMs: 100 },
+  });
+  expect(await i.check()).toBe("failed");
+  expect(i.last()?.result).toBe("failed");
 });

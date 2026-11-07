@@ -98,3 +98,12 @@ test("main.ts sweeps the run scratch only after the server binds, next to recove
   expect(recover).toBeGreaterThan(serve);
   expect(src.indexOf("createContainer(")).toBeLessThan(serve);
 });
+
+test("main.ts runs the backup tick right after bind, before the first tick()", () => {
+  const src = readFileSync(join(import.meta.dir, "../../src/main.ts"), "utf8");
+  const serve = src.indexOf("Bun.serve(");
+  const now = src.indexOf("runNow(OPS_BACKUP_JOB)");
+  const firstTick = src.indexOf("\ntick();");
+  expect(now).toBeGreaterThan(serve);
+  expect(firstTick).toBeGreaterThan(now);
+});

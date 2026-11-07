@@ -111,7 +111,7 @@ test("queue counts and the oldest due pending age", async () => {
 });
 
 test("a backup shows as the last backup and the retention summary is passed through", async () => {
-  const r = c.backup.run(7);
+  const r = await c.backup.run(7);
   expect(r.ok).toBe(true);
   const summary = {
     at: "2026-11-07T03:00:00.000Z",

@@ -11,6 +11,7 @@ import { createShutdown } from "./core/system/shutdown";
 import { NotifySendNotifier } from "./infrastructure/notifier";
 import { PRIVATE_FILES_LOG_LINE, securePrivateFiles } from "./infrastructure/private-files";
 import { sweepRunScratch } from "./workers/engineering/steps";
+import { OPS_BACKUP_JOB } from "./workers/ops";
 
 const config = loadConfig(process.env);
 // R1: new files are private; existing data files are tightened before anything opens them.
@@ -54,7 +55,7 @@ recoverOrphanRuns(c.db, c.clock);
 // same reason: it deletes runs a live process on the same data dir may be using.
 sweepRunScratch(c.runRoot);
 // R4: the result feeds the `database` health check; a failure is reported there, not fatal here.
-c.integrity.check();
+void c.integrity.check();
 // E6: the engineering lease is never released by core recovery. Settled here, before the worker
 // and the scheduler start, so no step or pickup runs against a tree that a crash left half-changed.
 try {
@@ -83,6 +84,8 @@ const reap = guarded("recovery.reap", () =>
   reapExpiredJobs({ db: c.db, clock: c.clock, audit: c.audit, sweeps: c.recoverySweeps }),
 );
 
+// H4.2: the daily backup tick is due right after startup (coalesced; `dailyDue` decides).
+c.scheduler.runNow(OPS_BACKUP_JOB);
 tick();
 const intervals = [
   setInterval(tick, 5_000),

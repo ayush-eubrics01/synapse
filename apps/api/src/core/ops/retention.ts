@@ -88,7 +88,7 @@ export class RetentionService {
     const aborted = signal?.aborted === true;
     this.d.sqlite.exec("pragma wal_checkpoint(TRUNCATE)");
     this.d.sqlite.exec("pragma optimize");
-    const quickCheck = this.d.integrity.check();
+    const quickCheck = await this.d.integrity.check();
 
     const summary: RetentionSummary = {
       at: isoNow(clock),

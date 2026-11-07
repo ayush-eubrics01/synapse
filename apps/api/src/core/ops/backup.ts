@@ -17,6 +17,7 @@ import { type Clock, newId } from "@synapse/shared";
 import { desc, inArray, sql } from "drizzle-orm";
 import type { AuditLogger } from "../audit/audit";
 import { checkBackupDir } from "../config/config";
+import { BACKUP_WORKER_TIMEOUT_MS, runDbTask } from "./db-task";
 
 export const BACKUP_NAME_RE = /^synapse-\d{8}-\d{6}\.db$/;
 export const BACKUP_TMP_RE = /^\.synapse-.+\.tmp$/;
@@ -47,6 +48,8 @@ export interface BackupServiceDeps {
   chmodDir?: boolean;
   /** Test seam for the repository root used by that check. */
   repoRoot?: string;
+  /** Test seam for the db worker (entry URL and timeout). */
+  worker?: { url?: URL; timeoutMs?: number };
 }
 
 export type BackupResult =
@@ -84,10 +87,10 @@ export class BackupService {
   }
 
   /** Never throws: every outcome is audited with a fixed code. */
-  run(keep: number): BackupResult {
+  async run(keep: number): Promise<BackupResult> {
     let result: BackupResult;
     try {
-      result = this.attempt(keep);
+      result = await this.attempt(keep);
     } catch (e) {
       const failure = e instanceof Failure ? e.code : "unexpected";
       const cause = e instanceof Failure ? e.cause : causeOf(e);
@@ -152,7 +155,7 @@ export class BackupService {
     return { ok, at: row.at, code: !ok && typeof code === "string" ? code : null };
   }
 
-  private attempt(keep: number): BackupResult {
+  private async attempt(keep: number): Promise<BackupResult> {
     const { dir } = this;
     this.prepareDir();
     for (const n of readdirSync(dir)) if (BACKUP_TMP_RE.test(n)) rmQuiet(join(dir, n));
@@ -169,12 +172,28 @@ export class BackupService {
       // Created 0600 up front (an empty file is a valid VACUUM INTO target), so the copy is
       // never readable by others, whatever the umask.
       writeFileSync(tmp, "", { mode: 0o600, flag: "wx" });
-      try {
-        (this.d.vacuumInto ?? ((t) => void this.d.sqlite.run("VACUUM INTO ?", [t])))(tmp);
-      } catch (e) {
-        throw new Failure("vacuum_failed", causeOf(e));
+      if (this.d.vacuumInto || this.d.dbPath === ":memory:") {
+        try {
+          (this.d.vacuumInto ?? ((t) => void this.d.sqlite.run("VACUUM INTO ?", [t])))(tmp);
+        } catch (e) {
+          throw new Failure("vacuum_failed", causeOf(e));
+        }
+        if (!this.integrityOk(tmp)) throw new Failure("integrity_failed");
+      } else {
+        const r = await runDbTask(
+          { op: "backup", dbPath: this.d.dbPath, target: tmp },
+          {
+            timeoutMs: this.d.worker?.timeoutMs ?? BACKUP_WORKER_TIMEOUT_MS,
+            url: this.d.worker?.url,
+          },
+        );
+        if (!r.ok) {
+          throw new Failure(
+            r.code === "worker_failed" || r.code === "check_failed" ? "unexpected" : r.code,
+            r.cause,
+          );
+        }
       }
-      if (!this.integrityOk(tmp)) throw new Failure("integrity_failed");
       chmodSync(tmp, 0o600);
       // A hard link never replaces an existing file, even one that appeared since the check.
       try {

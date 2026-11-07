@@ -86,36 +86,36 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-test("tick before the hour is not_due and writes nothing", () => {
-  expect(runBackupTick(deps())).toEqual({ skipped: "not_due" });
+test("tick before the hour is not_due and writes nothing", async () => {
+  expect(await runBackupTick(deps())).toEqual({ skipped: "not_due" });
   expect(files()).toEqual([]);
 });
 
-test("tick at the hour backs up and records the date; later ticks are done_today", () => {
+test("tick at the hour backs up and records the date; later ticks are done_today", async () => {
   at = { date: "2026-11-07", hour: 3 };
-  const r = runBackupTick(deps());
+  const r = await runBackupTick(deps());
   expect(r).toMatchObject({ date: "2026-11-07", backup: { ok: true } });
   expect(settings.get("ops.backup.lastRunDate")).toBe("2026-11-07");
   at = { date: "2026-11-07", hour: 3 };
-  expect(runBackupTick(deps())).toEqual({ skipped: "done_today" });
+  expect(await runBackupTick(deps())).toEqual({ skipped: "done_today" });
   // a fresh registration (restart) reads the stored date
   const d = deps();
   registerOpsJobs(d);
-  expect(runBackupTick(d)).toEqual({ skipped: "done_today" });
+  expect(await runBackupTick(d)).toEqual({ skipped: "done_today" });
 });
 
-test("disabled: no file, date still recorded", () => {
+test("disabled: no file, date still recorded", async () => {
   settings.set("ops.backup.enabled", false);
   at = { date: "2026-11-07", hour: 4 };
-  expect(runBackupTick(deps())).toEqual({ date: "2026-11-07", backup: "disabled" });
+  expect(await runBackupTick(deps())).toEqual({ date: "2026-11-07", backup: "disabled" });
   expect(files()).toEqual([]);
   expect(settings.get("ops.backup.lastRunDate")).toBe("2026-11-07");
 });
 
-test("a failed backup still records the date (no retry every tick)", () => {
+test("a failed backup still records the date (no retry every tick)", async () => {
   free = 1;
   at = { date: "2026-11-07", hour: 4 };
-  expect(runBackupTick(deps())).toEqual({
+  expect(await runBackupTick(deps())).toEqual({
     date: "2026-11-07",
     backup: { ok: false, failure: "insufficient_space" },
   });
@@ -151,7 +151,7 @@ test("registerOpsJobs registers handler and schedule; manual runs even when disa
   const d = deps();
   registerOpsJobs(d);
   const reg = d.handlers.get(OPS_BACKUP_JOB);
-  expect(reg?.timeoutMs).toBe(600_000);
+  expect(reg?.timeoutMs).toBe(660_000);
   const manual = (await reg?.handler({ input: { manual: true } } as never, {} as never)) as {
     ok: boolean;
   };
@@ -174,10 +174,10 @@ test("backupJobLive sees pending manual jobs only", () => {
   expect(backupJobLive(db)).toBe(true);
 });
 
-test("the backup tick enqueues ops.retention for the date, even when backup is disabled", () => {
+test("the backup tick enqueues ops.retention for the date, even when backup is disabled", async () => {
   at = { date: "2026-11-07", hour: 3 };
   const d = deps();
-  runBackupTick(d);
+  await runBackupTick(d);
   const job = (key: string) =>
     db.select().from(schema.jobs).where(eq(schema.jobs.idempotencyKey, key)).get();
   expect(job("ops.retention:2026-11-07")?.type).toBe(OPS_RETENTION_JOB);
@@ -185,7 +185,7 @@ test("the backup tick enqueues ops.retention for the date, even when backup is d
 
   settings.set("ops.backup.enabled", false);
   at = { date: "2026-11-08", hour: 4 };
-  runBackupTick(d);
+  await runBackupTick(d);
   expect(job("ops.retention:2026-11-08")).toBeDefined();
 });
 

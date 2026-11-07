@@ -163,7 +163,7 @@ Phase 10b: `code_answers.answer`, `not_answerable_reason` and the `suspected_inj
 
 ### Operational retention (Phase 11, R4)
 
-The daily job `ops.retention` (enqueued by the backup tick, once a day, key `ops.retention:<date>`) prunes operational tables. Deletes run in batches of 500 ids, one immediate transaction per batch, yielding to the event loop between batches, so the API stays responsive. After pruning it runs `PRAGMA wal_checkpoint(TRUNCATE)`, `PRAGMA optimize` and `PRAGMA quick_check`. The counts are audited as `ops.retention_ran` and stored in `ops.retention.lastRun`.
+The daily job `ops.retention` (enqueued by the backup tick, once a day, key `ops.retention:<date>`) prunes operational tables. Deletes run in batches of 500 ids, one immediate transaction per batch, yielding to the event loop between batches, so the API stays responsive. After pruning it runs `PRAGMA wal_checkpoint(TRUNCATE)`, `PRAGMA optimize` and `PRAGMA quick_check` (the last in a worker). The counts are audited as `ops.retention_ran` and stored in `ops.retention.lastRun`.
 
 | Data | Rule | Setting (default) |
 |---|---|---|
@@ -187,4 +187,4 @@ The daily job `ops.retention` (enqueued by the backup tick, once a day, key `ops
 
 ### Backups
 
-Backups are not a table; the files in the backup directory are the record. A backup is `VACUUM INTO` a temporary file, then `PRAGMA integrity_check` on it (exactly `ok`), then a no-clobber publish as `synapse-YYYYMMDD-HHMMSS.db` (local time). See `runtime-design.md`.
+Backups are not a table; the files in the backup directory are the record. A backup runs in a worker with its own read-only connection: `VACUUM INTO` a temporary file, then `PRAGMA integrity_check` on it (exactly `ok`), then a no-clobber publish as `synapse-YYYYMMDD-HHMMSS.db` (local time). See `runtime-design.md`.
