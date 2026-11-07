@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import {
   existsSync,
+  lutimesSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -153,6 +154,46 @@ test("H4.7: pruneInstanceRoots removes only old 8-hex real directories", () => {
     removed: 0,
     kept: 0,
   });
+});
+
+test("H4.7: an old inner symlink is never followed and its target survives", () => {
+  const base = mkdtempSync(join(tmpdir(), "syn-"));
+  const outside = mkdtempSync(join(tmpdir(), "syn-"));
+  roots.push(base, outside);
+  const old = new Date(Date.now() - 8 * 86_400_000);
+  mkdirSync(join(outside, "d"));
+  writeFileSync(join(outside, "d", "f"), "1");
+  writeFileSync(join(outside, "file"), "1");
+  mkdirSync(join(base, "aaaaaaaa", "r"), { recursive: true });
+  symlinkSync(join(outside, "d"), join(base, "aaaaaaaa", "r", "ld"));
+  symlinkSync(join(outside, "file"), join(base, "aaaaaaaa", "r", "lf"));
+  for (const p of ["ld", "lf"]) lutimesSync(join(base, "aaaaaaaa", "r", p), old, old);
+  for (const p of [join(base, "aaaaaaaa", "r"), join(base, "aaaaaaaa")]) utimesSync(p, old, old);
+  expect(pruneInstanceRoots(base, join(base, "eeeeeeee"))).toEqual({ removed: 1, kept: 0 });
+  expect(existsSync(join(base, "aaaaaaaa"))).toBe(false);
+  expect(existsSync(join(outside, "d", "f"))).toBe(true);
+  expect(existsSync(join(outside, "file"))).toBe(true);
+});
+
+test("H4.7: a symlinked base prunes nothing", () => {
+  const real = mkdtempSync(join(tmpdir(), "syn-"));
+  const holder = mkdtempSync(join(tmpdir(), "syn-"));
+  roots.push(real, holder);
+  const old = new Date(Date.now() - 8 * 86_400_000);
+  mkdirSync(join(real, "aaaaaaaa"));
+  utimesSync(join(real, "aaaaaaaa"), old, old);
+  symlinkSync(real, join(holder, "base"));
+  expect(pruneInstanceRoots(join(holder, "base"), join(holder, "keep"))).toEqual({
+    removed: 0,
+    kept: 0,
+  });
+  expect(existsSync(join(real, "aaaaaaaa"))).toBe(true);
+});
+
+test("H4.7: main.ts prunes only a real instance base, never for :memory:", () => {
+  const src = readFileSync(join(import.meta.dir, "../../src/main.ts"), "utf8");
+  expect(src).toContain('config.dbPath !== ":memory:"');
+  expect(src).toContain("dirname(c.runRoot) === defaultRunScratchRoot(process.env)");
 });
 
 test("H4.7: main.ts prunes old run roots right after the startup sweep", () => {

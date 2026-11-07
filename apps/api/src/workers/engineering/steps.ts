@@ -136,6 +136,8 @@ export function pruneInstanceRoots(
   const maxAgeMs = opts.maxAgeMs ?? INSTANCE_ROOT_MAX_AGE_MS;
   let entries: string[];
   try {
+    // The base itself must be a real directory, not a symlink that would redirect the pruning.
+    if (!lstatSync(base).isDirectory()) return { removed: 0, kept: 0 };
     entries = readdirSync(base);
   } catch {
     return { removed: 0, kept: 0 };

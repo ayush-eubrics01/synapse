@@ -184,7 +184,7 @@ The daily job `ops.retention` (enqueued by the backup tick, once a day, key `ops
 - Read commitment reminders are pruned with their notifications, so an overdue commitment can be reminded about again after about 30 days.
 - A repository inspection that failed may run again after about 30 days, once its failed job is gone.
 - Migration 0022 (`retention_fk_indexes`, added to the Phase 11 plan after review) indexes `claude_runs.job_id`, `event_consumptions.event_id`, `job_attempts.job_id` and `job_checkpoints.job_id`. Without them each batch scanned the child tables (the slowest batch went from about 2.5 s to 11 ms).
-- Snapshot pruning keeps the newest row of each snapshot table, so the latest quota and login state is never lost. The retention summary and audit row carry `quotaSnapshots` and `authSnapshots` counts (optional in the stored summary, so an older `ops.retention.lastRun` still parses).
+- Snapshot pruning keeps the newest row of each snapshot table, so the latest quota and login state is never lost. The retention summary and audit row carry `quotaSnapshots` and `authSnapshots` counts (optional in the stored summary, so an older `ops.retention.lastRun` still parses). `AuthMonitor.status().slides` compares against the oldest remaining auth snapshot, so it now means "slid within the retention window" and can become null after a long idle period.
 
 ### Backups
 

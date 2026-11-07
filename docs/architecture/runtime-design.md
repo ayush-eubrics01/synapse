@@ -134,4 +134,6 @@ The quota thresholds are starting values, to be tuned once real usage data exist
 - People profile recommendations (action `records.update`, target `people`) are applied by `ProfileService.apply` in one immediate transaction, so a failure leaves no partial version; its errors are content-free because the engine stores `e.message`. A skipped apply (stale base, superseded) ends as an executed approval with a skipped result. Because a failed approval is terminal, `retryApply` requests a fresh approval (`people.rec:<id>:<n>`) for the still-pending recommendation. See `docs/modules/people-memory.md`.
 - `approval.rejected` / `approval.expired` / `approval.revoked` get no generic consumer; modules subscribe through `dispatcher.subscribe`.
 
+Snapshot retention changes what `AuthMonitor.status().slides` means: it compares against the oldest remaining auth snapshot, so it is now "slid within the retention window" and can become null after a long idle period (only the newest row is kept).
+
 **Database path and Runtime panel note.** A relative `SYNAPSE_DB_PATH` is resolved against the process cwd at config load (`:memory:` is unchanged), so every path derived from it, including the sandbox masks, is absolute. When `ops.backup.enabled` is off the Runtime panel says "Automatic backups are off; Back up now still makes one".
