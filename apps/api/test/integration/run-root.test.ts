@@ -1,10 +1,26 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lutimesSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AIProvider } from "@synapse/contracts";
 import { createContainer } from "../../src/container";
 import { instanceRunRoot, loadConfig } from "../../src/core/config/config";
-import { sweepRunScratch } from "../../src/workers/engineering/steps";
+import {
+  pruneBaseFor,
+  pruneInstanceRoots,
+  sweepRunScratch,
+} from "../../src/workers/engineering/steps";
 import { tempDir } from "../fixtures/git-repo";
 
 /**
@@ -97,4 +113,100 @@ test("main.ts sweeps the run scratch only after the server binds, next to recove
   expect(sweep).toBeGreaterThan(serve);
   expect(recover).toBeGreaterThan(serve);
   expect(src.indexOf("createContainer(")).toBeLessThan(serve);
+});
+
+test("main.ts runs the backup tick right after bind, before the first tick()", () => {
+  const src = readFileSync(join(import.meta.dir, "../../src/main.ts"), "utf8");
+  const serve = src.indexOf("Bun.serve(");
+  const now = src.indexOf("runNow(OPS_BACKUP_JOB)");
+  const firstTick = src.indexOf("\ntick();");
+  expect(now).toBeGreaterThan(serve);
+  expect(firstTick).toBeGreaterThan(now);
+});
+
+test("H4.7: pruneInstanceRoots removes only old 8-hex real directories", () => {
+  const base = mkdtempSync(join(tmpdir(), "syn-"));
+  const outside = mkdtempSync(join(tmpdir(), "syn-"));
+  roots.push(base, outside);
+  const old = new Date(Date.now() - 8 * 86_400_000);
+  const age = (p: string) => utimesSync(p, old, old);
+  const tree = (root: string) => {
+    mkdirSync(join(root, "r", "x"), { recursive: true });
+    writeFileSync(join(root, "r", "x", "f"), "1");
+    for (const p of [join(root, "r", "x", "f"), join(root, "r", "x"), join(root, "r"), root])
+      age(p);
+  };
+  tree(join(base, "aaaaaaaa"));
+  tree(join(base, "bbbbbbbb"));
+  writeFileSync(join(base, "bbbbbbbb", "r", "x", "new"), "1"); // touched now
+  tree(join(base, "eeeeeeee")); // the keep root
+  tree(join(outside, "target"));
+  symlinkSync(join(outside, "target"), join(base, "cccccccc"));
+  writeFileSync(join(base, "dddddddd"), "x");
+  age(join(base, "dddddddd"));
+  tree(join(base, "old-dir"));
+
+  const r = pruneInstanceRoots(base, join(base, "eeeeeeee"));
+  expect(r).toEqual({ removed: 1, kept: 3 });
+  expect(existsSync(join(base, "aaaaaaaa"))).toBe(false);
+  expect(existsSync(join(base, "bbbbbbbb", "r", "x", "new"))).toBe(true);
+  expect(existsSync(join(base, "eeeeeeee", "r", "x", "f"))).toBe(true);
+  expect(existsSync(join(outside, "target", "r", "x", "f"))).toBe(true);
+  expect(existsSync(join(base, "dddddddd"))).toBe(true);
+  expect(existsSync(join(base, "old-dir", "r", "x", "f"))).toBe(true);
+  expect(pruneInstanceRoots(join(base, "missing"), join(base, "eeeeeeee"))).toEqual({
+    removed: 0,
+    kept: 0,
+  });
+});
+
+test("H4.7: an old inner symlink is never followed and its target survives", () => {
+  const base = mkdtempSync(join(tmpdir(), "syn-"));
+  const outside = mkdtempSync(join(tmpdir(), "syn-"));
+  roots.push(base, outside);
+  const old = new Date(Date.now() - 8 * 86_400_000);
+  mkdirSync(join(outside, "d"));
+  writeFileSync(join(outside, "d", "f"), "1");
+  writeFileSync(join(outside, "file"), "1");
+  mkdirSync(join(base, "aaaaaaaa", "r"), { recursive: true });
+  symlinkSync(join(outside, "d"), join(base, "aaaaaaaa", "r", "ld"));
+  symlinkSync(join(outside, "file"), join(base, "aaaaaaaa", "r", "lf"));
+  for (const p of ["ld", "lf"]) lutimesSync(join(base, "aaaaaaaa", "r", p), old, old);
+  for (const p of [join(base, "aaaaaaaa", "r"), join(base, "aaaaaaaa")]) utimesSync(p, old, old);
+  expect(pruneInstanceRoots(base, join(base, "eeeeeeee"))).toEqual({ removed: 1, kept: 0 });
+  expect(existsSync(join(base, "aaaaaaaa"))).toBe(false);
+  expect(existsSync(join(outside, "d", "f"))).toBe(true);
+  expect(existsSync(join(outside, "file"))).toBe(true);
+});
+
+test("H4.7: a symlinked base prunes nothing", () => {
+  const real = mkdtempSync(join(tmpdir(), "syn-"));
+  const holder = mkdtempSync(join(tmpdir(), "syn-"));
+  roots.push(real, holder);
+  const old = new Date(Date.now() - 8 * 86_400_000);
+  mkdirSync(join(real, "aaaaaaaa"));
+  utimesSync(join(real, "aaaaaaaa"), old, old);
+  symlinkSync(real, join(holder, "base"));
+  expect(pruneInstanceRoots(join(holder, "base"), join(holder, "keep"))).toEqual({
+    removed: 0,
+    kept: 0,
+  });
+  expect(existsSync(join(real, "aaaaaaaa"))).toBe(true);
+});
+
+test("H4.7: pruneBaseFor allows only the default instance base, never :memory:", () => {
+  const env = { HOME: "/home/u" };
+  const base = "/home/u/.cache/synapse";
+  expect(pruneBaseFor(":memory:", join(base, "aaaaaaaa"), env)).toBeNull();
+  expect(pruneBaseFor("/home/u/d/synapse.db", "/tmp/x-runs", env)).toBeNull();
+  expect(pruneBaseFor("/home/u/d/synapse.db", join(base, "aaaaaaaa"), env)).toBe(base);
+  expect(pruneBaseFor("/home/u/d/synapse.db", "/home/u/other/aaaaaaaa", env)).toBeNull();
+});
+
+test("H4.7: main.ts prunes old run roots right after the startup sweep", () => {
+  const src = readFileSync(join(import.meta.dir, "../../src/main.ts"), "utf8");
+  const sweep = src.indexOf("sweepRunScratch(c.runRoot)");
+  const prune = src.indexOf("pruneInstanceRoots(");
+  expect(sweep).toBeGreaterThan(-1);
+  expect(prune).toBeGreaterThan(sweep);
 });

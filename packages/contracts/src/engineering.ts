@@ -27,6 +27,17 @@ export const engineeringTaskStatusSchema = z.enum([
 ]);
 export type EngineeringTaskStatus = z.infer<typeof engineeringTaskStatusSchema>;
 
+/**
+ * Develop `needs_attention` reasons a retry can resolve once the user fixes the environment
+ * (batch 2): the sandbox cannot start, is off, or its run root does not fit.
+ */
+export const DEVELOP_RETRY_REASONS = [
+  "sandbox_unavailable",
+  "sandbox_disabled",
+  "sandbox_path_too_long",
+  "sandbox_root_masked",
+] as const;
+
 export const engineeringStepSchema = z.enum([
   "investigate",
   "branch",
@@ -114,6 +125,18 @@ export type PlanApprovalInput = z.infer<typeof planApprovalInputSchema>;
 export const approveDescriptionInputSchema = z.object({ description: z.string().min(1).max(8000) });
 export type ApproveDescriptionInput = z.infer<typeof approveDescriptionInputSchema>;
 
+/**
+ * H2: what a terminal task's cleanup left behind. Fixed values only: no paths, branch names or
+ * text.
+ */
+export interface EngineeringCleanupView {
+  branchKept: boolean;
+  pushedNotPr: boolean;
+  dirtyTree: boolean;
+  /** The status a cancelled task was cancelled from; null once the audit row is pruned. */
+  priorStatus: EngineeringTaskStatus | null;
+}
+
 export interface EngineeringTaskView {
   id: string;
   repositoryId: string;
@@ -134,6 +157,8 @@ export interface EngineeringTaskView {
    * Cleared by a successful pickup.
    */
   lastPickupError: string | null;
+  /** H2: null for a task that is not terminal or has no recorded cleanup outcome. */
+  cleanup: EngineeringCleanupView | null;
   createdAt: string;
   updatedAt: string;
 }

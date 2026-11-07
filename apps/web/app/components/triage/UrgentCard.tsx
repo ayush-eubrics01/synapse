@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
 import type { UrgencyStatusDto, UrgentItemDto } from "../../../lib/api";
 import { conversationLabel } from "../../../lib/format";
 import { Button } from "../ui/Button";
+import { useDraft } from "../ui/useDraft";
 import {
   Actions,
   absoluteTime,
@@ -41,7 +41,7 @@ export interface UrgentCardProps {
 }
 
 export function UrgentCard({ item: i, now, onStatus, onReply, onCopy }: UrgentCardProps) {
-  const [text, setText] = useState(i.draft?.text ?? "");
+  const [text, setText] = useDraft(`reply:${i.messageId}`, i.draft?.text ?? "");
   const reply = i.reply;
   const canRequest = reply === null || reply.canRequest;
   const statusLine = reply?.outgoingStatus != null ? SEND_STATUS[reply.outgoingStatus] : undefined;

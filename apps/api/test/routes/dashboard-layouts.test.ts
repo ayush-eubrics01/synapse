@@ -121,8 +121,12 @@ describe("dashboard layouts API", () => {
     const focus = (await (await post("Focus")).json()) as DashboardLayoutView;
     const a = await call("POST", `/${focus.id}/activate`);
     expect(a.status).toBe(200);
-    expect(((await a.json()) as DashboardLayoutView).isActive).toBe(true);
+    const body = (await a.json()) as DashboardLayoutsResponse;
     const all = await list();
+    expect(body).toEqual(all);
+    expect(body.active.id).toBe(focus.id);
+    expect(body.layouts).toHaveLength(2);
+    expect(body.layouts.filter((l) => l.isActive)).toHaveLength(1);
     expect(all.layouts.filter((l) => l.isActive)).toHaveLength(1);
     expect(all.active.id).toBe(focus.id);
     await call("PUT", `/${focus.id}`, {

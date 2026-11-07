@@ -80,10 +80,19 @@ const atOrUnder = (path: string, dir: string) => path === dir || path.startsWith
 
 /** The realpath of `p` when it exists, else `p` (a symlinked home or data dir must compare and mask by its target). */
 const real = (p: string): string => {
-  try {
-    return stripSlashes(realpathSync(p));
-  } catch {
-    return stripSlashes(p);
+  // A path that does not exist yet (a run root before its first mkdir) resolves through its
+  // deepest existing ancestor, with the missing tail re-appended.
+  let head = stripSlashes(p);
+  let tail = "";
+  for (;;) {
+    try {
+      return stripSlashes(realpathSync(head)) + tail;
+    } catch {
+      const slash = head.lastIndexOf("/");
+      if (slash <= 0) return stripSlashes(p);
+      tail = head.slice(slash) + tail;
+      head = head.slice(0, slash);
+    }
   }
 };
 
@@ -129,6 +138,23 @@ export const REPO_IN_MASKED_PATH = "repo_in_masked_path";
 export const SANDBOX_PATH_TOO_LONG = "sandbox_path_too_long";
 export const SANDBOX_PATH_TOO_LONG_HINT =
   "The develop run's temp path is too long for the sandbox's sockets; set XDG_CACHE_HOME to a shorter path and restart the API";
+
+/**
+ * True when the run root is at or under a `sandboxDenyRead` entry or one of `roots`: every run's
+ * TMPDIR would then be masked (ADR-040, H4.6). Pure, apart from the realpath of existing paths.
+ */
+export function runRootMasked(
+  runRoot: string,
+  home: string,
+  protectedDirs: readonly string[],
+  roots: readonly string[] = SANDBOX_MASKED_ROOTS,
+): boolean {
+  const r = real(runRoot);
+  return (
+    sandboxDenyRead(home, protectedDirs).some((e) => atOrUnder(r, e)) ||
+    roots.some((m) => atOrUnder(r, stripSlashes(m)))
+  );
+}
 
 /**
  * True when the repository is at or under one of `roots` (default: the paths the sandbox always

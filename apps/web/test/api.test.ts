@@ -283,6 +283,8 @@ test("layout API URLs, methods and error codes", async () => {
   expect(u.calls[0]?.url).toBe("/api/dashboard/layouts/L%201");
   expect(u.calls[0]?.init?.method).toBe("PUT");
   const a = fake(200, {});
+  const answer = { active: { id: "L1" }, layouts: [] };
+  expect(await activateLayout("L1", fake(200, answer).impl)).toEqual(answer as never);
   await activateLayout("L1", a.impl);
   await resetLayout("L1", a.impl);
   expect(a.calls.map((x) => x.url)).toEqual([

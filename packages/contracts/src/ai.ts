@@ -46,6 +46,15 @@ export interface SandboxSpec {
 export const SANDBOX_MASKED_ROOTS = ["/run", "/var/run", "/tmp"] as const;
 
 /**
+ * ADR-040 (batch 2, H4.6): the fixed develop failure (and `JobError` message) when the run root
+ * (`<XDG_CACHE_HOME or ~/.cache>/synapse/<hash>`) is inside a masked path, so every run's TMPDIR
+ * would be hidden. The same hint is the health hint for the `sandbox` check's `run_root_masked`.
+ */
+export const SANDBOX_ROOT_MASKED = "sandbox_root_masked";
+export const SANDBOX_ROOT_MASKED_HINT =
+  "Set XDG_CACHE_HOME to a directory outside ~/.config and the other protected folders, then restart Synapse and try again.";
+
+/**
  * ADR-040: matches a sandbox that could not start, tested against the CLI's stderr head, an error
  * result's text and (fix round 2) a develop run's Bash tool_result content; only the match is
  * used. Phrases from Claude Code 2.1.319:

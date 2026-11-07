@@ -80,6 +80,27 @@ export class SchedulerService {
     );
   }
 
+  /** Makes an enabled schedule due on the next tick. False when no enabled row has that name. */
+  runNow(name: string): boolean {
+    const now = isoNow(this.clock);
+    return this.db.transaction(
+      (tx) => {
+        const row = tx
+          .select({ id: scheduledTasks.id })
+          .from(scheduledTasks)
+          .where(and(eq(scheduledTasks.name, name), eq(scheduledTasks.enabled, true)))
+          .get();
+        if (!row) return false;
+        tx.update(scheduledTasks)
+          .set({ nextRunAt: now })
+          .where(eq(scheduledTasks.id, row.id))
+          .run();
+        return true;
+      },
+      { behavior: "immediate" },
+    );
+  }
+
   /** Enqueue each due task once; reschedule from now so downtime never causes a catch-up storm. */
   tick(): number {
     const nowDate = this.clock.now();

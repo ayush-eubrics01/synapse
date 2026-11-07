@@ -10,7 +10,8 @@ import {
 import { createShutdown } from "./core/system/shutdown";
 import { NotifySendNotifier } from "./infrastructure/notifier";
 import { PRIVATE_FILES_LOG_LINE, securePrivateFiles } from "./infrastructure/private-files";
-import { sweepRunScratch } from "./workers/engineering/steps";
+import { pruneBaseFor, pruneInstanceRoots, sweepRunScratch } from "./workers/engineering/steps";
+import { OPS_BACKUP_JOB } from "./workers/ops";
 
 const config = loadConfig(process.env);
 // R1: new files are private; existing data files are tightened before anything opens them.
@@ -53,8 +54,15 @@ recoverOrphanRuns(c.db, c.clock);
 // ADR-040: leftover develop-run dirs of a killed process. Here, never in createContainer, for the
 // same reason: it deletes runs a live process on the same data dir may be using.
 sweepRunScratch(c.runRoot);
+// ADR-040: run roots of other instances (old data dirs, smokes) nothing touched for 7 days.
+// Only a real instance base (`<cache>/synapse`); an in-memory container's sibling dir is never one.
+const pruneBase = pruneBaseFor(config.dbPath, c.runRoot, process.env);
+if (pruneBase !== null) {
+  const pruned = pruneInstanceRoots(pruneBase, c.runRoot);
+  console.log(`engineering.step: old run roots removed=${pruned.removed} kept=${pruned.kept}`);
+}
 // R4: the result feeds the `database` health check; a failure is reported there, not fatal here.
-c.integrity.check();
+void c.integrity.check();
 // E6: the engineering lease is never released by core recovery. Settled here, before the worker
 // and the scheduler start, so no step or pickup runs against a tree that a crash left half-changed.
 try {
@@ -83,6 +91,12 @@ const reap = guarded("recovery.reap", () =>
   reapExpiredJobs({ db: c.db, clock: c.clock, audit: c.audit, sweeps: c.recoverySweeps }),
 );
 
+// H4.2: the daily backup tick is due right after startup (coalesced; `dailyDue` decides).
+try {
+  c.scheduler.runNow(OPS_BACKUP_JOB);
+} catch (e) {
+  console.error("backup tick at startup failed:", e instanceof Error ? e.name : "non-error");
+}
 tick();
 const intervals = [
   setInterval(tick, 5_000),

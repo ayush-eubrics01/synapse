@@ -13,7 +13,7 @@ import type { SyncStateService } from "../inbox/sync-state";
 import type { UrgentInbox } from "../inbox/urgent";
 import type { PeopleViews } from "../people/views";
 import type { SecurityFlagsService } from "../security-flags/service";
-import { HEALTH_HINTS, HEALTH_LABELS } from "./health-hints";
+import { HEALTH_LABELS, healthHint } from "./health-hints";
 import { pipelineStages } from "./pipeline";
 
 export interface DashboardDeps {
@@ -137,7 +137,7 @@ export class DashboardService {
             label: HEALTH_LABELS[check] ?? check,
             status: r.status,
             detail: r.detail ?? null,
-            hint: HEALTH_HINTS[check] ?? null,
+            hint: healthHint(check, r.detail ?? null),
           })),
       },
       pipeline: pipelineStages(

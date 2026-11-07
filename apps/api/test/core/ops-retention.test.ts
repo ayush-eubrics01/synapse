@@ -362,6 +362,8 @@ test("summary, setting and a counts-only audit row", async () => {
     audit: 0,
     claudeRunsCompacted: 1,
     quickCheck: "ok",
+    quotaSnapshots: 0,
+    authSnapshots: 0,
   });
   expect(settings.get("ops.retention.lastRun")?.date).toBe("2026-11-07");
   const rows = sqlite
@@ -372,24 +374,93 @@ test("summary, setting and a counts-only audit row", async () => {
   expect(JSON.parse(rows[0]?.details ?? "{}")).toMatchObject({ jobs: 1, claudeRunsCompacted: 1 });
 });
 
-test("DatabaseIntegrity reports ok and remembers the last result", () => {
+test("DatabaseIntegrity reports ok and remembers the last result", async () => {
   const i = new DatabaseIntegrity(sqlite, clock);
   expect(i.last()).toBeNull();
-  expect(i.check()).toBe("ok");
+  expect(await i.check()).toBe("ok");
   expect(i.last()).toEqual({ result: "ok", at: NOW.toISOString() });
 });
 
-test("DatabaseIntegrity reports failed when quick_check does not return a single ok", () => {
+test("DatabaseIntegrity reports failed when quick_check does not return a single ok", async () => {
   const stub = {
     query: () => ({ all: () => [{ quick_check: "row 1 missing from index" }] }),
   } as unknown as Database;
   const i = new DatabaseIntegrity(stub, clock);
-  expect(i.check()).toBe("failed");
+  expect(await i.check()).toBe("failed");
   expect(i.last()?.result).toBe("failed");
   const throwing = {
     query: () => {
       throw new Error("disk image is malformed");
     },
   } as unknown as Database;
-  expect(new DatabaseIntegrity(throwing, clock).check()).toBe("failed");
+  expect(await new DatabaseIntegrity(throwing, clock).check()).toBe("failed");
+});
+
+test("H4.2: quick_check through the worker reads the file and reports ok", async () => {
+  const i = new DatabaseIntegrity(sqlite, clock, { dbPath: join(root, "synapse.db") });
+  expect(await i.check()).toBe("ok");
+  expect(i.last()?.result).toBe("ok");
+});
+
+test("H4.2: a hung worker times out as failed", async () => {
+  const i = new DatabaseIntegrity(sqlite, clock, {
+    dbPath: join(root, "synapse.db"),
+    worker: { url: new URL("../fixtures/hang-db-worker.ts", import.meta.url), timeoutMs: 100 },
+  });
+  expect(await i.check()).toBe("failed");
+  expect(i.last()?.result).toBe("failed");
+});
+
+function insertQuota(days: number) {
+  sqlite
+    .query("insert into quota_snapshots (id, observed_at, status) values (?, ?, 'ok')")
+    .run(uid(), ago(days));
+}
+function insertAuth(days: number) {
+  sqlite.query("insert into auth_snapshots (id, observed_at) values (?, ?)").run(uid(), ago(days));
+}
+
+test("H4.5: old quota and auth snapshots go, the newest row of each table stays", async () => {
+  insertQuota(40);
+  insertQuota(40);
+  insertQuota(1);
+  insertAuth(40);
+  insertAuth(39);
+  const r = await service().run("2026-11-07");
+  expect(r.quotaSnapshots).toBe(2);
+  expect(r.authSnapshots).toBe(1);
+  expect(count("quota_snapshots")).toBe(1);
+  expect(count("auth_snapshots")).toBe(1);
+  const row = sqlite
+    .query("select details from audit_events where action = 'ops.retention_ran'")
+    .get() as { details: string };
+  expect(JSON.parse(row.details)).toMatchObject({ quotaSnapshots: 2, authSnapshots: 1 });
+});
+
+test("H4.5: a table with one old row keeps it", async () => {
+  insertQuota(100);
+  insertAuth(100);
+  const r = await service().run("2026-11-07");
+  expect(r.quotaSnapshots).toBe(0);
+  expect(r.authSnapshots).toBe(0);
+  expect(count("quota_snapshots")).toBe(1);
+  expect(count("auth_snapshots")).toBe(1);
+});
+
+test("H4.5: a stored lastRun without the snapshot counts still parses", () => {
+  settings.set(
+    "ops.retention.lastRun",
+    {
+      at: NOW.toISOString(),
+      date: "2026-11-06",
+      jobs: 1,
+      notifications: 0,
+      events: 0,
+      audit: 0,
+      claudeRunsCompacted: 0,
+      quickCheck: "ok",
+    },
+    { emit: false },
+  );
+  expect(() => settings.get("ops.retention.lastRun")).not.toThrow();
 });

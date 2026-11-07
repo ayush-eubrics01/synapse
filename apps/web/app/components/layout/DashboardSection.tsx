@@ -20,6 +20,8 @@ export interface DashboardSectionProps {
   /** The wanted state: the toolbar toggles it (saved); a collapsed header asks for `false`. */
   onCollapse: (collapsed: boolean) => void;
   onWidth: (width: "full" | "half") => void;
+  /** A layout call is running: the toolbar waits. */
+  busy?: boolean;
   children: ReactNode;
 }
 
@@ -39,6 +41,7 @@ export function DashboardSection({
   onHide,
   onCollapse,
   onWidth,
+  busy = false,
   children,
 }: DashboardSectionProps) {
   const cls = `syn-section${collapsed ? " is-collapsed" : ""}${customising ? " is-customising" : ""}`;
@@ -55,7 +58,7 @@ export function DashboardSection({
           <button
             type="button"
             className="syn-btn syn-btn--ghost syn-btn--sm"
-            disabled={isFirst}
+            disabled={busy || isFirst}
             onClick={() => onMove(-1)}
           >
             Move up
@@ -63,13 +66,18 @@ export function DashboardSection({
           <button
             type="button"
             className="syn-btn syn-btn--ghost syn-btn--sm"
-            disabled={isLast}
+            disabled={busy || isLast}
             onClick={() => onMove(1)}
           >
             Move down
           </button>
           {canHide && (
-            <button type="button" className="syn-btn syn-btn--ghost syn-btn--sm" onClick={onHide}>
+            <button
+              type="button"
+              className="syn-btn syn-btn--ghost syn-btn--sm"
+              disabled={busy}
+              onClick={onHide}
+            >
               Hide
             </button>
           )}
@@ -77,6 +85,7 @@ export function DashboardSection({
             <button
               type="button"
               className="syn-btn syn-btn--ghost syn-btn--sm"
+              disabled={busy}
               onClick={() => onCollapse(!collapsed)}
             >
               {collapsed ? "Expand" : "Collapse"}
@@ -85,6 +94,7 @@ export function DashboardSection({
           <button
             type="button"
             className="syn-btn syn-btn--ghost syn-btn--sm"
+            disabled={busy}
             onClick={() => onWidth(width === "half" ? "full" : "half")}
           >
             {width === "half" ? "Full width" : "Half width"}

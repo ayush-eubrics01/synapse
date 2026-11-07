@@ -42,7 +42,7 @@ Rules:
 | `notifications` | In-app + desktop notifications via adapter | `NotificationService` |
 | `health` | Liveness, readiness, integration health, auth expiry checks | `HealthService` |
 | `orchestrator` | All Claude Code execution: queueing, concurrency, quota gate, budgets, timeouts, cancellation, run log | `ClaudeOrchestrator` |
-| `ops` | Operational safety: verified backups (`BackupService`), operational retention (`RetentionService`), `PRAGMA quick_check` (`DatabaseIntegrity`), the numbers behind the runtime panel (`RuntimeService`). Writes no domain data; retention deletes only the rows listed in `database-design.md`, and backups read the database through `VACUUM INTO` | `BackupService`, `RetentionService`, `DatabaseIntegrity`, `RuntimeService` |
+| `ops` | Operational safety: verified backups (`BackupService`), operational retention (`RetentionService`), `PRAGMA quick_check` (`DatabaseIntegrity`), the numbers behind the runtime panel (`RuntimeService`). Writes no domain data; retention deletes only the rows listed in `database-design.md`, and backups and `quick_check` run in a worker with a read-only connection (`VACUUM INTO`), never on the API thread | `BackupService`, `RetentionService`, `DatabaseIntegrity`, `RuntimeService` |
 | `module-registry` | Registered modules, enabled state, declared dependencies | `ModuleRegistry` |
 
 ## Domain modules (`apps/api/src/modules`)

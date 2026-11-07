@@ -212,6 +212,7 @@ export interface OpsSettingsDto {
   "retention.notificationsDays": number;
   "retention.claudeRunsDays": number;
   "retention.auditDays": number;
+  "retention.snapshotsDays": number;
 }
 export type SettingsDto = ClaudeSettingsDto & OpsSettingsDto;
 
@@ -976,6 +977,18 @@ export function retryEngineeringMerge(
   );
 }
 
+/** Queues the develop step again after a sandbox refusal; a refusal is an ApiError with a code. */
+export function retryEngineeringDevelop(
+  taskId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EngineeringTaskDetail> {
+  return request(
+    `/api/engineering/tasks/${encodeURIComponent(taskId)}/retry-develop`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
 export function cancelEngineeringTask(
   id: string,
   fetchImpl: typeof fetch = fetch,
@@ -1058,7 +1071,7 @@ export function updateLayout(
 export function activateLayout(
   id: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<DashboardLayoutView> {
+): Promise<DashboardLayoutsResponse> {
   return request(
     `/api/dashboard/layouts/${encodeURIComponent(id)}/activate`,
     { method: "POST" },

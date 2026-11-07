@@ -146,5 +146,6 @@ export const ENGINEERING_REASON_CODES = [
   "sandbox_disabled",
   "repo_in_masked_path",
   "sandbox_path_too_long",
+  "sandbox_root_masked",
 ] as const;
 export type EngineeringReasonCode = (typeof ENGINEERING_REASON_CODES)[number];

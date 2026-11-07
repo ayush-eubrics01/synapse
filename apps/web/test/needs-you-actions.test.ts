@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { TOAST_MS } from "../app/components/ui/Toasts";
 import { ApiError } from "../lib/api";
 import { createDeferred } from "../lib/deferred";
+import { clearAllDrafts, readDraft, writeDraft } from "../lib/drafts";
 import {
   createNeedsYouActions,
   type NeedsYouApi,
@@ -393,6 +394,18 @@ test("retryEngineeringMerge shows the checks_failing reason when checks still fa
   expect(ok.toasts.map((t) => t.text)).toContain(TOASTS.mergeRequested);
 });
 
+test("retryEngineeringDevelop toasts, and shows a refusal as its sentence", async () => {
+  const s = setup({ retryEngineeringDevelop: new ApiError("x", 409, "not_retryable") });
+  s.handlers.retryEngineeringDevelop("t1");
+  await settle();
+  expect(s.errors.at(-1)).toBe("This task can't be retried now.");
+  const ok = setup();
+  ok.handlers.retryEngineeringDevelop("t1");
+  await settle();
+  expect(ok.calls).toContain('retryEngineeringDevelop("t1")');
+  expect(ok.toasts.map((t) => t.text)).toContain(TOASTS.developRetried);
+});
+
 test("saveEngineeringApprovalText resolves to an error sentence, or null on success", async () => {
   const bad = setup({ editEngineeringApproval: new ApiError("x", 409, "not_pending") });
   expect(await bad.handlers.saveEngineeringApprovalText("t1", "a1", { prTitle: "T" })).toBe(
@@ -402,4 +415,49 @@ test("saveEngineeringApprovalText resolves to an error sentence, or null on succ
   expect(await ok.handlers.saveEngineeringApprovalText("t1", "a1", { prTitle: "T" })).toBeNull();
   expect(ok.calls).toContain('editEngineeringApproval("t1","a1",{"prTitle":"T"})');
   expect(ok.toasts.map((t) => t.text)).toContain(TOASTS.textSaved);
+});
+
+test("a sent urgent reply clears only its own draft; a failed request keeps it", async () => {
+  clearAllDrafts();
+  writeDraft("reply:m1", "a");
+  writeDraft("reply:m2", "b");
+  const bad = setup({ requestUrgentReply: new Error("nope") });
+  bad.handlers.urgentReply("m1", "t");
+  await settle();
+  expect(readDraft("reply:m1")).toBe("a");
+  const ok = setup();
+  ok.handlers.urgentReply("m1", "t");
+  await settle();
+  expect(readDraft("reply:m1")).toBeUndefined();
+  expect(readDraft("reply:m2")).toBe("b");
+  clearAllDrafts();
+});
+
+test("a sent follow-up clears its draft; a failed send keeps it", async () => {
+  clearAllDrafts();
+  writeDraft("followup:f1", "a");
+  const bad = setup({ sendFollowup: new Error("nope") });
+  bad.handlers.sendFollowup("f1", "t");
+  await settle();
+  expect(readDraft("followup:f1")).toBe("a");
+  const ok = setup();
+  ok.handlers.sendFollowup("f1", "t");
+  await settle();
+  expect(readDraft("followup:f1")).toBeUndefined();
+});
+
+test("a follow-up discard keeps its draft on Undo and clears it once committed", async () => {
+  clearAllDrafts();
+  writeDraft("followup:f1", "a");
+  const undone = setup();
+  undone.handlers.discardFollowup("f1");
+  undone.toasts[0]?.undo?.();
+  undone.timers.advance(DELAY * 2);
+  await settle();
+  expect(readDraft("followup:f1")).toBe("a");
+  const s = setup();
+  s.handlers.discardFollowup("f1");
+  s.timers.advance(DELAY);
+  await settle();
+  expect(readDraft("followup:f1")).toBeUndefined();
 });

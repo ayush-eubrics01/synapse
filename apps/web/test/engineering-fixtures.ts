@@ -46,6 +46,7 @@ export const task = (o: Partial<EngineeringTaskView> = {}): EngineeringTaskView 
   prNumber: null,
   failure: null,
   lastPickupError: null,
+  cleanup: null,
   createdAt: T,
   updatedAt: T,
   ...o,

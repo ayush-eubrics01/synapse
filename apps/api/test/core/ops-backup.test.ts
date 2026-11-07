@@ -66,9 +66,9 @@ const audits = (action: string) =>
     .all()
     .filter((a) => a.action === action);
 
-test("success: 0600 file in 0700 dir, readable copy, audited without row content", () => {
+test("success: 0600 file in 0700 dir, readable copy, audited without row content", async () => {
   const s = svc();
-  const r = s.run(7);
+  const r = await s.run(7);
   expect(r).toMatchObject({ ok: true, name: "synapse-20261107-030000.db", pruned: 0 });
   if (!r.ok) throw new Error("x");
   expect(r.bytes).toBeGreaterThan(0);
@@ -86,15 +86,15 @@ test("success: 0600 file in 0700 dir, readable copy, audited without row content
   expect(s.lastAttempt()?.ok).toBe(true);
 });
 
-test("corrupt output fails integrity, leaves nothing, audits the code", () => {
+test("corrupt output fails integrity, leaves nothing, audits the code", async () => {
   const s = svc({ vacuumInto: (t) => writeFileSync(t, Buffer.alloc(4096, 7)) });
-  expect(s.run(7)).toEqual({ ok: false, failure: "integrity_failed" });
+  expect(await s.run(7)).toEqual({ ok: false, failure: "integrity_failed" });
   expect(readdirSync(dir)).toEqual([]);
   expect(audits("ops.backup_failed")[0]?.details).toEqual({ code: "integrity_failed" });
   expect(s.lastAttempt()?.ok).toBe(false);
 });
 
-test("disk full during VACUUM INTO: tmp removed, vacuum_failed, no partial backup", () => {
+test("disk full during VACUUM INTO: tmp removed, vacuum_failed, no partial backup", async () => {
   const s = svc({
     vacuumInto: (t) => {
       writeFileSync(t, Buffer.alloc(2048, 1));
@@ -103,7 +103,7 @@ test("disk full during VACUUM INTO: tmp removed, vacuum_failed, no partial backu
       });
     },
   });
-  expect(s.run(7)).toEqual({ ok: false, failure: "vacuum_failed", cause: "SQLITE_FULL" });
+  expect(await s.run(7)).toEqual({ ok: false, failure: "vacuum_failed", cause: "SQLITE_FULL" });
   expect(readdirSync(dir)).toEqual([]);
   expect(audits("ops.backup_failed")[0]?.details).toEqual({
     code: "vacuum_failed",
@@ -112,26 +112,26 @@ test("disk full during VACUUM INTO: tmp removed, vacuum_failed, no partial backu
   expect(JSON.stringify(audits("ops.backup_failed"))).not.toContain("secret");
 });
 
-test("insufficient space: no vacuum attempted", () => {
+test("insufficient space: no vacuum attempted", async () => {
   let called = 0;
   const s = svc({ diskFree: () => 100 * 2 ** 20, vacuumInto: () => void called++ });
-  expect(s.run(7)).toEqual({ ok: false, failure: "insufficient_space" });
+  expect(await s.run(7)).toEqual({ ok: false, failure: "insufficient_space" });
   expect(called).toBe(0);
 });
 
-test("unknown free space does not block", () => {
-  expect(svc({ diskFree: () => null }).run(7).ok).toBe(true);
+test("unknown free space does not block", async () => {
+  expect((await svc({ diskFree: () => null }).run(7)).ok).toBe(true);
 });
 
-test("name conflict: existing file is never overwritten, tmp removed", () => {
+test("name conflict: existing file is never overwritten, tmp removed", async () => {
   mkdirSync(dir, { mode: 0o700 });
   writeFileSync(join(dir, FIXED()), "old");
-  expect(svc().run(7)).toEqual({ ok: false, failure: "name_conflict" });
+  expect(await svc().run(7)).toEqual({ ok: false, failure: "name_conflict" });
   expect(readdirSync(dir)).toEqual([FIXED()]);
   expect(readFileSync(join(dir, FIXED()), "utf8")).toBe("old");
 });
 
-test("a target appearing after the check is not overwritten", () => {
+test("a target appearing after the check is not overwritten", async () => {
   const s = svc({
     vacuumInto: (t) => {
       sqlite.run("VACUUM INTO ?", [`${t}.x`]);
@@ -139,73 +139,73 @@ test("a target appearing after the check is not overwritten", () => {
       writeFileSync(join(dir, FIXED()), "racer");
     },
   });
-  expect(s.run(7)).toEqual({ ok: false, failure: "name_conflict" });
+  expect(await s.run(7)).toEqual({ ok: false, failure: "name_conflict" });
   expect(readFileSync(join(dir, FIXED()), "utf8")).toBe("racer");
   expect(readdirSync(dir)).toEqual([FIXED()]);
 });
 
-test("dir that cannot be created is dir_unavailable", () => {
+test("dir that cannot be created is dir_unavailable", async () => {
   writeFileSync(join(root, "afile"), "x");
-  expect(svc({ dir: join(root, "afile", "sub") }).run(7)).toEqual({
+  expect(await svc({ dir: join(root, "afile", "sub") }).run(7)).toEqual({
     ok: false,
     failure: "dir_unavailable",
   });
 });
 
-test("an explicitly checked dir inside the repository is refused; the default dir is not", () => {
+test("an explicitly checked dir inside the repository is refused; the default dir is not", async () => {
   const fakeRepo = join(root, "fake-repo");
   mkdirSync(fakeRepo);
   const inside = join(fakeRepo, "backups");
-  expect(svc({ dir: inside, repoRoot: fakeRepo }).run(7)).toEqual({
+  expect(await svc({ dir: inside, repoRoot: fakeRepo }).run(7)).toEqual({
     ok: false,
     failure: "dir_unavailable",
   });
   expect(existsSync(inside)).toBe(false);
-  expect(svc({ dir: inside, repoRoot: fakeRepo, checkDir: false }).run(7).ok).toBe(true);
+  expect((await svc({ dir: inside, repoRoot: fakeRepo, checkDir: false }).run(7)).ok).toBe(true);
 });
 
-test("a symlinked dir that resolves inside the (fake) repository is refused", () => {
+test("a symlinked dir that resolves inside the (fake) repository is refused", async () => {
   const fakeRepo = join(root, "fake-repo");
   mkdirSync(fakeRepo);
   const link = join(root, "link");
   symlinkSync(fakeRepo, link);
-  expect(svc({ dir: link, repoRoot: fakeRepo }).run(7)).toEqual({
+  expect(await svc({ dir: link, repoRoot: fakeRepo }).run(7)).toEqual({
     ok: false,
     failure: "dir_unavailable",
   });
   expect(readdirSync(fakeRepo)).toEqual([]);
 });
 
-test("unexpected failure records a whitelisted cause only", () => {
+test("unexpected failure records a whitelisted cause only", async () => {
   const s = svc({
     diskFree: () => {
       throw Object.assign(new Error("/x/y path"), { code: "EACCES" });
     },
   });
-  expect(s.run(7)).toEqual({ ok: false, failure: "unexpected", cause: "EACCES" });
+  expect(await s.run(7)).toEqual({ ok: false, failure: "unexpected", cause: "EACCES" });
   expect(JSON.stringify(audits("ops.backup_failed"))).not.toContain("/x/y");
 });
 
-test("list ignores symlinks named like backups", () => {
+test("list ignores symlinks named like backups", async () => {
   mkdirSync(dir, { mode: 0o700 });
   writeFileSync(join(root, "real"), "data");
   symlinkSync(join(root, "real"), join(dir, "synapse-20261101-030000.db"));
   expect(svc().list()).toEqual([]);
 });
 
-test("prune never removes the backup just written, even with newer-mtime older files", () => {
+test("prune never removes the backup just written, even with newer-mtime older files", async () => {
   mkdirSync(dir, { mode: 0o700 });
   const future = new Date(Date.now() + 10 * 86_400_000);
   for (const n of ["synapse-20261101-030000.db", "synapse-20261102-030000.db"]) {
     writeFileSync(join(dir, n), "b");
     utimesSync(join(dir, n), future, future);
   }
-  const r = svc().run(1);
+  const r = await svc().run(1);
   expect(r).toMatchObject({ ok: true, pruned: 2 });
   expect(readdirSync(dir)).toEqual([FIXED()]);
 });
 
-test("prune touches only synapse-YYYYMMDD-HHMMSS.db files", () => {
+test("prune touches only synapse-YYYYMMDD-HHMMSS.db files", async () => {
   mkdirSync(dir, { mode: 0o700 });
   const others = [
     "synapse.db",
@@ -220,20 +220,20 @@ test("prune touches only synapse-YYYYMMDD-HHMMSS.db files", () => {
     const t = new Date(Date.UTC(2026, 10, 1 + i));
     utimesSync(join(dir, n), t, t);
   });
-  const r = svc().run(2);
+  const r = await svc().run(2);
   expect(r).toMatchObject({ ok: true, pruned: 3 });
   const left = readdirSync(dir).sort();
   expect(left).toEqual([...others, "synapse-20261104-030000.db", FIXED()].sort());
 });
 
-test("leftover tmp files are deleted", () => {
+test("leftover tmp files are deleted", async () => {
   mkdirSync(dir, { mode: 0o700 });
   writeFileSync(join(dir, ".synapse-old.tmp"), "junk");
-  svc().run(7);
+  await svc().run(7);
   expect(existsSync(join(dir, ".synapse-old.tmp"))).toBe(false);
 });
 
-test("list is newest first and ignores other names", () => {
+test("list is newest first and ignores other names", async () => {
   mkdirSync(dir, { mode: 0o700 });
   for (const [n, day] of [
     ["synapse-20261101-030000.db", 1],
@@ -259,12 +259,12 @@ test("list is newest first and ignores other names", () => {
   expect(svc({ dir: join(root, "missing") }).list()).toEqual([]);
 });
 
-test("backupFileName uses local time", () => {
+test("backupFileName uses local time", async () => {
   const d = new Date(2026, 10, 7, 3, 4, 5);
   expect(backupFileName(d)).toBe("synapse-20261107-030405.db");
 });
 
-test("dailyDue", () => {
+test("dailyDue", async () => {
   const lt = (date: string, hour: number) => () => ({ date, hour });
   const now = new Date();
   expect(dailyDue(now, 3, null, lt("2026-11-07", 2))).toEqual({
@@ -280,12 +280,45 @@ test("dailyDue", () => {
   expect(dailyDue(now, 3, "2026-11-06", lt("2026-11-07", 4)).due).toBe(true);
 });
 
-test("a pre-existing backup dir keeps its mode when chmodDir is false; a created one is 0700", () => {
+test("a pre-existing backup dir keeps its mode when chmodDir is false; a created one is 0700", async () => {
   mkdirSync(dir, { mode: 0o755 });
   chmodSync(dir, 0o755);
-  expect(svc({ chmodDir: false }).run(7).ok).toBe(true);
+  expect((await svc({ chmodDir: false }).run(7)).ok).toBe(true);
   expect(statSync(dir).mode & 0o777).toBe(0o755);
   rmSync(dir, { recursive: true, force: true });
-  expect(svc({ chmodDir: false }).run(7).ok).toBe(true);
+  expect((await svc({ chmodDir: false }).run(7)).ok).toBe(true);
   expect(statSync(dir).mode & 0o777).toBe(0o700);
+});
+
+const HANG = new URL("../fixtures/hang-db-worker.ts", import.meta.url);
+const CRASH = new URL("../fixtures/crash-db-worker.ts", import.meta.url);
+
+test("H4.1: a worker that never answers times out; no .tmp remains; the next run works", async () => {
+  const r = await svc({ worker: { url: HANG, timeoutMs: 100 } }).run(7);
+  expect(r).toEqual({ ok: false, failure: "timeout" });
+  expect(readdirSync(dir).filter((n) => n.endsWith(".tmp"))).toEqual([]);
+  expect(audits("ops.backup_failed").map((a) => a.details)).toEqual([{ code: "timeout" }]);
+  expect((await svc().run(7)).ok).toBe(true);
+});
+
+test("H4.1: a worker that crashes on load fails as unexpected, quickly", async () => {
+  const t0 = Date.now();
+  const r = await svc({ worker: { url: CRASH, timeoutMs: 10_000 } }).run(7);
+  expect(r).toEqual({ ok: false, failure: "unexpected" });
+  expect(Date.now() - t0).toBeLessThan(5_000);
+  expect(readdirSync(dir).filter((n) => n.endsWith(".tmp"))).toEqual([]);
+});
+
+test("an overlapping run answers already_running and leaves the first run's temp and backup intact", async () => {
+  const s = svc();
+  const first = s.run(7);
+  const second = await s.run(7); // starts while the first awaits its worker
+  expect(second).toEqual({ ok: false, failure: "already_running" });
+  expect((await first).ok).toBe(true);
+  expect(readdirSync(dir).filter((n) => n.endsWith(".tmp"))).toEqual([]);
+  expect(readdirSync(dir)).toEqual([FIXED()]);
+  expect(audits("ops.backup_failed")).toEqual([]);
+  expect(audits("ops.backup_created")).toHaveLength(1);
+  // the guard is released afterwards
+  expect(await s.run(7)).toMatchObject({ ok: false, failure: "name_conflict" });
 });

@@ -341,6 +341,41 @@ describe("approve-plan error mapping", () => {
   });
 });
 
+describe("cleanup in the list (H2)", () => {
+  test("a cancelled task's cleanup has exactly the four fixed keys and no branch name", async () => {
+    const t = await createTask();
+    await send("POST", `/api/engineering/tasks/${t.id}/cancel`);
+    c.db
+      .update(schema.engineeringTasks)
+      .set({ taskBranch: "synapse/BRANCH-MARKER" })
+      .where(eq(schema.engineeringTasks.id, t.id))
+      .run();
+    c.db
+      .insert(schema.engineeringTaskSteps)
+      .values({
+        id: "s-cleanup",
+        taskId: t.id,
+        step: "cleanup",
+        status: "done",
+        output: { git: true, deleted: false, outcome: "branch_kept" },
+        createdAt: NOW,
+        updatedAt: NOW,
+      })
+      .run();
+    const res = await send("GET", "/api/engineering/tasks");
+    const body = (await res.json()) as EngineeringTaskView[];
+    const cleanup = body.find((x) => x.id === t.id)?.cleanup;
+    expect(Object.keys(cleanup ?? {}).sort()).toEqual([
+      "branchKept",
+      "dirtyTree",
+      "priorStatus",
+      "pushedNotPr",
+    ]);
+    expect(cleanup?.branchKept).toBe(true);
+    expect(JSON.stringify(cleanup)).not.toContain("BRANCH-MARKER");
+  });
+});
+
 describe("cancel, lock and overview", () => {
   test("cancel cancels; a second cancel is 400; unknown is 404", async () => {
     const t = await createTask();
@@ -397,5 +432,15 @@ describe("approval text edit and retry-merge routes (F2.1, F3.2)", () => {
     expect(r.status).toBe(400);
     expect(await r.json()).toEqual({ error: "invalid_state" });
     expect((await send("POST", "/api/engineering/tasks/nope/retry-merge")).status).toBe(404);
+  });
+
+  test("retry-develop: unknown id is 404, a planned task is 409 not_retryable", async () => {
+    const t = await createTask();
+    const miss = await send("POST", "/api/engineering/tasks/nope/retry-develop");
+    expect(miss.status).toBe(404);
+    expect(await miss.json()).toEqual({ error: "not_found" });
+    const r = await send("POST", `/api/engineering/tasks/${t.id}/retry-develop`);
+    expect(r.status).toBe(409);
+    expect(await r.json()).toEqual({ error: "not_retryable" });
   });
 });

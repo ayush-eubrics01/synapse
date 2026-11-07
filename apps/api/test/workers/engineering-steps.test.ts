@@ -18,10 +18,12 @@ import {
   type Approval,
   type ClaudeJobRequest,
   COMMIT_SUBJECT_MAX,
+  GitWorkflowError,
   isValidApprovalText,
   JobError,
   type Operation,
   type RawToolResult,
+  SANDBOX_ROOT_MASKED_HINT,
 } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock, newId } from "@synapse/shared";
@@ -209,6 +211,8 @@ function editingRun(
 let db: ReturnType<typeof openDatabase>["db"];
 let clock: FakeClock;
 let settings: SettingsService;
+let pathTooLong = false;
+let sandboxHealth: () => Promise<{ status: "ok" | "degraded" | "down"; detail?: string }>;
 let queue: JobQueue;
 let leases: LeaseService;
 let audit: AuditLogger;
@@ -278,6 +282,18 @@ function hooked<T extends object>(target: T): T {
     },
   });
 }
+
+/** True when a PENDING `engineering.step` job for this task and step is queued. */
+const pendingStep = (taskId: string, step: string): boolean =>
+  db
+    .select()
+    .from(schema.jobs)
+    .where(and(eq(schema.jobs.type, STEP_JOB), eq(schema.jobs.status, "PENDING")))
+    .all()
+    .some((j) => {
+      const i = j.input as { taskId?: string; step?: string } | null;
+      return i?.taskId === taskId && i?.step === step;
+    });
 
 /** Runs queued `engineering.step` jobs in order until none is left. */
 async function drain(): Promise<void> {
@@ -385,6 +401,8 @@ beforeEach(async () => {
   runMigrations(db);
   clock = new FakeClock(NOW);
   settings = new SettingsService(db, clock, () => "e");
+  sandboxHealth = async () => ({ status: "ok" });
+  pathTooLong = false;
   events = new EventPublisher(clock);
   audit = new AuditLogger(clock);
   queue = new JobQueue(db, clock);
@@ -447,6 +465,9 @@ beforeEach(async () => {
     lock,
     git: hooked(workflow),
     prs: hooked(gh),
+    settings,
+    sandboxHealth: () => sandboxHealth(),
+    sandboxPathTooLong: () => pathTooLong,
   });
   steps.register(approvals, dispatcher);
   requests = [];
@@ -707,13 +728,41 @@ describe("develop sandbox (ADR-040)", () => {
     });
     const id = await developed();
     expect(requests).toHaveLength(0);
-    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.status).toBe("needs_attention");
     expect(taskRow(id)?.failure).toBe("sandbox_path_too_long");
     const out = stepRow(id, "develop")?.output as Record<string, unknown>;
     expect(out.hint).toBe(SANDBOX_PATH_TOO_LONG_HINT);
     expect(SANDBOX_PATH_TOO_LONG_HINT).toContain("XDG_CACHE_HOME");
     expect(existsSync(root)).toBe(false);
-    expect(leaseRow()).toBeUndefined();
+    expect(leaseRow()).toBeDefined();
+    expect(pendingStep(id, "cleanup")).toBe(false);
+  });
+
+  test("a run root inside a masked path refuses the run: sandbox_root_masked, nothing created (H4.6)", async () => {
+    const root = join(fx.home, ".config", "c", "synapse", "abcd1234");
+    handlers.delete(STEP_JOB);
+    registerStepJob({
+      db,
+      settings,
+      steps,
+      handlers,
+      orchestrator: {
+        run: async (req: ClaudeJobRequest) => {
+          requests.push(req);
+          return reply(req);
+        },
+      },
+      sandbox: { runRoot: root, home: fx.home, protectedDirs: [], maskedRoots: [] },
+    });
+    const id = await developed();
+    expect(requests).toHaveLength(0);
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(taskRow(id)?.failure).toBe("sandbox_root_masked");
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(out.hint).toBe(SANDBOX_ROOT_MASKED_HINT);
+    expect(existsSync(root)).toBe(false);
+    expect(leaseRow()).toBeDefined();
+    expect(pendingStep(id, "cleanup")).toBe(false);
   });
 
   test("a sandbox init failure inside the Bash tool_result is sandbox_unavailable, not failed tests (fix round 2)", async () => {
@@ -838,14 +887,15 @@ describe("develop sandbox (ADR-040)", () => {
     expect(pendingOf("engineering.commit")).toBeUndefined();
   });
 
-  test("rule M's refusal surfaces as sandbox_disabled and releases the lock (F1.5)", async () => {
+  test("rule M's refusal surfaces as sandbox_disabled and keeps the lock (F1.5, H4.6)", async () => {
     reply = () => {
       throw new JobError({ kind: "invalid_input", message: SANDBOX_REQUIRED_REASON });
     };
     const id = await developed();
-    expect(taskRow(id)?.status).toBe("failed");
+    expect(taskRow(id)?.status).toBe("needs_attention");
     expect(taskRow(id)?.failure).toBe("sandbox_disabled");
-    expect(leaseRow()).toBeUndefined();
+    expect(leaseRow()).toBeDefined();
+    expect(pendingStep(id, "cleanup")).toBe(false);
   });
 
   test("sandbox denial text in a passing run does not flip testsPassed (F1.4)", () => {
@@ -2154,5 +2204,193 @@ describe("approval text edits and merge re-request (F2.1, F3.2)", () => {
     protectMain();
     expect(await retry(id)).toEqual({ status: 400, body: { error: "protected_branch" } });
     expect(approvals.listPending()).toEqual([]);
+  });
+});
+
+describe("retry the develop step (H3)", () => {
+  const parked = async (): Promise<string> => {
+    const msg = "Sandbox is required but failed to initialize: Failed to create bridge sockets.";
+    // The sandbox refused before the model edited anything, so the tree is clean for the retry.
+    reply = editingRun({}, [tool("Bash", { command: "bun test" }, msg, true)], false);
+    const id = await developed();
+    expect(taskRow(id)?.failure).toBe("sandbox_unavailable");
+    return id;
+  };
+  const developJobs = (id: string) =>
+    db
+      .select()
+      .from(schema.jobs)
+      .where(and(eq(schema.jobs.type, STEP_JOB), eq(schema.jobs.status, "PENDING")))
+      .all()
+      .filter((j) => {
+        const i = j.input as { taskId?: string; step?: string } | null;
+        return i?.taskId === id && i?.step === "develop";
+      }).length;
+  const code = async (id: string) => {
+    try {
+      await steps.retryDevelop(id);
+    } catch (e) {
+      return e instanceof EngineeringTaskError ? e.code : String(e);
+    }
+    return "ok";
+  };
+
+  test("requeues develop, audits, and a good run reaches the commit approval", async () => {
+    const id = await parked();
+    await steps.retryDevelop(id);
+    expect(taskRow(id)?.status).toBe("in_progress");
+    expect(taskRow(id)?.currentStep).toBe("develop");
+    expect(taskRow(id)?.failure).toBeNull();
+    expect(stepRow(id, "develop")?.status).toBe("pending");
+    expect(developJobs(id)).toBe(1);
+    const audits = db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "engineering.develop_retried"))
+      .all();
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.details).toEqual({ taskId: id });
+    reply = editingRun();
+    await drain();
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+    expect(taskRow(id)?.currentStep).toBe("commit");
+  });
+
+  test("a second retry is not_retryable and queues nothing", async () => {
+    const id = await parked();
+    await steps.retryDevelop(id);
+    expect(await code(id)).toBe("not_retryable");
+    expect(developJobs(id)).toBe(1);
+  });
+
+  test("setting off, unavailable and masked sandboxes refuse and keep needs_attention", async () => {
+    const id = await parked();
+    settings.set("engineering.sandbox.enabled", false);
+    expect(await code(id)).toBe("sandbox_disabled");
+    settings.set("engineering.sandbox.enabled", true);
+    sandboxHealth = async () => ({ status: "degraded", detail: "missing: socat" });
+    expect(await code(id)).toBe("sandbox_unavailable");
+    sandboxHealth = async () => ({ status: "degraded", detail: "run_root_masked" });
+    expect(await code(id)).toBe("sandbox_root_masked");
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(developJobs(id)).toBe(0);
+  });
+
+  test("a task cancelled while the health check runs is not_retryable", async () => {
+    const id = await parked();
+    sandboxHealth = async () => {
+      service.cancel(id);
+      return { status: "ok" };
+    };
+    expect(await code(id)).toBe("not_retryable");
+    expect(developJobs(id)).toBe(0);
+  });
+
+  test("a changed git fingerprint is unsafe_change and a leftover file is changes_left", async () => {
+    const id = await parked();
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(typeof out.gitDirBaseline).toBe("string");
+    const set = (o: Record<string, unknown>) =>
+      db
+        .update(schema.engineeringTaskSteps)
+        .set({ output: o })
+        .where(
+          and(
+            eq(schema.engineeringTaskSteps.taskId, id),
+            eq(schema.engineeringTaskSteps.step, "develop"),
+          ),
+        )
+        .run();
+    set({ ...out, gitDirBaseline: "stale" });
+    expect(await code(id)).toBe("unsafe_change");
+    set({ ...out, configFingerprint: "stale" });
+    expect(await code(id)).toBe("unsafe_change");
+    expect(developJobs(id)).toBe(0);
+    set(out);
+    writeFileSync(join(repo, "left.txt"), "x\n");
+    expect(await code(id)).toBe("changes_left");
+    expect(developJobs(id)).toBe(0);
+    expect(taskRow(id)?.status).toBe("needs_attention");
+  });
+
+  const setOut = (id: string, o: Record<string, unknown>) =>
+    db
+      .update(schema.engineeringTaskSteps)
+      .set({ output: o })
+      .where(
+        and(
+          eq(schema.engineeringTaskSteps.taskId, id),
+          eq(schema.engineeringTaskSteps.step, "develop"),
+        ),
+      )
+      .run();
+  const setFailure = (id: string, failure: string) =>
+    db
+      .update(schema.engineeringTasks)
+      .set({ failure })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+
+  test("a pre-run refusal ignores changed stored fingerprints (no model ran)", async () => {
+    for (const reason of ["sandbox_disabled", "sandbox_path_too_long", "sandbox_root_masked"]) {
+      const id = await parked();
+      const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+      setOut(id, { ...out, gitDirBaseline: "stale", configFingerprint: "stale" });
+      setFailure(id, reason);
+      expect(await code(id)).toBe("ok");
+      expect(developJobs(id)).toBe(1);
+      service.cancel(id);
+      await drain();
+    }
+  });
+
+  test("sandbox_unavailable with a missing stored fingerprint fails closed", async () => {
+    const id = await parked();
+    const out = { ...(stepRow(id, "develop")?.output as Record<string, unknown>) };
+    setOut(id, { ...out, gitDirBaseline: undefined });
+    expect(await code(id)).toBe("unsafe_change");
+    setOut(id, { ...out, configFingerprint: 7 });
+    expect(await code(id)).toBe("unsafe_change");
+    setOut(id, {});
+    expect(await code(id)).toBe("unsafe_change");
+    expect(developJobs(id)).toBe(0);
+  });
+
+  test("a git error while checking is git_failed, not unsafe_change", async () => {
+    const id = await parked();
+    hooks.gitDirFingerprint = () => {
+      throw new GitWorkflowError("git_timeout");
+    };
+    expect(await code(id)).toBe("git_failed");
+    hooks.diffSummary = () => {
+      throw new GitWorkflowError("git_failed");
+    };
+    expect(await code(id)).toBe("git_failed");
+    expect(developJobs(id)).toBe(0);
+    expect(taskRow(id)?.status).toBe("needs_attention");
+  });
+
+  test("sandbox_path_too_long is re-checked before queuing", async () => {
+    const id = await parked();
+    db.update(schema.engineeringTasks)
+      .set({ failure: "sandbox_path_too_long" })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+    pathTooLong = true;
+    expect(await code(id)).toBe("sandbox_path_too_long");
+    expect(developJobs(id)).toBe(0);
+    pathTooLong = false;
+    expect(await code(id)).toBe("ok");
+    expect(developJobs(id)).toBe(1);
+  });
+
+  test("another reason and an unknown task are refused", async () => {
+    const id = await parked();
+    db.update(schema.engineeringTasks)
+      .set({ failure: "dirty_tree" })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+    expect(await code(id)).toBe("not_retryable");
+    expect(await code("nope")).toBe("not_found");
   });
 });

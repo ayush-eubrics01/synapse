@@ -1,3 +1,5 @@
+import { SANDBOX_ROOT_MASKED_HINT } from "@synapse/contracts";
+
 /** Plain-language names for health checks, keyed by check name. */
 export const HEALTH_LABELS: Record<string, string> = {
   database: "Database",
@@ -19,6 +21,12 @@ export const HEALTH_LABELS: Record<string, string> = {
   claude_settings: "Claude Code settings",
 };
 
+/** The hint for a check's current detail: a detail-specific one first, else the check's own. */
+export function healthHint(check: string, detail: string | null): string | null {
+  if (check === "sandbox" && detail === "run_root_masked") return SANDBOX_ROOT_MASKED_HINT;
+  return HEALTH_HINTS[check] ?? null;
+}
+
 /** What to do about a failing check. A check with no entry has no hint. */
 export const HEALTH_HINTS: Record<string, string> = {
   jobs: "Wait for the next scheduler tick. If jobs are still pending after 15 minutes, check the API logs.",
@@ -39,8 +47,7 @@ export const HEALTH_HINTS: Record<string, string> = {
   backup:
     "The daily backup is missing or failed. Check free space in the backup directory, then use Back up now in System.",
   disk: "Free space is low where Synapse keeps its data. Delete old files or move backups with SYNAPSE_BACKUP_DIR.",
-  sandbox:
-    "Install bubblewrap and socat (sudo apt install bubblewrap socat), then cancel this task and propose it again.",
+  sandbox: "Install bubblewrap and socat (sudo apt install bubblewrap socat), then use Try again.",
   claude_settings:
     "Your ~/.claude/settings.json allows tools or sets sandbox options Synapse must control; engineering and code-answer runs are refused until those allow entries and sandbox settings are removed and the API is restarted",
   bun: "Upgrade Bun to 1.4.4 or newer.",

@@ -116,6 +116,7 @@ import { backupStartMessage } from "../lib/backup";
 import { brainPaletteItems, projectRowId } from "../lib/brain";
 import { codeAnswerErrorText, codeAnswerEventMessageId } from "../lib/code-answers";
 import { trailingDebounce } from "../lib/debounce";
+import { clearDraft } from "../lib/drafts";
 import { engineeringErrorText, isTerminal, lockText, type TaskSource } from "../lib/engineering";
 import { conversationTitle, filterConversations, type InboxFilter } from "../lib/inbox";
 import { jiraPaletteItems, jiraRowId } from "../lib/jira";
@@ -131,7 +132,13 @@ import {
   setVisible,
   setWidth,
 } from "../lib/layout";
-import { createLayoutGate, createLayoutSaver } from "../lib/layout-saver";
+import {
+  createLayoutGate,
+  createLayoutSaver,
+  LAYOUT_SWITCH_FAILED,
+  type LayoutCallOutcome,
+  runLayoutCall,
+} from "../lib/layout-saver";
 import { LIVE_EVENT_TYPES } from "../lib/live-events";
 import { SECTION_IDS, type SectionId, sidebarItems } from "../lib/nav";
 import {
@@ -265,6 +272,7 @@ export default function Dashboard() {
   const [openHealthSignal, setOpenHealthSignal] = useState(0);
   const [layout, setLayout] = useState<DashboardLayout>(DEFAULT_DASHBOARD_LAYOUT);
   const [layoutList, setLayoutList] = useState<DashboardLayoutSummary[]>([]);
+  const [layoutBusy, setLayoutBusy] = useState(false);
   const [activeLayoutId, setActiveLayoutId] = useState<string | null>(null);
   const [customising, setCustomising] = useState(false);
   // Sections the user expanded outside customise mode; never saved.
@@ -608,6 +616,7 @@ export default function Dashboard() {
     setActionError(null);
     try {
       await sendCodeAnswer(id, text, useAnyway);
+      clearDraft(`code_answer:${id}`);
       setCodeDraft(null);
       toast.show("Approval request created · nothing is sent until you approve");
     } catch (e) {
@@ -866,31 +875,29 @@ export default function Dashboard() {
     saver.change(next);
   };
 
-  // Picker actions: pending edits are sent first, then the change, then a refresh shows the result.
-  const layoutCall = async (fn: () => Promise<unknown>, flushFirst: boolean) => {
-    if (flushFirst) await saver.flush();
-    // Edits are refused until the new active layout (and its id) is applied.
-    gate.lock();
-    try {
-      try {
-        await fn();
-      } catch (e) {
-        toast.show(layoutErrorText(e instanceof ApiError ? e.code : undefined));
-      }
-      try {
-        const r = await getLayouts();
-        gate.bump();
-        applyLayouts(r);
-        setLocalShown(new Set());
-        setLocalExpanded(new Set());
-      } catch {
-        // the next refresh shows the stored layout
-      }
-    } finally {
-      gate.unlock();
-    }
-    await refresh();
+  // Picker actions: serialised; the server's answer is applied, then a refresh shows the rest.
+  const layoutCall = async (
+    op: Parameters<typeof runLayoutCall>[1],
+  ): Promise<LayoutCallOutcome> => {
+    const outcome = await runLayoutCall(
+      {
+        gate,
+        flush: () => saver.flush(),
+        setBusy: setLayoutBusy,
+        getLayouts,
+        apply: (r) => {
+          applyLayouts(r);
+          setLocalShown(new Set());
+          setLocalExpanded(new Set());
+        },
+        toast: toast.show,
+      },
+      op,
+    );
+    if (outcome !== "busy") await refresh();
+    return outcome;
   };
+  const opErrorText = (e: unknown) => layoutErrorText(e instanceof ApiError ? e.code : undefined);
 
   const toggleCustomise = () => {
     if (customising) void saver.flush();
@@ -933,6 +940,7 @@ export default function Dashboard() {
           else if (!want) setLocalExpanded((set) => new Set(set).add(id));
         }}
         onWidth={(w) => editLayout((l) => setWidth(l, id, w), { id, action: "width" })}
+        busy={layoutBusy}
       >
         {sectionBodies[id]}
       </DashboardSection>
@@ -1081,8 +1089,14 @@ export default function Dashboard() {
             onUseAsReply: (v: CodeAnswerView, useAnyway: boolean) =>
               setCodeDraft({ codeAnswerId: v.id, draft: v.answer ?? "", useAnyway }),
             onSend: (id, text, useAnyway) => void sendCodeAnswerDraft(id, text, useAnyway),
-            onDiscard: () => setCodeDraft(null),
-            onDismissed: (id) => setCodeDraft((d) => (d?.codeAnswerId === id ? null : d)),
+            onDiscard: () => {
+              if (codeDraft) clearDraft(`code_answer:${codeDraft.codeAnswerId}`);
+              setCodeDraft(null);
+            },
+            onDismissed: (id) => {
+              clearDraft(`code_answer:${id}`);
+              setCodeDraft((d) => (d?.codeAnswerId === id ? null : d));
+            },
           }}
         />
       </>
@@ -1299,23 +1313,63 @@ export default function Dashboard() {
               <LayoutPicker
                 layouts={layoutList}
                 activeId={activeLayoutId ?? ""}
-                onSwitch={(id) => void layoutCall(async () => activateLayout(id), true)}
-                onSaveAs={(name) =>
-                  void layoutCall(async () => {
-                    const made = await createLayout(name, activeLayoutIdRef.current ?? undefined);
-                    await activateLayout(made.id);
-                  }, true)
+                busy={layoutBusy}
+                onSwitch={(id) =>
+                  void layoutCall({
+                    run: () => activateLayout(id),
+                    flushFirst: true,
+                    errorText: () => LAYOUT_SWITCH_FAILED,
+                  })
                 }
-                onRename={(id, name) => void layoutCall(() => updateLayout(id, { name }), false)}
-                onDelete={(id) => void layoutCall(() => deleteLayout(id), false)}
+                onSaveAs={(name) =>
+                  void layoutCall({
+                    run: async () => {
+                      const made = await createLayout(name, activeLayoutIdRef.current ?? undefined);
+                      try {
+                        return await activateLayout(made.id);
+                      } catch {
+                        throw new Error(LAYOUT_SWITCH_FAILED);
+                      }
+                    },
+                    flushFirst: true,
+                    errorText: (e) =>
+                      e instanceof ApiError ? layoutErrorText(e.code) : LAYOUT_SWITCH_FAILED,
+                  })
+                }
+                onRename={(id, name) =>
+                  void layoutCall({
+                    run: async () => {
+                      await updateLayout(id, { name });
+                      return undefined;
+                    },
+                    flushFirst: false,
+                    errorText: opErrorText,
+                  })
+                }
+                onDelete={(id) =>
+                  void layoutCall({
+                    run: async () => {
+                      await deleteLayout(id);
+                      return undefined;
+                    },
+                    flushFirst: false,
+                    errorText: opErrorText,
+                  })
+                }
                 onReset={() =>
-                  void layoutCall(async () => {
-                    const id = activeLayoutIdRef.current;
-                    if (id !== null) await resetLayout(id);
-                  }, true)
+                  void layoutCall({
+                    run: async () => {
+                      const id = activeLayoutIdRef.current;
+                      if (id !== null) await resetLayout(id);
+                      return undefined;
+                    },
+                    flushFirst: true,
+                    errorText: opErrorText,
+                  })
                 }
               />
               <HiddenTray
+                busy={layoutBusy}
                 hidden={hiddenSections(layout)}
                 onShow={(id) => editLayout((l) => setVisible(l, id, true))}
               />

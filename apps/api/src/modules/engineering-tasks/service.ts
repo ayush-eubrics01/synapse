@@ -25,6 +25,7 @@ import type { JobQueue } from "../../core/jobs/queue";
 import { RegistryError } from "../engineering-brain/registry";
 import { type EngineeringLock, STEP_JOB } from "./lock";
 import {
+  cleanupViews,
   EngineeringTaskError,
   EngineeringTaskStore,
   priorTerminalStatus,
@@ -663,7 +664,9 @@ export class EngineeringTaskService {
   }
 
   list(status?: EngineeringTaskStatus): EngineeringTaskView[] {
-    return this.store.list(this.deps.db, status).map(toView);
+    const rows = this.store.list(this.deps.db, status);
+    const c = cleanupViews(this.deps.db, rows);
+    return rows.map((r) => toView(r, c.get(r.id) ?? null));
   }
 
   get(id: string): EngineeringTaskDetail | null {

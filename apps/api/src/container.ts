@@ -2,11 +2,12 @@ import type { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, statfsSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type {
-  AIProvider,
-  DesktopNotifier,
-  MessageSink,
-  PullRequestProvider,
+import {
+  type AIProvider,
+  type DesktopNotifier,
+  type MessageSink,
+  type PullRequestProvider,
+  SANDBOX_MASKED_ROOTS,
 } from "@synapse/contracts";
 import { type Db, openDatabase, runMigrations } from "@synapse/database";
 import { type Clock, newId, systemClock } from "@synapse/shared";
@@ -74,6 +75,7 @@ import { LocalGitWorkflow } from "./integrations/repository/git-workflow";
 import { LocalGitProvider } from "./integrations/repository/local-git";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
+import { runRootMasked } from "./intelligence/engineering/develop-prompt";
 import { AutoReplyService } from "./modules/auto-reply/service";
 import { WipReminders } from "./modules/claude-activity/reminders";
 import { ClaudeActivityService } from "./modules/claude-activity/service";
@@ -118,7 +120,7 @@ import { registerCodeAnswerJob } from "./workers/code-answer/generate";
 import { registerCommitmentJobs } from "./workers/commitments";
 import { registerInvestigateJob } from "./workers/engineering/investigate";
 import { registerPickupJobs } from "./workers/engineering/pickup";
-import { registerStepJob } from "./workers/engineering/steps";
+import { registerStepJob, runTmpTooLong } from "./workers/engineering/steps";
 import { createRunHelpers } from "./workers/intelligence-shared";
 import { registerJiraJobs } from "./workers/jira";
 import { registerOpsJobs } from "./workers/ops";
@@ -660,7 +662,21 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     lock: engineeringLock,
     git: gitWorkflow,
   });
+  const sandboxHealthCheck = sandboxCheck({
+    settings,
+    which,
+    runRootMasked: () =>
+      runRootMasked(
+        runRoot,
+        home,
+        [dataDir, backupDir],
+        deps.sandboxMaskedRoots ?? SANDBOX_MASKED_ROOTS,
+      ),
+  });
   const engineeringSteps = new EngineeringStepService({
+    settings,
+    sandboxHealth: () => sandboxHealthCheck(),
+    sandboxPathTooLong: () => runTmpTooLong(runRoot),
     db,
     clock,
     events,
@@ -742,7 +758,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     dbPath: config.dbPath,
     diskFree,
   });
-  const integrity = new DatabaseIntegrity(sqlite, clock);
+  const integrity = new DatabaseIntegrity(sqlite, clock, { dbPath: config.dbPath });
   const runtime = new RuntimeService({
     db,
     sqlite,
@@ -767,7 +783,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     bun: bunVersionCheck(),
     auth: authCheck(auth, clock),
     claude: claudeCheck(provider, clock),
-    sandbox: sandboxCheck({ settings, which }),
+    sandbox: sandboxHealthCheck,
     claude_settings: claudeSettingsCheck({
       provider,
       knownServers: () => settings.get("orchestrator.knownServers"),

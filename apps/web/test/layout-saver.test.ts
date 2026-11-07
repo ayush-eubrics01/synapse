@@ -2,7 +2,13 @@ import { expect, test } from "bun:test";
 import { type DashboardLayoutView, DEFAULT_DASHBOARD_LAYOUT } from "@synapse/contracts";
 import type { TimerApi } from "../lib/debounce";
 import { setVisible } from "../lib/layout";
-import { createLayoutGate, createLayoutSaver, LAYOUT_SAVE_FAILED } from "../lib/layout-saver";
+import {
+  createLayoutGate,
+  createLayoutSaver,
+  LAYOUT_SAVE_FAILED,
+  type LayoutCallDeps,
+  runLayoutCall,
+} from "../lib/layout-saver";
 
 function fakeTimers() {
   const q = new Map<number, () => void>();
@@ -182,4 +188,124 @@ test("the gate drops a fetch begun before a save settled and refuses edits while
   expect(g.isLocked()).toBe(true);
   g.unlock();
   expect(g.isLocked()).toBe(false);
+});
+
+test("flush resolves true with nothing pending, true after a good put, false after a bad one", async () => {
+  const idle = setup(async () => view());
+  expect(await idle.saver.flush()).toBe(true);
+  const ok = setup(async () => view());
+  ok.saver.change(l1);
+  expect(await ok.saver.flush()).toBe(true);
+  const bad = setup(() => Promise.reject(new Error("x")));
+  bad.saver.change(l1);
+  expect(await bad.saver.flush()).toBe(false);
+  expect(bad.log.errors).toEqual([LAYOUT_SAVE_FAILED]);
+  expect(bad.log.reloads).toBe(1);
+});
+
+const R = { active: { id: "L2" }, layouts: [] } as never;
+const callSetup = (over: Partial<LayoutCallDeps> = {}) => {
+  const gate = createLayoutGate();
+  const busy: boolean[] = [];
+  const spies = { apply: [] as unknown[], toast: [] as string[], getLayouts: 0 };
+  const deps: LayoutCallDeps = {
+    gate,
+    flush: async () => true,
+    setBusy: (b) => void busy.push(b),
+    getLayouts: async () => {
+      spies.getLayouts++;
+      return R;
+    },
+    apply: (r) => void spies.apply.push(r),
+    toast: (t) => void spies.toast.push(t),
+    ...over,
+  };
+  return { gate, busy, spies, deps };
+};
+const errorText = () => "ERR";
+
+test("a failed flush cancels the call and unlocks", async () => {
+  const { gate, busy, spies, deps } = callSetup({ flush: async () => false });
+  let ran = 0;
+  const out = await runLayoutCall(deps, {
+    run: async () => {
+      ran++;
+      return R;
+    },
+    flushFirst: true,
+    errorText,
+  });
+  expect(out).toBe("flush_failed");
+  expect(ran).toBe(0);
+  expect(spies.apply).toEqual([]);
+  expect(spies.getLayouts).toBe(0);
+  expect(busy).toEqual([true, false]);
+  expect(gate.isLocked()).toBe(false);
+});
+
+test("a returned response is applied without a refetch", async () => {
+  const { spies, deps } = callSetup();
+  const out = await runLayoutCall(deps, { run: async () => R, flushFirst: true, errorText });
+  expect(out).toBe("applied");
+  expect(spies.apply).toEqual([R]);
+  expect(spies.getLayouts).toBe(0);
+});
+
+test("a rejected run toasts and applies nothing", async () => {
+  const { gate, spies, deps } = callSetup();
+  const out = await runLayoutCall(deps, {
+    run: () => Promise.reject(new Error("x")),
+    flushFirst: false,
+    errorText,
+  });
+  expect(out).toBe("call_failed");
+  expect(spies.toast).toEqual(["ERR"]);
+  expect(spies.apply).toEqual([]);
+  expect(spies.getLayouts).toBe(0);
+  expect(gate.isLocked()).toBe(false);
+});
+
+test("an undefined result refetches; a failed refetch still unlocks", async () => {
+  const a = callSetup();
+  expect(
+    await runLayoutCall(a.deps, { run: async () => undefined, flushFirst: false, errorText }),
+  ).toBe("applied");
+  expect(a.spies.getLayouts).toBe(1);
+  expect(a.spies.apply).toEqual([R]);
+  const b = callSetup({ getLayouts: () => Promise.reject(new Error("x")) });
+  expect(
+    await runLayoutCall(b.deps, { run: async () => undefined, flushFirst: false, errorText }),
+  ).toBe("refetch_failed");
+  expect(b.gate.isLocked()).toBe(false);
+  expect(b.busy).toEqual([true, false]);
+});
+
+test("the gate is locked inside run, and a second call meanwhile is busy", async () => {
+  const { gate, deps } = callSetup();
+  let release!: () => void;
+  const hold = new Promise<void>((r) => (release = r));
+  let lockedInside = false;
+  let secondRan = 0;
+  const first = runLayoutCall(deps, {
+    run: async () => {
+      lockedInside = gate.isLocked();
+      await hold;
+      return R;
+    },
+    flushFirst: false,
+    errorText,
+  });
+  const second = await runLayoutCall(deps, {
+    run: async () => {
+      secondRan++;
+      return R;
+    },
+    flushFirst: false,
+    errorText,
+  });
+  expect(second).toBe("busy");
+  expect(secondRan).toBe(0);
+  release();
+  expect(await first).toBe("applied");
+  expect(lockedInside).toBe(true);
 });

@@ -44,7 +44,7 @@ Both are **systemd user services**. The API runs independently of the web servic
 
 | Check | Signal |
 |---|---|
-| Database (`database`) | Writable, `journal_mode` is WAL, and the last `PRAGMA quick_check` (at startup and in the daily retention job). `ok`; `degraded` when not in WAL; `down` when quick_check failed |
+| Database (`database`) | Writable, `journal_mode` is WAL, and the last `PRAGMA quick_check` (at startup and in the daily retention job; it runs in a worker with a read-only connection and a 5-minute timeout, and a timeout counts as failed). `ok`; `degraded` when not in WAL; `down` when quick_check failed |
 | Job processor | Queue depth, oldest pending job, stuck leases |
 | Claude Code | CLI present, last successful run, connector status at last init |
 | Quota | Latest five-hour/seven-day utilization and reset times |
@@ -71,11 +71,11 @@ Backups never leave the machine: there is no upload or remote target.
 
 **Backup (R2)** — `core/ops/backup.ts`, job `ops.backup` (`workers/ops.ts`):
 
-- **When.** The 15-minute scheduler tick runs the job once a day, at or after `ops.backup.hour` local time (default 3), using the internal `ops.backup.lastRunDate`. A missed run therefore happens on the first 15-minute tick after the API starts, not at startup itself. The date is recorded even when the backup fails, so a failure does not retry on every tick. `POST /api/system/backups` runs one on demand (202 `{jobId}`; 409 `already_running`); a manual backup runs even when `ops.backup.enabled` is false. `GET /api/system/backups` lists `{name, bytes, createdAt}` from the directory.
-- **How.** The directory is `ops.backup.dir` / `SYNAPSE_BACKUP_DIR` (an absolute path that must not be inside the repository) or `<data dir>/backups` by default (`<data dir>/synapse-backups` when the data dir is not dedicated: relative path, `/`, home, an ancestor of home or the cwd), mode `0700`; an existing directory is chmodded only when it is the dedicated default, files `0600`. Leftover `.synapse-*.tmp` files are deleted first. If free space is below 2 x the database size (plus WAL) + 1 GiB, the backup fails with `insufficient_space`. Otherwise `VACUUM INTO` a private temp file, `PRAGMA integrity_check` on the copy (must be exactly `ok`), then a hard link to `synapse-YYYYMMDD-HHMMSS.db` (local time) that never replaces an existing file (`name_conflict`), then the temp file is removed.
+- **When.** The 15-minute scheduler tick runs the job once a day, at or after `ops.backup.hour` local time (default 3), using the internal `ops.backup.lastRunDate`. Startup enqueues the daily tick once right after the server binds (`runNow`, coalesced); the handler's `dailyDue` decides, so a missed run happens at startup, not up to 15 minutes later. The date is recorded even when the backup fails, so a failure does not retry on every tick. `POST /api/system/backups` runs one on demand (202 `{jobId}`; 409 `already_running`); a manual backup runs even when `ops.backup.enabled` is false. `GET /api/system/backups` lists `{name, bytes, createdAt}` from the directory.
+- **How.** The directory is `ops.backup.dir` / `SYNAPSE_BACKUP_DIR` (an absolute path that must not be inside the repository) or `<data dir>/backups` by default (`<data dir>/synapse-backups` when the data dir is not dedicated: relative path, `/`, home, an ancestor of home or the cwd), mode `0700`; an existing directory is chmodded only when it is the dedicated default, files `0600`. Leftover `.synapse-*.tmp` files are deleted first. If free space is below 2 x the database size (plus WAL) + 1 GiB, the backup fails with `insufficient_space`. Otherwise, in a worker (below), `VACUUM INTO` a private temp file, `PRAGMA integrity_check` on the copy (must be exactly `ok`), then a hard link to `synapse-YYYYMMDD-HHMMSS.db` (local time) that never replaces an existing file (`name_conflict`), then the temp file is removed.
 - **Keep N.** After success the newest `ops.backup.keep` (default 7) `synapse-*.db` files are kept, by modification time; only files matching that name are ever deleted.
-- **Failure.** Failure codes are fixed: `insufficient_space`, `vacuum_failed`, `integrity_failed`, `name_conflict`, `dir_unavailable`, `unexpected` (plus an optional errno-style cause). The audit row is `ops.backup_failed`, the job ends FAILED (not retried), and health `backup` is degraded until the next success. Success is audited as `ops.backup_created` (name, bytes, pruned count).
-- `VACUUM INTO` and the integrity check run synchronously on the API thread, so a large database pauses requests while it runs (parked; fine at the current size).
+- **Failure.** Failure codes are fixed: `insufficient_space`, `vacuum_failed`, `integrity_failed`, `timeout`, `name_conflict`, `dir_unavailable`, `unexpected` (plus an optional errno-style cause). The audit row is `ops.backup_failed`, the job ends FAILED (not retried), and health `backup` is degraded until the next success. Success is audited as `ops.backup_created` (name, bytes, pruned count).
+- `VACUUM INTO` and the integrity check run in a Bun Worker (`core/ops/db-worker.ts`, started by `db-task.ts`) with its own read-only connection (`busy_timeout` 5 s), so a large database does not pause the API. The worker is terminated after it answers, and on a 10-minute timeout (`timeout`): it is asked to stop, but an in-flight native SQLite statement (`VACUUM`) finishes first, so the temp path is removed at once while its disk space is held until that statement ends. A worker crash is `unexpected`. Backups are serialised inside the service: a call while one is in flight returns `already_running` without touching any file; it is not audited, does not degrade health, does not record the daily date, and `POST /api/system/backups` answers 409 `already_running` while any `ops.backup` job is live. The job handler's timeout is the worker's plus one minute.
 
 **Restore (R3, CLI only, never from the web)** — `bun scripts/ops/restore.ts <backup-file> --yes`. It is listed in CLAUDE.md under the commands that need the user's approval, because it replaces the live database. Order:
 
@@ -118,9 +118,10 @@ Slack-content retention (180 days) is the separate job described in `database-de
 | `retention.notificationsDays` | 30 (7-365) |
 | `retention.claudeRunsDays` | 90 (14-730) |
 | `retention.auditDays` | 365 (90-3650) |
+| `retention.snapshotsDays` | 30 (7-365): `quota_snapshots` and `auth_snapshots` older than this are deleted; the newest row of each table is kept |
 | `SYNAPSE_BACKUP_DIR` (env) | `<data dir>/backups`; absolute, outside the repository. `ops.backup.dir` is the stored equivalent and is not editable from the web |
 
-The eight `ops.*` and `retention.*` keys above are in the settings API allowlist and the Runtime panel. `ops.backup.lastRunDate` and `ops.retention.lastRun` are internal.
+The nine `ops.*` and `retention.*` keys above are in the settings API allowlist and the Runtime panel. `ops.backup.lastRunDate` and `ops.retention.lastRun` are internal.
 
 The quota thresholds are starting values, to be tuned once real usage data exists. What each level allows is defined in `docs/modules/claude-orchestrator.md`.
 
@@ -132,3 +133,7 @@ The quota thresholds are starting values, to be tuned once real usage data exist
 - The engine's claim (`execution_started_at`) guarantees at-most-once execution, so a re-delivered event or re-run job never executes twice. An executor error is terminal: the approval becomes `failed` and the job completes without retry, because the side effect may have happened. Only bookkeeping failures surface as a job error, and they never carry the payload or result.
 - People profile recommendations (action `records.update`, target `people`) are applied by `ProfileService.apply` in one immediate transaction, so a failure leaves no partial version; its errors are content-free because the engine stores `e.message`. A skipped apply (stale base, superseded) ends as an executed approval with a skipped result. Because a failed approval is terminal, `retryApply` requests a fresh approval (`people.rec:<id>:<n>`) for the still-pending recommendation. See `docs/modules/people-memory.md`.
 - `approval.rejected` / `approval.expired` / `approval.revoked` get no generic consumer; modules subscribe through `dispatcher.subscribe`.
+
+Snapshot retention changes what `AuthMonitor.status().slides` means: it compares against the oldest remaining auth snapshot, so it is now "slid within the retention window" and can become null after a long idle period (only the newest row is kept).
+
+**Database path and Runtime panel note.** A relative `SYNAPSE_DB_PATH` is resolved against the process cwd at config load (`:memory:` is unchanged), so every path derived from it, including the sandbox masks, is absolute. When `ops.backup.enabled` is off the Runtime panel says "Automatic backups are off; Back up now still makes one".

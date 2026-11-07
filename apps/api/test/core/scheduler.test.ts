@@ -121,3 +121,17 @@ test("R58: coalesce only looks at jobs of the schedule's own type", () => {
   expect(sched.tick()).toBe(1);
   expect(jobs().filter((j) => j.type === "tb")).toHaveLength(2);
 });
+
+test("runNow makes an enabled schedule due on the next tick", () => {
+  sched.upsert({ name: "s", jobType: "t", intervalSeconds: 900 });
+  expect(sched.tick()).toBe(1);
+  expect(sched.tick()).toBe(0);
+  expect(sched.runNow("s")).toBe(true);
+  expect(sched.tick()).toBe(1);
+});
+
+test("runNow is false for a missing or disabled schedule", () => {
+  expect(sched.runNow("missing")).toBe(false);
+  sched.upsert({ name: "d", jobType: "t", intervalSeconds: 900, enabled: false });
+  expect(sched.runNow("d")).toBe(false);
+});

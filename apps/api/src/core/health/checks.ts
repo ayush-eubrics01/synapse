@@ -278,19 +278,23 @@ export function diskCheck(deps: {
   });
 }
 
-/** ADR-040: develop runs need bubblewrap and socat. Setting off reads `ok` (the feature is off). */
+/** ADR-040: develop runs need bubblewrap and socat and an unmasked run root. Setting off reads `ok` (the feature is off). */
 export function sandboxCheck(deps: {
   settings: Pick<SettingsService, "get">;
   which: (bin: string) => string | null;
+  runRootMasked?: () => boolean;
 }): HealthCheck {
   return guarded(async () => {
     if (!deps.settings.get("engineering.sandbox.enabled")) {
       return { status: "ok", detail: "disabled" };
     }
     const missing = ["bwrap", "socat"].filter((b) => deps.which(b) === null);
-    return missing.length === 0
-      ? { status: "ok" }
-      : { status: "degraded", detail: `missing: ${missing.join(", ")}` };
+    if (missing.length > 0) {
+      return { status: "degraded", detail: `missing: ${missing.join(", ")}` };
+    }
+    // H4.6: the run root is inside a masked path, so every develop run would be refused.
+    if (deps.runRootMasked?.()) return { status: "degraded", detail: "run_root_masked" };
+    return { status: "ok" };
   });
 }
 

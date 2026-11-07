@@ -277,6 +277,7 @@ test("the needs attention card shows the plain-English reason", () => {
         onCancel={noop}
         onOpen={noop}
         onCheckAgain={noop}
+        onTryAgain={noop}
       />,
     ),
   );
@@ -424,6 +425,36 @@ test("the section groups tasks and shows the lock status", () => {
     expect(html).toContain(s);
   }
   expect(html).toContain("Develop");
+});
+
+test("History rows show cleanup badges; active rows do not", () => {
+  const cleanup = {
+    branchKept: true,
+    pushedNotPr: false,
+    dirtyTree: false,
+    priorStatus: null,
+  };
+  const html = text(
+    renderToString(
+      <EngineeringSection
+        tasks={[
+          task({ id: "a1", status: "in_progress", title: "Active one", cleanup }),
+          task({ id: "h1", status: "cancelled", title: "Done one", cleanup }),
+        ]}
+        details={{}}
+        repos={[repo()]}
+        lock={{ held: false }}
+        now={NOW}
+        handlers={{
+          create: async () => null,
+          approveDescription: async () => null,
+          approvePlan: async () => null,
+          cancel: noop,
+        }}
+      />,
+    ),
+  );
+  expect(html.split("Branch kept").length - 1).toBe(1);
 });
 
 test("an empty section explains how tasks start", () => {
@@ -761,6 +792,7 @@ const attention = (failure: string, currentStep: string) =>
         onCancel={noop}
         onOpen={noop}
         onCheckAgain={noop}
+        onTryAgain={noop}
       />,
     ),
   );
@@ -768,6 +800,13 @@ const attention = (failure: string, currentStep: string) =>
 test("Check again shows for failing checks at the merge step only", () => {
   expect(attention("checks_failing", "merge_pr")).toContain("Check again");
   expect(attention("dirty_tree", "merge_pr")).not.toContain("Check again");
+});
+
+test("Try again shows for a sandbox refusal at develop, with Cancel task kept", () => {
+  const t = attention("sandbox_unavailable", "develop");
+  expect(t).toContain("Try again");
+  expect(t).toContain("Cancel task");
+  expect(attention("checks_failing", "merge_pr")).not.toContain("Try again");
 });
 
 test("the plan card states whether tests run in the sandbox", () => {

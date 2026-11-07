@@ -98,6 +98,7 @@ function Card({ card, p }: { card: NeedsCard; p: NeedsYouProps }) {
           now={p.now}
           onCancel={h.cancelEngineeringTask}
           onCheckAgain={h.retryEngineeringMerge}
+          onTryAgain={h.retryEngineeringDevelop}
           onOpen={h.seeAllEngineering}
         />
       );

@@ -30,6 +30,12 @@ function tempDb(): string {
   return join(dir, "synapse.db");
 }
 
+function cacheDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "syn-"));
+  dirs.push(dir);
+  return dir;
+}
+
 function start(dbPath: string, port: number, extra: Record<string, string> = {}) {
   const p = Bun.spawn(["bun", "apps/api/src/main.ts"], {
     cwd: REPO_ROOT,
@@ -38,6 +44,8 @@ function start(dbPath: string, port: number, extra: Record<string, string> = {})
       SYNAPSE_API_PORT: String(port),
       SYNAPSE_CLAUDE_BIN: "/nonexistent/claude",
       HOME: process.env.HOME ?? "",
+      // Never let startup pruning look at the real ~/.cache/synapse.
+      XDG_CACHE_HOME: cacheDir(),
       PATH: process.env.PATH ?? "",
       ...extra,
     },

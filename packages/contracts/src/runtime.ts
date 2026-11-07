@@ -10,9 +10,11 @@ export type BackupFailureCode =
   | "insufficient_space"
   | "vacuum_failed"
   | "integrity_failed"
+  | "timeout"
   | "name_conflict"
   | "dir_unavailable"
-  | "unexpected";
+  | "unexpected"
+  | "already_running";
 
 export const retentionSummarySchema = z.strictObject({
   at: z.string(),
@@ -23,6 +25,9 @@ export const retentionSummarySchema = z.strictObject({
   audit: z.number().int(),
   claudeRunsCompacted: z.number().int(),
   quickCheck: z.enum(["ok", "failed"]),
+  // Optional so an older stored lastRun still parses.
+  quotaSnapshots: z.number().int().optional(),
+  authSnapshots: z.number().int().optional(),
 });
 export type RetentionSummary = z.infer<typeof retentionSummarySchema>;
 

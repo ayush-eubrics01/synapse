@@ -7,12 +7,13 @@ import type { JobQueue } from "../core/jobs/queue";
 import type { HandlerRegistration } from "../core/jobs/worker";
 import type { BackupResult, BackupService } from "../core/ops/backup";
 import { dailyDue, type LocalTime } from "../core/ops/daily";
+import { BACKUP_WORKER_TIMEOUT_MS } from "../core/ops/db-task";
 import type { RetentionService } from "../core/ops/retention";
 import type { SchedulerService } from "../core/scheduler/scheduler";
 
 export const OPS_BACKUP_JOB = "ops.backup";
 export const OPS_RETENTION_JOB = "ops.retention";
-const BACKUP_TIMEOUT_MS = 600_000;
+const BACKUP_TIMEOUT_MS = BACKUP_WORKER_TIMEOUT_MS + 60_000;
 const RETENTION_TIMEOUT_MS = 600_000;
 
 export interface OpsJobDeps {
@@ -27,9 +28,11 @@ export interface OpsJobDeps {
   localTime?: LocalTime;
 }
 
-export function runBackupTick(
+export async function runBackupTick(
   deps: OpsJobDeps,
-): { skipped: "not_due" | "done_today" } | { date: string; backup: BackupResult | "disabled" } {
+): Promise<
+  { skipped: "not_due" | "done_today" } | { date: string; backup: BackupResult | "disabled" }
+> {
   const { settings, clock } = deps;
   const due = dailyDue(
     clock.now(),
@@ -39,8 +42,13 @@ export function runBackupTick(
   );
   if (!due.due) return { skipped: due.reason ?? "not_due" };
   const backup = settings.get("ops.backup.enabled")
-    ? deps.backup.run(settings.get("ops.backup.keep"))
+    ? await deps.backup.run(settings.get("ops.backup.keep"))
     : "disabled";
+  // Another backup is in flight: nothing was attempted, so the date stays unrecorded and the
+  // next tick tries again.
+  if (typeof backup === "object" && !backup.ok && backup.failure === "already_running") {
+    return { date: due.date, backup };
+  }
   // Recorded whether it worked or not, so a failure does not retry on every 15-minute tick.
   settings.set("ops.backup.lastRunDate", due.date, { emit: false });
   // Retention follows the backup attempt (including a disabled one); the key makes it once a day.
@@ -54,7 +62,7 @@ export function runBackupTick(
 
 export function backupJobLive(db: Db): boolean {
   const rows = db
-    .select({ input: schema.jobs.input })
+    .select({ id: schema.jobs.id })
     .from(schema.jobs)
     .where(
       and(
@@ -63,7 +71,7 @@ export function backupJobLive(db: Db): boolean {
       ),
     )
     .all();
-  return rows.some((r) => (r.input as { manual?: unknown } | null)?.manual === true);
+  return rows.length > 0;
 }
 
 export function registerOpsJobs(deps: OpsJobDeps): void {
@@ -72,10 +80,14 @@ export function registerOpsJobs(deps: OpsJobDeps): void {
       const manual = (job.input as { manual?: unknown } | null)?.manual === true;
       // A manual run goes ahead even when daily backups are disabled: the user asked.
       const out = manual
-        ? deps.backup.run(deps.settings.get("ops.backup.keep"))
-        : runBackupTick(deps);
+        ? await deps.backup.run(deps.settings.get("ops.backup.keep"))
+        : await runBackupTick(deps);
       const failed =
         "ok" in out ? out : "backup" in out && typeof out.backup === "object" ? out.backup : null;
+      if (failed && !failed.ok && failed.failure === "already_running") {
+        // Not a failure: another backup is running. No alarm, no recorded date.
+        return { skipped: "already_running" };
+      }
       if (failed && !failed.ok) {
         // Fixed code only; non-retryable (the date is already recorded, so no 15-minute loop).
         throw new JobError({

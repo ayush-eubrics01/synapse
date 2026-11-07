@@ -1,5 +1,6 @@
 import type {
   Approval,
+  EngineeringCleanupView,
   EngineeringStep,
   EngineeringTaskDetail,
   EngineeringTaskStatus,
@@ -10,7 +11,9 @@ import type {
 import {
   type ApprovalTextEdit,
   type ApprovalTextField,
+  DEVELOP_RETRY_REASONS,
   isValidApprovalText,
+  SANDBOX_ROOT_MASKED_HINT,
 } from "@synapse/contracts";
 import {
   isSafeTestCommand,
@@ -118,12 +121,14 @@ const REASONS: Record<string, string> = {
   checks_failing:
     "The pull request's checks are failing, so it was not merged. Fix the checks, then use Check again, or cancel the task.",
   sandbox_unavailable:
-    "The test sandbox could not start. Install bubblewrap and socat (sudo apt install bubblewrap socat), then cancel this task and propose it again.",
+    "The test sandbox could not start. Install bubblewrap and socat (sudo apt install bubblewrap socat), then use Try again.",
   sandbox_path_too_long:
     "The sandbox temp path is too long. Set XDG_CACHE_HOME to a shorter path and restart Synapse.",
+  sandbox_root_masked: SANDBOX_ROOT_MASKED_HINT,
   repo_in_masked_path:
     "This repository is inside a folder the test sandbox hides (for example /tmp or ~/.config), so develop runs are refused.",
-  sandbox_disabled: "Develop runs are disabled because the test sandbox is turned off.",
+  sandbox_disabled:
+    "Develop runs are disabled because the test sandbox is turned off. Turn it on in Settings, then use Try again.",
   not_pending: "This approval was already decided or replaced.",
   invalid_text: "The text is empty, too long or has characters that can't be used.",
   merged_after_cancel:
@@ -193,6 +198,17 @@ export const STATUS_LABELS: Record<EngineeringTaskStatus, string> = {
 
 export function isTerminal(status: EngineeringTaskStatus): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+/** H2: the badges for what a finished task's cleanup left behind, in a fixed order. */
+export function cleanupBadges(c: EngineeringCleanupView | null): string[] {
+  if (!c) return [];
+  const out: string[] = [];
+  if (c.branchKept) out.push("Branch kept");
+  if (c.pushedNotPr) out.push("Pushed, no PR");
+  if (c.dirtyTree) out.push("Uncommitted changes left");
+  if (c.priorStatus) out.push(`Cancelled from ${STATUS_LABELS[c.priorStatus]}`);
+  return out;
 }
 
 export interface TaskGroups {
@@ -618,6 +634,36 @@ export function canCheckAgain(
   return (
     t.status === "needs_attention" && t.failure === "checks_failing" && t.currentStep === "merge_pr"
   );
+}
+
+/** A sandbox refusal at the develop step can be retried once the environment is fixed. */
+export function canRetryDevelop(
+  t: Pick<EngineeringTaskView, "status" | "failure" | "currentStep">,
+): boolean {
+  return (
+    t.status === "needs_attention" &&
+    t.currentStep === "develop" &&
+    (DEVELOP_RETRY_REASONS as readonly string[]).includes(t.failure ?? "")
+  );
+}
+
+const RETRY_DEVELOP_TEXT: Record<string, string> = {
+  not_retryable: "This task can't be retried now.",
+  sandbox_disabled: "Turn the test sandbox on first.",
+  sandbox_unavailable: "The test sandbox still can't start. Install bubblewrap and socat first.",
+  sandbox_root_masked: "XDG_CACHE_HOME is still inside a protected folder.",
+  unsafe_change:
+    "The repository's git settings changed since the step stopped; cancel this task and propose it again.",
+  git_failed: "Git could not check the repository; try again in a moment.",
+  changes_left: "The failed run left changes in the repository; cancel this task.",
+  sandbox_path_too_long:
+    "The temp path is still too long; shorten XDG_CACHE_HOME and restart Synapse.",
+};
+
+/** The sentence for a refused "Try again". */
+export function retryDevelopErrorText(e: unknown): string {
+  const code = (e as { code?: unknown } | null)?.code;
+  return (typeof code === "string" && RETRY_DEVELOP_TEXT[code]) || engineeringErrorText(e);
 }
 
 export type ApprovalTextValues = Partial<Record<ApprovalTextField, string>>;

@@ -163,7 +163,7 @@ Phase 10b: `code_answers.answer`, `not_answerable_reason` and the `suspected_inj
 
 ### Operational retention (Phase 11, R4)
 
-The daily job `ops.retention` (enqueued by the backup tick, once a day, key `ops.retention:<date>`) prunes operational tables. Deletes run in batches of 500 ids, one immediate transaction per batch, yielding to the event loop between batches, so the API stays responsive. After pruning it runs `PRAGMA wal_checkpoint(TRUNCATE)`, `PRAGMA optimize` and `PRAGMA quick_check`. The counts are audited as `ops.retention_ran` and stored in `ops.retention.lastRun`.
+The daily job `ops.retention` (enqueued by the backup tick, once a day, key `ops.retention:<date>`) prunes operational tables. Deletes run in batches of 500 ids, one immediate transaction per batch, yielding to the event loop between batches, so the API stays responsive. After pruning it runs `PRAGMA wal_checkpoint(TRUNCATE)`, `PRAGMA optimize` and `PRAGMA quick_check` (the last in a worker). The counts are audited as `ops.retention_ran` and stored in `ops.retention.lastRun`.
 
 | Data | Rule | Setting (default) |
 |---|---|---|
@@ -171,6 +171,7 @@ The daily job `ops.retention` (enqueued by the backup tick, once a day, key `ops
 | `notifications` | Read ones older than the cutoff are deleted. Unread ones stay | `retention.notificationsDays` (30) |
 | `domain_events` | Dispatched more than 7 days ago, with no unfinished `event_consumptions`, are deleted with their consumptions | fixed 7 days |
 | `audit_events` | Deleted when older than the cutoff | `retention.auditDays` (365) |
+| `quota_snapshots`, `auth_snapshots` | Deleted when `observed_at` is older than the cutoff; the newest row of each table is always kept | `retention.snapshotsDays` (30) |
 | `claude_runs` | **Compacted, never deleted**, when started before the cutoff (below) | `retention.claudeRunsDays` (90) |
 
 **Compaction.** `claude_runs.permission_denials` is set to null and `claude_runs.error` is reduced to `{"kind": ...}` (the message and details go). Id, status, timing, usage, cost, model and profile stay, so every foreign key into `claude_runs` stays valid. Raw tool results were never stored there.
@@ -183,8 +184,8 @@ The daily job `ops.retention` (enqueued by the backup tick, once a day, key `ops
 - Read commitment reminders are pruned with their notifications, so an overdue commitment can be reminded about again after about 30 days.
 - A repository inspection that failed may run again after about 30 days, once its failed job is gone.
 - Migration 0022 (`retention_fk_indexes`, added to the Phase 11 plan after review) indexes `claude_runs.job_id`, `event_consumptions.event_id`, `job_attempts.job_id` and `job_checkpoints.job_id`. Without them each batch scanned the child tables (the slowest batch went from about 2.5 s to 11 ms).
-- `quota_snapshots` and `auth_snapshots` are not pruned (see the Phase 11 follow-ups).
+- Snapshot pruning keeps the newest row of each snapshot table, so the latest quota and login state is never lost. The retention summary and audit row carry `quotaSnapshots` and `authSnapshots` counts (optional in the stored summary, so an older `ops.retention.lastRun` still parses). `AuthMonitor.status().slides` compares against the oldest remaining auth snapshot, so it now means "slid within the retention window" and can become null after a long idle period.
 
 ### Backups
 
-Backups are not a table; the files in the backup directory are the record. A backup is `VACUUM INTO` a temporary file, then `PRAGMA integrity_check` on it (exactly `ok`), then a no-clobber publish as `synapse-YYYYMMDD-HHMMSS.db` (local time). See `runtime-design.md`.
+Backups are not a table; the files in the backup directory are the record. A backup runs in a worker with its own read-only connection: `VACUUM INTO` a temporary file, then `PRAGMA integrity_check` on it (exactly `ok`), then a no-clobber publish as `synapse-YYYYMMDD-HHMMSS.db` (local time). See `runtime-design.md`.

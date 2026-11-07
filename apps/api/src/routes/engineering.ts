@@ -40,6 +40,14 @@ const STATUS: Record<
   pr_head_moved: 409,
   pr_status_failed: 409,
   state_changed: 409,
+  not_retryable: 409,
+  sandbox_disabled: 409,
+  sandbox_unavailable: 409,
+  sandbox_root_masked: 409,
+  unsafe_change: 409,
+  changes_left: 409,
+  sandbox_path_too_long: 409,
+  git_failed: 409,
 };
 
 export function engineeringErrorResponse(e: EngineeringTaskError): {
@@ -132,6 +140,11 @@ export function engineeringRoutes(c: Container): Hono {
   app.post("/api/engineering/tasks/:id/retry-merge", async (ctx) => {
     const id = ctx.req.param("id");
     await c.engineeringSteps.retryMerge(id);
+    return ctx.json(c.engineering.get(id));
+  });
+  app.post("/api/engineering/tasks/:id/retry-develop", async (ctx) => {
+    const id = ctx.req.param("id");
+    await c.engineeringSteps.retryDevelop(id);
     return ctx.json(c.engineering.get(id));
   });
   app.get("/api/engineering/lock", (ctx) => ctx.json(c.engineeringLock.view()));

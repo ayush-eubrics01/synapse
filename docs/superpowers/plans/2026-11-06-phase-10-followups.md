@@ -42,15 +42,19 @@ Three runs of `bun scripts/dev/develop-smoke.ts` (two haiku runs each; no gh, no
 ### New follow-ups from batch 1
 
 - **Network-enabled sandboxes.** A repository whose tests need the network (package installs, services) cannot use develop runs; the sandbox allows no domain. A per-repository allowlist would need its own decision.
-- **A retry action for the develop step after `sandbox_unavailable`.** Today the user installs bubblewrap and socat, then cancels and proposes the task again.
+- ~~**A retry action for the develop step after `sandbox_unavailable`.**~~ **Done in follow-ups batch 2.** Retry develop covers `sandbox_unavailable` and the three other reasons. Original note: Today the user installs bubblewrap and socat, then cancels and proposes the task again.
 - **Repositories registered under `/tmp` (or `/run`, `/var/run`) are unverified** with the `/tmp` mask and are refused (`repo_in_masked_path`); so are repositories inside `~/.config`, other home mask entries, the data directory and the backup directory.
 - **The seccomp layer is skipped** on hosts with `apparmor_restrict_unprivileged_userns=1` (`allowAllUnixSockets: true`); the masks carry socket isolation. Revisit when the CLI's seccomp layer works there.
 - **Files outside the mask list stay readable to tests** (other `~/.local/share` applications, browser profiles). They can leave only through the diff or test output the user reviews.
-- **A relative `SYNAPSE_DB_PATH`** makes the data directory mask a relative path, so rule M refuses the develop run with a confusing "sandbox paths must be absolute" error. Resolve it at config load, or give a specific error.
-- **`XDG_CACHE_HOME` inside a mask** (for example under `~/.config`) makes rule M refuse every develop run with a generic error. A specific reason and hint would help.
-- **Old instance directories under `~/.cache/synapse/<8hex>` are never pruned** (a changed data directory, an old smoke); only an instance's own `r/` is swept at start.
+- ~~**A relative `SYNAPSE_DB_PATH`**~~ **Done in follow-ups batch 2.** Resolved at config load. Original note: makes the data directory mask a relative path, so rule M refuses the develop run with a confusing "sandbox paths must be absolute" error. Resolve it at config load, or give a specific error.
+- ~~**`XDG_CACHE_HOME` inside a mask**~~ **Done in follow-ups batch 2.** The develop step refuses with `sandbox_root_masked` and a hint. Original note: (for example under `~/.config`) makes rule M refuse every develop run with a generic error. A specific reason and hint would help.
+- ~~**Old instance directories under `~/.cache/synapse/<8hex>` are never pruned**~~ **Done in follow-ups batch 2.** Pruned at API start: 8-hex real directories, not this instance, nothing modified in 7 days. Original note: (a changed data directory, an old smoke); only an instance's own `r/` is swept at start.
 - **TOCTOU in the placeholder cleanup.** The cleanup lstats every component and refuses symlinks, but a path can still change between the check and the removal; the window is small and the run has ended, and nothing non-empty is removed. Harden with fd-relative operations if it matters.
-- **An unused Hono import warning** shows in the check output; remove the import.
+- ~~**An unused Hono import warning**~~ **Done in follow-ups batch 2.** Already removed in the batch-1 final fix. Original note: shows in the check output; remove the import.
+
+### New follow-ups from batch 2
+
+- **`priorStatus` on history rows fades** when retention prunes the `engineering.cancelled` audit row (`retention.auditDays`).
 
 ## Fixed in the final review (2026-11-06)
 
@@ -65,7 +69,7 @@ Network-independent recovery and retryable pickup (I1), cleanup return-branch fa
 - **Multi-repo tasks.** One task, one repository. A change that spans two repositories needs two tasks today.
 - ~~**A repository picker for create-from-Jira and create-from-Slack when the repository is ambiguous.**~~ **Done in follow-ups batch 1.** Original note: The API answers `ambiguous_repository`; the web shows a plain sentence and has no picker. The routes already accept an optional `repositoryId`.
 - **`include.path` targets are not fingerprinted.** `configFingerprint` and `gitDirFingerprint` hash the config files but do not follow `include.path` or `includeIf` targets inside them. The model's file tools cannot write outside the repository, but the test command runs repository code that can (security-model §3.1), and a config in the repository's git dir could include a file elsewhere that changes later.
-- **A history view showing cleanup outcomes.** The web fetches step details only for non-terminal tasks, so history rows show status, PR link and failure reason but not `branch_kept`, `pushed_not_pr`, `priorStatus` or a `dirty_tree` cleanup.
+- ~~**A history view showing cleanup outcomes.**~~ **Done in follow-ups batch 2.** The history view shows them. Original note: The web fetches step details only for non-terminal tasks, so history rows show status, PR link and failure reason but not `branch_kept`, `pushed_not_pr`, `priorStatus` or a `dirty_tree` cleanup.
 - ~~**Re-requesting `merge_pr` after failing checks.**~~ **Done in follow-ups batch 1** (`POST …/retry-merge`). Original note: Since the final review, failing checks refuse the merge (`checks_failing`): the approval is revoked and the task goes to `needs_attention`. There is no "try the merge again" action: the user fixes the checks and merges the PR on GitHub (or cancels the task, which leaves the PR as it is). A re-request route for a `needs_attention` task at `merge_pr` would close this.
 - **Approval state after an executor refusal.** When revalidation passed but the executor then finds the repository gone (`path_unavailable`, final review M9), the task goes to `needs_attention`, but the approval was already claimed by the engine, so it ends `failed`, not `revoked`. Both are terminal; only the label differs.
 - ~~**Editing the commit message, PR title and PR body before approval.**~~ **Done in follow-ups batch 1** (`PUT …/approvals/:approvalId`). Original note: The spec (E10, E13) says the user may edit them. No route updates an approval payload, so the executors use what was proposed. An approval-edit endpoint only has to update the payload before the approval is decided.

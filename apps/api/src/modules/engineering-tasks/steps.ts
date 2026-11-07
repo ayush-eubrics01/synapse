@@ -5,6 +5,7 @@ import {
   type ApprovalTextEdit,
   type ApprovalTextField,
   COMMIT_SUBJECT_MAX,
+  DEVELOP_RETRY_REASONS,
   type EngineeringStep,
   type GitWorkflow,
   GitWorkflowError,
@@ -20,6 +21,8 @@ import {
   type PullRequestProvider,
   type RiskLevel,
   retryDecision,
+  SANDBOX_ROOT_MASKED,
+  SANDBOX_ROOT_MASKED_HINT,
   SANDBOX_TOOL_RESULT_RE,
   type TestRun,
   testResultLabel,
@@ -32,8 +35,10 @@ import { z } from "zod";
 import type { ApprovalEngine } from "../../core/approvals/approvals";
 import { registerIntegrationExecutor } from "../../core/approvals/execution";
 import type { AuditLogger } from "../../core/audit/audit";
+import type { SettingsService } from "../../core/config/settings";
 import type { OutboxDispatcher } from "../../core/events/dispatcher";
 import type { EventPublisher } from "../../core/events/publisher";
+import type { HealthCheck } from "../../core/health/health";
 import type { JobQueue } from "../../core/jobs/queue";
 import { SANDBOX_REQUIRED_REASON } from "../../core/orchestrator/validator";
 import {
@@ -191,6 +196,11 @@ export interface EngineeringStepDeps {
   lock: Pick<EngineeringLock, "holder" | "release">;
   git: GitWorkflow;
   prs: PullRequestProvider;
+  settings: Pick<SettingsService, "get">;
+  /** The `sandbox` health check: retry refuses while it is not ok. */
+  sandboxHealth: HealthCheck;
+  /** True when a develop run's sandbox tmpDir would exceed the 64-byte cap (H3.3). */
+  sandboxPathTooLong: () => boolean;
 }
 
 /** The develop step's pre-run fingerprints plus the placeholder count (ADR-040, Task 4b). */
@@ -245,6 +255,13 @@ function sandboxUnavailable(err: unknown): boolean {
  * logs or thrown messages: diff and test tail live in step outputs; paths, commits and PR text in
  * the approval payloads the user reviews.
  */
+/** Develop-retry reasons where the refusal came before any model run (no edits possible). */
+const PRE_RUN_RETRY_REASONS: readonly string[] = [
+  "sandbox_disabled",
+  "sandbox_path_too_long",
+  "sandbox_root_masked",
+];
+
 export class EngineeringStepService {
   private readonly store: EngineeringTaskStore;
   /** Tasks with a step or executor running in this process; cleanup waits for them. */
@@ -432,6 +449,93 @@ export class EngineeringStepService {
     );
   }
 
+  // ---- H3: retry the develop step after a sandbox refusal -----------------------------------------
+
+  /**
+   * "Try again": a task parked at `develop` for a sandbox reason (`DEVELOP_RETRY_REASONS`) that
+   * still holds the lock goes back to `in_progress` with a fresh `engineering.step` develop job,
+   * once the sandbox setting is on and the `sandbox` health check passes.
+   */
+  async retryDevelop(taskId: string): Promise<void> {
+    const eligible = (t: TaskRow | null | undefined): boolean =>
+      t != null &&
+      t.status === "needs_attention" &&
+      t.currentStep === "develop" &&
+      (DEVELOP_RETRY_REASONS as readonly string[]).includes(t.failure ?? "") &&
+      this.deps.lock.holder()?.taskId === taskId;
+    const task = this.store.get(this.deps.db, taskId);
+    if (!task) throw new EngineeringTaskError("not_found");
+    if (!eligible(task)) throw new EngineeringTaskError("not_retryable");
+    if (!this.deps.settings.get("engineering.sandbox.enabled")) {
+      throw new EngineeringTaskError("sandbox_disabled");
+    }
+    const health = await this.deps.sandboxHealth();
+    if (health.status !== "ok") {
+      throw new EngineeringTaskError(
+        health.detail === "run_root_masked" ? "sandbox_root_masked" : "sandbox_unavailable",
+      );
+    }
+    if (task.failure === "sandbox_path_too_long" && this.deps.sandboxPathTooLong()) {
+      throw new EngineeringTaskError("sandbox_path_too_long");
+    }
+    // The failed run's pre-run fingerprints are discarded below, so compare them now, before any
+    // git command that could run a filter or hook (ADR-040).
+    const ctx = this.context(taskId);
+    if ("skip" in ctx) {
+      throw new EngineeringTaskError(
+        ctx.skip === "path_unavailable" ? "path_unavailable" : "not_retryable",
+      );
+    }
+    const prior = this.stepOutput(taskId, "develop");
+    // The pre-run refusals stopped before any model ran, so no run could have edited git
+    // settings and the stored fingerprints say nothing about this retry; a fetch or a config
+    // tweak the user made meanwhile must not block it. `sandbox_unavailable` can follow a
+    // mid-run failure, so its fingerprints are compared and must exist (fail closed).
+    const preRun = PRE_RUN_RETRY_REASONS.includes(task.failure ?? "");
+    let baseline: string | undefined;
+    if (!preRun) {
+      const storedBase = prior?.gitDirBaseline;
+      const storedConfig = prior?.configFingerprint;
+      if (typeof storedBase !== "string" || typeof storedConfig !== "string") {
+        throw new EngineeringTaskError("unsafe_change");
+      }
+      baseline = storedBase;
+      let gitDirNow: string;
+      let configNow: string;
+      try {
+        gitDirNow = await this.deps.git.gitDirFingerprint(ctx.path);
+        configNow = await this.deps.git.configFingerprint(ctx.path);
+      } catch {
+        throw new EngineeringTaskError("git_failed");
+      }
+      if (gitDirNow !== storedBase || configNow !== storedConfig) {
+        throw new EngineeringTaskError("unsafe_change");
+      }
+    }
+    try {
+      const diff = await this.deps.git.diffSummary(
+        ctx.path,
+        baseline === undefined ? undefined : { gitDirBaseline: baseline },
+      );
+      if (diff.unsafe || diff.files.length > 0) throw new EngineeringTaskError("changes_left");
+    } catch (e) {
+      throw e instanceof EngineeringTaskError ? e : new EngineeringTaskError("git_failed");
+    }
+    this.deps.db.transaction(
+      (tx) => {
+        if (!eligible(this.store.get(tx, taskId))) throw new EngineeringTaskError("not_retryable");
+        this.store.transition(tx, taskId, "in_progress", { failure: null }, ["needs_attention"]);
+        this.store.upsertStep(tx, taskId, "develop", "pending", {
+          output: null,
+          claudeRunId: null,
+        });
+        this.enqueue(tx, taskId, "develop");
+        this.audit(tx, "engineering.develop_retried", taskId, "ok", {});
+      },
+      { behavior: "immediate" },
+    );
+  }
+
   // ---- E8: branch -----------------------------------------------------------------------------
 
   async runBranch(taskId: string): Promise<StepResult> {
@@ -551,16 +655,43 @@ export class EngineeringStepService {
           err instanceof JobError &&
           err.classified.kind === "invalid_input" &&
           err.classified.message === SANDBOX_PATH_TOO_LONG;
+        // The run root is inside a masked path (H4.6).
+        const rootMasked =
+          err instanceof JobError &&
+          err.classified.kind === "invalid_input" &&
+          err.classified.message === SANDBOX_ROOT_MASKED;
+        // Sandbox refusals are environment problems the user fixes, then retries: the task and
+        // the lock stay (needs_attention), like sandbox_unavailable.
+        if (sandboxOff) {
+          return this.attention(
+            taskId,
+            "develop",
+            "sandbox_disabled",
+            { ...fp, failure: "sandbox_disabled" },
+            runner.runId(),
+          );
+        }
         if (tooLong) {
-          return this.developFailed(ctx, SANDBOX_PATH_TOO_LONG, fp, runner.runId(), {
-            hint: SANDBOX_PATH_TOO_LONG_HINT,
-          });
+          return this.attention(
+            taskId,
+            "develop",
+            SANDBOX_PATH_TOO_LONG,
+            { ...fp, failure: SANDBOX_PATH_TOO_LONG, hint: SANDBOX_PATH_TOO_LONG_HINT },
+            runner.runId(),
+          );
+        }
+        if (rootMasked) {
+          return this.attention(
+            taskId,
+            "develop",
+            SANDBOX_ROOT_MASKED,
+            { ...fp, failure: SANDBOX_ROOT_MASKED, hint: SANDBOX_ROOT_MASKED_HINT },
+            runner.runId(),
+          );
         }
         const kind = masked
           ? REPO_IN_MASKED_PATH
-          : sandboxOff
-            ? "sandbox_disabled"
-            : (stopKind(err) ?? (err instanceof JobError ? err.classified.kind : "unknown"));
+          : (stopKind(err) ?? (err instanceof JobError ? err.classified.kind : "unknown"));
         return this.developFailed(ctx, kind, fp, runner.runId());
       }
       return this.developDone(ctx, outcome.result, testCommand, fp, runner.runId());

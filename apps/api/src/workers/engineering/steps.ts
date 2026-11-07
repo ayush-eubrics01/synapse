@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { type Job, JobError, SANDBOX_MASKED_ROOTS } from "@synapse/contracts";
+import { basename, dirname, join } from "node:path";
+import { type Job, JobError, SANDBOX_MASKED_ROOTS, SANDBOX_ROOT_MASKED } from "@synapse/contracts";
 import { type Db, schema } from "@synapse/database";
 import { desc, eq, sql } from "drizzle-orm";
+import { defaultRunScratchRoot } from "../../core/config/config";
 import type { SettingsService } from "../../core/config/settings";
 import type { HandlerRegistration, JobContext } from "../../core/jobs/worker";
 import type { ClaudeOrchestrator } from "../../core/orchestrator/orchestrator";
@@ -12,6 +13,7 @@ import {
   REPO_IN_MASKED_PATH,
   repoInDenyMask,
   repoInMaskedPath,
+  runRootMasked,
   SANDBOX_PATH_TOO_LONG,
 } from "../../intelligence/engineering/develop-prompt";
 import { STEP_JOB } from "../../modules/engineering-tasks/lock";
@@ -56,6 +58,11 @@ export interface StepJobDeps {
  * a ~89-byte TMPDIR failed on the real CLI ("Failed to create bridge sockets after 5 attempts").
  */
 export const RUN_TMP_MAX_BYTES = 64;
+
+/** True when `<runRoot>/r/<8hex>/t` (the fixed-length shape of a run's tmpDir) is over the cap. */
+export function runTmpTooLong(runRoot: string): boolean {
+  return Buffer.byteLength(join(runRoot, "r", "00000000", "t")) > RUN_TMP_MAX_BYTES;
+}
 
 /**
  * A develop run's scratch dir: `<runRoot>/r/<first 8 hex of sha256(jobId)>`, short on purpose
@@ -102,6 +109,79 @@ export function sweepRunScratch(runRoot: string): void {
       console.error("engineering.step: run scratch sweep failed");
     }
   }
+}
+
+export const INSTANCE_ROOT_MAX_AGE_MS = 7 * 86_400_000;
+
+/** Newest lstat mtime of `p` and everything below it. Never follows a symlink. */
+function newestMtimeMs(p: string): number {
+  const st = lstatSync(p);
+  let newest = st.mtimeMs;
+  if (st.isDirectory()) {
+    for (const e of readdirSync(p)) newest = Math.max(newest, newestMtimeMs(join(p, e)));
+  }
+  return newest;
+}
+
+/**
+ * The base directory `pruneInstanceRoots` may walk at startup, or null: only a real instance base
+ * (`<cache>/synapse`, the default scratch root). An in-memory database and a run root under any
+ * other base (a test's, an override's) are never pruned.
+ */
+export function pruneBaseFor(
+  dbPath: string,
+  runRoot: string,
+  env: NodeJS.ProcessEnv,
+): string | null {
+  if (dbPath === ":memory:") return null;
+  const base = dirname(runRoot);
+  return base === defaultRunScratchRoot(env) ? base : null;
+}
+
+/**
+ * Removes old instance run roots (`<base>/<8 hex>`) left by other data dirs or smokes (ADR-040).
+ * Only a real directory (not a symlink) owned by this user, other than `keepRoot`, with nothing
+ * modified inside for `maxAgeMs`. Anything else counts as kept; errors are swallowed per entry.
+ */
+export function pruneInstanceRoots(
+  base: string,
+  keepRoot: string,
+  opts: { nowMs?: number; maxAgeMs?: number } = {},
+): { removed: number; kept: number } {
+  const nowMs = opts.nowMs ?? Date.now();
+  const maxAgeMs = opts.maxAgeMs ?? INSTANCE_ROOT_MAX_AGE_MS;
+  let entries: string[];
+  try {
+    // The base itself must be a real directory, not a symlink that would redirect the pruning.
+    if (!lstatSync(base).isDirectory()) return { removed: 0, kept: 0 };
+    entries = readdirSync(base);
+  } catch {
+    return { removed: 0, kept: 0 };
+  }
+  const uid = process.getuid?.();
+  const keepName = basename(keepRoot);
+  let removed = 0;
+  let kept = 0;
+  for (const e of entries) {
+    if (!/^[0-9a-f]{8}$/.test(e) || e === keepName) continue;
+    const dir = join(base, e);
+    try {
+      const st = lstatSync(dir);
+      if (!st.isDirectory() || (uid !== undefined && st.uid !== uid)) {
+        kept++;
+        continue;
+      }
+      if (nowMs - newestMtimeMs(dir) <= maxAgeMs) {
+        kept++;
+        continue;
+      }
+      rmSync(dir, { recursive: true, force: true });
+      removed++;
+    } catch {
+      kept++;
+    }
+  }
+  return { removed, kept };
 }
 
 /**
@@ -167,6 +247,13 @@ export function registerStepJob(deps: StepJobDeps): void {
               // Refused before any run: the sandbox would hide the repository from itself, or
               // unmasking it would expose a credential dir, synapse.db or the backups.
               throw new JobError({ kind: "invalid_input", message: REPO_IN_MASKED_PATH });
+            }
+            if (
+              sandboxed &&
+              runRootMasked(sandbox.runRoot, sandbox.home, sandbox.protectedDirs, maskedRoots)
+            ) {
+              // Every run's TMPDIR would be masked: refused before anything is created (H4.6).
+              throw new JobError({ kind: "invalid_input", message: SANDBOX_ROOT_MASKED });
             }
             // Off: no sandbox and no scratch; rule M refuses the run.
             const runScratch = sandboxed ? runScratchDir(sandbox.runRoot, job.id) : null;

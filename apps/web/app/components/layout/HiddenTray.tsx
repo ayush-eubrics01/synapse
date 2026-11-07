@@ -6,9 +6,10 @@ import { SECTION_LABELS } from "../../../lib/layout";
 export interface HiddenTrayProps {
   hidden: DashboardSectionId[];
   onShow: (id: DashboardSectionId) => void;
+  busy?: boolean;
 }
 
-export function HiddenTray({ hidden, onShow }: HiddenTrayProps) {
+export function HiddenTray({ hidden, onShow, busy = false }: HiddenTrayProps) {
   if (hidden.length === 0) return null;
   return (
     <div className="syn-hidden-tray">
@@ -20,6 +21,7 @@ export function HiddenTray({ hidden, onShow }: HiddenTrayProps) {
             <button
               type="button"
               className="syn-btn syn-btn--secondary syn-btn--sm"
+              disabled={busy}
               onClick={() => onShow(id)}
             >
               Show

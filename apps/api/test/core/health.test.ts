@@ -217,6 +217,19 @@ test("sandbox check reports the missing binaries in order (F1.4)", async () => {
   expect(await mk([])()).toEqual({ status: "ok", detail: "disabled" });
 });
 
+test("sandbox check reports a masked run root after the binaries (H4.6)", async () => {
+  const both = (b: string) => `/usr/bin/${b}`;
+  const mk = (which: (b: string) => string | null) =>
+    sandboxCheck({ settings, which, runRootMasked: () => true });
+  expect(await mk(both)()).toEqual({ status: "degraded", detail: "run_root_masked" });
+  expect(await mk((b) => (b === "socat" ? null : both(b)))()).toEqual({
+    status: "degraded",
+    detail: "missing: socat",
+  });
+  settings.set("engineering.sandbox.enabled", false);
+  expect(await mk(both)()).toEqual({ status: "ok", detail: "disabled" });
+});
+
 test("claude_settings check mirrors the orchestrator's refusal condition (F3.3)", async () => {
   const mk = (p: { widen?: boolean; servers?: string[] }) =>
     claudeSettingsCheck({

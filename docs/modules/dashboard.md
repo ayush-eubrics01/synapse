@@ -45,7 +45,7 @@ The page's sections are the widgets. The user's arrangement is stored in `dashbo
 | `GET /api/dashboard/layouts` | `{ active: DashboardLayoutView, layouts: [{id, name, isActive, updatedAt}] }` |
 | `POST /api/dashboard/layouts {name, fromId?}` | 201, the new layout, copied from `fromId` or the active one |
 | `PUT /api/dashboard/layouts/:id {name?, layout?}` | the stored (normalised) layout; at least one field is required |
-| `POST /api/dashboard/layouts/:id/activate` | the activated layout |
+| `POST /api/dashboard/layouts/:id/activate` | the same body as `GET /api/dashboard/layouts` |
 | `POST /api/dashboard/layouts/:id/reset` | the layout replaced by the default, name kept |
 | `DELETE /api/dashboard/layouts/:id` | 204 |
 

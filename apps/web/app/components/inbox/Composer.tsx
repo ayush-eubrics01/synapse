@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
 import type { ComposerState } from "../../../lib/inbox";
 import { Button } from "../ui/Button";
+import { useDraft } from "../ui/useDraft";
 
 const MAX_TEXT = 4000;
 
@@ -66,7 +66,7 @@ function ReplyComposer({
   draft: string | null;
   onReply: ComposerProps["onReply"];
 }) {
-  const [text, setText] = useState(draft ?? "");
+  const [text, setText] = useDraft(`reply:${urgentId}`, draft ?? "");
   return (
     <div className="syn-composer">
       <div className="syn-composer-head">
@@ -110,7 +110,7 @@ function CodeAnswerComposer({
   onSend: ComposerProps["onSendCodeAnswer"];
   onDiscard: ComposerProps["onDiscardCodeAnswer"];
 }) {
-  const [text, setText] = useState(draft);
+  const [text, setText] = useDraft(`code_answer:${codeAnswerId}`, draft);
   return (
     <div className="syn-composer">
       <div className="syn-composer-head">
