@@ -431,6 +431,13 @@ test("retryDevelopErrorText maps the retry refusals", () => {
     "The test sandbox still can't start. Install bubblewrap and socat first.",
   );
   expect(e("sandbox_root_masked")).toBe("XDG_CACHE_HOME is still inside a protected folder.");
+  expect(e("unsafe_change")).toBe("The failed run changed git settings; cancel this task.");
+  expect(e("changes_left")).toBe(
+    "The failed run left changes in the repository; cancel this task.",
+  );
+  expect(e("sandbox_path_too_long")).toBe(
+    "The temp path is still too long; shorten XDG_CACHE_HOME and restart Synapse.",
+  );
   expect(e("not_found")).toBe(reasonLabel("not_found"));
   expect(reasonLabel("sandbox_unavailable")).toContain("then use Try again");
 });

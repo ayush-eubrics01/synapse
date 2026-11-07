@@ -44,6 +44,9 @@ const STATUS: Record<
   sandbox_disabled: 409,
   sandbox_unavailable: 409,
   sandbox_root_masked: 409,
+  unsafe_change: 409,
+  changes_left: 409,
+  sandbox_path_too_long: 409,
 };
 
 export function engineeringErrorResponse(e: EngineeringTaskError): {

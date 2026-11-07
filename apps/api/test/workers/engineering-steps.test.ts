@@ -210,6 +210,7 @@ function editingRun(
 let db: ReturnType<typeof openDatabase>["db"];
 let clock: FakeClock;
 let settings: SettingsService;
+let pathTooLong = false;
 let sandboxHealth: () => Promise<{ status: "ok" | "degraded" | "down"; detail?: string }>;
 let queue: JobQueue;
 let leases: LeaseService;
@@ -400,6 +401,7 @@ beforeEach(async () => {
   clock = new FakeClock(NOW);
   settings = new SettingsService(db, clock, () => "e");
   sandboxHealth = async () => ({ status: "ok" });
+  pathTooLong = false;
   events = new EventPublisher(clock);
   audit = new AuditLogger(clock);
   queue = new JobQueue(db, clock);
@@ -464,6 +466,7 @@ beforeEach(async () => {
     prs: hooked(gh),
     settings,
     sandboxHealth: () => sandboxHealth(),
+    sandboxPathTooLong: () => pathTooLong,
   });
   steps.register(approvals, dispatcher);
   requests = [];
@@ -2280,6 +2283,47 @@ describe("retry the develop step (H3)", () => {
     };
     expect(await code(id)).toBe("not_retryable");
     expect(developJobs(id)).toBe(0);
+  });
+
+  test("a changed git fingerprint is unsafe_change and a leftover file is changes_left", async () => {
+    const id = await parked();
+    const out = stepRow(id, "develop")?.output as Record<string, unknown>;
+    expect(typeof out.gitDirBaseline).toBe("string");
+    const set = (o: Record<string, unknown>) =>
+      db
+        .update(schema.engineeringTaskSteps)
+        .set({ output: o })
+        .where(
+          and(
+            eq(schema.engineeringTaskSteps.taskId, id),
+            eq(schema.engineeringTaskSteps.step, "develop"),
+          ),
+        )
+        .run();
+    set({ ...out, gitDirBaseline: "stale" });
+    expect(await code(id)).toBe("unsafe_change");
+    set({ ...out, configFingerprint: "stale" });
+    expect(await code(id)).toBe("unsafe_change");
+    expect(developJobs(id)).toBe(0);
+    set(out);
+    writeFileSync(join(repo, "left.txt"), "x\n");
+    expect(await code(id)).toBe("changes_left");
+    expect(developJobs(id)).toBe(0);
+    expect(taskRow(id)?.status).toBe("needs_attention");
+  });
+
+  test("sandbox_path_too_long is re-checked before queuing", async () => {
+    const id = await parked();
+    db.update(schema.engineeringTasks)
+      .set({ failure: "sandbox_path_too_long" })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+    pathTooLong = true;
+    expect(await code(id)).toBe("sandbox_path_too_long");
+    expect(developJobs(id)).toBe(0);
+    pathTooLong = false;
+    expect(await code(id)).toBe("ok");
+    expect(developJobs(id)).toBe(1);
   });
 
   test("another reason and an unknown task are refused", async () => {

@@ -651,6 +651,10 @@ const RETRY_DEVELOP_TEXT: Record<string, string> = {
   sandbox_disabled: "Turn the test sandbox on first.",
   sandbox_unavailable: "The test sandbox still can't start. Install bubblewrap and socat first.",
   sandbox_root_masked: "XDG_CACHE_HOME is still inside a protected folder.",
+  unsafe_change: "The failed run changed git settings; cancel this task.",
+  changes_left: "The failed run left changes in the repository; cancel this task.",
+  sandbox_path_too_long:
+    "The temp path is still too long; shorten XDG_CACHE_HOME and restart Synapse.",
 };
 
 /** The sentence for a refused "Try again". */

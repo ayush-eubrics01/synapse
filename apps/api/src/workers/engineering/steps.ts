@@ -58,6 +58,11 @@ export interface StepJobDeps {
  */
 export const RUN_TMP_MAX_BYTES = 64;
 
+/** True when `<runRoot>/r/<8hex>/t` (the fixed-length shape of a run's tmpDir) is over the cap. */
+export function runTmpTooLong(runRoot: string): boolean {
+  return Buffer.byteLength(join(runRoot, "r", "00000000", "t")) > RUN_TMP_MAX_BYTES;
+}
+
 /**
  * A develop run's scratch dir: `<runRoot>/r/<first 8 hex of sha256(jobId)>`, short on purpose
  * (RUN_TMP_MAX_BYTES). If that name is taken (a leftover), 12 then 16 hex; null when all three are

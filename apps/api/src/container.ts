@@ -120,7 +120,7 @@ import { registerCodeAnswerJob } from "./workers/code-answer/generate";
 import { registerCommitmentJobs } from "./workers/commitments";
 import { registerInvestigateJob } from "./workers/engineering/investigate";
 import { registerPickupJobs } from "./workers/engineering/pickup";
-import { registerStepJob } from "./workers/engineering/steps";
+import { registerStepJob, runTmpTooLong } from "./workers/engineering/steps";
 import { createRunHelpers } from "./workers/intelligence-shared";
 import { registerJiraJobs } from "./workers/jira";
 import { registerOpsJobs } from "./workers/ops";
@@ -676,6 +676,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
   const engineeringSteps = new EngineeringStepService({
     settings,
     sandboxHealth: () => sandboxHealthCheck(),
+    sandboxPathTooLong: () => runTmpTooLong(runRoot),
     db,
     clock,
     events,

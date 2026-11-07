@@ -199,6 +199,8 @@ export interface EngineeringStepDeps {
   settings: Pick<SettingsService, "get">;
   /** The `sandbox` health check: retry refuses while it is not ok. */
   sandboxHealth: HealthCheck;
+  /** True when a develop run's sandbox tmpDir would exceed the 64-byte cap (H3.3). */
+  sandboxPathTooLong: () => boolean;
 }
 
 /** The develop step's pre-run fingerprints plus the placeholder count (ADR-040, Task 4b). */
@@ -465,6 +467,44 @@ export class EngineeringStepService {
       throw new EngineeringTaskError(
         health.detail === "run_root_masked" ? "sandbox_root_masked" : "sandbox_unavailable",
       );
+    }
+    if (task.failure === "sandbox_path_too_long" && this.deps.sandboxPathTooLong()) {
+      throw new EngineeringTaskError("sandbox_path_too_long");
+    }
+    // The failed run's pre-run fingerprints are discarded below, so compare them now, before any
+    // git command that could run a filter or hook (ADR-040).
+    const ctx = this.context(taskId);
+    if ("skip" in ctx) {
+      throw new EngineeringTaskError(
+        ctx.skip === "path_unavailable" ? "path_unavailable" : "not_retryable",
+      );
+    }
+    const prior = this.stepOutput(taskId, "develop");
+    const baseline = typeof prior?.gitDirBaseline === "string" ? prior.gitDirBaseline : undefined;
+    try {
+      if (
+        baseline !== undefined &&
+        (await this.deps.git.gitDirFingerprint(ctx.path)) !== baseline
+      ) {
+        throw new EngineeringTaskError("unsafe_change");
+      }
+      if (
+        typeof prior?.configFingerprint === "string" &&
+        (await this.deps.git.configFingerprint(ctx.path)) !== prior.configFingerprint
+      ) {
+        throw new EngineeringTaskError("unsafe_change");
+      }
+    } catch (e) {
+      throw e instanceof EngineeringTaskError ? e : new EngineeringTaskError("unsafe_change");
+    }
+    try {
+      const diff = await this.deps.git.diffSummary(
+        ctx.path,
+        baseline === undefined ? undefined : { gitDirBaseline: baseline },
+      );
+      if (diff.unsafe || diff.files.length > 0) throw new EngineeringTaskError("changes_left");
+    } catch (e) {
+      throw e instanceof EngineeringTaskError ? e : new EngineeringTaskError("unsafe_change");
     }
     this.deps.db.transaction(
       (tx) => {

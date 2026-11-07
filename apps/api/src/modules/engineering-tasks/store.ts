@@ -46,6 +46,9 @@ export const ENGINEERING_TASK_ERROR_CODES = [
   "sandbox_disabled",
   "sandbox_unavailable",
   "sandbox_root_masked",
+  "unsafe_change",
+  "changes_left",
+  "sandbox_path_too_long",
 ] as const;
 /** `registry_error:<RegistryErrorCode>` wraps a refusal of the repository registry. */
 export type EngineeringTaskErrorCode =
