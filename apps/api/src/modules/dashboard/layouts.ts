@@ -43,11 +43,15 @@ export class DashboardLayoutService {
           this.emit(tx, "system", "activated", latest.id);
           rows = this.rows(tx);
         }
-        const active = rows.find((r) => r.isActive) as Row;
-        return { active: this.view(active), layouts: rows.map(summary) };
+        return this.snapshot(rows);
       },
       { behavior: "immediate" },
     );
+  }
+
+  private snapshot(rows: Row[]): DashboardLayoutsResponse {
+    const active = rows.find((r) => r.isActive) as Row;
+    return { active: this.view(active), layouts: rows.map(summary) };
   }
 
   create(name: string, fromId?: string): DashboardLayoutView {
@@ -87,16 +91,21 @@ export class DashboardLayoutService {
     });
   }
 
-  activate(id: string): DashboardLayoutView {
-    return this.write("activated", (tx) => {
-      if (!this.rows(tx).some((r) => r.id === id)) throw new LayoutError("not_found");
-      tx.update(t).set({ isActive: false }).where(eq(t.isActive, true)).run();
-      tx.update(t)
-        .set({ isActive: true, updatedAt: isoNow(this.deps.clock) })
-        .where(eq(t.id, id))
-        .run();
-      return id;
-    });
+  /** Activates a layout and answers with the same body as `list()`. */
+  activate(id: string): DashboardLayoutsResponse {
+    return this.deps.db.transaction(
+      (tx) => {
+        if (!this.rows(tx).some((r) => r.id === id)) throw new LayoutError("not_found");
+        tx.update(t).set({ isActive: false }).where(eq(t.isActive, true)).run();
+        tx.update(t)
+          .set({ isActive: true, updatedAt: isoNow(this.deps.clock) })
+          .where(eq(t.id, id))
+          .run();
+        this.emit(tx, "user", "activated", id);
+        return this.snapshot(this.rows(tx));
+      },
+      { behavior: "immediate" },
+    );
   }
 
   reset(id: string): DashboardLayoutView {

@@ -120,3 +120,43 @@ test("a collapsed header has no dangling aria-controls; toolbar and tray entries
     'id="hidden-tray-jira"',
   );
 });
+
+const pickerProps = {
+  layouts: [
+    { id: "L1", name: "Default", isActive: true, updatedAt: "x" },
+    { id: "L2", name: "Focus", isActive: false, updatedAt: "x" },
+  ],
+  activeId: "L1",
+  onSwitch: noop,
+  onSaveAs: noop,
+  onRename: noop,
+  onDelete: noop,
+  onReset: noop,
+};
+
+test("busy disables every picker button, the tray Show and the section toolbar", () => {
+  const picker = renderToString(<LayoutPicker {...pickerProps} busy />);
+  const buttons = picker.match(/<button[^>]*>/g) ?? [];
+  expect(buttons.length).toBeGreaterThan(5);
+  for (const b of buttons) expect(b).toContain("disabled");
+  expect(renderToString(<HiddenTray hidden={["jira"]} onShow={noop} busy />)).toMatch(
+    /<button[^>]*disabled[^>]*>Show/,
+  );
+  const html = section({ busy: true });
+  for (const t of ["Move down", "Hide", "Collapse", "Half width"])
+    expect(html).toMatch(new RegExp(`<button[^>]*disabled[^>]*>${t}`));
+});
+
+test("not busy leaves the picker, tray and toolbar enabled", () => {
+  const picker = renderToString(<LayoutPicker {...pickerProps} busy={false} />);
+  const disabled = (picker.match(/<button[^>]*>/g) ?? []).filter((b) => b.includes("disabled"));
+  expect(disabled).toHaveLength(1); // Delete on the active layout
+  expect(renderToString(<HiddenTray hidden={["jira"]} onShow={noop} busy={false} />)).not.toContain(
+    "disabled",
+  );
+  expect(section({ busy: false })).not.toMatch(/<button[^>]*disabled[^>]*>(Move down|Hide|Half)/);
+});
+
+test("a collapsed header stays enabled while busy", () => {
+  expect(section({ busy: true, customising: false, collapsed: true })).not.toContain("disabled");
+});

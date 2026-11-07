@@ -115,7 +115,8 @@ test("navigation reveals hidden or collapsed targets locally before scrolling", 
 test("a stale layout fetch is dropped and edits wait for a layout switch", () => {
   expect(PAGE).toMatch(/gate\.isCurrent\(layoutToken\)/);
   expect(PAGE).toMatch(/if \(gate\.isLocked\(\)\) return;/);
-  expect(PAGE).toContain("gate.lock();");
+  expect(PAGE).toContain("runLayoutCall(");
+  expect(PAGE).toContain("busy={layoutBusy}");
 });
 
 test("the palette entry reflects the customise state", () => {

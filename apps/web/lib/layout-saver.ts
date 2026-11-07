@@ -1,7 +1,12 @@
-import type { DashboardLayout, DashboardLayoutView } from "@synapse/contracts";
+import type {
+  DashboardLayout,
+  DashboardLayoutsResponse,
+  DashboardLayoutView,
+} from "@synapse/contracts";
 import { type TimerApi, trailingDebounce } from "./debounce";
 
 export const LAYOUT_SAVE_FAILED = "Couldn't save the layout";
+export const LAYOUT_SWITCH_FAILED = "Couldn't switch the layout";
 
 export interface LayoutSaverDeps {
   put: (layout: DashboardLayout) => Promise<DashboardLayoutView>;
@@ -19,6 +24,7 @@ export interface LayoutSaverDeps {
 export function createLayoutSaver(deps: LayoutSaverDeps) {
   let pending: DashboardLayout | null = null;
   let inFlight = 0;
+  let failures = 0;
   let chain: Promise<void> = Promise.resolve();
 
   const send = (): Promise<void> => {
@@ -39,6 +45,7 @@ export function createLayoutSaver(deps: LayoutSaverDeps) {
       // A newer edit is already waiting or in flight: this result is stale and must not apply.
       const newer = pending !== null || inFlight > 0;
       if (failed) {
+        failures++;
         deps.onError(LAYOUT_SAVE_FAILED);
         deps.reload();
       } else if (saved && !newer) deps.onSaved(saved);
@@ -55,10 +62,13 @@ export function createLayoutSaver(deps: LayoutSaverDeps) {
       pending = l;
       debounced.call();
     },
-    async flush(): Promise<void> {
+    /** True when nothing was pending or every PUT it awaited succeeded. */
+    async flush(): Promise<boolean> {
+      const before = failures;
       debounced.cancel();
       await send();
       await chain;
+      return failures === before;
     },
     isBusy: () => pending !== null || inFlight > 0,
     cancel(): void {
@@ -87,4 +97,64 @@ export function createLayoutGate() {
     },
     isLocked: () => locked,
   };
+}
+
+export type LayoutCallOutcome =
+  | "applied"
+  | "busy"
+  | "flush_failed"
+  | "call_failed"
+  | "refetch_failed";
+
+export interface LayoutCallDeps {
+  gate: ReturnType<typeof createLayoutGate>;
+  flush: () => Promise<boolean>;
+  setBusy: (busy: boolean) => void;
+  getLayouts: () => Promise<DashboardLayoutsResponse>;
+  apply: (r: DashboardLayoutsResponse) => void;
+  toast: (text: string) => void;
+}
+
+/**
+ * One serialised picker call: refused while another runs, flushes pending edits first when
+ * asked (a failed flush cancels the call), and applies the server's answer, or a re-read.
+ */
+export async function runLayoutCall(
+  deps: LayoutCallDeps,
+  op: {
+    run: () => Promise<DashboardLayoutsResponse | undefined>;
+    flushFirst: boolean;
+    errorText: (e: unknown) => string;
+  },
+): Promise<LayoutCallOutcome> {
+  const { gate } = deps;
+  if (gate.isLocked()) return "busy";
+  gate.lock();
+  deps.setBusy(true);
+  try {
+    if (op.flushFirst && !(await deps.flush())) return "flush_failed";
+    let result: DashboardLayoutsResponse | undefined;
+    try {
+      result = await op.run();
+    } catch (e) {
+      deps.toast(op.errorText(e));
+      return "call_failed";
+    }
+    if (result !== undefined) {
+      gate.bump();
+      deps.apply(result);
+      return "applied";
+    }
+    try {
+      const r = await deps.getLayouts();
+      gate.bump();
+      deps.apply(r);
+      return "applied";
+    } catch {
+      return "refetch_failed";
+    }
+  } finally {
+    gate.unlock();
+    deps.setBusy(false);
+  }
 }

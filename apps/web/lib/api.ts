@@ -1058,7 +1058,7 @@ export function updateLayout(
 export function activateLayout(
   id: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<DashboardLayoutView> {
+): Promise<DashboardLayoutsResponse> {
   return request(
     `/api/dashboard/layouts/${encodeURIComponent(id)}/activate`,
     { method: "POST" },

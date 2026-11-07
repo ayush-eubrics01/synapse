@@ -12,6 +12,8 @@ export interface LayoutPickerProps {
   onDelete: (id: string) => void;
   /** Resets the active layout to the default. */
   onReset: () => void;
+  /** A layout call is running: every button waits. */
+  busy?: boolean;
 }
 
 const btn = "syn-btn syn-btn--secondary syn-btn--sm";
@@ -24,6 +26,7 @@ export function LayoutPicker({
   onRename,
   onDelete,
   onReset,
+  busy = false,
 }: LayoutPickerProps) {
   const [newName, setNewName] = useState("");
   const [editing, setEditing] = useState<{ id: string; name: string } | null>(null);
@@ -45,6 +48,7 @@ export function LayoutPicker({
                 <button
                   type="button"
                   className={btn}
+                  disabled={busy}
                   onClick={() => {
                     onRename(l.id, editing.name);
                     setEditing(null);
@@ -52,7 +56,12 @@ export function LayoutPicker({
                 >
                   Save name
                 </button>
-                <button type="button" className={btn} onClick={() => setEditing(null)}>
+                <button
+                  type="button"
+                  className={btn}
+                  disabled={busy}
+                  onClick={() => setEditing(null)}
+                >
                   Cancel
                 </button>
               </>
@@ -62,13 +71,19 @@ export function LayoutPicker({
                 {l.id === activeId ? (
                   <span className="syn-chip syn-chip--green">Active</span>
                 ) : (
-                  <button type="button" className={btn} onClick={() => onSwitch(l.id)}>
+                  <button
+                    type="button"
+                    className={btn}
+                    disabled={busy}
+                    onClick={() => onSwitch(l.id)}
+                  >
                     Switch
                   </button>
                 )}
                 <button
                   type="button"
                   className={btn}
+                  disabled={busy}
                   onClick={() => setEditing({ id: l.id, name: l.name })}
                 >
                   Rename
@@ -76,7 +91,7 @@ export function LayoutPicker({
                 <button
                   type="button"
                   className={btn}
-                  disabled={l.id === activeId}
+                  disabled={busy || l.id === activeId}
                   onClick={() => onDelete(l.id)}
                 >
                   Delete
@@ -98,6 +113,7 @@ export function LayoutPicker({
         <button
           type="button"
           className={btn}
+          disabled={busy}
           onClick={() => {
             if (newName.trim() === "") return;
             onSaveAs(newName.trim());
@@ -106,7 +122,7 @@ export function LayoutPicker({
         >
           Save as new
         </button>
-        <button type="button" className={btn} onClick={onReset}>
+        <button type="button" className={btn} disabled={busy} onClick={onReset}>
           Reset to default
         </button>
       </div>
