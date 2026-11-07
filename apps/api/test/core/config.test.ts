@@ -157,6 +157,14 @@ test("phase 6 settings defaults and bounds", () => {
   settings.set("commitments.extract.batchMax", 40);
 });
 
+test("autoReply limits can only be tightened (ADR-033)", () => {
+  const { settings } = setup();
+  expect(() => settings.set("autoReply.minConfidence", 0.5)).toThrow();
+  expect(() => settings.set("autoReply.maxPerPersonPerDay", 4)).toThrow();
+  settings.set("autoReply.maxPerPersonPerDay", 0);
+  expect(settings.get("autoReply.maxPerPersonPerDay")).toBe(0);
+});
+
 test("set then get round-trips and emits one settings.changed", () => {
   const { db, settings } = setup();
   settings.set("jobs.maxAttempts", 5);

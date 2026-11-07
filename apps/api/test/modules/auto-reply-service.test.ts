@@ -855,6 +855,27 @@ describe("evaluate: caps", () => {
     c.autoReply.setAway(true);
   });
 
+  test("maxPerPersonPerDay 0 holds a high-confidence follow-up question and an acknowledgement: daily_cap", () => {
+    c.settings.set("autoReply.maxPerPersonPerDay", 0);
+    const m = msg();
+    const f = followup({
+      origin: "spec_clarity",
+      originMessageId: m.id,
+      conv: "c-ch",
+      thread: m.ts,
+      confidence: 0.9,
+    });
+    expect(c.autoReply.evaluate({ kind: "followup_question", followupId: f })).toMatchObject({
+      status: "held",
+      reason: "daily_cap",
+    });
+    expect(c.autoReply.evaluate({ kind: "acknowledgement", messageId: msg().id })).toMatchObject({
+      status: "held",
+      reason: "daily_cap",
+    });
+    expect(sink.sends).toHaveLength(0);
+  });
+
   test("a 4th send to Ada within 24 h is held: daily_cap; the window is rolling", () => {
     // One sent 25 h ago does not count; three within the window do.
     seedSent(new Date(Date.parse(NOW) - 25 * H).toISOString());

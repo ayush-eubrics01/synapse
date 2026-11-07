@@ -803,7 +803,11 @@ export class AutoReplyService {
       now,
       confidence: r.confidence,
       candidateText: r.text,
-      maxPerDay: settings.get("autoReply.maxPerPersonPerDay"),
+      // A review-only code answer is a user approval, not an unapproved send: a daily cap of 0
+      // (no automatic replies) must not stop it.
+      maxPerDay: reviewOnly
+        ? Number.POSITIVE_INFINITY
+        : settings.get("autoReply.maxPerPersonPerDay"),
       minGapMinutes: settings.get("autoReply.minMinutesBetweenInThread"),
       minConfidence: settings.get("autoReply.minConfidence"),
     });

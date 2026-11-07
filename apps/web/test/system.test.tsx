@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DashboardOverview, Job } from "@synapse/contracts";
 import { renderToString } from "react-dom/server";
+import { AwayReplySettings } from "../app/components/system/AwayReplySettings";
 import { ClaudeSettings, SANDBOX_HINT } from "../app/components/system/ClaudeSettings";
 import { QuotaBars } from "../app/components/system/QuotaBars";
 import { Running } from "../app/components/system/Running";
@@ -258,4 +259,65 @@ test("flipping the sandbox switch reports the setting key and the new value", ()
   };
   find(tree)?.onChange(false);
   expect(calls).toEqual([["engineering.sandbox.enabled", false]]);
+});
+
+const awayValues = {
+  "autoReply.allowedKinds": [
+    "code_answer",
+    "stalled_reminder",
+    "followup_question",
+    "acknowledgement",
+  ],
+  "autoReply.maxPerPersonPerDay": 3,
+  "autoReply.minMinutesBetweenInThread": 30,
+  "autoReply.minConfidence": 0.75,
+  "autoReply.maxSendDelayMinutes": 15,
+} as never;
+
+test("AwayReplySettings renders the card, four checked kinds, four numbers and the hint", () => {
+  const html = renderToString(<AwayReplySettings values={awayValues} onChange={() => {}} />);
+  expect(html).toContain("Away replies");
+  for (const l of ["Code answers", "Stalled reminders", "Follow-up questions", "Acknowledgements"])
+    expect(html).toContain(l);
+  expect((html.match(/checked=""/g) ?? []).length).toBe(4);
+  for (const l of [
+    "Max replies per person per day",
+    "Min minutes between replies in a thread",
+    "Min confidence",
+    "Max send delay (minutes)",
+  ])
+    expect(html).toContain(l);
+  expect(html).toContain("only be made stricter");
+  expect(html).toContain('min="0.75"');
+  expect(html).toContain('max="1"');
+});
+
+test("AwayReplySettings without values says unavailable", () => {
+  const html = renderToString(<AwayReplySettings values={null} onChange={() => {}} />);
+  expect(html).toContain("Settings unavailable.");
+});
+
+test("toggling a kind sends the new array in the fixed order", () => {
+  const calls: unknown[][] = [];
+  const tree = AwayReplySettings({
+    values: {
+      ...(awayValues as object),
+      "autoReply.allowedKinds": ["code_answer", "acknowledgement"],
+    } as never,
+    onChange: (...a) => calls.push(a),
+  }) as never;
+  const boxes: { id?: string; onChange?: () => void }[] = [];
+  const walk = (n: unknown): void => {
+    if (!n || typeof n !== "object") return;
+    const props = (n as { props?: Record<string, unknown> }).props ?? {};
+    if (props.type === "checkbox") boxes.push(props as never);
+    const k = props.children;
+    for (const x of Array.isArray(k) ? k.flat(Infinity) : [k]) walk(x);
+  };
+  walk(tree);
+  expect(boxes).toHaveLength(4);
+  boxes[2]?.onChange?.();
+  expect(calls).toEqual([
+    ["autoReply.allowedKinds", ["code_answer", "followup_question", "acknowledgement"]],
+  ]);
 });

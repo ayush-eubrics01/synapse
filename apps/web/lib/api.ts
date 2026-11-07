@@ -214,7 +214,21 @@ export interface OpsSettingsDto {
   "retention.auditDays": number;
   "retention.snapshotsDays": number;
 }
-export type SettingsDto = ClaudeSettingsDto & OpsSettingsDto;
+export type AutoReplyKind =
+  | "code_answer"
+  | "stalled_reminder"
+  | "followup_question"
+  | "acknowledgement";
+
+/** ADR-033 away-reply limits; the API only accepts values at least as strict as ADR-033. */
+export interface AwayReplySettingsDto {
+  "autoReply.allowedKinds": AutoReplyKind[];
+  "autoReply.maxPerPersonPerDay": number;
+  "autoReply.minMinutesBetweenInThread": number;
+  "autoReply.minConfidence": number;
+  "autoReply.maxSendDelayMinutes": number;
+}
+export type SettingsDto = ClaudeSettingsDto & OpsSettingsDto & AwayReplySettingsDto;
 
 export function getSettings(fetchImpl: typeof fetch = fetch): Promise<SettingsDto> {
   return request("/api/settings", undefined, fetchImpl);

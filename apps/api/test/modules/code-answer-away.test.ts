@@ -447,6 +447,22 @@ describe("away decision (C7)", () => {
     expect(row(a.id)?.status).toBe("held");
   });
 
+  test("maxPerPersonPerDay 0: the review approval is still created (infinite cap for review-only)", () => {
+    c.settings.set("autoReply.maxPerPersonPerDay", 0);
+    const a = seedAway();
+    expect(evaluate(a.id)).toMatchObject({ status: "held", reason: "code_answer_review" });
+    expect(approvals()).toHaveLength(1);
+    expect(sink.sends).toHaveLength(0);
+  });
+
+  test("maxPerPersonPerDay 0 with autoSend on: held daily_cap, nothing sent", () => {
+    c.settings.set("autoReply.maxPerPersonPerDay", 0);
+    c.settings.set("codeAnswer.away.autoSend", true);
+    const a = seedAway();
+    expect(evaluate(a.id)).toMatchObject({ status: "held", reason: "daily_cap" });
+    expectNothingForApproval();
+  });
+
   test("autoSend on and every check passing: sent with the tag and a policy approval", () => {
     c.settings.set("codeAnswer.away.autoSend", true);
     const a = seedAway();

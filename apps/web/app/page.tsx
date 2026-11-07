@@ -171,6 +171,7 @@ import { People } from "./components/people/People";
 import { ProfileDrawer } from "./components/people/ProfileDrawer";
 import { useQueuedEvaluations } from "./components/people/useQueuedEvaluations";
 import { Sidebar } from "./components/shell/Sidebar";
+import { AwayReplySettings } from "./components/system/AwayReplySettings";
 import { ClaudeCodeCard } from "./components/system/ClaudeCodeCard";
 import { ClaudeSettings } from "./components/system/ClaudeSettings";
 import { Running } from "./components/system/Running";
@@ -1266,6 +1267,17 @@ export default function Dashboard() {
           }}
         />
         <ClaudeSettings
+          values={claudeSettings}
+          onChange={(key, value) => {
+            void putSettings({ [key]: value })
+              .then(setClaudeSettings)
+              .catch(() => {
+                toast.show("Could not save that setting");
+                void refresh();
+              });
+          }}
+        />
+        <AwayReplySettings
           values={claudeSettings}
           onChange={(key, value) => {
             void putSettings({ [key]: value })

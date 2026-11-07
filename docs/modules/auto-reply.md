@@ -105,19 +105,21 @@ A cancelled send ends as outgoing `failed` with `cancelled_away_off`, `cancelled
 
 ## Settings
 
-| Key | Default |
-|---|---|
-| `autoReply.awayMode` | `false` (written by `setAway`, not the settings page) |
-| `autoReply.allowedKinds` | all four kinds |
-| `autoReply.maxPerPersonPerDay` | 3 |
-| `autoReply.minMinutesBetweenInThread` | 30 |
-| `autoReply.minConfidence` | 0.75 |
-| `autoReply.maxSendDelayMinutes` | 15 |
-| `codeAnswer.away.enabled` / `autoSend` / `maxRunsPerDay` | `true` / `false` / 10 (Phase 10b; editable through `PUT /api/settings`, see `docs/modules/code-answers.md`) |
+| Key | Default | Allowed range (never looser than ADR-033) |
+|---|---|---|
+| `autoReply.awayMode` | `false` (written by `setAway`, not editable through the settings API) | n/a |
+| `autoReply.allowedKinds` | all four kinds | any subset, at most 4, no duplicates |
+| `autoReply.maxPerPersonPerDay` | 3 | 0 to 3 |
+| `autoReply.minMinutesBetweenInThread` | 30 | 30 to 1440 |
+| `autoReply.minConfidence` | 0.75 | 0.75 to 1 |
+| `autoReply.maxSendDelayMinutes` | 15 | 1 to 15 |
+| `codeAnswer.away.enabled` / `autoSend` / `maxRunsPerDay` | `true` / `false` / 10 (Phase 10b; editable through `PUT /api/settings`, see `docs/modules/code-answers.md`) | see code-answers |
+
+The five `autoReply.*` limits are editable through `PUT /api/settings` and the Away replies card in the System section; each change is audited with the key only. `autoReply.maxPerPersonPerDay = 0` means no automatic replies (every automatic send is held as `daily_cap`). A code answer with `codeAnswer.away.autoSend` off is a user approval, not an unapproved send, so the cap does not apply to it (`maxPerDay` is infinite for it) and its review approval is still created.
 
 Permission: `slack.auto_reply` defaults to `policy_gated`, which only `recordPolicyApproval` accepts. An override can tighten it (which holds auto-replies as `policy_disabled`) but never loosen it.
 
-There is no UI or route yet to tighten the permission or to change the `autoReply.*` settings (`PermissionManager.setOverride` and `SettingsService.set` exist, but nothing exposes them for these keys). Today's kill switch is switching away mode off (`PUT /api/away {on: false}` or the header switch), which also cancels anything not yet spawned. Recorded in the follow-ups.
+Priority people and the `Sent using @claude` tag are not settable. The permission tightening (`PermissionManager.setOverride`) still has no UI or route. The quick kill switch is switching away mode off (`PUT /api/away {on: false}` or the header switch), which also cancels anything not yet spawned; setting `maxPerPersonPerDay` to 0 stops automatic sends while keeping away mode's other behaviour.
 
 ## Events and routes
 

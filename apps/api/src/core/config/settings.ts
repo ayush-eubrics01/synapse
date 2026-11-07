@@ -58,12 +58,15 @@ const settingSchemas = {
   "autoReply.awayMode": z.boolean().default(false),
   "autoReply.allowedKinds": z
     .array(z.enum(["code_answer", "stalled_reminder", "followup_question", "acknowledgement"]))
+    .max(4)
+    .refine((a) => new Set(a).size === a.length)
     .default(["code_answer", "stalled_reminder", "followup_question", "acknowledgement"]),
-  "autoReply.maxPerPersonPerDay": z.number().int().positive().default(3),
-  "autoReply.minMinutesBetweenInThread": z.number().int().nonnegative().default(30),
-  "autoReply.minConfidence": z.number().min(0).max(1).default(0.75),
+  // ADR-033 limits: the user may only tighten them. 0 per day means no automatic replies.
+  "autoReply.maxPerPersonPerDay": z.number().int().min(0).max(3).default(3),
+  "autoReply.minMinutesBetweenInThread": z.number().int().min(30).max(1440).default(30),
+  "autoReply.minConfidence": z.number().min(0.75).max(1).default(0.75),
   // M8: an auto-send not started this long after its decision is cancelled as `stale`.
-  "autoReply.maxSendDelayMinutes": z.number().int().positive().default(15),
+  "autoReply.maxSendDelayMinutes": z.number().int().min(1).max(15).default(15),
   "jira.enabled": z.boolean().default(false),
   "jira.cloudId": z
     .string()
@@ -205,6 +208,11 @@ export const USER_EDITABLE_SETTINGS = [
   "retention.auditDays",
   "retention.snapshotsDays",
   "engineering.sandbox.enabled",
+  "autoReply.allowedKinds",
+  "autoReply.maxPerPersonPerDay",
+  "autoReply.minMinutesBetweenInThread",
+  "autoReply.minConfidence",
+  "autoReply.maxSendDelayMinutes",
 ] as const satisfies readonly SettingKey[];
 export type UserEditableKey = (typeof USER_EDITABLE_SETTINGS)[number];
 
