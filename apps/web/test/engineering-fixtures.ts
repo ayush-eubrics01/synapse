@@ -19,6 +19,7 @@ export const repo = (o: Partial<RepositoryView> = {}): RepositoryView => ({
   notes: null,
   headSha: null,
   inspectedHeadSha: null,
+  inspectionWarning: null,
   drift: null,
   environments: [
     { id: "e-prod", name: "prod", branch: "main", protected: true, autoDeploysOnMerge: false },

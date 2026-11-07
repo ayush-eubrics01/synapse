@@ -761,6 +761,11 @@ export function updateRepository(
   return send("PUT", `/api/repos/${encodeURIComponent(id)}`, input, fetchImpl);
 }
 
+/** Unregisters a repository (204); a refusal such as `repo_has_active_task` is an ApiError with a code. */
+export function unregisterRepository(id: string, fetchImpl: typeof fetch = fetch): Promise<void> {
+  return request(`/api/repos/${encodeURIComponent(id)}`, { method: "DELETE" }, fetchImpl);
+}
+
 /** Queues an inspection; 409 (thrown, code `already_queued`) when one is already queued. */
 export function inspectRepositoryNow(
   id: string,

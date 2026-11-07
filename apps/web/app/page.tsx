@@ -109,11 +109,12 @@ import {
   skipUnreadablePage,
   startBackup,
   type UrgentItemDto,
+  unregisterRepository,
   updateLayout,
   updateMilestone,
 } from "../lib/api";
 import { backupStartMessage } from "../lib/backup";
-import { brainPaletteItems, projectRowId } from "../lib/brain";
+import { brainPaletteItems, projectRowId, removeErrorLabel } from "../lib/brain";
 import { codeAnswerErrorText, codeAnswerEventMessageId } from "../lib/code-answers";
 import { trailingDebounce } from "../lib/debounce";
 import { clearDraft } from "../lib/drafts";
@@ -709,6 +710,18 @@ export default function Dashboard() {
     await refresh();
   };
 
+  const removeRepository = async (id: string) => {
+    try {
+      await unregisterRepository(id);
+      toast.show("Repository removed");
+    } catch (e) {
+      toast.show(
+        e instanceof ApiError ? removeErrorLabel(e.code) : "Couldn't remove the repository",
+      );
+    }
+    await refresh();
+  };
+
   const proposeRepository = async (path: string) => {
     try {
       return { ok: true, proposal: await inspectRepositoryPath(path) } as const;
@@ -1150,6 +1163,7 @@ export default function Dashboard() {
           registerSignal={registerSignal}
           onInspectNow={(id) => void inspectNow(id)}
           onAcceptRemotes={(id) => void act(() => acceptCurrentRemotes(id))}
+          onRemove={(id) => void removeRepository(id)}
           onProposal={proposeRepository}
           onRegister={register}
           onAcceptFact={feed.handlers.acceptBrainFact}

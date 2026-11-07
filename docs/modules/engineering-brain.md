@@ -25,7 +25,7 @@ Non-responsibilities:
 
 | Table | Notes |
 |---|---|
-| `repositories` | `name` unique, `local_path` unique (realpath), `origin_url`, `upstream_url` (credential-stripped), `upstream_push_disabled`, `tracked_branch`, `jira_project_keys` (json), `notes`, `head_sha`, `inspected_head_sha`, `drift` (json, nullable), timestamps |
+| `repositories` | `name` unique, `local_path` unique (realpath), `origin_url`, `upstream_url` (credential-stripped), `upstream_push_disabled`, `tracked_branch`, `jira_project_keys` (json), `notes`, `head_sha`, `inspected_head_sha`, `inspection_warning` (nullable, `"permission_denied"`), `drift` (json, nullable), timestamps |
 | `repository_environments` | `name`, `branch`, `protected`, `auto_deploys_on_merge`, `notes`; unique (`repository_id`, `name`) |
 | `projects` | `name` unique, `summary`, timestamps |
 | `project_repositories` | project to repository link, unique pair |
@@ -109,7 +109,7 @@ Triggers: registration (the `repo.registered` consumer), the "Inspect now" butto
 
 **User-permission guard.** The CLI merges the user's `~/.claude/settings.json` permissions into every run, and the override cannot remove them, so a user-level `permissions.allow` for `Read`, `Bash`, `Edit` and similar would defeat the path scope. The orchestrator therefore refuses every engineering run, before spawning, when the startup read of the user's settings found such an entry, additional directories, or a default mode of `bypassPermissions`, `acceptEdits` or `auto`. The inspection job then fails with a fixed `needs_attention` message. Details in the orchestrator doc and the security model.
 
-**Single attempt.** The job is enqueued with `maxAttempts: 1`: an inspection is an expensive run and a retry rarely fixes it. A run that stops on max turns or timeout is audited (`brain.inspect_failed`, repository id and kind only) and ends `needs_attention`. A run with no successful `Read`, `Grep` or `Glob` result (the provider's `expectedToolNames` check, and the worker checks again) is audited the same way with kind `incomplete_ai_output` and fails as `incomplete_ai_output`, storing nothing (ADR-026). A reply that does not parse ends `parse_failed`. The user can press "Inspect now".
+**Single attempt.** The job is enqueued with `maxAttempts: 1`: an inspection is an expensive run and a retry rarely fixes it. A run that stops on max turns or timeout is audited (`brain.inspect_failed`, repository id and kind only) and ends `needs_attention`. `inspection_warning` (the view's `inspectionWarning`) is set to `permission_denied` when a recorded inspection had permission denials and cleared by the next recorded inspection without any; a failed run leaves it as it was. The repository card shows "The last inspection was refused some file reads; results may be incomplete." while it is set. A run with no successful `Read`, `Grep` or `Glob` result (the provider's `expectedToolNames` check, and the worker checks again) is audited the same way with kind `incomplete_ai_output` and fails as `incomplete_ai_output`, storing nothing (ADR-026). A reply that does not parse ends `parse_failed`. The user can press "Inspect now".
 
 **Turn budget.** `brain.inspect.maxTurns` (default 30, up to 100) is clamped to 50 in the request, which is the CLI cap, and the system part tells the model its turn budget so it batches reads and answers before running out. `brain.inspect.timeoutMinutes` (default 10, up to 60) is the run timeout; the job handler allows 65 minutes so the worker never times out first.
 
@@ -147,11 +147,11 @@ Surviving facts are inserted as `needs_review` (source `inspection`, with the cl
 - **Projects.** One per repository by default (created at registration). `PUT /api/projects/:id {name?, summary?}` renames or edits (audited with field names only). `GET /api/projects/:id` returns the repositories, facts, milestones and the Jira summary.
 - **Milestones.** CRUD under `/api/projects/:id/milestones` (name up to 120 characters, `targetDate` as YYYY-MM-DD, status default `planned`, optional environment and notes). An environment must belong to a repository of the same project (400 `invalid_environment`). All changes are audited by id.
 - **Upcoming.** `GET /api/brain/upcoming` lists `planned` milestones due within `brain.upcoming.days` (default 30) or already past, by date then name, with the project and environment name. A past `planned` milestone has `overdue: true`. "Today" and the horizon are local calendar dates (`localDate` in `@synapse/shared`, shared with the Jira attention rules; final review), not UTC ones. The overview gains `counts.brainReview` (facts needing review) and `upcoming` (the next three).
-- **Jira association (C11).** A project's issues are in-scope `jira_issues` with an attention whose `project_key` is in the union of its repositories' `jira_project_keys`. The detail has counts by attention (overdue, blocked, due_soon, stale) and the five most urgent issues. No new table. It is **not gated on `jira.enabled`** (deferred item).
+- **Jira association (C11).** A project's issues are in-scope `jira_issues` with an attention whose `project_key` is in the union of its repositories' `jira_project_keys`. The detail has counts by attention (overdue, blocked, due_soon, stale) and the five most urgent issues. No new table. It is gated on `jira.enabled`: while Jira is off the detail's `jira` is `null` and the card shows no Jira section.
 
 ## Web (C13)
 
-A "Projects" section after Jira (`apps/web/app/components/brain`): the repository list with branch, environment chips, a drift warning with "Accept remotes" and "Inspect now", the register flow (path, proposal, confirm form), and project cards with approved facts grouped by kind, pending facts with Accept, Edit and Reject, milestones (the edit form sets planned, done, slipped or cancelled; Delete asks for an inline confirmation), and the Jira summary. Jira keys in the register form use `JIRA_PROJECT_KEY_RE` from `@synapse/contracts/patterns`, the same rule as the API schema. Needs-you cards: "PROJECTS · REVIEW" (facts needing review) and "PROJECTS · SETUP" (no repository registered). Upcoming go-lives appear in the Running panel. The frontend holds no business logic. Fact text is shown as plain text.
+A "Projects" section after Jira (`apps/web/app/components/brain`): the repository list with branch, environment chips, a drift warning with "Accept remotes", "Inspect now", an inspection warning (denied file reads), and "Remove" (an inline confirm, then `DELETE /api/repos/:id`; a refusal such as `repo_has_active_task` shows its fixed message in a toast; files on disk are not touched), the register flow (path, proposal, confirm form), and project cards with approved facts grouped by kind, pending facts with Accept, Edit and Reject, milestones (the edit form sets planned, done, slipped or cancelled; Delete asks for an inline confirmation), and the Jira summary. Jira keys in the register form use `JIRA_PROJECT_KEY_RE` from `@synapse/contracts/patterns`, the same rule as the API schema. Needs-you cards: "PROJECTS · REVIEW" (facts needing review) and "PROJECTS · SETUP" (no repository registered). Upcoming go-lives appear in the Running panel. The frontend holds no business logic. Fact text is shown as plain text.
 
 ## Routes
 
@@ -221,7 +221,6 @@ Recorded in `docs/superpowers/plans/2026-11-06-phase-9-followups.md`:
 - Repository auto-discovery (explicit registration is the only path).
 - Project decisions, dependencies, blockers and knowledge recommendations tables from the original design.
 - A repository remove button in the UI.
-- Gating the project Jira summary on `jira.enabled`.
 - Surfacing permission denials of an inspection run.
 
 ## Open questions

@@ -347,6 +347,18 @@ describe("brain.inspect_repository", () => {
     expect(audit?.details).toMatchObject({ permissionDenials: ["Bash", "Read"], inserted: 3 });
   });
 
+  test("inspectionWarning is set by denials, kept by a failure, cleared by a clean run", async () => {
+    reply = () => result(fenced({ facts: FACTS, unknowns: [] }), { permissionDenials: ["Read"] });
+    await runInspect();
+    expect(repoRow()?.inspectionWarning).toBe("permission_denied");
+    reply = () => result(fenced({ facts: [{ kind: "vibe", content: "x", evidence: [] }] }));
+    await runInspect().catch(() => {});
+    expect(repoRow()?.inspectionWarning).toBe("permission_denied");
+    reply = () => result(fenced({ facts: FACTS, unknowns: [] }), { permissionDenials: [] });
+    await runInspect();
+    expect(repoRow()?.inspectionWarning).toBeNull();
+  });
+
   test("drops facts with bad evidence or secrets and counts them", async () => {
     reply = () =>
       result(

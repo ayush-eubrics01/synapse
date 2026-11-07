@@ -38,6 +38,7 @@ import {
   setPersonPriority,
   setUrgentStatus,
   startBackfill,
+  unregisterRepository,
   updateLayout,
 } from "../lib/api";
 
@@ -303,4 +304,19 @@ test("layout API URLs, methods and error codes", async () => {
     status: 409,
     code: "active_layout",
   });
+});
+
+test("unregisterRepository DELETEs the repo and resolves undefined on 204", async () => {
+  const calls: Call[] = [];
+  const noContent = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    return new Response(null, { status: 204 });
+  }) as unknown as typeof fetch;
+  expect(await unregisterRepository("r1", noContent)).toBeUndefined();
+  expect(calls[0]?.url).toBe("/api/repos/r1");
+  expect(calls[0]?.init?.method).toBe("DELETE");
+  const busy = fake(409, { error: "repo_has_active_task" });
+  const err = await unregisterRepository("r1", busy.impl).catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ApiError);
+  expect((err as ApiError).code).toBe("repo_has_active_task");
 });

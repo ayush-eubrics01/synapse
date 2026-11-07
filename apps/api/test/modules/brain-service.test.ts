@@ -359,6 +359,7 @@ describe("milestones (C10)", () => {
 });
 
 describe("projects and the Jira summary (C11)", () => {
+  beforeEach(() => c.settings.set("jira.enabled", true));
   const issue = (key: string, projectKey: string, over: object = {}) =>
     c.db
       .insert(schema.jiraIssues)
@@ -399,6 +400,15 @@ describe("projects and the Jira summary (C11)", () => {
     const j = c.brain.getProject(projectId)?.jira;
     expect(j?.byAttention).toEqual({ overdue: 1, blocked: 2, due_soon: 1, stale: 2 });
     expect(j?.top.map((i) => i.key)).toEqual(["DEMO-2", "DEMO-3", "OPS-1", "OPS-2", "DEMO-1"]);
+  });
+
+  test("jira is null while jira.enabled is off, even with an attention issue", () => {
+    const { projectId } = seedProject("app", { jiraKeys: ["DEMO"] });
+    issue("DEMO-1", "DEMO", { attention: "overdue" });
+    c.settings.set("jira.enabled", false);
+    expect(c.brain.getProject(projectId)?.jira).toBeNull();
+    c.settings.set("jira.enabled", true);
+    expect(c.brain.getProject(projectId)?.jira?.byAttention.overdue).toBe(1);
   });
 
   test("a project with no Jira keys has an empty summary", () => {

@@ -289,7 +289,7 @@ describe("projects, facts and milestones", () => {
     expect(list.map((p) => p.id)).toEqual([projectId]);
     const detail = (await (await call(`/api/projects/${projectId}`)).json()) as ProjectDetail;
     expect(detail.repositories.map((r) => r.id)).toEqual([repo.id]);
-    expect(detail.jira.byAttention).toEqual({ overdue: 0, blocked: 0, due_soon: 0, stale: 0 });
+    expect(detail.jira).toBeNull(); // jira.enabled is off by default
     expect((await call("/api/projects/nope")).status).toBe(404);
     const put = await send("PUT", `/api/projects/${projectId}`, { summary: "S" });
     expect(put.status).toBe(200);

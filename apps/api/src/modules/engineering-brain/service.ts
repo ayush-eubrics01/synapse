@@ -564,6 +564,7 @@ export class BrainService {
 
   /** C11: in-scope issues whose project key is one of the repositories' Jira keys. */
   private jiraSummary(tx: DbOrTx, keys: readonly string[]): ProjectDetail["jira"] {
+    if (!this.deps.settings.get("jira.enabled")) return null;
     const byAttention: Record<JiraAttention, number> = {
       overdue: 0,
       blocked: 0,

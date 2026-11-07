@@ -142,6 +142,7 @@ describe("register", () => {
       notes: null,
       headSha: git(repo, "rev-parse", "HEAD"),
       inspectedHeadSha: null,
+      inspectionWarning: null,
       drift: null,
       createdAt: NOW,
       updatedAt: NOW,

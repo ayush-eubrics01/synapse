@@ -139,6 +139,7 @@ export const repositoryViewSchema = z.object({
   notes: z.string().nullable(),
   headSha: z.string().nullable(),
   inspectedHeadSha: z.string().nullable(),
+  inspectionWarning: z.enum(["permission_denied"]).nullable(),
   drift: repositoryDriftSchema.nullable(),
   environments: z.array(environmentViewSchema),
   projectId: z.string().nullable(),
@@ -203,12 +204,15 @@ export const projectDetailSchema = projectViewSchema.extend({
   repositories: z.array(repositoryViewSchema),
   facts: z.array(projectFactViewSchema),
   milestones: z.array(milestoneViewSchema),
-  jira: z.object({
-    byAttention: z.record(jiraAttentionSchema, z.number().int()),
-    top: z.array(
-      z.object({ key: z.string(), summary: z.string(), attention: jiraAttentionSchema }),
-    ),
-  }),
+  /** `null` while Jira is switched off (`jira.enabled`). */
+  jira: z
+    .object({
+      byAttention: z.record(jiraAttentionSchema, z.number().int()),
+      top: z.array(
+        z.object({ key: z.string(), summary: z.string(), attention: jiraAttentionSchema }),
+      ),
+    })
+    .nullable(),
 });
 export type ProjectDetail = z.infer<typeof projectDetailSchema>;
 
