@@ -59,5 +59,5 @@ Results:
 
 ## Left after the final re-review
 
-- ~~`classifyOverviewFailure` (apps/web/lib/api.ts) treats every error that isn't an `ApiError` as unreachable. A 200 response with malformed JSON therefore shows "Unreachable". Narrow the check to `TypeError` and give malformed responses their own state.~~ **Done in follow-ups batch 3.** Malformed responses get their own state.
+- ~~`classifyOverviewFailure` (apps/web/lib/api.ts) treats every error that isn't an `ApiError` as unreachable~~ **Done in follow-ups batch 3.** Malformed responses get their own state. Original note: `classifyOverviewFailure` (apps/web/lib/api.ts) treats every error that isn't an `ApiError` as unreachable. A 200 response with malformed JSON therefore shows "Unreachable". Narrow the check to `TypeError` and give malformed responses their own state.
 - `commitmentsToReview` and `peopleToEvaluate` are counted within the view limits (candidates: 50), the same limits the page fetches use. If either side's limit changes, the counts can disagree with the feed.

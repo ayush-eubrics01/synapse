@@ -6,7 +6,7 @@ const HOME = "/home/u";
 const t = (text: string) => includeTargets(text, FILE, HOME);
 
 describe("includeTargets", () => {
-  test("depth cap constant", () => expect(INCLUDE_DEPTH_MAX).toBe(5));
+  test("depth cap constant", () => expect(INCLUDE_DEPTH_MAX).toBe(10));
   test("relative to the including file's directory", () => {
     expect(t("[include]\n\tpath = extra.cfg")).toEqual(["/home/u/r/.git/extra.cfg"]);
   });
@@ -37,5 +37,16 @@ describe("includeTargets", () => {
       "/home/u/r/.git/b",
       "/home/u/r/.git/a",
     ]);
+  });
+  test("backslash-newline continues a value", () => {
+    expect(t("[include]\n\tpath = foo\\\nbar.cfg")).toEqual(["/home/u/r/.git/foobar.cfg"]);
+  });
+  test("] inside a quoted subsection, path on the same line", () => {
+    expect(t('[includeIf "gitdir:**/[r]/"] path = x.cfg')).toEqual(["/home/u/r/.git/x.cfg"]);
+  });
+  test("~name is unresolved unless it is the current user", () => {
+    expect(t("[include]\n\tpath = ~nobody-such/x")).toEqual(["unresolved:~nobody-such/x"]);
+    const me = require("node:os").userInfo().username;
+    expect(t(`[include]\n\tpath = ~${me}/x.cfg`)).toEqual(["/home/u/x.cfg"]);
   });
 });

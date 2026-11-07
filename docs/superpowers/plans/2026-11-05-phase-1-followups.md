@@ -10,7 +10,7 @@ These are harmless in Phase 1, where only heartbeat jobs exist and there are no 
 |---|---|---|---|
 | G1 (done in Phase 2) | Per-claim lease owner token (`${workerId}:${newId()}` or match `attempts` in `owned()`) | `core/jobs/queue.ts`, `worker.ts` | After laptop suspend or a clock step, the reaper can requeue a job and the same worker id re-claims it, so a non-external job could run twice |
 | G2 (done in Phase 2) | Persist handler-level `externalWrite` on the job at claim time | `worker.ts` / `queue.claim` | Today only the enqueue flag survives a crash; a crashed external write whose handler declares it could be retried |
-| G3 (open) | Boundary test misses `export … from`, side-effect `import "…"`, dynamic `import()`, bare `…/integrations` | `tests/boundaries.test.ts` | Becomes live once `apps/api/src/modules/` exists. Batch 3 note: still open, the boundary test still misses some import forms |
+| G3 (open) | Boundary test misses `export … from`, side-effect `import "…"`, dynamic `import()`, bare `…/integrations` | `tests/boundaries.test.ts` | Becomes live once `apps/api/src/modules/` exists. Batch 3 note, still open: the provider scanner (`tests/provider-boundary.ts`) catches `export … from` and dynamic `import()` of `cli-provider`, but `tests/boundaries.test.ts` still misses side-effect `import "…"`, dynamic `import()` and bare `…/integrations` paths |
 | G4 (done in follow-ups batch 3) | Scheduler `tick` per-task isolation + cap `intervalSeconds` | `core/scheduler/scheduler.ts` | One bad user-set interval (e.g. huge) throws and stops every later schedule, including heartbeat |
 | G5 (first half done in follow-ups batch 3) | Don't store raw executor error messages; surface approvals left claimed by a crash | `core/approvals/approvals.ts`, health | Executor errors may contain message content; stuck claims are invisible. Raw executor messages are no longer stored (batch 3); surfacing stuck claims stays open |
 | G6 (done in follow-ups batch 3) | Timeout (or cache) for the `loginctl` linger check | `container.ts` `runCommand` | A hung `loginctl` hangs `/health/ready` and the dashboard badge |
@@ -24,8 +24,8 @@ These are harmless in Phase 1, where only heartbeat jobs exist and there are no 
 - **Database:**
   - `database-design.md` lacks some implementer-chosen columns (approvals/notifications `created_at`, `claude_runs` token column names, link-table id PKs).
   - Several status columns are untyped text.
-  - ~~No indexes on FK columns (e.g. `job_attempts.job_id`).~~ **Done in follow-ups batch 3.** Indexes were added on the FK columns.
-  - ~~Heartbeat adds about 1,440 job rows a day with no retention yet.~~ **Done in follow-ups batch 3.** Already fixed earlier: `retention.jobsDays` prunes terminal jobs.
+  - ~~No indexes on FK columns (e.g~~ **Done in follow-ups batch 3.** Indexes were added on the FK columns. Original note: No indexes on FK columns (e.g. `job_attempts.job_id`).
+  - ~~Heartbeat adds about 1,440 job rows a day with no retention yet~~ **Done in follow-ups batch 3.** Already fixed earlier: `retention.jobsDays` prunes terminal jobs. Original note: Heartbeat adds about 1,440 job rows a day with no retention yet.
 - **Config/settings:** the loopback check is case-sensitive with no `[::1]`; `Number()` accepts `1e3`/`0x10` ports; `system.lastHeartbeatAt` isn't validated as an ISO datetime; an unknown runtime key gives a TypeError.
 - **Outbox:**
   - LiveBus forwarding waits until all consumers settle.

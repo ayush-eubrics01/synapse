@@ -1,7 +1,11 @@
 import { createHash, type Hash } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   readdirSync,
   readFileSync,
   readlinkSync,
@@ -26,7 +30,7 @@ import {
   type GitWorkflowErrorCode,
 } from "@synapse/contracts";
 import { type GitExec, type GitResult, lines, runGit } from "./git";
-import { INCLUDE_DEPTH_MAX, includeTargets } from "./git-includes";
+import { INCLUDE_DEPTH_MAX, includeTargets, UNRESOLVED_PREFIX } from "./git-includes";
 import { pushDisabled, stripCredentials } from "./local-git";
 import { existingSandboxPlaceholders, removeNewSandboxPlaceholders } from "./sandbox-placeholders";
 
@@ -208,6 +212,46 @@ function fileMarker(path: string): string {
   }
 }
 
+const INCLUDE_FILE_MAX = 1024 * 1024;
+const INCLUDE_NODES_MAX = 64;
+
+interface LoadedConfig {
+  marker: string;
+  text?: string;
+}
+
+/** Realpath of `p`, or `p` itself when it cannot be resolved. */
+function realKey(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
+ * Reads a config file once (hash and parse the same bytes). Only regular files up to
+ * INCLUDE_FILE_MAX are read; a FIFO, device or directory is the marker `special` (opened
+ * non-blocking, never read), a big file `too_large`; never throws.
+ */
+function loadConfig(path: string): LoadedConfig {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    const st = fstatSync(fd);
+    if (!st.isFile()) return { marker: "special" };
+    if (st.size > INCLUDE_FILE_MAX) return { marker: "too_large" };
+    const buf = readFileSync(fd);
+    if (buf.length > INCLUDE_FILE_MAX) return { marker: "too_large" };
+    return { marker: sha256(buf), text: buf.toString("utf8") };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    return { marker: code === "ENOENT" || code === "ENOTDIR" ? "missing" : "unreadable" };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 function within(root: string, p: string): boolean {
   return p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 }
@@ -347,25 +391,55 @@ export class LocalGitWorkflow implements GitWorkflow {
     const { gitDir, common } = this.gitDirs(repo);
     const h = createHash("sha256");
     const file = (label: string, path: string) => h.update(`${label}\0${fileMarker(path)}\0`);
-    // Config files: hash the file, then follow include.path / includeIf.*.path depth-first
-    // (cap INCLUDE_DEPTH_MAX, visited set, never runs git; ADR-040).
-    const configFile = (label: string, path: string, visited: Set<string>, depth = 0): void => {
-      file(label, path);
-      if (depth >= INCLUDE_DEPTH_MAX) return;
-      let text: string;
-      try {
-        text = readFileSync(path, "utf8");
-      } catch {
-        return;
+    // Config files: hash the file, then follow include.path / includeIf.*.path breadth-first
+    // (shallowest depth wins, so a visited file is never skipped at a deeper level than git
+    // would load it). Bounded: depth INCLUDE_DEPTH_MAX, INCLUDE_NODES_MAX files per root,
+    // regular files up to INCLUDE_FILE_MAX bytes read once, visited keyed on realpath. Never
+    // runs git (ADR-040).
+    const cache = new Map<string, LoadedConfig>();
+    const load = (path: string): LoadedConfig => {
+      const k = realKey(path);
+      let c = cache.get(k);
+      if (!c) {
+        c = loadConfig(path);
+        cache.set(k, c);
       }
-      includeTargets(text, path, this.opts.home).forEach((t, i) => {
-        h.update(`${label}>include${i}\0${t}\0${fileMarker(t)}\0`);
-        if (visited.has(t)) return;
-        visited.add(t);
-        configFile(`${label}>include${i}`, t, visited, depth + 1);
-      });
+      return c;
     };
-    const cf = (label: string, path: string) => configFile(label, path, new Set([path]));
+    const configFile = (label: string, path: string): void => {
+      const root = load(path);
+      h.update(`${label}\0${root.marker}\0`);
+      const visited = new Set([realKey(path)]);
+      let nodes = 1;
+      const queue = [{ label, file: path, text: root.text, depth: 0 }];
+      for (let q = 0; q < queue.length; q++) {
+        const n = queue[q] as (typeof queue)[number];
+        if (n.text === undefined || n.depth >= INCLUDE_DEPTH_MAX) continue;
+        const seen = new Set<string>();
+        let i = 0;
+        for (const t of includeTargets(n.text, n.file, this.opts.home)) {
+          if (seen.has(t)) continue;
+          seen.add(t);
+          const lbl = `${n.label}>include${i++}`;
+          if (t.startsWith(UNRESOLVED_PREFIX)) {
+            h.update(`${lbl}\0${t}\0`);
+            continue;
+          }
+          const k = realKey(t);
+          if (!visited.has(k) && nodes >= INCLUDE_NODES_MAX) {
+            h.update(`${lbl}\0${t}\0truncated\0`);
+            continue;
+          }
+          const c = load(t);
+          h.update(`${lbl}\0${t}\0${c.marker}\0`);
+          if (visited.has(k)) continue;
+          visited.add(k);
+          nodes++;
+          queue.push({ label: lbl, file: t, text: c.text, depth: n.depth + 1 });
+        }
+      }
+    };
+    const cf = (label: string, path: string) => configFile(label, path);
     cf("config", join(common, "config"));
     cf("config.worktree", join(common, "config.worktree"));
     if (gitDir !== common) cf("worktree/config.worktree", join(gitDir, "config.worktree"));
