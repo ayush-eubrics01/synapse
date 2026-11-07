@@ -208,6 +208,10 @@ export class OutgoingSendError extends Error {
     super(`slack send failed: ${failure}`);
     this.name = "OutgoingSendError";
   }
+
+  get code(): SendFailure {
+    return this.failure;
+  }
 }
 
 export interface OutgoingServiceDeps {

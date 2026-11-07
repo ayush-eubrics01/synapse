@@ -62,9 +62,9 @@ export type ApplyResult =
 /** Content-free by construction: the engine stores `message` in the approval and audit row. */
 export class ProfileApplyError extends Error {
   constructor(
-    message: "invalid approval payload" | "recommendation not found" | "profile write failed",
+    readonly code: "invalid_payload" | "recommendation_not_found" | "profile_write_failed",
   ) {
-    super(message);
+    super(code);
     this.name = "ProfileApplyError";
   }
 }
@@ -111,7 +111,7 @@ export class ProfileService {
   /** Runs in one immediate transaction. Throws only content-free messages (the engine stores them). */
   apply(approval: Approval): ApplyResult {
     const payload = payloadSchema.safeParse(approval.payload);
-    if (!payload.success) throw new ProfileApplyError("invalid approval payload");
+    if (!payload.success) throw new ProfileApplyError("invalid_payload");
     try {
       return this.deps.db.transaction(
         (tx) => this.applyIn(tx, approval, payload.data.recommendationId),
@@ -121,14 +121,14 @@ export class ProfileService {
       );
     } catch (e) {
       if (e instanceof ProfileApplyError) throw e;
-      throw new ProfileApplyError("profile write failed");
+      throw new ProfileApplyError("profile_write_failed");
     }
   }
 
   private applyIn(tx: DbOrTx, approval: Approval, recommendationId: string): ApplyResult {
     const { clock, events, audit } = this.deps;
     const rec = tx.select().from(recs).where(eq(recs.id, recommendationId)).get();
-    if (!rec) throw new ProfileApplyError("recommendation not found");
+    if (!rec) throw new ProfileApplyError("recommendation_not_found");
     if (rec.status !== "pending")
       return { status: "skipped", reason: "recommendation_not_pending" };
     // R7 M-4: only the recommendation's current approval may act on it (a stale or stray approval
@@ -165,13 +165,13 @@ export class ProfileService {
     if (rec.kind === "initial") {
       if (profile) return supersede("profile_exists");
       const parsed = profileContentSchema.safeParse(rec.content);
-      if (!parsed.success) throw new ProfileApplyError("profile write failed");
+      if (!parsed.success) throw new ProfileApplyError("profile_write_failed");
       content = parsed.data;
     } else {
       if (!profile || rec.baseVersion !== profile.currentVersion) return supersede("stale_base");
       const diff = profileUpdateOutputSchema.safeParse(rec.content);
       const base = profileContentSchema.safeParse(profile.content);
-      if (!diff.success || !base.success) throw new ProfileApplyError("profile write failed");
+      if (!diff.success || !base.success) throw new ProfileApplyError("profile_write_failed");
       touched = new Set();
       content = applyDiff(base.data, diff.data, touched);
     }

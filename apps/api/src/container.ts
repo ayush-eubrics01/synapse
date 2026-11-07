@@ -77,6 +77,7 @@ import { LocalGitProvider } from "./integrations/repository/local-git";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
 import { runRootMasked } from "./intelligence/engineering/develop-prompt";
+import { autoSentOutgoingIds } from "./modules/auto-reply/read";
 import { AutoReplyService } from "./modules/auto-reply/service";
 import { WipReminders } from "./modules/claude-activity/reminders";
 import { ClaudeActivityService } from "./modules/claude-activity/service";
@@ -373,6 +374,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     settings,
     urgent,
     normalise: normaliseSentText,
+    autoSent: (ids) => autoSentOutgoingIds(db, ids),
   });
   const people = new PeopleService({ db, clock, events, audit, settings });
   const securityFlags = new SecurityFlagsService({

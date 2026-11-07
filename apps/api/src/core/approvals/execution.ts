@@ -1,4 +1,4 @@
-import { type Approval, JobError, type Operation } from "@synapse/contracts";
+import { type Approval, ExecutorError, JobError, type Operation } from "@synapse/contracts";
 import { z } from "zod";
 import type { SettingsService } from "../config/settings";
 import type { OutboxDispatcher } from "../events/dispatcher";
@@ -121,7 +121,7 @@ export function registerIntegrationExecutor(
     engine.registerExecutor(action, {
       execute: async (a, signal) => {
         const target = pick(a);
-        if (!target) throw new Error("no executor");
+        if (!target) throw new ExecutorError("no_executor");
         return target.execute(a, signal);
       },
       // An unknown integration must reach execute() so it is recorded as failed, not skipped.

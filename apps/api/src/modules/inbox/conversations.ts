@@ -23,6 +23,8 @@ export interface InboxConversationsDeps {
   urgent: UrgentInbox;
   /** The sender's decode-and-whitespace normalisation (injected: modules never import integrations). */
   normalise: (text: string) => string;
+  /** Which of these outgoing ids were auto-replies (the auto-reply module's read port). */
+  autoSent: (outgoingIds: readonly string[]) => ReadonlySet<string>;
 }
 
 interface Row {
@@ -77,12 +79,12 @@ export class InboxConversations {
     const flags = this.flagsOf(ids);
     const cms = this.commitmentsOf(ids);
     const answerCounts = this.codeAnswerCountsOf(ids);
-    const outgoing = db
+    const outgoingRows = db
       .select({
+        id: schema.outgoingMessages.id,
         text: schema.outgoingMessages.text,
         status: schema.outgoingMessages.status,
         at: schema.outgoingMessages.sendingAt,
-        auto: sql<number>`exists (select 1 from auto_replies ar where ar.outgoing_id = outgoing_messages.id and ar.decision = 'sent')`,
       })
       .from(schema.outgoingMessages)
       .where(
@@ -92,13 +94,17 @@ export class InboxConversations {
           isNotNull(schema.outgoingMessages.sendingAt),
         ),
       )
-      .all()
-      .map((o) => ({
-        norm: this.deps.normalise(o.text),
-        status: o.status,
-        auto: Boolean(o.auto),
-        at: Date.parse(o.at as string),
-      }));
+      .all();
+    const autoIds =
+      outgoingRows.length > 0
+        ? this.deps.autoSent(outgoingRows.map((o) => o.id))
+        : new Set<string>();
+    const outgoing = outgoingRows.map((o) => ({
+      norm: this.deps.normalise(o.text),
+      status: o.status,
+      auto: autoIds.has(o.id),
+      at: Date.parse(o.at as string),
+    }));
 
     const messages: ThreadMessage[] = rows.map((r) => {
       const isSelf = self !== null && r.senderId === self;

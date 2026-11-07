@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { type Container, createContainer } from "../../src/container";
 import { loadConfig } from "../../src/core/config/config";
 import { ACK_TEXT, withAutoReplyTag } from "../../src/modules/auto-reply/policy";
+import { autoSentOutgoingIds } from "../../src/modules/auto-reply/read";
 import {
   AUTOREPLY_EVALUATE_JOB,
   AutoReplyService,
@@ -1140,4 +1141,43 @@ test("events, audit rows and jobs carry ids only, never reply or message text", 
   ]);
   expect(dump).not.toContain("SECRET");
   expect(dump).not.toContain("away at the moment");
+});
+
+describe("autoSentOutgoingIds (read port)", () => {
+  test("returns only outgoing ids with a sent auto_replies row; [] needs no query", () => {
+    c.db
+      .insert(schema.awaySessions)
+      .values({ id: "as1", startedAt: NOW, endedAt: null, dismissedAt: null })
+      .run();
+    const ids = c.db.transaction((tx) =>
+      ["o1", "o2", "o3"].map(
+        (_, i) =>
+          c.outgoing.requestSend(tx, {
+            followupId: null,
+            conversationExternalId: DM,
+            text: `t${i}`,
+            requestedByModule: "test",
+          }).outgoingId,
+      ),
+    );
+    const [o1, o2, o3] = ids as [string, string, string];
+    const ar = (id: string, decision: "sent" | "held", outgoingId: string) =>
+      c.db
+        .insert(schema.autoReplies)
+        .values({
+          id,
+          sessionId: "as1",
+          kind: "acknowledgement",
+          recipientSlackUserId: ADA,
+          conversationExternalId: DM,
+          decision,
+          outgoingId,
+          createdAt: NOW,
+        })
+        .run();
+    ar("ar1", "sent", o1);
+    ar("ar2", "held", o2);
+    expect([...autoSentOutgoingIds(c.db, [o1, o2, o3])]).toEqual([o1]);
+    expect(autoSentOutgoingIds(c.db, []).size).toBe(0);
+  });
 });

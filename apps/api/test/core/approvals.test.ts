@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { Operation } from "@synapse/contracts";
+import { ExecutorError, JobError, type Operation } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
 import { eq } from "drizzle-orm";
@@ -294,4 +294,35 @@ test("updatePendingPayload changes a pending payload only", () => {
   const row = db.select().from(schema.approvals).where(eq(schema.approvals.id, a.id)).get();
   expect(row?.payload).toEqual({ text: "new" });
   expect(db.transaction((tx) => engine.updatePendingPayload(tx, "missing", {}))).toBeNull();
+});
+
+test("a failed executor stores only a fixed code, never the error text", async () => {
+  const cases: [Error, string][] = [
+    [new Error("token SECRET-TEXT"), "executor_failed"],
+    [new JobError({ kind: "timeout", message: "SECRET" }), "timeout"],
+    [new ExecutorError("protected_branch"), "protected_branch"],
+    [Object.assign(new Error("SECRET"), { code: "Bad Code!" }), "executor_failed"],
+  ];
+  for (const [err, code] of cases) {
+    const { db, engine } = setup();
+    engine.registerExecutor("slack.send", {
+      execute: async () => {
+        throw err;
+      },
+    });
+    const a = engine.request(db, req("slack.send"));
+    engine.approve(a.id);
+    const out = await engine.execute(a.id);
+    expect(out).toEqual({ status: "failed", result: { error: code } });
+    const row = db.select().from(schema.approvals).where(eq(schema.approvals.id, a.id)).get();
+    expect(row?.executionResult).toEqual({ error: code });
+    const failed = db
+      .select()
+      .from(schema.auditEvents)
+      .all()
+      .filter((e) => e.action === "approval.failed");
+    expect(failed).toHaveLength(1);
+    expect(JSON.stringify(failed[0]?.details)).toBe(JSON.stringify({ error: code }));
+    expect(JSON.stringify([row, failed])).not.toContain("SECRET");
+  }
 });

@@ -330,7 +330,7 @@ describe("failure paths", () => {
       requestedByModule: "people",
     });
     const out = await approveAndRun(a.id);
-    expect(out).toEqual({ status: "failed", result: { error: "recommendation not found" } });
+    expect(out).toEqual({ status: "failed", result: { error: "recommendation_not_found" } });
   });
 
   test("invalid payload fails; a failed write rolls back everything", async () => {
@@ -343,13 +343,13 @@ describe("failure paths", () => {
       idempotencyKey: "k2",
       requestedByModule: "people",
     });
-    expect((await approveAndRun(bad.id)).result).toEqual({ error: "invalid approval payload" });
+    expect((await approveAndRun(bad.id)).result).toEqual({ error: "invalid_payload" });
 
     // corrupt update diff on base 1 makes the write fail after nothing is committed
     await approveAndRun(store("initial", content({ communication: [obs("a")] })).approvalId);
     const u = store("update", { nonsense: true } as unknown as ProfileUpdateOutput, [], 1);
     const out = await approveAndRun(u.approvalId);
-    expect(out.result).toEqual({ error: "profile write failed" });
+    expect(out.result).toEqual({ error: "profile_write_failed" });
     expect(recRow(u.id)?.status).toBe("pending");
     expect(db.select().from(schema.peopleProfileVersions).all()).toHaveLength(1);
     expect(service.getProfile(personId)?.version).toBe(1);
@@ -575,7 +575,7 @@ describe("atomicity after writes", () => {
       .run();
     const before = counts();
     const out = await approveAndRun(u.approvalId);
-    expect(out).toEqual({ status: "failed", result: { error: "profile write failed" } });
+    expect(out).toEqual({ status: "failed", result: { error: "profile_write_failed" } });
     expect(counts()).toEqual(before);
     expect(db.select().from(schema.peopleProfiles).get()?.currentVersion).toBe(1);
     expect(recRow(u.id)?.status).toBe("pending");

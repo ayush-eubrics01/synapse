@@ -62,6 +62,17 @@ export class JobError extends Error {
   }
 }
 
+/**
+ * An approval executor's refusal or failure, as a fixed code. The approval engine stores only the
+ * code (never free text), so an executor throws this for anything the user should see by name.
+ */
+export class ExecutorError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+    this.name = "ExecutorError";
+  }
+}
+
 export type RetryDecision = "retry" | "needs_attention" | "fail" | "defer";
 
 const DECISIONS: Record<ErrorKind, RetryDecision> = {

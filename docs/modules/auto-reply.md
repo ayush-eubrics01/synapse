@@ -93,6 +93,10 @@ The user's return wins. Anything not yet spawned is cancelled by three checks, a
 
 A cancelled send ends as outgoing `failed` with `cancelled_away_off`, `cancelled_policy_disabled` or `cancelled_stale`; the `auto_replies` row becomes `held` with the matching reason (`away_off`, `policy_disabled`, `stale`; text cleared), a linked follow-up returns to `draft`, and `autoreply.held` is published. A send that has already spawned is allowed to finish; `setAway(false)` never cancels a `sending` row.
 
+## Read port
+
+`autoSentOutgoingIds(db, outgoingIds)` (`modules/auto-reply/read.ts`) returns the outgoing ids that have an `auto_replies` row with `decision = 'sent'` (empty input runs no query). The inbox thread view uses it, injected as `autoSent`, to mark `sentViaSynapse.auto`; the inbox has no SQL on `auto_replies`.
+
 ## Records and digest
 
 `auto_replies(id, session_id, kind, recipient_slack_user_id, conversation_external_id, thread_ts, source_message_id, followup_id, decision 'sent'|'held', reason, text, outgoing_id, approval_id, created_at)`, indexed on (recipient, created_at), (conversation, thread, created_at) and `outgoing_id`; `away_sessions(id, started_at, ended_at, dismissed_at)`. Migration `0013_away_mode.sql`; `0014_followup_context_flags.sql` adds `followups.suspected_injection` (boolean, not null, default false), `followups.context_message_ids` (JSON text, nullable) and the `auto_replies_outgoing_idx` index. Text is kept only on sent rows; a held row keeps no text (the draft is in its follow-up).

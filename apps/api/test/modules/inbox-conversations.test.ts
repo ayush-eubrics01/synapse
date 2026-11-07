@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { AIProvider, ConversationSummary, ConversationThread } from "@synapse/contracts";
 import { schema } from "@synapse/database";
 import { eq } from "drizzle-orm";
 import { createApp } from "../../src/app";
 import { type Container, createContainer } from "../../src/container";
 import { loadConfig } from "../../src/core/config/config";
+import { InboxConversations } from "../../src/modules/inbox/conversations";
 
 const fakeProvider: AIProvider = {
   execute: async () => {
@@ -273,6 +276,24 @@ describe("GET /api/inbox/conversations/:id/thread", () => {
     });
     expect(t.messages.find((m) => m.id === "m6")?.flag).toBeNull();
     expect(t.messages.find((m) => m.id === "m6")?.commitment).toBeNull();
+  });
+
+  test("a thread with no outgoing rows never calls autoSent; the source has no auto_replies SQL", async () => {
+    seed();
+    const deps = {
+      db: c.db,
+      settings: c.settings,
+      urgent: c.urgent,
+      normalise: (t: string) => t,
+      autoSent: () => {
+        throw new Error("must not be called");
+      },
+    };
+    const view = new InboxConversations(deps).thread("C0OPS0001", 50);
+    expect(view?.messages.length).toBeGreaterThan(0);
+    expect(
+      readFileSync(join(import.meta.dir, "../../src/modules/inbox/conversations.ts"), "utf8"),
+    ).not.toContain("auto_replies");
   });
 
   test("sentViaSynapse.auto is true only when an auto_replies row links the outgoing row", async () => {
