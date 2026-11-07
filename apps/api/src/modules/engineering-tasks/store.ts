@@ -1,4 +1,5 @@
 import type {
+  EngineeringCleanupView,
   EngineeringStep,
   EngineeringStepStatus,
   EngineeringTaskDetail,
@@ -9,10 +10,10 @@ import type {
 } from "@synapse/contracts";
 import { type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { EventPublisher } from "../../core/events/publisher";
 
-const { engineeringTasks, engineeringTaskSteps } = schema;
+const { engineeringTasks, engineeringTaskSteps, auditEvents } = schema;
 
 export type TaskRow = typeof engineeringTasks.$inferSelect;
 export type StepRow = typeof engineeringTaskSteps.$inferSelect;
@@ -134,7 +135,86 @@ export function priorFailureOf(tx: DbOrTx, taskId: string): string | null {
   return typeof f === "string" ? f : null;
 }
 
-export function toView(r: TaskRow): EngineeringTaskView {
+const KNOWN_STATUSES = Object.keys(ALLOWED_TRANSITIONS) as EngineeringTaskStatus[];
+
+/**
+ * H2: the cleanup outcome of each terminal task, from what the steps already record (Plan
+ * decision 3). One query on the step rows and one on the cancel audit rows. A task with no
+ * source is absent from the map.
+ */
+export function cleanupViews(
+  tx: DbOrTx,
+  tasks: ReadonlyArray<Pick<TaskRow, "id" | "status">>,
+): Map<string, EngineeringCleanupView> {
+  const out = new Map<string, EngineeringCleanupView>();
+  const terminal = tasks.filter((t) => TERMINAL_STATUSES.includes(t.status));
+  if (terminal.length === 0) return out;
+  const ids = terminal.map((t) => t.id);
+  const views = new Map<string, EngineeringCleanupView>();
+  const view = (id: string) => {
+    let v = views.get(id);
+    if (!v) {
+      v = { branchKept: false, pushedNotPr: false, dirtyTree: false, priorStatus: null };
+      views.set(id, v);
+    }
+    return v;
+  };
+  const rows = tx
+    .select({
+      taskId: engineeringTaskSteps.taskId,
+      step: engineeringTaskSteps.step,
+      status: engineeringTaskSteps.status,
+      output: engineeringTaskSteps.output,
+    })
+    .from(engineeringTaskSteps)
+    .where(
+      and(
+        inArray(engineeringTaskSteps.taskId, ids),
+        inArray(engineeringTaskSteps.step, ["cleanup", "push_pr"]),
+      ),
+    )
+    .all();
+  for (const r of rows) {
+    const o = (r.output ?? {}) as { outcome?: unknown; failure?: unknown };
+    const v = view(r.taskId);
+    if (r.step === "push_pr" && o.outcome === "pushed_not_pr") v.pushedNotPr = true;
+    if (r.step === "cleanup") {
+      if (o.outcome === "branch_kept") v.branchKept = true;
+      if (r.status === "failed" && o.failure === "dirty_tree") v.dirtyTree = true;
+    }
+  }
+  const cancelled = terminal.filter((t) => t.status === "cancelled").map((t) => t.id);
+  if (cancelled.length > 0) {
+    // Newest first: the first row seen per task is its latest cancel.
+    const audits = tx
+      .select({ targetRef: auditEvents.targetRef, details: auditEvents.details })
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.action, "engineering.cancelled"),
+          inArray(auditEvents.targetRef, cancelled),
+        ),
+      )
+      .orderBy(desc(auditEvents.occurredAt), sql`${auditEvents}.rowid desc`)
+      .all();
+    const seen = new Set<string>();
+    for (const a of audits) {
+      if (!a.targetRef || seen.has(a.targetRef)) continue;
+      seen.add(a.targetRef);
+      const from = (a.details as { from?: unknown } | null)?.from;
+      if (typeof from === "string" && KNOWN_STATUSES.includes(from as EngineeringTaskStatus)) {
+        view(a.targetRef).priorStatus = from as EngineeringTaskStatus;
+      }
+    }
+  }
+  for (const [id, v] of views) out.set(id, v);
+  return out;
+}
+
+export function toView(
+  r: TaskRow,
+  cleanup: EngineeringCleanupView | null = null,
+): EngineeringTaskView {
   return {
     id: r.id,
     repositoryId: r.repositoryId,
@@ -150,6 +230,7 @@ export function toView(r: TaskRow): EngineeringTaskView {
     prNumber: r.prNumber,
     failure: r.failure,
     lastPickupError: r.lastPickupError,
+    cleanup,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -350,7 +431,7 @@ export class EngineeringTaskStore {
     const r = this.get(tx, id);
     if (!r) return null;
     return {
-      ...toView(r),
+      ...toView(r, cleanupViews(tx, [r]).get(r.id) ?? null),
       draftDescription: r.draftDescription,
       approvedDescription: r.approvedDescription,
       plan: (r.plan as InvestigationOutput | null) ?? null,

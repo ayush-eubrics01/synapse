@@ -23,6 +23,7 @@ import {
   approvalTextValues,
   canCheckAgain,
   changedText,
+  cleanupBadges,
   defaultPlanForm,
   deployEnvironment,
   engineeringApproval,
@@ -381,4 +382,24 @@ test("editEngineeringApproval PUTs the edit and surfaces the code", async () => 
   await expect(editEngineeringApproval("t1", "a1", {}, bad)).rejects.toMatchObject({
     code: "not_pending",
   });
+});
+
+test("cleanupBadges lists the outcomes in a fixed order and nothing for null", () => {
+  expect(
+    cleanupBadges({
+      branchKept: true,
+      pushedNotPr: true,
+      dirtyTree: true,
+      priorStatus: "in_progress",
+    }),
+  ).toEqual([
+    "Branch kept",
+    "Pushed, no PR",
+    "Uncommitted changes left",
+    "Cancelled from In progress",
+  ]);
+  expect(cleanupBadges(null)).toEqual([]);
+  expect(
+    cleanupBadges({ branchKept: false, pushedNotPr: false, dirtyTree: false, priorStatus: null }),
+  ).toEqual([]);
 });

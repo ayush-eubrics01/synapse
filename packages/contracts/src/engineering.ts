@@ -114,6 +114,18 @@ export type PlanApprovalInput = z.infer<typeof planApprovalInputSchema>;
 export const approveDescriptionInputSchema = z.object({ description: z.string().min(1).max(8000) });
 export type ApproveDescriptionInput = z.infer<typeof approveDescriptionInputSchema>;
 
+/**
+ * H2: what a terminal task's cleanup left behind. Fixed values only: no paths, branch names or
+ * text.
+ */
+export interface EngineeringCleanupView {
+  branchKept: boolean;
+  pushedNotPr: boolean;
+  dirtyTree: boolean;
+  /** The status a cancelled task was cancelled from; null once the audit row is pruned. */
+  priorStatus: EngineeringTaskStatus | null;
+}
+
 export interface EngineeringTaskView {
   id: string;
   repositoryId: string;
@@ -134,6 +146,8 @@ export interface EngineeringTaskView {
    * Cleared by a successful pickup.
    */
   lastPickupError: string | null;
+  /** H2: null for a task that is not terminal or has no recorded cleanup outcome. */
+  cleanup: EngineeringCleanupView | null;
   createdAt: string;
   updatedAt: string;
 }

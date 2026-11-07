@@ -805,6 +805,107 @@ describe("startup recovery (E6)", () => {
   });
 });
 
+describe("cleanup outcomes in the list (H2)", () => {
+  const putStep = (
+    taskId: string,
+    step: "cleanup" | "push_pr",
+    status: "done" | "failed",
+    output: unknown,
+  ) =>
+    db
+      .insert(schema.engineeringTaskSteps)
+      .values({ id: newId(), taskId, step, status, output, createdAt: NOW, updatedAt: NOW })
+      .run();
+  const cleanupOf = (id: string) => service.list().find((t) => t.id === id)?.cleanup;
+  const mk = () => service.create({ repositoryId: repoId, title: "Fix", draftDescription: "x" });
+  const setStatus = (id: string, status: "completed" | "cancelled") =>
+    db
+      .update(schema.engineeringTasks)
+      .set({ status })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+
+  test("a cancelled task reports branch_kept and the status it was cancelled from", () => {
+    const t = mk();
+    service.cancel(t.id);
+    putStep(t.id, "cleanup", "done", { git: true, deleted: false, outcome: "branch_kept" });
+    expect(cleanupOf(t.id)).toEqual({
+      branchKept: true,
+      pushedNotPr: false,
+      dirtyTree: false,
+      priorStatus: t.status,
+    });
+  });
+
+  test("pushed_not_pr on the push_pr row", () => {
+    const t = mk();
+    service.cancel(t.id);
+    putStep(t.id, "push_pr", "done", { outcome: "pushed_not_pr" });
+    expect(cleanupOf(t.id)?.pushedNotPr).toBe(true);
+  });
+
+  test("a failed cleanup row with dirty_tree reads dirtyTree", () => {
+    const t = mk();
+    service.cancel(t.id);
+    putStep(t.id, "cleanup", "failed", { failure: "dirty_tree", priorStatus: "cancelled" });
+    expect(cleanupOf(t.id)?.dirtyTree).toBe(true);
+    expect(cleanupOf(t.id)?.branchKept).toBe(false);
+  });
+
+  test("a completed task never reports a priorStatus", () => {
+    const t = mk();
+    setStatus(t.id, "completed");
+    putStep(t.id, "cleanup", "done", {
+      git: true,
+      deleted: false,
+      outcome: "branch_kept",
+      priorStatus: "completed",
+    });
+    expect(cleanupOf(t.id)).toEqual({
+      branchKept: true,
+      pushedNotPr: false,
+      dirtyTree: false,
+      priorStatus: null,
+    });
+  });
+
+  test("a pruned audit row leaves priorStatus null", () => {
+    const t = mk();
+    service.cancel(t.id);
+    putStep(t.id, "cleanup", "done", { outcome: "branch_kept" });
+    db.delete(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "engineering.cancelled"))
+      .run();
+    expect(cleanupOf(t.id)?.priorStatus).toBeNull();
+    expect(cleanupOf(t.id)?.branchKept).toBe(true);
+  });
+
+  test("a non-terminal task has cleanup null, even with step rows", () => {
+    const t = mk();
+    putStep(t.id, "cleanup", "done", { outcome: "branch_kept" });
+    expect(cleanupOf(t.id)).toBeNull();
+    expect(service.get(t.id)?.cleanup).toBeNull();
+  });
+
+  test("a terminal task with no step rows and no audit row has cleanup null", () => {
+    const t = mk();
+    setStatus(t.id, "completed");
+    expect(cleanupOf(t.id)).toBeNull();
+  });
+
+  test("a cancelled task with only the audit row still gets its priorStatus; detail matches the list", () => {
+    const t = mk();
+    service.cancel(t.id);
+    expect(cleanupOf(t.id)).toEqual({
+      branchKept: false,
+      pushedNotPr: false,
+      dirtyTree: false,
+      priorStatus: t.status,
+    });
+    expect(service.get(t.id)?.cleanup).toEqual(cleanupOf(t.id) ?? null);
+  });
+});
+
 describe("cancel", () => {
   test("a task without the lock is cancelled directly", () => {
     const t = service.create({ repositoryId: repoId, title: "Fix", draftDescription: "x" });

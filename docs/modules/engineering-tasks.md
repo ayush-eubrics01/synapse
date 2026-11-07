@@ -219,6 +219,17 @@ Shown to the user as fixed sentences (`apps/web/lib/engineering.ts` `reasonLabel
 - The auto-deploy notice at plan approval is rendered by the web from the registry; the server states it in the push and merge approval payloads.
 - E19 `from-jira` and `from-slack` take an optional `repositoryId`. When the API answers `ambiguous_repository` the web shows a select of registered repositories (names only) and retries with the chosen id (F3.1).
 
+## Cleanup outcomes in history (H2)
+
+`EngineeringTaskView.cleanup` (so the list and the detail) is `null` or `{ branchKept, pushedNotPr, dirtyTree, priorStatus }`: fixed values only, never a path, branch name or text. It is `null` for a task that is not terminal, and for a terminal task when none of the sources below exists. Sources, all already recorded:
+
+- `branchKept`: the `cleanup` step `output.outcome === "branch_kept"`.
+- `pushedNotPr`: the `push_pr` step `output.outcome === "pushed_not_pr"`.
+- `dirtyTree`: the `cleanup` step is `failed` with `output.failure === "dirty_tree"`. A later successful cleanup overwrites that row, so it then reads `false`.
+- `priorStatus`: for `cancelled` tasks only, `details.from` of the latest `engineering.cancelled` audit row (the cleanup step's own `output.priorStatus` means something else, see M8). It fades to `null` once audit retention (`retention.auditDays`) prunes that row.
+
+`cleanupViews` reads them with two queries for a whole list. The web History rows render them as badges ("Branch kept", "Pushed, no PR", "Uncommitted changes left", "Cancelled from <status>").
+
 ## Deferred
 
-See `docs/superpowers/plans/2026-11-06-phase-10-followups.md`. Done in follow-ups batch 1: the develop-run sandbox (ADR-040), the repository picker, re-requesting `merge_pr`, and editing the commit message and PR text. Still open: non-GitHub hosts, overriding protected branches, multi-repo tasks, `include.path` fingerprinting, a history view with cleanup outcomes, network-enabled sandboxes, a retry action after `sandbox_unavailable`, and the sandbox items recorded there.
+See `docs/superpowers/plans/2026-11-06-phase-10-followups.md`. Done in follow-ups batch 1: the develop-run sandbox (ADR-040), the repository picker, re-requesting `merge_pr`, and editing the commit message and PR text. Still open: non-GitHub hosts, overriding protected branches, multi-repo tasks, `include.path` fingerprinting, network-enabled sandboxes, a retry action after `sandbox_unavailable`, and the sandbox items recorded there.

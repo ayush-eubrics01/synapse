@@ -426,6 +426,36 @@ test("the section groups tasks and shows the lock status", () => {
   expect(html).toContain("Develop");
 });
 
+test("History rows show cleanup badges; active rows do not", () => {
+  const cleanup = {
+    branchKept: true,
+    pushedNotPr: false,
+    dirtyTree: false,
+    priorStatus: null,
+  };
+  const html = text(
+    renderToString(
+      <EngineeringSection
+        tasks={[
+          task({ id: "a1", status: "in_progress", title: "Active one", cleanup }),
+          task({ id: "h1", status: "cancelled", title: "Done one", cleanup }),
+        ]}
+        details={{}}
+        repos={[repo()]}
+        lock={{ held: false }}
+        now={NOW}
+        handlers={{
+          create: async () => null,
+          approveDescription: async () => null,
+          approvePlan: async () => null,
+          cancel: noop,
+        }}
+      />,
+    ),
+  );
+  expect(html.split("Branch kept").length - 1).toBe(1);
+});
+
 test("an empty section explains how tasks start", () => {
   const html = text(
     renderToString(

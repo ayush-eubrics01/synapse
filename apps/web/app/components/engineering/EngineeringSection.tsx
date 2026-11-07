@@ -9,6 +9,7 @@ import type {
 import { useState } from "react";
 import {
   CANCEL_CONFIRM_TEXT,
+  cleanupBadges,
   developOutput,
   draftSourceNote,
   groupTasks,
@@ -185,6 +186,12 @@ function TaskRow({
         <span className="syn-eng-task-title">{task.title}</span>
         <span className="syn-eng-task-meta">
           <Chip tone={STATUS_TONE[task.status]}>{STATUS_LABELS[task.status]}</Chip>
+          {isTerminal(task.status) &&
+            cleanupBadges(task.cleanup).map((b) => (
+              <Chip key={b} tone="neutral">
+                {b}
+              </Chip>
+            ))}
           {task.currentStep && !isTerminal(task.status) && (
             <span className="syn-eng-faint">{stepLabel(task.currentStep)}</span>
           )}

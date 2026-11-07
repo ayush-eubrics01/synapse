@@ -1,5 +1,6 @@
 import type {
   Approval,
+  EngineeringCleanupView,
   EngineeringStep,
   EngineeringTaskDetail,
   EngineeringTaskStatus,
@@ -193,6 +194,17 @@ export const STATUS_LABELS: Record<EngineeringTaskStatus, string> = {
 
 export function isTerminal(status: EngineeringTaskStatus): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+/** H2: the badges for what a finished task's cleanup left behind, in a fixed order. */
+export function cleanupBadges(c: EngineeringCleanupView | null): string[] {
+  if (!c) return [];
+  const out: string[] = [];
+  if (c.branchKept) out.push("Branch kept");
+  if (c.pushedNotPr) out.push("Pushed, no PR");
+  if (c.dirtyTree) out.push("Uncommitted changes left");
+  if (c.priorStatus) out.push(`Cancelled from ${STATUS_LABELS[c.priorStatus]}`);
+  return out;
 }
 
 export interface TaskGroups {
