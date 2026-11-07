@@ -116,6 +116,7 @@ import { backupStartMessage } from "../lib/backup";
 import { brainPaletteItems, projectRowId } from "../lib/brain";
 import { codeAnswerErrorText, codeAnswerEventMessageId } from "../lib/code-answers";
 import { trailingDebounce } from "../lib/debounce";
+import { clearDraft } from "../lib/drafts";
 import { engineeringErrorText, isTerminal, lockText, type TaskSource } from "../lib/engineering";
 import { conversationTitle, filterConversations, type InboxFilter } from "../lib/inbox";
 import { jiraPaletteItems, jiraRowId } from "../lib/jira";
@@ -615,6 +616,7 @@ export default function Dashboard() {
     setActionError(null);
     try {
       await sendCodeAnswer(id, text, useAnyway);
+      clearDraft(`code_answer:${id}`);
       setCodeDraft(null);
       toast.show("Approval request created · nothing is sent until you approve");
     } catch (e) {
@@ -1087,8 +1089,14 @@ export default function Dashboard() {
             onUseAsReply: (v: CodeAnswerView, useAnyway: boolean) =>
               setCodeDraft({ codeAnswerId: v.id, draft: v.answer ?? "", useAnyway }),
             onSend: (id, text, useAnyway) => void sendCodeAnswerDraft(id, text, useAnyway),
-            onDiscard: () => setCodeDraft(null),
-            onDismissed: (id) => setCodeDraft((d) => (d?.codeAnswerId === id ? null : d)),
+            onDiscard: () => {
+              if (codeDraft) clearDraft(`code_answer:${codeDraft.codeAnswerId}`);
+              setCodeDraft(null);
+            },
+            onDismissed: (id) => {
+              clearDraft(`code_answer:${id}`);
+              setCodeDraft((d) => (d?.codeAnswerId === id ? null : d));
+            },
           }}
         />
       </>

@@ -9,6 +9,7 @@ import * as apiModule from "./api";
 import { brainFactKey } from "./brain";
 import { decideThenRefresh } from "./decide";
 import type { Deferred } from "./deferred";
+import { clearDraft } from "./drafts";
 import { engineeringErrorText, friendly, type TaskSource } from "./engineering";
 import { flagKey } from "./needs-you";
 import type { Decision } from "./people-decision";
@@ -185,15 +186,19 @@ export function createNeedsYouActions(d: NeedsYouActionsDeps): NeedsYouHandlers 
     });
   };
 
-  const now = async (fn: () => Promise<unknown>, success?: string) => {
+  /** Runs an immediate action; resolves true when `fn` succeeded. */
+  const now = async (fn: () => Promise<unknown>, success?: string): Promise<boolean> => {
     setActionError(null);
+    let ok = false;
     try {
       await fn();
+      ok = true;
       if (success) toast.show(success);
     } catch (e) {
       setActionError(message(e));
     }
     await refresh();
+    return ok;
   };
 
   // A refusal (no identity, already queued) is a normal result; show it as a notice.
@@ -237,15 +242,22 @@ export function createNeedsYouActions(d: NeedsYouActionsDeps): NeedsYouHandlers 
   return {
     urgentStatus: (id, s) => void now(() => api.setUrgentStatus(id, s)),
     urgentReply: (id, text) =>
-      void now(() => api.requestUrgentReply(id, text), TOASTS.approvalRequested),
+      void now(() => api.requestUrgentReply(id, text), TOASTS.approvalRequested).then((ok) => {
+        if (ok) clearDraft(`reply:${id}`);
+      }),
     resolve: (id, dec) => void now(() => api.resolveOutgoing(id, dec), TOASTS.resolve[dec]),
     decide: (id, dec) => void decide(id, dec),
     reviewFlag: (id, s) => defer(flagKey(id), TOASTS.flag[s], () => api.reviewFlag(id, s)),
     toggleHistory: d.toggleHistory,
     sendFollowup: (id, text) =>
-      void now(() => api.sendFollowup(id, text), TOASTS.approvalRequested),
+      void now(() => api.sendFollowup(id, text), TOASTS.approvalRequested).then((ok) => {
+        if (ok) clearDraft(`followup:${id}`);
+      }),
     discardFollowup: (id) =>
-      defer(`followup:${id}`, TOASTS.draftDiscarded, () => api.discardFollowup(id)),
+      defer(`followup:${id}`, TOASTS.draftDiscarded, async () => {
+        await api.discardFollowup(id);
+        clearDraft(`followup:${id}`);
+      }),
     trackCommitment: (id, edits) =>
       void now(() => api.reviewCommitment(id, "accept", edits), "Commitment tracked"),
     rejectCommitment: (id) =>

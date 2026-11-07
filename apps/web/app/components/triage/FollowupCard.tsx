@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
 import type { FollowupViewDto } from "../../../lib/api";
 import { Button } from "../ui/Button";
+import { useDraft } from "../ui/useDraft";
 import {
   Actions,
   absoluteTime,
@@ -34,7 +34,7 @@ export function FollowupCard({
   onSend: (id: string, text: string) => void;
   onDiscard: (id: string) => void;
 }) {
-  const [text, setText] = useState(f.draftText ?? "");
+  const [text, setText] = useDraft(`followup:${f.id}`, f.draftText ?? "");
   const line = f.outgoing ? SEND_STATUS[f.outgoing.status] : undefined;
   const canSend = f.actions.includes("send");
   const canDiscard = f.actions.includes("discard");
