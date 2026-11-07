@@ -96,7 +96,7 @@ const routers = new WeakMap<ApprovalEngine, Map<Operation, Map<string, Executor>
 /**
  * Registers `ex` for (action, targetIntegration). The engine holds one executor per action, so a
  * routing executor is registered once per action and dispatches on approval.targetIntegration.
- * An unknown integration fails the approval with the message "no executor".
+ * An unknown integration fails the approval with the fixed code `no_executor`.
  */
 export function registerIntegrationExecutor(
   engine: ApprovalEngine,

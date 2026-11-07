@@ -294,6 +294,9 @@ describe("GET /api/inbox/conversations/:id/thread", () => {
     expect(
       readFileSync(join(import.meta.dir, "../../src/modules/inbox/conversations.ts"), "utf8"),
     ).not.toContain("auto_replies");
+    expect(
+      readFileSync(join(import.meta.dir, "../../src/modules/inbox/conversations.ts"), "utf8"),
+    ).not.toContain("autoReplies");
   });
 
   test("sentViaSynapse.auto is true only when an auto_replies row links the outgoing row", async () => {

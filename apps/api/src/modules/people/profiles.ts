@@ -59,7 +59,7 @@ export type ApplyResult =
         | "unsupported_kind";
     };
 
-/** Content-free by construction: the engine stores `message` in the approval and audit row. */
+/** Content-free by construction: the engine stores only `code` in the approval and audit row. */
 export class ProfileApplyError extends Error {
   constructor(
     readonly code: "invalid_payload" | "recommendation_not_found" | "profile_write_failed",
@@ -108,7 +108,7 @@ export class ProfileService {
     }
   }
 
-  /** Runs in one immediate transaction. Throws only content-free messages (the engine stores them). */
+  /** Runs in one immediate transaction. Throws only `ProfileApplyError` with a fixed code (the engine stores the code). */
   apply(approval: Approval): ApplyResult {
     const payload = payloadSchema.safeParse(approval.payload);
     if (!payload.success) throw new ProfileApplyError("invalid_payload");

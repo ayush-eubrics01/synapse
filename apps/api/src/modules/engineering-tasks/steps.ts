@@ -1533,7 +1533,7 @@ export class EngineeringStepService {
    * cancel during the step, or the step itself ending the task).
    */
   private async track<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
-    if (this.#inFlight.has(taskId)) throw new Error("step_running");
+    if (this.#inFlight.has(taskId)) throw new ExecutorError("step_running");
     this.#inFlight.add(taskId);
     try {
       return await fn();
