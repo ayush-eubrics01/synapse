@@ -10,7 +10,12 @@ import { brainFactKey } from "./brain";
 import { decideThenRefresh } from "./decide";
 import type { Deferred } from "./deferred";
 import { clearDraft } from "./drafts";
-import { engineeringErrorText, friendly, type TaskSource } from "./engineering";
+import {
+  engineeringErrorText,
+  friendly,
+  retryDevelopErrorText,
+  type TaskSource,
+} from "./engineering";
 import { flagKey } from "./needs-you";
 import type { Decision } from "./people-decision";
 
@@ -50,6 +55,7 @@ export interface NeedsYouHandlers {
   /** Creates the proposal in the repository the user picked after an ambiguous refusal. */
   createTaskInRepository: (source: TaskSource, repositoryId: string) => void;
   retryEngineeringMerge: (taskId: string) => void;
+  retryEngineeringDevelop: (taskId: string) => void;
   /** Saves edited commit or PR text; resolves to an error sentence, or null on success. */
   saveEngineeringApprovalText: (
     taskId: string,
@@ -89,6 +95,7 @@ export type NeedsYouApi = Pick<
   | "cancelEngineeringTask"
   | "editEngineeringApproval"
   | "retryEngineeringMerge"
+  | "retryEngineeringDevelop"
 >;
 
 export const realNeedsYouApi: NeedsYouApi = apiModule;
@@ -111,6 +118,7 @@ export const TOASTS = {
   taskProposed: "Task proposed · review it in Engineering. Nothing runs until you approve.",
   taskCancelled: "Task cancelled",
   mergeRequested: "New merge approval created",
+  developRetried: "Develop step queued again",
   textSaved: "Saved",
   factAccepted: "Fact approved",
   factRejected: "Fact rejected",
@@ -296,6 +304,14 @@ export function createNeedsYouActions(d: NeedsYouActionsDeps): NeedsYouHandlers 
     createTaskInRepository: (source, repositoryId) => void propose(source, repositoryId),
     retryEngineeringMerge: (id) =>
       void now(() => friendly(() => api.retryEngineeringMerge(id)), TOASTS.mergeRequested),
+    retryEngineeringDevelop: (id) =>
+      void now(async () => {
+        try {
+          await api.retryEngineeringDevelop(id);
+        } catch (e) {
+          throw new Error(retryDevelopErrorText(e));
+        }
+      }, TOASTS.developRetried),
     saveEngineeringApprovalText: async (taskId, approvalId, edit) => {
       try {
         await api.editEngineeringApproval(taskId, approvalId, edit);

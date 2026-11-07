@@ -277,6 +277,7 @@ test("the needs attention card shows the plain-English reason", () => {
         onCancel={noop}
         onOpen={noop}
         onCheckAgain={noop}
+        onTryAgain={noop}
       />,
     ),
   );
@@ -791,6 +792,7 @@ const attention = (failure: string, currentStep: string) =>
         onCancel={noop}
         onOpen={noop}
         onCheckAgain={noop}
+        onTryAgain={noop}
       />,
     ),
   );
@@ -798,6 +800,13 @@ const attention = (failure: string, currentStep: string) =>
 test("Check again shows for failing checks at the merge step only", () => {
   expect(attention("checks_failing", "merge_pr")).toContain("Check again");
   expect(attention("dirty_tree", "merge_pr")).not.toContain("Check again");
+});
+
+test("Try again shows for a sandbox refusal at develop, with Cancel task kept", () => {
+  const t = attention("sandbox_unavailable", "develop");
+  expect(t).toContain("Try again");
+  expect(t).toContain("Cancel task");
+  expect(attention("checks_failing", "merge_pr")).not.toContain("Try again");
 });
 
 test("the plan card states whether tests run in the sandbox", () => {

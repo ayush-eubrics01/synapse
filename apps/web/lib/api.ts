@@ -976,6 +976,18 @@ export function retryEngineeringMerge(
   );
 }
 
+/** Queues the develop step again after a sandbox refusal; a refusal is an ApiError with a code. */
+export function retryEngineeringDevelop(
+  taskId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EngineeringTaskDetail> {
+  return request(
+    `/api/engineering/tasks/${encodeURIComponent(taskId)}/retry-develop`,
+    { method: "POST" },
+    fetchImpl,
+  );
+}
+
 export function cancelEngineeringTask(
   id: string,
   fetchImpl: typeof fetch = fetch,

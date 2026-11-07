@@ -210,6 +210,7 @@ function editingRun(
 let db: ReturnType<typeof openDatabase>["db"];
 let clock: FakeClock;
 let settings: SettingsService;
+let sandboxHealth: () => Promise<{ status: "ok" | "degraded" | "down"; detail?: string }>;
 let queue: JobQueue;
 let leases: LeaseService;
 let audit: AuditLogger;
@@ -398,6 +399,7 @@ beforeEach(async () => {
   runMigrations(db);
   clock = new FakeClock(NOW);
   settings = new SettingsService(db, clock, () => "e");
+  sandboxHealth = async () => ({ status: "ok" });
   events = new EventPublisher(clock);
   audit = new AuditLogger(clock);
   queue = new JobQueue(db, clock);
@@ -460,6 +462,8 @@ beforeEach(async () => {
     lock,
     git: hooked(workflow),
     prs: hooked(gh),
+    settings,
+    sandboxHealth: () => sandboxHealth(),
   });
   steps.register(approvals, dispatcher);
   requests = [];
@@ -2196,5 +2200,95 @@ describe("approval text edits and merge re-request (F2.1, F3.2)", () => {
     protectMain();
     expect(await retry(id)).toEqual({ status: 400, body: { error: "protected_branch" } });
     expect(approvals.listPending()).toEqual([]);
+  });
+});
+
+describe("retry the develop step (H3)", () => {
+  const parked = async (): Promise<string> => {
+    const msg = "Sandbox is required but failed to initialize: Failed to create bridge sockets.";
+    // The sandbox refused before the model edited anything, so the tree is clean for the retry.
+    reply = editingRun({}, [tool("Bash", { command: "bun test" }, msg, true)], false);
+    const id = await developed();
+    expect(taskRow(id)?.failure).toBe("sandbox_unavailable");
+    return id;
+  };
+  const developJobs = (id: string) =>
+    db
+      .select()
+      .from(schema.jobs)
+      .where(and(eq(schema.jobs.type, STEP_JOB), eq(schema.jobs.status, "PENDING")))
+      .all()
+      .filter((j) => {
+        const i = j.input as { taskId?: string; step?: string } | null;
+        return i?.taskId === id && i?.step === "develop";
+      }).length;
+  const code = async (id: string) => {
+    try {
+      await steps.retryDevelop(id);
+    } catch (e) {
+      return e instanceof EngineeringTaskError ? e.code : String(e);
+    }
+    return "ok";
+  };
+
+  test("requeues develop, audits, and a good run reaches the commit approval", async () => {
+    const id = await parked();
+    await steps.retryDevelop(id);
+    expect(taskRow(id)?.status).toBe("in_progress");
+    expect(taskRow(id)?.currentStep).toBe("develop");
+    expect(taskRow(id)?.failure).toBeNull();
+    expect(stepRow(id, "develop")?.status).toBe("pending");
+    expect(developJobs(id)).toBe(1);
+    const audits = db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "engineering.develop_retried"))
+      .all();
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.details).toEqual({ taskId: id });
+    reply = editingRun();
+    await drain();
+    expect(taskRow(id)?.status).toBe("awaiting_approval");
+    expect(taskRow(id)?.currentStep).toBe("commit");
+  });
+
+  test("a second retry is not_retryable and queues nothing", async () => {
+    const id = await parked();
+    await steps.retryDevelop(id);
+    expect(await code(id)).toBe("not_retryable");
+    expect(developJobs(id)).toBe(1);
+  });
+
+  test("setting off, unavailable and masked sandboxes refuse and keep needs_attention", async () => {
+    const id = await parked();
+    settings.set("engineering.sandbox.enabled", false);
+    expect(await code(id)).toBe("sandbox_disabled");
+    settings.set("engineering.sandbox.enabled", true);
+    sandboxHealth = async () => ({ status: "degraded", detail: "missing: socat" });
+    expect(await code(id)).toBe("sandbox_unavailable");
+    sandboxHealth = async () => ({ status: "degraded", detail: "run_root_masked" });
+    expect(await code(id)).toBe("sandbox_root_masked");
+    expect(taskRow(id)?.status).toBe("needs_attention");
+    expect(developJobs(id)).toBe(0);
+  });
+
+  test("a task cancelled while the health check runs is not_retryable", async () => {
+    const id = await parked();
+    sandboxHealth = async () => {
+      service.cancel(id);
+      return { status: "ok" };
+    };
+    expect(await code(id)).toBe("not_retryable");
+    expect(developJobs(id)).toBe(0);
+  });
+
+  test("another reason and an unknown task are refused", async () => {
+    const id = await parked();
+    db.update(schema.engineeringTasks)
+      .set({ failure: "dirty_tree" })
+      .where(eq(schema.engineeringTasks.id, id))
+      .run();
+    expect(await code(id)).toBe("not_retryable");
+    expect(await code("nope")).toBe("not_found");
   });
 });

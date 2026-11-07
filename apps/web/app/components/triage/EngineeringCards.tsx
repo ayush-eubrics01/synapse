@@ -14,6 +14,7 @@ import {
   CANCEL_CONFIRM_TEXT,
   type CommitRef,
   canCheckAgain,
+  canRetryDevelop,
   changedText,
   clockTime,
   developOutput,
@@ -388,12 +389,14 @@ export function EngineeringAttentionCard({
   onCancel,
   onOpen,
   onCheckAgain,
+  onTryAgain,
 }: {
   task: EngineeringTaskView;
   now: Date | null;
   onCancel: (taskId: string) => void;
   onOpen: (taskId: string) => void;
   onCheckAgain: (taskId: string) => void;
+  onTryAgain: (taskId: string) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
   return (
@@ -408,6 +411,11 @@ export function EngineeringAttentionCard({
         {canCheckAgain(task) && (
           <Button variant="primary" onClick={() => onCheckAgain(task.id)}>
             Check again
+          </Button>
+        )}
+        {canRetryDevelop(task) && (
+          <Button variant="primary" onClick={() => onTryAgain(task.id)}>
+            Try again
           </Button>
         )}
         <Button variant="secondary" onClick={() => onOpen(task.id)}>

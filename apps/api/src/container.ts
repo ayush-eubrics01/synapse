@@ -662,7 +662,20 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     lock: engineeringLock,
     git: gitWorkflow,
   });
+  const sandboxHealthCheck = sandboxCheck({
+    settings,
+    which,
+    runRootMasked: () =>
+      runRootMasked(
+        runRoot,
+        home,
+        [dataDir, backupDir],
+        deps.sandboxMaskedRoots ?? SANDBOX_MASKED_ROOTS,
+      ),
+  });
   const engineeringSteps = new EngineeringStepService({
+    settings,
+    sandboxHealth: () => sandboxHealthCheck(),
     db,
     clock,
     events,
@@ -769,17 +782,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     bun: bunVersionCheck(),
     auth: authCheck(auth, clock),
     claude: claudeCheck(provider, clock),
-    sandbox: sandboxCheck({
-      settings,
-      which,
-      runRootMasked: () =>
-        runRootMasked(
-          runRoot,
-          home,
-          [dataDir, backupDir],
-          deps.sandboxMaskedRoots ?? SANDBOX_MASKED_ROOTS,
-        ),
-    }),
+    sandbox: sandboxHealthCheck,
     claude_settings: claudeSettingsCheck({
       provider,
       knownServers: () => settings.get("orchestrator.knownServers"),

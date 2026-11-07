@@ -5,6 +5,7 @@ import {
   type ApprovalTextEdit,
   type ApprovalTextField,
   COMMIT_SUBJECT_MAX,
+  DEVELOP_RETRY_REASONS,
   type EngineeringStep,
   type GitWorkflow,
   GitWorkflowError,
@@ -34,8 +35,10 @@ import { z } from "zod";
 import type { ApprovalEngine } from "../../core/approvals/approvals";
 import { registerIntegrationExecutor } from "../../core/approvals/execution";
 import type { AuditLogger } from "../../core/audit/audit";
+import type { SettingsService } from "../../core/config/settings";
 import type { OutboxDispatcher } from "../../core/events/dispatcher";
 import type { EventPublisher } from "../../core/events/publisher";
+import type { HealthCheck } from "../../core/health/health";
 import type { JobQueue } from "../../core/jobs/queue";
 import { SANDBOX_REQUIRED_REASON } from "../../core/orchestrator/validator";
 import {
@@ -193,6 +196,9 @@ export interface EngineeringStepDeps {
   lock: Pick<EngineeringLock, "holder" | "release">;
   git: GitWorkflow;
   prs: PullRequestProvider;
+  settings: Pick<SettingsService, "get">;
+  /** The `sandbox` health check: retry refuses while it is not ok. */
+  sandboxHealth: HealthCheck;
 }
 
 /** The develop step's pre-run fingerprints plus the placeholder count (ADR-040, Task 4b). */
@@ -429,6 +435,47 @@ export class EngineeringStepService {
           { prNumber },
         );
         this.audit(tx, "engineering.merge_rerequested", taskId, "ok", { prNumber });
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  // ---- H3: retry the develop step after a sandbox refusal -----------------------------------------
+
+  /**
+   * "Try again": a task parked at `develop` for a sandbox reason (`DEVELOP_RETRY_REASONS`) that
+   * still holds the lock goes back to `in_progress` with a fresh `engineering.step` develop job,
+   * once the sandbox setting is on and the `sandbox` health check passes.
+   */
+  async retryDevelop(taskId: string): Promise<void> {
+    const eligible = (t: TaskRow | null | undefined): boolean =>
+      t != null &&
+      t.status === "needs_attention" &&
+      t.currentStep === "develop" &&
+      (DEVELOP_RETRY_REASONS as readonly string[]).includes(t.failure ?? "") &&
+      this.deps.lock.holder()?.taskId === taskId;
+    const task = this.store.get(this.deps.db, taskId);
+    if (!task) throw new EngineeringTaskError("not_found");
+    if (!eligible(task)) throw new EngineeringTaskError("not_retryable");
+    if (!this.deps.settings.get("engineering.sandbox.enabled")) {
+      throw new EngineeringTaskError("sandbox_disabled");
+    }
+    const health = await this.deps.sandboxHealth();
+    if (health.status !== "ok") {
+      throw new EngineeringTaskError(
+        health.detail === "run_root_masked" ? "sandbox_root_masked" : "sandbox_unavailable",
+      );
+    }
+    this.deps.db.transaction(
+      (tx) => {
+        if (!eligible(this.store.get(tx, taskId))) throw new EngineeringTaskError("not_retryable");
+        this.store.transition(tx, taskId, "in_progress", { failure: null }, ["needs_attention"]);
+        this.store.upsertStep(tx, taskId, "develop", "pending", {
+          output: null,
+          claudeRunId: null,
+        });
+        this.enqueue(tx, taskId, "develop");
+        this.audit(tx, "engineering.develop_retried", taskId, "ok", {});
       },
       { behavior: "immediate" },
     );

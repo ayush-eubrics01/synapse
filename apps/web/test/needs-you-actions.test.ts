@@ -394,6 +394,18 @@ test("retryEngineeringMerge shows the checks_failing reason when checks still fa
   expect(ok.toasts.map((t) => t.text)).toContain(TOASTS.mergeRequested);
 });
 
+test("retryEngineeringDevelop toasts, and shows a refusal as its sentence", async () => {
+  const s = setup({ retryEngineeringDevelop: new ApiError("x", 409, "not_retryable") });
+  s.handlers.retryEngineeringDevelop("t1");
+  await settle();
+  expect(s.errors.at(-1)).toBe("This task can't be retried now.");
+  const ok = setup();
+  ok.handlers.retryEngineeringDevelop("t1");
+  await settle();
+  expect(ok.calls).toContain('retryEngineeringDevelop("t1")');
+  expect(ok.toasts.map((t) => t.text)).toContain(TOASTS.developRetried);
+});
+
 test("saveEngineeringApprovalText resolves to an error sentence, or null on success", async () => {
   const bad = setup({ editEngineeringApproval: new ApiError("x", 409, "not_pending") });
   expect(await bad.handlers.saveEngineeringApprovalText("t1", "a1", { prTitle: "T" })).toBe(

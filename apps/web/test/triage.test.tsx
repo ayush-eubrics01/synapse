@@ -812,6 +812,7 @@ const handlers: NeedsYouHandlers = {
   cancelEngineeringTask: noop,
   createTaskInRepository: noop,
   retryEngineeringMerge: noop,
+  retryEngineeringDevelop: noop,
   saveEngineeringApprovalText: async () => null,
   seeAllEngineering: noop,
   startBackfill: noop,

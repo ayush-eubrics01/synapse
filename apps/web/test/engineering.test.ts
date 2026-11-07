@@ -8,6 +8,7 @@ import {
   PR_ERROR_CODES,
 } from "@synapse/contracts";
 import {
+  ApiError,
   approveTaskDescription,
   approveTaskPlan,
   cancelEngineeringTask,
@@ -22,6 +23,7 @@ import {
   approvalTextProblem,
   approvalTextValues,
   canCheckAgain,
+  canRetryDevelop,
   changedText,
   cleanupBadges,
   defaultPlanForm,
@@ -33,6 +35,7 @@ import {
   parseDiff,
   reasonLabel,
   repositoryChoices,
+  retryDevelopErrorText,
   SANDBOX_OFF_TEXT,
   SANDBOX_ON_TEXT,
   stepLabel,
@@ -402,4 +405,32 @@ test("cleanupBadges lists the outcomes in a fixed order and nothing for null", (
   expect(
     cleanupBadges({ branchKept: false, pushedNotPr: false, dirtyTree: false, priorStatus: null }),
   ).toEqual([]);
+});
+
+test("canRetryDevelop is true for the four sandbox reasons at develop only", () => {
+  const t = (status: string, failure: string | null, currentStep: string | null) =>
+    canRetryDevelop({ status, failure, currentStep } as Parameters<typeof canRetryDevelop>[0]);
+  for (const f of [
+    "sandbox_unavailable",
+    "sandbox_disabled",
+    "sandbox_path_too_long",
+    "sandbox_root_masked",
+  ]) {
+    expect(t("needs_attention", f, "develop")).toBe(true);
+  }
+  expect(t("needs_attention", "unsafe_change", "develop")).toBe(false);
+  expect(t("needs_attention", "sandbox_unavailable", "commit")).toBe(false);
+  expect(t("failed", "sandbox_unavailable", "develop")).toBe(false);
+});
+
+test("retryDevelopErrorText maps the retry refusals", () => {
+  const e = (code: string) => retryDevelopErrorText(new ApiError("x", 409, code));
+  expect(e("not_retryable")).toBe("This task can't be retried now.");
+  expect(e("sandbox_disabled")).toBe("Turn the test sandbox on first.");
+  expect(e("sandbox_unavailable")).toBe(
+    "The test sandbox still can't start. Install bubblewrap and socat first.",
+  );
+  expect(e("sandbox_root_masked")).toBe("XDG_CACHE_HOME is still inside a protected folder.");
+  expect(e("not_found")).toBe(reasonLabel("not_found"));
+  expect(reasonLabel("sandbox_unavailable")).toContain("then use Try again");
 });

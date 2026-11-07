@@ -433,4 +433,14 @@ describe("approval text edit and retry-merge routes (F2.1, F3.2)", () => {
     expect(await r.json()).toEqual({ error: "invalid_state" });
     expect((await send("POST", "/api/engineering/tasks/nope/retry-merge")).status).toBe(404);
   });
+
+  test("retry-develop: unknown id is 404, a planned task is 409 not_retryable", async () => {
+    const t = await createTask();
+    const miss = await send("POST", "/api/engineering/tasks/nope/retry-develop");
+    expect(miss.status).toBe(404);
+    expect(await miss.json()).toEqual({ error: "not_found" });
+    const r = await send("POST", `/api/engineering/tasks/${t.id}/retry-develop`);
+    expect(r.status).toBe(409);
+    expect(await r.json()).toEqual({ error: "not_retryable" });
+  });
 });

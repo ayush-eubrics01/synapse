@@ -42,6 +42,10 @@ export const ENGINEERING_TASK_ERROR_CODES = [
   "pr_head_moved",
   "pr_status_failed",
   "state_changed",
+  "not_retryable",
+  "sandbox_disabled",
+  "sandbox_unavailable",
+  "sandbox_root_masked",
 ] as const;
 /** `registry_error:<RegistryErrorCode>` wraps a refusal of the repository registry. */
 export type EngineeringTaskErrorCode =
