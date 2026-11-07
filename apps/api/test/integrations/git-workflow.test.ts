@@ -1369,8 +1369,8 @@ describe("fingerprint follows git config includes (K6.3)", () => {
     put("root", []);
     git(f.repo, "config", "--add", "include.path", "a1.cfg");
     git(f.repo, "config", "--add", "include.path", "b.cfg");
-    for (let i = 1; i < max; i++) put(`a${i}`, [`a${i + 1}`]);
-    put(`a${max}`, ["w"]);
+    for (let i = 1; i < max - 1; i++) put(`a${i}`, [`a${i + 1}`]);
+    put(`a${max - 1}`, ["w"]);
     put("b", ["w"]);
     put("w", ["v"]);
     put("v", []);
@@ -1387,14 +1387,28 @@ describe("fingerprint follows git config includes (K6.3)", () => {
     expect(await f.wf.configFingerprint(f.repo)).toBe(a);
   });
 
-  test("a file over 1 MiB is a marker, not parsed", async () => {
+  test("a file over 1 MiB is fully hashed (edits visible) but its includes are not parsed", async () => {
     const f = setup();
-    git(f.repo, "config", "include.path", "big.cfg");
-    const p = join(f.repo, ".git", "big.cfg");
-    writeFileSync(p, "#".repeat(1024 * 1024 + 1));
+    const cfg = join(f.repo, ".git", "config");
+    const orig = readFileSync(cfg, "utf8");
+    writeFileSync(cfg, `${orig}# ${"#".repeat(1024 * 1024 + 1)}\n`);
     const a = await f.wf.configFingerprint(f.repo);
-    writeFileSync(p, "a".repeat(1024 * 1024 + 1));
     expect(await f.wf.configFingerprint(f.repo)).toBe(a);
+    writeFileSync(cfg, `${orig}# ${"#".repeat(1024 * 1024 + 1)}\n[filter "x"]\n\tclean = evil\n`);
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(a);
+  });
+
+  test("a relative include through a symlinked directory resolves like the kernel", async () => {
+    const f = setup();
+    const dir = join(f.repo, ".git");
+    mkdirSync(join(dir, "real", "sub"), { recursive: true });
+    symlinkSync(join(dir, "real", "sub"), join(dir, "l1"));
+    writeFileSync(join(dir, "real", "x.cfg"), "[core]\n\tpager = one\n");
+    writeFileSync(join(dir, "x.cfg"), "[core]\n\tpager = lexical\n");
+    git(f.repo, "config", "include.path", "l1/../x.cfg");
+    const a = await f.wf.configFingerprint(f.repo);
+    writeFileSync(join(dir, "real", "x.cfg"), "[core]\n\tpager = two\n");
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(a);
   });
 
   test("total include nodes per root are capped, with a truncated marker", async () => {

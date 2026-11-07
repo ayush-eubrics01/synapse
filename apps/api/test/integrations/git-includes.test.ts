@@ -49,4 +49,12 @@ describe("includeTargets", () => {
     const me = require("node:os").userInfo().username;
     expect(t(`[include]\n\tpath = ~${me}/x.cfg`)).toEqual(["/home/u/x.cfg"]);
   });
+  test("backslash-newline does not continue a comment", () => {
+    expect(
+      t("[include]\n# note \\\npath = hidden.cfg\npath = a.cfg ; x \\\npath = hidden2.cfg\n"),
+    ).toEqual(["/home/u/r/.git/hidden.cfg", "/home/u/r/.git/a.cfg", "/home/u/r/.git/hidden2.cfg"]);
+  });
+  test("relative paths are not normalised lexically", () => {
+    expect(t("[include]\npath = l1/../x.cfg")).toEqual(["/home/u/r/.git/l1/../x.cfg"]);
+  });
 });

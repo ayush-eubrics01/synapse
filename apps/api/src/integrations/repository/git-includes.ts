@@ -1,5 +1,5 @@
 import { userInfo } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 
 /** How many include levels `configFingerprint` follows below a config file (git's MAX_INCLUDE_DEPTH; the file itself is 0). */
 export const INCLUDE_DEPTH_MAX = 10;
@@ -58,18 +58,74 @@ function headerEnd(rest: string): number {
 }
 
 /**
+ * Splits config text into logical lines like git: a backslash-newline continues a line only
+ * inside a value and outside a comment (a `#` or `;` comment ends at the newline, whatever
+ * it ends with). Header, key and value contexts are tracked so `=` and `;` inside a quoted
+ * subsection or value are not misread.
+ */
+function logicalLines(raw: string): string[] {
+  const text = raw.replace(/\r\n/g, "\n");
+  const lines: string[] = [];
+  let cur = "";
+  let ctx: "start" | "header" | "key" | "value" | "comment" = "start";
+  let quote = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i] as string;
+    if (c === "\n") {
+      lines.push(cur);
+      cur = "";
+      ctx = "start";
+      quote = false;
+      continue;
+    }
+    if (ctx === "value" && c === "\\") {
+      const n = text[i + 1];
+      if (n === "\n") {
+        i++;
+        continue;
+      }
+      cur += c;
+      if (n !== undefined) {
+        cur += n;
+        i++;
+      }
+      continue;
+    }
+    cur += c;
+    if (ctx === "comment") continue;
+    if (ctx === "header") {
+      if (quote && c === "\\") {
+        const n = text[i + 1];
+        if (n !== undefined && n !== "\n") {
+          cur += n;
+          i++;
+        }
+      } else if (c === '"') quote = !quote;
+      else if (c === "]" && !quote) ctx = "start";
+    } else if (ctx === "value") {
+      if (c === '"') quote = !quote;
+      else if (!quote && (c === "#" || c === ";")) ctx = "comment";
+    } else if (c === "#" || c === ";") ctx = "comment";
+    else if (c === "[" && ctx === "start") ctx = "header";
+    else if (c === "=" && ctx === "key") ctx = "value";
+    else if (ctx === "start" && c !== " " && c !== "\t") ctx = "key";
+  }
+  lines.push(cur);
+  return lines;
+}
+
+/**
  * The `path` values of `[include]` and `[includeIf "..."]` sections in git config `text`
- * (read from `file`), as absolute paths in file order, duplicates kept. A relative path is
- * relative to `file`'s directory; `~/` and `~<current user>/` are `home`; any other `~name/`
- * is returned as `unresolved:<raw value>` (fail closed). `includeIf` conditions are not
- * evaluated (every target counts). Backslash-newline continues a line. Pure: never touches
- * the filesystem.
+ * (read from `file`), in file order, duplicates kept. A relative path is `dirname(file)/path`
+ * with no normalisation (the kernel resolves it when opened, as git does, so `l1/../x` through
+ * a symlinked directory points where git's does); `~/` and `~<current user>/` are `home`; any
+ * other `~name/` is returned as `unresolved:<raw value>` (fail closed). `includeIf` conditions
+ * are not evaluated (every target counts). Pure: never touches the filesystem.
  */
 export function includeTargets(text: string, file: string, home: string): string[] {
   const out: string[] = [];
   let inInclude = false;
-  const joined = text.replace(/\\(\\|\r?\n)/g, (m, g: string) => (g === "\\" ? m : ""));
-  for (const line of joined.split(/\r?\n/)) {
+  for (const line of logicalLines(text)) {
     let rest = line.trimStart();
     if (rest.startsWith("[")) {
       const close = headerEnd(rest);
@@ -83,12 +139,12 @@ export function includeTargets(text: string, file: string, home: string): string
     if (!m || (m[1] as string).toLowerCase() !== "path" || m[2] === undefined) continue;
     const value = parseValue((m[3] ?? "").trimStart());
     if (value === "") continue;
-    if (value === "~" || value.startsWith("~/")) out.push(resolve(join(home, value.slice(1))));
+    if (value === "~" || value.startsWith("~/")) out.push(home + value.slice(1));
     else if (value.startsWith("~")) {
       const um = /^~([^/]+)(\/.*)?$/.exec(value);
-      if (um && um[1] === currentUser()) out.push(resolve(join(home, um[2] ?? "")));
+      if (um && um[1] === currentUser()) out.push(home + (um[2] ?? ""));
       else out.push(UNRESOLVED_PREFIX + value);
-    } else out.push(isAbsolute(value) ? resolve(value) : resolve(dirname(file), value));
+    } else out.push(isAbsolute(value) ? value : `${dirname(file)}/${value}`);
   }
   return out;
 }

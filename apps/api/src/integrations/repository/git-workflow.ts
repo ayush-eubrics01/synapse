@@ -9,7 +9,9 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  readSync,
   realpathSync,
+  statSync,
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import {
@@ -237,12 +239,13 @@ function realKey(p: string): string {
 function loadConfig(path: string): LoadedConfig {
   let fd: number | undefined;
   try {
+    if (!statSync(path).isFile()) return { marker: "special" };
     fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
     const st = fstatSync(fd);
     if (!st.isFile()) return { marker: "special" };
-    if (st.size > INCLUDE_FILE_MAX) return { marker: "too_large" };
+    if (st.size > INCLUDE_FILE_MAX) return streamMarker(fd);
     const buf = readFileSync(fd);
-    if (buf.length > INCLUDE_FILE_MAX) return { marker: "too_large" };
+    if (buf.length > INCLUDE_FILE_MAX) return streamMarker(fd, buf);
     return { marker: sha256(buf), text: buf.toString("utf8") };
   } catch (e) {
     const code = (e as NodeJS.ErrnoException)?.code;
@@ -250,6 +253,21 @@ function loadConfig(path: string): LoadedConfig {
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+/** A file over the cap: hash all of it in chunks (edits stay visible); its includes are not parsed. */
+function streamMarker(fd: number, head?: Buffer): LoadedConfig {
+  const h = createHash("sha256");
+  if (head) h.update(head);
+  else {
+    const chunk = Buffer.alloc(64 * 1024);
+    for (;;) {
+      const n = readSync(fd, chunk, 0, chunk.length, null);
+      if (n <= 0) break;
+      h.update(chunk.subarray(0, n));
+    }
+  }
+  return { marker: `${h.digest("hex")}:too_large_unparsed` };
 }
 
 function within(root: string, p: string): boolean {
