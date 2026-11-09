@@ -191,7 +191,7 @@ export class ResolveNotAllowed extends Error {
   }
 }
 
-/** Fixed reasons only: the engine stores the message in the approval and its audit row. */
+/** Fixed reasons only: the engine stores only this code in the approval and its audit row, never a message. */
 export type SendFailure =
   | "tool_error"
   | "no_send"

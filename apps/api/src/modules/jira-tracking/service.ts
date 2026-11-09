@@ -134,6 +134,8 @@ export class JiraService {
           settings.setIn(tx, "jira.cloudId", patch.cloudId);
           settings.setIn(tx, "jira.cloudIdCandidates", [], { emit: false });
           sync.update(tx, "jira.issues", { lastError: null });
+          // The parked lookup job is resolved: it must not keep the health check degraded.
+          this.deps.queue.resolveParked(tx, JIRA_JOB.resolveCloudId);
           // Keys only: a site name is never audited.
           audit.record(tx, {
             actor: "user",

@@ -654,6 +654,44 @@ describe("cloudId", () => {
     });
   });
 
+  test("duplicate candidate ids are collapsed before slicing", async () => {
+    const ID2 = "11111111-1111-4111-8111-111111111111";
+    sites.push(async () => [
+      { id: CLOUD, url: "https://a.invalid", name: "Demo site" },
+      { id: CLOUD, url: "https://a.invalid", name: "Demo site" },
+      { id: ID2, url: "https://b.invalid", name: "Demo site 2" },
+    ]);
+    await run("jira.resolve_cloud_id").catch((e) => e);
+    expect(settings.get("jira.cloudIdCandidates")).toEqual([
+      { id: CLOUD, name: "Demo site" },
+      { id: ID2, name: "Demo site 2" },
+    ]);
+  });
+
+  test("a choice made while the lookup ran is not overwritten (park and success)", async () => {
+    const ID2 = "11111111-1111-4111-8111-111111111111";
+    sites.push(async () => {
+      settings.set("jira.cloudId", ID2);
+      return [
+        { id: CLOUD, url: "https://a.invalid", name: "a" },
+        { id: "22222222-2222-4222-8222-222222222222", url: "https://b.invalid", name: "b" },
+      ];
+    });
+    expect(await run("jira.resolve_cloud_id")).toEqual({ skipped: "already_set" });
+    expect(settings.get("jira.cloudId")).toBe(ID2);
+    expect(settings.get("jira.cloudIdCandidates")).toEqual([]);
+    expect(sync.get("jira.issues").lastError).toBeNull();
+
+    settings.clear("jira.cloudId");
+    sites.push(async () => {
+      settings.set("jira.cloudId", ID2);
+      return [{ id: CLOUD, url: "https://a.invalid", name: "a" }];
+    });
+    expect(await run("jira.resolve_cloud_id")).toEqual({ skipped: "already_set" });
+    expect(settings.get("jira.cloudId")).toBe(ID2);
+    expect(jobs()).toHaveLength(0);
+  });
+
   test("already set: skipped without a run", async () => {
     settings.set("jira.cloudId", CLOUD);
     expect(await run("jira.resolve_cloud_id")).toEqual({ skipped: "already_set" });

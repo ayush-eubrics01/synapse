@@ -232,9 +232,9 @@ function realKey(p: string): string {
 }
 
 /**
- * Reads a config file once (hash and parse the same bytes). Only regular files up to
- * INCLUDE_FILE_MAX are read; a FIFO, device or directory is the marker `special` (opened
- * non-blocking, never read), a big file `too_large`; never throws.
+ * Reads a config file once (hash and parse the same bytes). Special files (a FIFO, device or
+ * directory) are never opened: the marker is `special`. A regular file over INCLUDE_FILE_MAX
+ * is hashed in full, marker `<sha>:too_large_unparsed` (its includes are not parsed); never throws.
  */
 function loadConfig(path: string): LoadedConfig {
   let fd: number | undefined;

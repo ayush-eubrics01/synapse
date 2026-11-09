@@ -42,6 +42,9 @@ Items parked during Phase 11 (dashboard customisation and runtime hardening). No
 
 ## Deferred from follow-ups batch 3
 
-- **Jira resolver park and success transactions don't re-check that `jira.cloudId` is still null.** A sync racing the user's choice can overwrite it or show a stale `multiple_sites`. Candidate ids are not de-duplicated.
 - **`outgoingAttention` counts auto-reply and code-answer outgoing rows** that never appear in the follow-ups feed.
 - **`runCommand`'s timeout kills only the direct child**, not its descendants.
+- **All-invalid candidate ids** park `multiple_sites` with an empty site list, so the hint in the Jira section is misleading.
+- **An out-of-range number in the Away replies and Claude settings cards stays on screen** after the API rejects it.
+- **The run-command test does not assert the child is dead**, and there is no partial-write rollback test for scheduler isolation.
+- **A cap-0 hold shows "Daily limit reached" in the away digest**; "Automatic replies off" would be clearer.

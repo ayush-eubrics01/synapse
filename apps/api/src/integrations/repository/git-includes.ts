@@ -6,7 +6,11 @@ export const INCLUDE_DEPTH_MAX = 10;
 
 const ESCAPES: Record<string, string> = { n: "\n", t: "\t", b: "\b", '"': '"', "\\": "\\" };
 
-/** Parses a git config value (quotes, escapes, `;`/`#` comments); the rest of the line only. */
+/**
+ * Parses a git config value (quotes, escapes, `;`/`#` comments); the rest of the line only.
+ * A continuation (a backslash-newline kept in the logical line, or a backslash ending the
+ * text) keeps the whitespace before it, as git does.
+ */
 function parseValue(raw: string): string {
   let out = "";
   let quoted = false;
@@ -15,7 +19,12 @@ function parseValue(raw: string): string {
     const c = raw[i] as string;
     if (c === "\\") {
       const n = raw[i + 1];
-      if (n !== undefined && n in ESCAPES) {
+      if (n === undefined || n === "\n") {
+        end = out.length;
+        i++;
+        continue;
+      }
+      if (n in ESCAPES) {
         out += ESCAPES[n];
         end = out.length;
         i++;
@@ -81,6 +90,8 @@ function logicalLines(raw: string): string[] {
     if (ctx === "value" && c === "\\") {
       const n = text[i + 1];
       if (n === "\n") {
+        // Kept for parseValue: whitespace before a continuation is part of the value.
+        cur += "\\\n";
         i++;
         continue;
       }

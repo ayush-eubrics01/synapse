@@ -57,4 +57,21 @@ describe("includeTargets", () => {
   test("relative paths are not normalised lexically", () => {
     expect(t("[include]\npath = l1/../x.cfg")).toEqual(["/home/u/r/.git/l1/../x.cfg"]);
   });
+  describe("whitespace before a continuation is kept (git oracle values)", () => {
+    test("space, then a comment on the next line", () => {
+      expect(t("[include]\npath = a.cfg \\\n; comment\n")).toEqual(["/home/u/r/.git/a.cfg "]);
+    });
+    test("space, backslash at end of file", () => {
+      expect(t("[include]\npath = a.cfg \\")).toEqual(["/home/u/r/.git/a.cfg "]);
+    });
+    test("tab, then a hash comment on the next line", () => {
+      expect(t("[include]\npath = a.cfg\t\\\n# c\n")).toEqual(["/home/u/r/.git/a.cfg\t"]);
+    });
+    test("quoted value with a semicolon, space, comment on the next line", () => {
+      expect(t('[include]\npath = "x;" \\\n; c\n')).toEqual(["/home/u/r/.git/x; "]);
+    });
+    test("without a continuation trailing whitespace is still trimmed", () => {
+      expect(t("[include]\npath = a.cfg \t\n")).toEqual(["/home/u/r/.git/a.cfg"]);
+    });
+  });
 });

@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { AuditLogger } from "../../src/core/audit/audit";
 import { SettingsService } from "../../src/core/config/settings";
 import { EventPublisher } from "../../src/core/events/publisher";
+import { jobsCheck } from "../../src/core/health/checks";
 import { JobQueue } from "../../src/core/jobs/queue";
 import { SyncStateService } from "../../src/modules/inbox/sync-state";
 import {
@@ -673,6 +674,37 @@ describe("choosing the site", () => {
       details: { keys: ["jira.cloudId"] },
     });
     expect(JSON.stringify(rows)).not.toContain("Demo site");
+  });
+
+  test("choosing a site resolves the parked lookup job; the health jobs check reads ok", async () => {
+    parked();
+    db.insert(schema.jobs)
+      .values({
+        id: "j-park",
+        type: "jira.resolve_cloud_id",
+        status: "NEEDS_ATTENTION",
+        idempotencyKey: "k-park",
+        priority: 100,
+        attempts: 1,
+        maxAttempts: 3,
+        runAfter: "2026-11-06T12:00:00.000Z",
+        createdAt: "2026-11-06T12:00:00.000Z",
+        updatedAt: "2026-11-06T12:00:00.000Z",
+      } as typeof schema.jobs.$inferInsert)
+      .run();
+    expect((await jobsCheck(db, clock)()).status).toBe("degraded");
+    service.updateSettings({ cloudId: ID1 });
+    const park = db.select().from(schema.jobs).where(eq(schema.jobs.id, "j-park")).get();
+    expect(park?.status).toBe("CANCELLED");
+    expect(park?.finishedAt).not.toBeNull();
+    expect(
+      db
+        .select()
+        .from(schema.jobs)
+        .all()
+        .some((j) => j.status === "NEEDS_ATTENTION"),
+    ).toBe(false);
+    expect(await jobsCheck(db, clock)()).toEqual({ status: "ok" });
   });
 
   test("an id outside the stored candidates is refused and nothing is written", () => {

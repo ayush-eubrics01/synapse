@@ -25,7 +25,7 @@ These are harmless in Phase 1, where only heartbeat jobs exist and there are no 
   - `database-design.md` lacks some implementer-chosen columns (approvals/notifications `created_at`, `claude_runs` token column names, link-table id PKs).
   - Several status columns are untyped text.
   - ~~No indexes on FK columns (e.g~~ **Done in follow-ups batch 3.** Indexes were added on the FK columns. Original note: No indexes on FK columns (e.g. `job_attempts.job_id`).
-  - ~~Heartbeat adds about 1,440 job rows a day with no retention yet~~ **Done in follow-ups batch 3.** Already fixed earlier: `retention.jobsDays` prunes terminal jobs. Original note: Heartbeat adds about 1,440 job rows a day with no retention yet.
+  - ~~Heartbeat adds about 1,440 job rows a day with no retention yet~~ **Already fixed before batch 3 (`retention.jobsDays`).** Original note: Heartbeat adds about 1,440 job rows a day with no retention yet.
 - **Config/settings:** the loopback check is case-sensitive with no `[::1]`; `Number()` accepts `1e3`/`0x10` ports; `system.lastHeartbeatAt` isn't validated as an ISO datetime; an unknown runtime key gives a TypeError.
 - **Outbox:**
   - LiveBus forwarding waits until all consumers settle.
