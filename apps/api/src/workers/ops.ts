@@ -62,7 +62,7 @@ export async function runBackupTick(
 
 export function backupJobLive(db: Db): boolean {
   const rows = db
-    .select({ id: schema.jobs.id })
+    .select({ status: schema.jobs.status, input: schema.jobs.input })
     .from(schema.jobs)
     .where(
       and(
@@ -71,7 +71,11 @@ export function backupJobLive(db: Db): boolean {
       ),
     )
     .all();
-  return rows.length > 0;
+  // Blocks on a manual backup in any live state, or any backup that is RUNNING. A merely queued
+  // scheduled tick does not: the user's request still goes ahead.
+  return rows.some(
+    (r) => r.status === "RUNNING" || (r.input as { manual?: unknown } | null)?.manual === true,
+  );
 }
 
 export function registerOpsJobs(deps: OpsJobDeps): void {

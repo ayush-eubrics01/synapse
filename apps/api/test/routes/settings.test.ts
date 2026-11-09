@@ -53,6 +53,54 @@ describe("settings routes", () => {
     expect(body["engineering.sandbox.enabled"]).toBe(true);
   });
 
+  test("GET includes the away-reply defaults", async () => {
+    const body = (await (await app.request("http://127.0.0.1:7400/api/settings")).json()) as Record<
+      string,
+      unknown
+    >;
+    expect(body["autoReply.allowedKinds"]).toEqual([
+      "code_answer",
+      "stalled_reminder",
+      "followup_question",
+      "acknowledgement",
+    ]);
+    expect(body["autoReply.maxPerPersonPerDay"]).toBe(3);
+    expect(body["autoReply.minMinutesBetweenInThread"]).toBe(30);
+    expect(body["autoReply.minConfidence"]).toBe(0.75);
+    expect(body["autoReply.maxSendDelayMinutes"]).toBe(15);
+    expect(body).not.toHaveProperty("autoReply.awayMode");
+  });
+
+  test("away-reply limits reject looser or invalid values (ADR-033)", async () => {
+    const bad: Record<string, unknown>[] = [
+      { "autoReply.maxPerPersonPerDay": 4 },
+      { "autoReply.maxPerPersonPerDay": -1 },
+      { "autoReply.minMinutesBetweenInThread": 29 },
+      { "autoReply.minConfidence": 0.7 },
+      { "autoReply.maxSendDelayMinutes": 16 },
+      { "autoReply.maxSendDelayMinutes": 0 },
+      { "autoReply.allowedKinds": ["bogus"] },
+      { "autoReply.allowedKinds": ["acknowledgement", "acknowledgement"] },
+      { "autoReply.awayMode": true },
+    ];
+    for (const b of bad) {
+      const r = await put(b);
+      expect(r.status).toBe(400);
+      expect(((await r.json()) as { error: string }).error).toBe("invalid_setting");
+    }
+    expect(audits()).toHaveLength(0);
+  });
+
+  test("maxPerPersonPerDay 0 and an empty kind list are accepted and audited by key", async () => {
+    const r = await put({ "autoReply.maxPerPersonPerDay": 0, "autoReply.allowedKinds": [] });
+    expect(r.status).toBe(200);
+    const rows = audits();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.details).toEqual({
+      keys: ["autoReply.maxPerPersonPerDay", "autoReply.allowedKinds"],
+    });
+  });
+
   test("retention.snapshotsDays is bounded 7..365", async () => {
     const bad = await put({ "retention.snapshotsDays": 6 });
     expect(bad.status).toBe(400);

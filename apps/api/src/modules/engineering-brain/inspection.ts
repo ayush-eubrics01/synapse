@@ -277,7 +277,10 @@ export class InspectionService {
           inserted++;
         }
         tx.update(repositories)
-          .set({ inspectedHeadSha: target.headSha })
+          .set({
+            inspectedHeadSha: target.headSha,
+            inspectionWarning: input.permissionDenials.length > 0 ? "permission_denied" : null,
+          })
           .where(eq(repositories.id, target.repositoryId))
           .run();
         const summary: InspectionSummary = {

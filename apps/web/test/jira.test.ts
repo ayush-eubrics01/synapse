@@ -105,7 +105,10 @@ test("validateJiraSetup mirrors the server rules", () => {
 test("jiraErrorLabel: fixed hints for site and page-size problems; other kinds as they are", () => {
   expect(jiraErrorLabel(null)).toBeNull();
   expect(jiraErrorLabel("multiple_sites")).toBe(
-    "Several Jira sites are available — set jira.cloudId in settings",
+    "Several Jira sites are available — use Sync now to list them",
+  );
+  expect(jiraErrorLabel("multiple_sites", true)).toBe(
+    "Several Jira sites are available — choose one below",
   );
   expect(jiraErrorLabel("no_sites")).toBe("No Jira site is available to this Claude account");
   expect(jiraErrorLabel("output_too_large")).toBe("Jira page too large — lower jira.pageSize");
@@ -153,6 +156,7 @@ const status = (o = {}) => ({
   lastError: null,
   scopeJql: "assignee = currentUser() AND updated >= -60d",
   excludedProjects: [],
+  sites: [],
   ...o,
 });
 

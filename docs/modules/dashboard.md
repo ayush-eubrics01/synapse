@@ -13,7 +13,7 @@ Every count starts from the same service method as its list endpoint and applies
 |---|---|
 | urgent | `UrgentInbox.listUrgent({status: "open"})` |
 | approvals | `ApprovalEngine.listPending()`, minus approvals whose id is the `approvalId` of a pending profile recommendation (those are decided on the recommendation card) |
-| outgoingAttention | `outgoing_messages` rows with status `needs_attention` |
+| outgoingAttention | `outgoing_messages` rows with status `needs_attention`, plus `sent_unverified` rows whose failure is `unverified` (the same rows the outgoing feed marks as needing attention) |
 | redFlags | sum of `openCount` over `SecurityFlagsService.listGroupedByPerson` (open flags, not groups) |
 | commitmentsToReview | `CommitmentLifecycle.listViews("review")` rows with `reviewStatus` `pending_review` (the rows whose actions include `accept`; the review filter also returns rejected rows) |
 | followupDrafts | `FollowupService.listViews("draft")` |

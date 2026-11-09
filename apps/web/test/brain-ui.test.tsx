@@ -183,6 +183,7 @@ const section = (o: Partial<Parameters<typeof ProjectsSection>[0]> = {}) =>
         hidden={new Set()}
         onInspectNow={noop}
         onAcceptRemotes={noop}
+        onRemove={noop}
         onProposal={async () => ({ ok: false, error: "x" })}
         onRegister={asyncNoop}
         onAcceptFact={noop}
@@ -286,4 +287,20 @@ test("brain.css exists, uses tokens only and is imported by the layout", () => {
   expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   const layout = readFileSync(join(import.meta.dir, "../app/layout.tsx"), "utf8");
   expect(layout).toContain("./styles/brain.css");
+});
+
+test("a permission_denied warning shows the inspection sentence; null does not", () => {
+  const sentence = "The last inspection was refused some file reads; results may be incomplete.";
+  expect(section({ repos: [repo({ inspectionWarning: "permission_denied" })] })).toContain(
+    sentence,
+  );
+  expect(section({ repos: [repo({ inspectionWarning: null })] })).not.toContain(sentence);
+});
+
+test("the repository row has a Remove button", () => {
+  expect(section()).toContain(">Remove<");
+});
+
+test("a project with jira null has no Jira attention section", () => {
+  expect(card({ project: detail({ jira: null }) })).not.toContain("Jira attention");
 });

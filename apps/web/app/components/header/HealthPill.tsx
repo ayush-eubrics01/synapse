@@ -54,11 +54,13 @@ export function HealthPill({ health, failure, open, onOpenChange }: HealthPillPr
   const tone = unreachable ? "down" : failure ? "degraded" : (health?.status ?? "checking");
   const label = unreachable
     ? "Unreachable"
-    : failure
-      ? "Overview unavailable"
-      : health
-        ? healthLabel(health)
-        : "Checking…";
+    : failure?.kind === "unexpected"
+      ? "Unexpected response"
+      : failure
+        ? "Overview unavailable"
+        : health
+          ? healthLabel(health)
+          : "Checking…";
   const first = health?.issues.find((i) => i.hint);
   return (
     <div className="syn-health" ref={rootRef}>
@@ -91,6 +93,10 @@ export function HealthPill({ health, failure, open, onOpenChange }: HealthPillPr
             <p className="syn-health-pop-text">
               The Synapse API is not responding. What you see may be out of date. Check that the API
               service is running.
+            </p>
+          ) : failure?.kind === "unexpected" ? (
+            <p className="syn-health-pop-text">
+              The API answered with something Synapse couldn't read. Check the API logs.
             </p>
           ) : failure ? (
             <p className="syn-health-pop-text">

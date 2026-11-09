@@ -37,5 +37,14 @@ Items parked during Phase 11 (dashboard customisation and runtime hardening). No
 - **`runTmpTooLong` assumes the 8-hex scratch name.** A 12- or 16-hex fallback name can pass the pre-check and then be refused again; harmless.
 - **The instance-root prune walk is synchronous and unbounded.** It runs once at startup over `<cache>/synapse`.
 - **A tiny walk-to-`rm` race** in that prune: an entry touched between the age walk and the removal can still be deleted.
-- **Retention's `wal_checkpoint(TRUNCATE)` can block the event loop** for up to `busy_timeout` while a worker read snapshot is open; `PASSIVE` would avoid it.
-- **"Back up now" answers 409 while a scheduled backup tick is queued.** `backupJobLive` counts any live `ops.backup` job, including the 15-minute tick that is not due. With both worker slots busy the tick can wait for minutes. A sharper rule: manual jobs live, or a scheduled job running (the in-service guard already prevents a real overlap). The comment on `triggerBackup` in `apps/web/lib/api.ts` still says "manual backup".
+- ~~**Retention's `wal_checkpoint(TRUNCATE)` can block the event loop**~~ **Done in follow-ups batch 3.** The checkpoint no longer blocks the event loop. Original note: for up to `busy_timeout` while a worker read snapshot is open; `PASSIVE` would avoid it.
+- ~~**"Back up now" answers 409 while a scheduled backup tick is queued.**~~ **Done in follow-ups batch 3.** The 409 applies only to manual jobs or a running scheduled one. Original note: `backupJobLive` counts any live `ops.backup` job, including the 15-minute tick that is not due. With both worker slots busy the tick can wait for minutes. A sharper rule: manual jobs live, or a scheduled job running (the in-service guard already prevents a real overlap). The comment on `triggerBackup` in `apps/web/lib/api.ts` still says "manual backup".
+
+## Deferred from follow-ups batch 3
+
+- **`outgoingAttention` counts auto-reply and code-answer outgoing rows** that never appear in the follow-ups feed.
+- **`runCommand`'s timeout kills only the direct child**, not its descendants.
+- **All-invalid candidate ids** park `multiple_sites` with an empty site list, so the hint in the Jira section is misleading.
+- **An out-of-range number in the Away replies and Claude settings cards stays on screen** after the API rejects it.
+- **The run-command test does not assert the child is dead**, and there is no partial-write rollback test for scheduler isolation.
+- **A cap-0 hold shows "Daily limit reached" in the away digest**; "Automatic replies off" would be clearer.

@@ -31,6 +31,7 @@ const runtime = (o: Partial<RuntimeView> = {}): RuntimeView => ({
     claudeRunsCompacted: 55,
     quickCheck: "ok",
   },
+  endpoints: { api: { host: "127.0.0.1", port: 7400 }, web: { host: "127.0.0.1", port: 7401 } },
   ...o,
 });
 const backups: BackupEntry[] = [

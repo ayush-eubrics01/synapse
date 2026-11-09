@@ -1,10 +1,30 @@
-import type { Approval, ApprovalStatus, Operation, Policy, RiskLevel } from "@synapse/contracts";
+import {
+  type Approval,
+  type ApprovalStatus,
+  JobError,
+  type Operation,
+  type Policy,
+  type RiskLevel,
+} from "@synapse/contracts";
 import { type Db, type DbOrTx, schema } from "@synapse/database";
 import { type Clock, isoNow, newId } from "@synapse/shared";
 import { and, asc, eq, inArray, isNotNull, lte } from "drizzle-orm";
 import type { AuditLogger } from "../audit/audit";
 import type { EventPublisher } from "../events/publisher";
 import type { PermissionManager } from "../permissions/permissions";
+
+const CODE_RE = /^[a-z][a-z0-9_]{0,63}$/;
+
+/**
+ * The only thing the engine stores or audits about an executor failure: a `JobError` kind, an
+ * error's own fixed `code`, else `executor_failed`. Never the error message (it may hold content).
+ */
+export function executorErrorCode(e: unknown): string {
+  if (e instanceof JobError) return e.classified.kind;
+  const code = (e as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && CODE_RE.test(code)) return code;
+  return "executor_failed";
+}
 
 export type Executor = {
   /** `signal` is the driving job's signal when there is one (aborted on job timeout or stop). */
@@ -386,7 +406,7 @@ export class ApprovalEngine {
     try {
       result = (await executor.execute(approval, signal)) ?? null;
     } catch (e) {
-      const error = { error: e instanceof Error ? e.message : String(e) };
+      const error = { error: executorErrorCode(e) };
       this.finish(id, "failed", error);
       return { status: "failed", result: error };
     }

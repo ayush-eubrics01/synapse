@@ -62,12 +62,23 @@ export class ApiError extends Error {
   }
 }
 
-/** Why the overview failed: the API could not be reached, or it answered with an HTTP error. */
-export type OverviewFailure = { kind: "network" } | { kind: "http"; status: number };
+/**
+ * Why the overview failed: the API could not be reached, it answered with an HTTP error, or it
+ * answered 200 with something that is not valid JSON.
+ */
+export type OverviewFailure =
+  | { kind: "network" }
+  | { kind: "http"; status: number }
+  | { kind: "unexpected" };
 
-/** An ApiError is an HTTP error; anything else (fetch throws a TypeError) means unreachable. */
+/**
+ * An ApiError is an HTTP error; a TypeError is what fetch throws when the API is unreachable;
+ * anything else (a SyntaxError from a malformed 200 body) is an unexpected response.
+ */
 export function classifyOverviewFailure(reason: unknown): OverviewFailure {
-  return reason instanceof ApiError ? { kind: "http", status: reason.status } : { kind: "network" };
+  if (reason instanceof ApiError) return { kind: "http", status: reason.status };
+  if (reason instanceof TypeError) return { kind: "network" };
+  return { kind: "unexpected" };
 }
 
 async function request<T>(
@@ -214,7 +225,21 @@ export interface OpsSettingsDto {
   "retention.auditDays": number;
   "retention.snapshotsDays": number;
 }
-export type SettingsDto = ClaudeSettingsDto & OpsSettingsDto;
+export type AutoReplyKind =
+  | "code_answer"
+  | "stalled_reminder"
+  | "followup_question"
+  | "acknowledgement";
+
+/** ADR-033 away-reply limits; the API only accepts values at least as strict as ADR-033. */
+export interface AwayReplySettingsDto {
+  "autoReply.allowedKinds": AutoReplyKind[];
+  "autoReply.maxPerPersonPerDay": number;
+  "autoReply.minMinutesBetweenInThread": number;
+  "autoReply.minConfidence": number;
+  "autoReply.maxSendDelayMinutes": number;
+}
+export type SettingsDto = ClaudeSettingsDto & OpsSettingsDto & AwayReplySettingsDto;
 
 export function getSettings(fetchImpl: typeof fetch = fetch): Promise<SettingsDto> {
   return request("/api/settings", undefined, fetchImpl);
@@ -683,6 +708,7 @@ export interface JiraSettingsDto {
   enabled?: boolean;
   scopeJql?: string;
   excludedProjects?: string[];
+  cloudId?: string;
 }
 
 export function getJiraStatus(fetchImpl: typeof fetch = fetch): Promise<JiraStatusDto> {
@@ -759,6 +785,11 @@ export function updateRepository(
   fetchImpl: typeof fetch = fetch,
 ): Promise<RepositoryView> {
   return send("PUT", `/api/repos/${encodeURIComponent(id)}`, input, fetchImpl);
+}
+
+/** Unregisters a repository (204); a refusal such as `repo_has_active_task` is an ApiError with a code. */
+export function unregisterRepository(id: string, fetchImpl: typeof fetch = fetch): Promise<void> {
+  return request(`/api/repos/${encodeURIComponent(id)}`, { method: "DELETE" }, fetchImpl);
 }
 
 /** Queues an inspection; 409 (thrown, code `already_queued`) when one is already queued. */
@@ -1106,7 +1137,7 @@ export function getBackups(fetchImpl: typeof fetch = fetch): Promise<BackupEntry
   return request("/api/system/backups", undefined, fetchImpl);
 }
 
-/** 202 with the job id; 409 (`already_running`) when a manual backup is already queued or running. */
+/** 202 with the job id; 409 (`already_running`) while a manual backup is queued or running, or a scheduled one is running. */
 export function startBackup(fetchImpl: typeof fetch = fetch): Promise<{ jobId: string }> {
   return request("/api/system/backups", { method: "POST" }, fetchImpl, [202]);
 }

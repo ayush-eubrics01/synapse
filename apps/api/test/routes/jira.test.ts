@@ -99,7 +99,21 @@ describe("jira routes", () => {
       lastError: null,
       scopeJql: "assignee = currentUser() AND updated >= -60d",
       excludedProjects: [],
+      sites: [],
     });
+  });
+
+  test("cloudId: a malformed id is 400; an unlisted candidate is 400 unknown_site; status lists sites", async () => {
+    expect((await put({ cloudId: "nope" })).status).toBe(400);
+    c.settings.set("jira.cloudIdCandidates", [
+      { id: "11111111-1111-4111-8111-111111111111", name: "Demo site" },
+    ]);
+    const s = (await (await call("/api/jira/status")).json()) as JiraStatusDto;
+    expect(s.sites).toEqual([{ id: "11111111-1111-4111-8111-111111111111", name: "Demo site" }]);
+    const bad = await put({ cloudId: "0f0f0f0f-0000-0000-0000-00000000dead" });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toEqual({ error: "unknown_site" });
+    expect((await put({ cloudId: "11111111-1111-4111-8111-111111111111" })).status).toBe(200);
   });
 
   test("GET status returns the stored scope and exclusions", async () => {

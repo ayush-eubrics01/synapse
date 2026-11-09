@@ -8,12 +8,12 @@ Phase 8 delivered read-only Jira tracking (`docs/modules/jira.md`, spec `docs/su
 - **Jira-sourced commitments.** Let a commitment cite an issue (`jira:<key>`) as its source, and extract commitments from issue changes. Needs a decision on trust (issue text is untrusted, ADR-032).
 - **AI analysis (`jira.analyze`).** Batched, recommendation-only: likely blocker reason, related Slack threads, suggested next action. Needs a prompt builder and output schema in `intelligence/`, and the untrusted-content rules for summaries.
 - **Comments and descriptions.** Both are left out of `JIRA_FIELDS` on purpose (less untrusted text, smaller pages). Adding them needs a per-issue read, provenance tags and size limits.
-- **Multi-site.** One site only today; more than one parks `jira.resolve_cloud_id` with `multiple_sites` and the user sets `jira.cloudId` by hand (there is no route for it yet). Supporting several sites needs per-site settings, streams and checkpoints.
+- **Multi-site.** One site only today; more than one parks `jira.resolve_cloud_id` with `multiple_sites` and the user sets `jira.cloudId` ~~by hand (there is no route for it yet)~~ (done in follow-ups batch 3: the user picks the site in the UI). Supporting several sites needs per-site settings, streams and checkpoints.
 - **Inbox chips for issue keys.** Show a chip on Slack messages that mention a tracked issue key, linking to the issue. Today the correlation runs one way (issue to messages, at read time).
 - **Count-only list view for performance.** `GET /api/jira/issues` computes Slack mentions per issue (a `LIKE` scan of `slack_messages` each). Add a view that returns counts only, or index or cache mentions, before the issue count or message volume grows.
 - **Per-issue mention scan on every list.** Part of the item above: each `list`/`get` runs one `LIKE` scan per issue. Parked by the final review; the count-only view is the fix.
-- **Lookup by `jira_id`.** A project move is matched by `jira_id`, which has no index. That's fine at today's issue counts; add an index (with a migration) if the table grows.
-- **Smaller items.** A route to set `jira.cloudId`; `jira.analyze`-free Engineering Brain links; offering issues as engineering-task candidates (requirement 7); applying interval and page-budget changes without a restart.
+- ~~**Lookup by `jira_id`.**~~ **Done in follow-ups batch 3.** `jira_id` is indexed. Original note: A project move is matched by `jira_id`, which has no index. That's fine at today's issue counts; add an index (with a migration) if the table grows.
+- **Smaller items.** ~~A route to set `jira.cloudId`~~ (done in follow-ups batch 3); `jira.analyze`-free Engineering Brain links; offering issues as engineering-task candidates (requirement 7); applying interval and page-budget changes without a restart.
 
 ## Real-connector smoke
 

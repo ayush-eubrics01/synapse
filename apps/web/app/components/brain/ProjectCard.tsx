@@ -212,7 +212,7 @@ export function ProjectCard({
   const environments = project.repositories.flatMap((r) =>
     r.environments.map((e) => ({ id: e.id, name: `${r.name} · ${e.name}` })),
   );
-  const attention = Object.entries(project.jira.byAttention).filter(([, n]) => n > 0);
+  const attention = Object.entries(project.jira?.byAttention ?? {}).filter(([, n]) => n > 0);
   return (
     <article className="syn-brain-project" id={`project-${project.id}`}>
       <header className="syn-brain-project-head">
@@ -404,7 +404,7 @@ export function ProjectCard({
         )}
       </section>
 
-      {attention.length > 0 && (
+      {project.jira && attention.length > 0 && (
         <section className="syn-brain-group" aria-label="Jira attention">
           <h4 className="syn-brain-group-head">Jira attention</h4>
           <p className="syn-jira-faint">

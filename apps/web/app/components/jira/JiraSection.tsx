@@ -1,6 +1,7 @@
 "use client";
 
 import type { JiraIssueView } from "@synapse/contracts";
+import { useState } from "react";
 import type { JiraStatusDto } from "../../../lib/api";
 import { relMinutes } from "../../../lib/format";
 import {
@@ -79,6 +80,31 @@ function syncLine(s: JiraStatusDto, now: Date | null): string {
   return now ? `synced ${relMinutes(s.lastSyncAt, now)}` : "synced";
 }
 
+function SitePicker({
+  sites,
+  onChoose,
+}: {
+  sites: JiraStatusDto["sites"];
+  onChoose: (id: string) => void;
+}) {
+  const [picked, setPicked] = useState<string | null>(null);
+  const value = picked !== null && sites.some((s) => s.id === picked) ? picked : sites[0]?.id;
+  return (
+    <p className="syn-jira-sites">
+      <select aria-label="Jira site" value={value} onChange={(e) => setPicked(e.target.value)}>
+        {sites.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.name || s.id}
+          </option>
+        ))}
+      </select>{" "}
+      <Button variant="secondary" size="sm" onClick={() => value && onChoose(value)}>
+        Use this site
+      </Button>
+    </p>
+  );
+}
+
 /** The Jira section (spec B12): grouped issues, last-sync line and a manual sync. */
 export function JiraSection({
   status,
@@ -87,6 +113,7 @@ export function JiraSection({
   onSync,
   onGoToSetup,
   onCreateTask,
+  onChooseSite,
 }: {
   status: JiraStatusDto | null;
   issues: JiraIssueView[];
@@ -95,6 +122,8 @@ export function JiraSection({
   onGoToSetup: () => void;
   /** Proposes an engineering task from the issue (Phase 10); the action is hidden without it. */
   onCreateTask?: (key: string) => void;
+  /** Saves the chosen Jira site while several are offered; the picker is hidden without it. */
+  onChooseSite?: (id: string) => void;
 }) {
   const enabled = status?.enabled === true;
   const groups = groupIssues(issues).filter((g) => g.issues.length > 0);
@@ -112,8 +141,14 @@ export function JiraSection({
         )}
       </div>
       {status?.lastError && enabled && (
-        <p className="syn-jira-error">Last sync problem: {jiraErrorLabel(status.lastError)}</p>
+        <p className="syn-jira-error">
+          Last sync problem: {jiraErrorLabel(status.lastError, status.sites.length > 0)}
+        </p>
       )}
+      {enabled &&
+        status?.lastError === "multiple_sites" &&
+        status.sites.length > 0 &&
+        onChooseSite && <SitePicker sites={status.sites} onChoose={onChooseSite} />}
       {status && !enabled && (
         <p className="syn-jira-faint">
           Jira tracking is off.{" "}

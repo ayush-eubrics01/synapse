@@ -3,7 +3,7 @@ import { jiraIssueViewKindSchema, jiraScopeJqlSchema } from "@synapse/contracts"
 import { Hono } from "hono";
 import { z } from "zod";
 import type { Container } from "../container";
-import { JiraDisabled } from "../modules/jira-tracking/service";
+import { JiraDisabled, JiraUnknownSite } from "../modules/jira-tracking/service";
 
 const PROJECT_KEY = /^[A-Z][A-Z0-9_]+$/;
 
@@ -14,6 +14,7 @@ const settingsBody = z
     // The same rules as the setting: no newline, no ORDER BY, balanced parentheses and quotes.
     scopeJql: jiraScopeJqlSchema,
     excludedProjects: z.array(z.string().regex(PROJECT_KEY)),
+    cloudId: z.string().regex(/^[0-9a-fA-F-]{8,64}$/),
   })
   .partial()
   .strict();
@@ -38,8 +39,13 @@ export function jiraRoutes(c: Container): Hono {
       throw e;
     }
   });
-  app.put("/api/jira/settings", zValidator("json", settingsBody), (ctx) =>
-    ctx.json(c.jira.updateSettings(ctx.req.valid("json"))),
-  );
+  app.put("/api/jira/settings", zValidator("json", settingsBody), (ctx) => {
+    try {
+      return ctx.json(c.jira.updateSettings(ctx.req.valid("json")));
+    } catch (e) {
+      if (e instanceof JiraUnknownSite) return ctx.json({ error: "unknown_site" }, 400);
+      throw e;
+    }
+  });
   return app;
 }

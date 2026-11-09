@@ -109,6 +109,8 @@ export const jiraStatusDtoSchema = z.object({
   /** The stored `jira.scope.jql` and `jira.excludedProjects` (local settings, never logged). */
   scopeJql: z.string(),
   excludedProjects: z.array(z.string()),
+  /** Candidate sites to choose from while no cloudId is set (id and display name only). */
+  sites: z.array(z.object({ id: z.string(), name: z.string() })),
 });
 export type JiraStatusDto = z.infer<typeof jiraStatusDtoSchema>;
 

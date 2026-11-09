@@ -6,7 +6,13 @@ import type {
   RepositoryRegisterInput,
   RepositoryView,
 } from "@synapse/contracts";
-import { driftLabel, envChipLabel } from "../../../lib/brain";
+import { useState } from "react";
+import {
+  driftLabel,
+  envChipLabel,
+  INSPECTION_DENIED_TEXT,
+  removeConfirmText,
+} from "../../../lib/brain";
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { Chip } from "../ui/Chip";
@@ -24,6 +30,7 @@ export interface ProjectsSectionProps {
   registerSignal?: number;
   onInspectNow: (repoId: string) => void;
   onAcceptRemotes: (repoId: string) => void;
+  onRemove: (repoId: string) => void;
   onProposal: (path: string) => Promise<InspectResult>;
   onRegister: (input: RepositoryRegisterInput) => Promise<RegisterResult>;
   onAcceptFact: (factId: string, content?: string) => void;
@@ -37,11 +44,14 @@ function RepoRow({
   repo,
   onInspectNow,
   onAcceptRemotes,
+  onRemove,
 }: {
   repo: RepositoryView;
   onInspectNow: (id: string) => void;
   onAcceptRemotes: (id: string) => void;
+  onRemove: (id: string) => void;
 }) {
+  const [confirming, setConfirming] = useState(false);
   const drift = driftLabel(repo.drift, repo.trackedBranch);
   return (
     <li className="syn-brain-repo">
@@ -54,7 +64,33 @@ function RepoRow({
         <Button variant="secondary" size="sm" onClick={() => onInspectNow(repo.id)}>
           Inspect now
         </Button>
+        <Button variant="ghost" size="sm" onClick={() => setConfirming(true)}>
+          Remove
+        </Button>
       </div>
+      {confirming && (
+        <div className="syn-brain-repo-main">
+          <p role="alert">{removeConfirmText(repo.name)}</p>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              setConfirming(false);
+              onRemove(repo.id);
+            }}
+          >
+            Remove
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
+            Cancel
+          </Button>
+        </div>
+      )}
+      {repo.inspectionWarning === "permission_denied" && (
+        <p className="syn-brain-drift" role="status">
+          <Chip tone="amber">Inspection</Chip> {INSPECTION_DENIED_TEXT}
+        </p>
+      )}
       {repo.environments.length > 0 && (
         <div className="syn-brain-chips">
           {repo.environments.map((e) => (
@@ -101,6 +137,7 @@ export function ProjectsSection(p: ProjectsSectionProps) {
               repo={r}
               onInspectNow={p.onInspectNow}
               onAcceptRemotes={p.onAcceptRemotes}
+              onRemove={p.onRemove}
             />
           ))}
         </ul>

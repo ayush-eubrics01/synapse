@@ -93,6 +93,10 @@ The user's return wins. Anything not yet spawned is cancelled by three checks, a
 
 A cancelled send ends as outgoing `failed` with `cancelled_away_off`, `cancelled_policy_disabled` or `cancelled_stale`; the `auto_replies` row becomes `held` with the matching reason (`away_off`, `policy_disabled`, `stale`; text cleared), a linked follow-up returns to `draft`, and `autoreply.held` is published. A send that has already spawned is allowed to finish; `setAway(false)` never cancels a `sending` row.
 
+## Read port
+
+`autoSentOutgoingIds(db, outgoingIds)` (`modules/auto-reply/read.ts`) returns the outgoing ids that have an `auto_replies` row with `decision = 'sent'` (empty input runs no query). The inbox thread view uses it, injected as `autoSent`, to mark `sentViaSynapse.auto`; the inbox has no SQL on `auto_replies`.
+
 ## Records and digest
 
 `auto_replies(id, session_id, kind, recipient_slack_user_id, conversation_external_id, thread_ts, source_message_id, followup_id, decision 'sent'|'held', reason, text, outgoing_id, approval_id, created_at)`, indexed on (recipient, created_at), (conversation, thread, created_at) and `outgoing_id`; `away_sessions(id, started_at, ended_at, dismissed_at)`. Migration `0013_away_mode.sql`; `0014_followup_context_flags.sql` adds `followups.suspected_injection` (boolean, not null, default false), `followups.context_message_ids` (JSON text, nullable) and the `auto_replies_outgoing_idx` index. Text is kept only on sent rows; a held row keeps no text (the draft is in its follow-up).
@@ -105,19 +109,21 @@ A cancelled send ends as outgoing `failed` with `cancelled_away_off`, `cancelled
 
 ## Settings
 
-| Key | Default |
-|---|---|
-| `autoReply.awayMode` | `false` (written by `setAway`, not the settings page) |
-| `autoReply.allowedKinds` | all four kinds |
-| `autoReply.maxPerPersonPerDay` | 3 |
-| `autoReply.minMinutesBetweenInThread` | 30 |
-| `autoReply.minConfidence` | 0.75 |
-| `autoReply.maxSendDelayMinutes` | 15 |
-| `codeAnswer.away.enabled` / `autoSend` / `maxRunsPerDay` | `true` / `false` / 10 (Phase 10b; editable through `PUT /api/settings`, see `docs/modules/code-answers.md`) |
+| Key | Default | Allowed range (never looser than ADR-033) |
+|---|---|---|
+| `autoReply.awayMode` | `false` (written by `setAway`, not editable through the settings API) | n/a |
+| `autoReply.allowedKinds` | all four kinds | any subset, at most 4, no duplicates |
+| `autoReply.maxPerPersonPerDay` | 3 | 0 to 3 |
+| `autoReply.minMinutesBetweenInThread` | 30 | 30 to 1440 |
+| `autoReply.minConfidence` | 0.75 | 0.75 to 1 |
+| `autoReply.maxSendDelayMinutes` | 15 | 1 to 15 |
+| `codeAnswer.away.enabled` / `autoSend` / `maxRunsPerDay` | `true` / `false` / 10 (Phase 10b; editable through `PUT /api/settings`, see `docs/modules/code-answers.md`) | see code-answers |
+
+The five `autoReply.*` limits are editable through `PUT /api/settings` and the Away replies card in the System section; each change is audited with the key only. `autoReply.maxPerPersonPerDay = 0` means no automatic replies (every decision that reaches the daily cap check is held as `daily_cap`; to also cancel replies already waiting to send, turn away mode off). A code answer with `codeAnswer.away.autoSend` off is a user approval, not an unapproved send, so the cap does not apply to it (`maxPerDay` is infinite for it) and its review approval is still created. Unchecking a kind in `autoReply.allowedKinds` (including "Code answers") also stops that kind's review approvals, because `kind_not_allowed` is checked before the review-only exception; this is intended.
 
 Permission: `slack.auto_reply` defaults to `policy_gated`, which only `recordPolicyApproval` accepts. An override can tighten it (which holds auto-replies as `policy_disabled`) but never loosen it.
 
-There is no UI or route yet to tighten the permission or to change the `autoReply.*` settings (`PermissionManager.setOverride` and `SettingsService.set` exist, but nothing exposes them for these keys). Today's kill switch is switching away mode off (`PUT /api/away {on: false}` or the header switch), which also cancels anything not yet spawned. Recorded in the follow-ups.
+Priority people and the `Sent using @claude` tag are not settable. The permission tightening (`PermissionManager.setOverride`) still has no UI or route. The quick kill switch is switching away mode off (`PUT /api/away {on: false}` or the header switch), which also cancels anything not yet spawned; setting `maxPerPersonPerDay` to 0 stops automatic sends while keeping away mode's other behaviour.
 
 ## Events and routes
 

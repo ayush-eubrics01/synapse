@@ -397,6 +397,8 @@ interface ClassifiedError {
 }
 ```
 
+**Approval executor errors (all executors).** The approval engine stores and audits only a fixed code (`executorErrorCode`): a `JobError` kind, else an error's own `code` when it is lower snake case, else `executor_failed`; never the error message. Executors throw `ExecutorError(code)` (contracts) for refusals; `OutgoingSendError` and `ProfileApplyError` expose `code`. An unknown integration for a routed action stores `no_executor`.
+
 ## 6. Capabilities and health
 
 ```typescript

@@ -122,7 +122,7 @@ test("unknown integration: approval failed with 'no executor', job content-free"
   await worker.runOnce();
   const row = db.select().from(schema.approvals).where(eq(schema.approvals.id, a.id)).get();
   expect(row?.status).toBe("failed");
-  expect(row?.executionResult).toEqual({ error: "no executor" });
+  expect(row?.executionResult).toEqual({ error: "no_executor" });
   expect(JSON.stringify(jobs())).not.toContain("SECRET-PAYLOAD");
 });
 

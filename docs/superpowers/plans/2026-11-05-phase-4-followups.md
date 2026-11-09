@@ -49,7 +49,7 @@ This confirmed real-format end-to-end behaviour:
   - Context for a non-threaded message includes replies from other threads in the conversation.
 - **Routes and web:** no pagination on the urgent list. The identity GET loads all people. No render test for the skip button.
 - **Recovery and limits:**
-  - `skipStale` scans every old row on each assess run. Bound it to a recent range.
+  - ~~`skipStale` scans every old row on each assess run~~ **Done in follow-ups batch 3.** `skipStale` is bounded to a recent range. Original note: `skipStale` scans every old row on each assess run. Bound it to a recent range.
   - The recover job is limited to one per clock hour (controller fix), so a deterministic crash loop costs at most 3 runs an hour.
   - `error_max_turns` is classified for every profile. That is unchanged in practice, because the CLI already sets `is_error`.
 - **Slack:** searches are not counted when `orchestrator.run` itself throws (Q2 covers failures after a result).

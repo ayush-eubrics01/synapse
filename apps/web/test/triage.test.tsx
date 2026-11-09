@@ -911,6 +911,7 @@ test("NeedsYou renders the Jira setup card prefilled with the stored scope", () 
       lastError: null,
       scopeJql: "project = DEMO",
       excludedProjects: ["SKIP"],
+      sites: [],
     },
   });
   expect(html).toContain("JIRA · SETUP");

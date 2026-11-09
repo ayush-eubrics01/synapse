@@ -4,6 +4,7 @@ import { type Db, schema } from "@synapse/database";
 import { type Clock, isoNow, systemClock } from "@synapse/shared";
 import { and, count, eq, lte, min } from "drizzle-orm";
 import type { PrivateFilesResult } from "../../infrastructure/private-files";
+import { type CommandRunner, CommandTimeoutError } from "../../infrastructure/run-command";
 import type { SettingsService } from "../config/settings";
 import type { DatabaseIntegrity } from "../ops/integrity";
 import type { AuthMonitor } from "../orchestrator/auth";
@@ -107,12 +108,22 @@ export function heartbeatCheck(settings: SettingsService, clock: Clock): HealthC
   });
 }
 
+export const LINGER_TIMEOUT_MS = 3_000;
+
 export function lingerCheck(
-  run: (cmd: string[]) => Promise<string>,
+  run: CommandRunner,
   user: string = process.env.USER ?? "",
 ): HealthCheck {
   return guarded(async () => {
-    const out = await run(["loginctl", "show-user", user, "-p", "Linger"]);
+    let out: string;
+    try {
+      out = await run(["loginctl", "show-user", user, "-p", "Linger"], {
+        timeoutMs: LINGER_TIMEOUT_MS,
+      });
+    } catch (e) {
+      if (e instanceof CommandTimeoutError) return { status: "degraded", detail: "timeout" };
+      throw e;
+    }
     const m = /Linger=(yes|no)/.exec(out);
     if (!m) return { status: "degraded", detail: `unparseable loginctl output: ${out.trim()}` };
     if (m[1] === "no") return { status: "degraded", detail: `run: loginctl enable-linger ${user}` };

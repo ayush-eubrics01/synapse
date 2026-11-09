@@ -1,11 +1,17 @@
 import { createHash, type Hash } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   readdirSync,
   readFileSync,
   readlinkSync,
+  readSync,
   realpathSync,
+  statSync,
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import {
@@ -26,6 +32,7 @@ import {
   type GitWorkflowErrorCode,
 } from "@synapse/contracts";
 import { type GitExec, type GitResult, lines, runGit } from "./git";
+import { INCLUDE_DEPTH_MAX, includeTargets, UNRESOLVED_PREFIX } from "./git-includes";
 import { pushDisabled, stripCredentials } from "./local-git";
 import { existingSandboxPlaceholders, removeNewSandboxPlaceholders } from "./sandbox-placeholders";
 
@@ -207,6 +214,63 @@ function fileMarker(path: string): string {
   }
 }
 
+const INCLUDE_FILE_MAX = 1024 * 1024;
+const INCLUDE_NODES_MAX = 64;
+
+interface LoadedConfig {
+  marker: string;
+  text?: string;
+}
+
+/** Realpath of `p`, or `p` itself when it cannot be resolved. */
+function realKey(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
+ * Reads a config file once (hash and parse the same bytes). Special files (a FIFO, device or
+ * directory) are refused before open (marker `special`); a file swapped in between stat and open is
+ * opened non-blocking and refused by fstat. A regular file over INCLUDE_FILE_MAX
+ * is hashed in full, marker `<sha>:too_large_unparsed` (its includes are not parsed); never throws.
+ */
+function loadConfig(path: string): LoadedConfig {
+  let fd: number | undefined;
+  try {
+    if (!statSync(path).isFile()) return { marker: "special" };
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    const st = fstatSync(fd);
+    if (!st.isFile()) return { marker: "special" };
+    if (st.size > INCLUDE_FILE_MAX) return streamMarker(fd);
+    const buf = readFileSync(fd);
+    if (buf.length > INCLUDE_FILE_MAX) return streamMarker(fd, buf);
+    return { marker: sha256(buf), text: buf.toString("utf8") };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    return { marker: code === "ENOENT" || code === "ENOTDIR" ? "missing" : "unreadable" };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/** A file over the cap: hash all of it in chunks (edits stay visible); its includes are not parsed. */
+function streamMarker(fd: number, head?: Buffer): LoadedConfig {
+  const h = createHash("sha256");
+  if (head) h.update(head);
+  else {
+    const chunk = Buffer.alloc(64 * 1024);
+    for (;;) {
+      const n = readSync(fd, chunk, 0, chunk.length, null);
+      if (n <= 0) break;
+      h.update(chunk.subarray(0, n));
+    }
+  }
+  return { marker: `${h.digest("hex")}:too_large_unparsed` };
+}
+
 function within(root: string, p: string): boolean {
   return p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 }
@@ -346,16 +410,65 @@ export class LocalGitWorkflow implements GitWorkflow {
     const { gitDir, common } = this.gitDirs(repo);
     const h = createHash("sha256");
     const file = (label: string, path: string) => h.update(`${label}\0${fileMarker(path)}\0`);
-    file("config", join(common, "config"));
-    file("config.worktree", join(common, "config.worktree"));
-    if (gitDir !== common) file("worktree/config.worktree", join(gitDir, "config.worktree"));
+    // Config files: hash the file, then follow include.path / includeIf.*.path breadth-first
+    // (shallowest depth wins, so a visited file is never skipped at a deeper level than git
+    // would load it). Bounded: depth INCLUDE_DEPTH_MAX, INCLUDE_NODES_MAX files per root,
+    // regular files up to INCLUDE_FILE_MAX bytes read once, visited keyed on realpath. Never
+    // runs git (ADR-040).
+    const cache = new Map<string, LoadedConfig>();
+    const load = (path: string): LoadedConfig => {
+      const k = realKey(path);
+      let c = cache.get(k);
+      if (!c) {
+        c = loadConfig(path);
+        cache.set(k, c);
+      }
+      return c;
+    };
+    const configFile = (label: string, path: string): void => {
+      const root = load(path);
+      h.update(`${label}\0${root.marker}\0`);
+      const visited = new Set([realKey(path)]);
+      let nodes = 1;
+      const queue = [{ label, file: path, text: root.text, depth: 0 }];
+      for (let q = 0; q < queue.length; q++) {
+        const n = queue[q] as (typeof queue)[number];
+        if (n.text === undefined || n.depth >= INCLUDE_DEPTH_MAX) continue;
+        const seen = new Set<string>();
+        let i = 0;
+        for (const t of includeTargets(n.text, n.file, this.opts.home)) {
+          if (seen.has(t)) continue;
+          seen.add(t);
+          const lbl = `${n.label}>include${i++}`;
+          if (t.startsWith(UNRESOLVED_PREFIX)) {
+            h.update(`${lbl}\0${t}\0`);
+            continue;
+          }
+          const k = realKey(t);
+          if (!visited.has(k) && nodes >= INCLUDE_NODES_MAX) {
+            h.update(`${lbl}\0${t}\0truncated\0`);
+            continue;
+          }
+          const c = load(t);
+          h.update(`${lbl}\0${t}\0${c.marker}\0`);
+          if (visited.has(k)) continue;
+          visited.add(k);
+          nodes++;
+          queue.push({ label: lbl, file: t, text: c.text, depth: n.depth + 1 });
+        }
+      }
+    };
+    const cf = (label: string, path: string) => configFile(label, path);
+    cf("config", join(common, "config"));
+    cf("config.worktree", join(common, "config.worktree"));
+    if (gitDir !== common) cf("worktree/config.worktree", join(gitDir, "config.worktree"));
     file("info/attributes", join(common, "info", "attributes"));
     h.update("hooks\0");
     this.walk(h, join(common, "hooks"), "", null);
-    file("global", join(this.opts.home, ".gitconfig"));
-    file("xdg/config", join(this.xdg, "git", "config"));
+    cf("global", join(this.opts.home, ".gitconfig"));
+    cf("xdg/config", join(this.xdg, "git", "config"));
     file("xdg/attributes", join(this.xdg, "git", "attributes"));
-    file("system", this.opts.systemConfig ?? "/etc/gitconfig");
+    cf("system", this.opts.systemConfig ?? "/etc/gitconfig");
     return h.digest("hex");
   }
 

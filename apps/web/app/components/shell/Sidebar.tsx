@@ -13,7 +13,7 @@ export interface SidebarProps {
   items: SidebarItem[];
   active: string;
   onGo: (id: string) => void;
-  footer: { api: string; web: string; lock: string };
+  footer: { addresses: { api: string; web: string } | null; lock: string };
 }
 
 export function Sidebar({ items, active, onGo, footer }: SidebarProps) {
@@ -55,10 +55,14 @@ export function Sidebar({ items, active, onGo, footer }: SidebarProps) {
       </div>
       <div className="syn-side-bottom">
         <dl className="syn-side-foot">
-          <dt>api</dt>
-          <dd>{footer.api}</dd>
-          <dt>web</dt>
-          <dd>{footer.web}</dd>
+          {footer.addresses && (
+            <>
+              <dt>api</dt>
+              <dd>{footer.addresses.api}</dd>
+              <dt>web</dt>
+              <dd>{footer.addresses.web}</dd>
+            </>
+          )}
           <dt>eng lock</dt>
           <dd>{footer.lock}</dd>
         </dl>

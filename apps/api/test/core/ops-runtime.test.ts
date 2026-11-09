@@ -21,6 +21,7 @@ const KEYS = [
   "backupCount",
   "dataDirFreeBytes",
   "dbBytes",
+  "endpoints",
   "lastBackup",
   "lastBackupAttempt",
   "memoryRssBytes",
@@ -67,6 +68,10 @@ test("runtime view has exactly the RuntimeView keys and the measured values", as
   expect(v.uptimeSeconds).toBe(90);
   expect(v.version).toBe("0.0.0+abc1234");
   expect(v.walBytes).toBe(0);
+  expect(v.endpoints).toEqual({
+    api: { host: "127.0.0.1", port: 7400 },
+    web: { host: "127.0.0.1", port: 7401 },
+  });
   expect(v.dataDirFreeBytes).toBe(42 * GIB);
   expect(v.lastBackup).toBeNull();
   expect(v.backupCount).toBe(0);

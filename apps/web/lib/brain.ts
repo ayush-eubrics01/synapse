@@ -115,6 +115,22 @@ export function registryErrorLabel(code: string): string {
   return REGISTRY_LABELS[code] ?? `Couldn't register: ${code}`;
 }
 
+const REMOVE_FAILED = "Couldn't remove the repository";
+
+/** The toast for a refused or failed repository removal. */
+export function removeErrorLabel(code: string | undefined): string {
+  // `not_found` is labelled "Path not found" for registering; that reads wrongly here.
+  if (code === undefined || code === "not_found") return REMOVE_FAILED;
+  return REGISTRY_LABELS[code] ?? REMOVE_FAILED;
+}
+
+export const removeConfirmText = (name: string): string =>
+  `Remove ${name} from Synapse? Files on disk are not touched.`;
+
+/** K1.3: shown while the last inspection recorded permission denials. */
+export const INSPECTION_DENIED_TEXT =
+  "The last inspection was refused some file reads; results may be incomplete.";
+
 /** The key a fact (and its deferred reject) uses in the hidden set. */
 export const brainFactKey = (factId: string): string => `brain-fact:${factId}`;
 

@@ -19,6 +19,8 @@ import {
   groupFacts,
   milestoneLabel,
   registryErrorLabel,
+  removeConfirmText,
+  removeErrorLabel,
 } from "../lib/brain";
 import { sidebarItems } from "../lib/nav";
 import { buildNeedsYou, type NeedsYouInput } from "../lib/needs-you";
@@ -245,4 +247,16 @@ test("inspecting a repository that is already queued is a 409 ApiError", async (
   const err = await inspectRepositoryNow("r1", f.impl).catch((e: unknown) => e);
   expect((err as ApiError).status).toBe(409);
   expect((err as ApiError).code).toBe("already_queued");
+});
+
+test("removeErrorLabel uses the registry label, else a generic one", () => {
+  expect(removeErrorLabel("repo_has_active_task")).toBe(registryErrorLabel("repo_has_active_task"));
+  expect(removeErrorLabel("not_found")).toBe("Couldn't remove the repository");
+  expect(removeErrorLabel(undefined)).toBe("Couldn't remove the repository");
+});
+
+test("removeConfirmText names the repository and promises files are untouched", () => {
+  expect(removeConfirmText("demo")).toBe(
+    "Remove demo from Synapse? Files on disk are not touched.",
+  );
 });

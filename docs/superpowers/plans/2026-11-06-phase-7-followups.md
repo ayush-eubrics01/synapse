@@ -27,10 +27,10 @@ Results:
 - **Away mode wiring (Phase 6b).** The toggle is rendered disabled with its explanation.
 - **Custom layout (Phase 11).** Per-user section order and visibility.
 - **Several toasts at once and stacked undo.** One toast shows at a time. A new deferred action replaces the toast, but the earlier action still commits after its delay. Its Undo is only reachable while its own toast is shown. The same holds when an immediate action's confirmation toast replaces an Undo toast: the deferred action still commits.
-- **Briefing count of unverified sends.** The feed shows a card for a `sent_unverified` send with resolve choices, but the overview's `outgoingAttention` counts only `needs_attention` rows and exposes nothing for these, so the briefing's "send(s) need attention" leaves them out. A backend count would fix it.
+- ~~**Briefing count of unverified sends.**~~ **Done in follow-ups batch 3.** The overview count now includes `sent_unverified` sends, matching the feed. Original note: The feed shows a card for a `sent_unverified` send with resolve choices, but the overview's `outgoingAttention` counts only `needs_attention` rows and exposes nothing for these, so the briefing's "send(s) need attention" leaves them out. A backend count would fix it.
 - **Duplicate reads.** The overview and the page's own list fetches read the same tables on every refresh. The conversation summary query also sorts in a way the current index doesn't cover.
 - **Reviewing the latest flag hides the whole person card for 5 s.** The deferred key is the latest open flag, which keys the whole grouped card.
-- **Sidebar footer addresses.** The footer hard-codes 127.0.0.1:7400 and :7401 instead of reading the configured ports.
+- ~~**Sidebar footer addresses.**~~ **Done in follow-ups batch 3.** The footer reads the configured ports. Original note: The footer hard-codes 127.0.0.1:7400 and :7401 instead of reading the configured ports.
 - **Priority control after a failed save.** The radiogroup keeps the chosen value locally so repeated arrow presses step on. If the save fails and the server's value doesn't change, the control keeps showing the chosen value (the error banner shows) until the next change of the value from the API.
 - **Autoscroll in threads on SSE updates.** A live refresh updates the open thread in place, without scrolling to the newest message.
 - **A reliable self-DM signal.** The collector stores no name for DMs, so `isSelfDm` (which needs the stored name to equal the self user's stored name) is false in practice. The self DM shows as "Direct message". A future signal could be the connector's channel metadata, or the DM channel the user's own sends resolve to.
@@ -59,5 +59,5 @@ Results:
 
 ## Left after the final re-review
 
-- `classifyOverviewFailure` (apps/web/lib/api.ts) treats every error that isn't an `ApiError` as unreachable. A 200 response with malformed JSON therefore shows "Unreachable". Narrow the check to `TypeError` and give malformed responses their own state.
+- ~~`classifyOverviewFailure` (apps/web/lib/api.ts) treats every error that isn't an `ApiError` as unreachable~~ **Done in follow-ups batch 3.** Malformed responses get their own state. Original note: `classifyOverviewFailure` (apps/web/lib/api.ts) treats every error that isn't an `ApiError` as unreachable. A 200 response with malformed JSON therefore shows "Unreachable". Narrow the check to `TypeError` and give malformed responses their own state.
 - `commitmentsToReview` and `peopleToEvaluate` are counted within the view limits (candidates: 50), the same limits the page fetches use. If either side's limit changes, the counts can disagree with the feed.

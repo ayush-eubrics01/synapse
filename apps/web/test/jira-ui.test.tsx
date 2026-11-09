@@ -16,9 +16,14 @@ const status = (o = {}) => ({
   lastError: null,
   scopeJql: "assignee = currentUser() AND updated >= -60d",
   excludedProjects: [] as string[],
+  sites: [] as { id: string; name: string }[],
   ...o,
 });
-const render = (issues = [issue()], st: ReturnType<typeof status> | null = status()) =>
+const render = (
+  issues = [issue()],
+  st: ReturnType<typeof status> | null = status(),
+  onChooseSite: ((id: string) => void) | undefined = undefined,
+) =>
   text(
     renderToString(
       <JiraSection
@@ -27,6 +32,7 @@ const render = (issues = [issue()], st: ReturnType<typeof status> | null = statu
         now={NOW}
         onSync={() => {}}
         onGoToSetup={() => {}}
+        onChooseSite={onChooseSite}
       />,
     ),
   );
@@ -93,7 +99,7 @@ test("empty state, not-synced line and disabled state", () => {
     "Jira page too large — lower jira.pageSize",
   );
   expect(render([], status({ lastError: "multiple_sites" }))).toContain(
-    "Several Jira sites are available — set jira.cloudId in settings",
+    "Several Jira sites are available — use Sync now to list them",
   );
   expect(render([], status({ lastError: "no_sites" }))).toContain(
     "No Jira site is available to this Claude account",
@@ -145,4 +151,35 @@ test("the setup card has the explainer, the stored scope and exclusions, and Ena
   expect(html).toContain('aria-label="Excluded projects"');
   expect(html).toContain("Enable");
   expect(html).not.toContain('role="alert"');
+});
+
+const SITES = [
+  { id: "11111111-1111-4111-8111-111111111111", name: "Demo site" },
+  { id: "22222222-2222-4222-8222-222222222222", name: "Demo site 2" },
+];
+
+test("several sites listed: a Jira site select with every name and a Use this site button", () => {
+  const html = render(
+    [],
+    status({ cloudIdSet: false, lastError: "multiple_sites", sites: SITES }),
+    () => {},
+  );
+  expect(html).toContain('aria-label="Jira site"');
+  expect(html).toContain("Demo site");
+  expect(html).toContain("Demo site 2");
+  expect(html).toContain(`value="${SITES[0]?.id}"`);
+  expect(html).toContain("Use this site");
+  expect(html).toContain("choose one below");
+});
+
+test("no sites listed: no select and the Sync now hint; disabled: no select", () => {
+  const none = render([], status({ lastError: "multiple_sites", sites: [] }), () => {});
+  expect(none).not.toContain('aria-label="Jira site"');
+  expect(none).toContain("use Sync now to list them");
+  const off = render(
+    [],
+    status({ enabled: false, lastError: "multiple_sites", sites: SITES }),
+    () => {},
+  );
+  expect(off).not.toContain('aria-label="Jira site"');
 });

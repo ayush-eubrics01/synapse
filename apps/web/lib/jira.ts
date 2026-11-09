@@ -98,14 +98,17 @@ function jqlBalanced(jql: string): boolean {
 
 /** Fixed hints for status `lastError` values a person must act on; other kinds show as they are. */
 const ERROR_HINTS: Record<string, string> = {
-  multiple_sites: "Several Jira sites are available — set jira.cloudId in settings",
+  multiple_sites: "Several Jira sites are available — use Sync now to list them",
   no_sites: "No Jira site is available to this Claude account",
   output_too_large: "Jira page too large — lower jira.pageSize",
 };
 
 /** The status line text for `JiraStatusDto.lastError`; null when there is none. */
-export function jiraErrorLabel(lastError: string | null): string | null {
+export function jiraErrorLabel(lastError: string | null, sitesListed = false): string | null {
   if (lastError === null) return null;
+  if (lastError === "multiple_sites" && sitesListed) {
+    return "Several Jira sites are available — choose one below";
+  }
   return ERROR_HINTS[lastError] ?? lastError;
 }
 

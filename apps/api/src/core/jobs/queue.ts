@@ -288,6 +288,20 @@ export class JobQueue {
     return res.length > 0;
   }
 
+  /**
+   * Closes the parked (NEEDS_ATTENTION) jobs of `type` after the user resolved what they waited
+   * for: they become CANCELLED so the health check and retention stop counting them. Runs in the
+   * caller's transaction; returns how many were moved.
+   */
+  resolveParked(tx: DbOrTx, type: string): number {
+    return tx
+      .update(jobs)
+      .set({ status: "CANCELLED", finishedAt: isoNow(this.clock) })
+      .where(and(eq(jobs.type, type), eq(jobs.status, "NEEDS_ATTENTION")))
+      .returning({ id: jobs.id })
+      .all().length;
+  }
+
   get(id: string): Job | null {
     return this.getIn(this.db, id);
   }

@@ -7,6 +7,7 @@ import {
   COMMIT_SUBJECT_MAX,
   DEVELOP_RETRY_REASONS,
   type EngineeringStep,
+  ExecutorError,
   type GitWorkflow,
   GitWorkflowError,
   type InvestigationOutput,
@@ -833,7 +834,7 @@ export class EngineeringStepService {
       }));
     } catch (e) {
       this.attention(task.id, "commit", codeOf(e));
-      throw new Error(codeOf(e));
+      throw new ExecutorError(codeOf(e));
     }
     const out = {
       sha,
@@ -901,7 +902,7 @@ export class EngineeringStepService {
     const { task, path, parent, taskBranch } = ctx;
     if (this.protectedBranches(task.repositoryId).includes(parent)) {
       this.attention(task.id, "merge_local", "protected_branch");
-      throw new Error("protected_branch");
+      throw new ExecutorError("protected_branch");
     }
     let merged: Awaited<ReturnType<GitWorkflow["mergeLocal"]>>;
     try {
@@ -911,11 +912,11 @@ export class EngineeringStepService {
       });
     } catch (e) {
       this.attention(task.id, "merge_local", codeOf(e));
-      throw new Error(codeOf(e));
+      throw new ExecutorError(codeOf(e));
     }
     if (!merged.ok) {
       this.attention(task.id, "merge_local", "merge_conflict");
-      throw new Error("merge_conflict");
+      throw new ExecutorError("merge_conflict");
     }
     const sha = merged.sha;
     let commits: { sha: string; subject: string }[];
@@ -925,7 +926,7 @@ export class EngineeringStepService {
       configNow = await this.deps.git.configFingerprint(path);
     } catch (e) {
       this.attention(task.id, "merge_local", codeOf(e), { sha });
-      throw new Error(codeOf(e));
+      throw new ExecutorError(codeOf(e));
     }
     const deploy = this.deployNotice(task);
     const payload: z.infer<typeof pushPrPayloadSchema> = {
@@ -968,7 +969,7 @@ export class EngineeringStepService {
     // Checked before the push: never push what cannot become a PR.
     if (!upstream || !fork) {
       this.attention(task.id, "push_pr", "unsupported_remote");
-      throw new Error("unsupported_remote");
+      throw new ExecutorError("unsupported_remote");
     }
     try {
       await this.deps.git.pushParent(path, parent, {
@@ -981,7 +982,7 @@ export class EngineeringStepService {
       });
     } catch (e) {
       this.attention(task.id, "push_pr", codeOf(e));
-      throw new Error(codeOf(e));
+      throw new ExecutorError(codeOf(e));
     }
     const pushedSha = p.mergeSha;
     const pushed = { pushed: true, pushedSha, configFingerprint: p.configFingerprint };
@@ -1016,7 +1017,7 @@ export class EngineeringStepService {
       });
     } catch (e) {
       this.attention(task.id, "push_pr", codeOf(e), pushed);
-      throw new Error(codeOf(e));
+      throw new ExecutorError(codeOf(e));
     }
     // M5: the PR exists now, whatever happens next (a cancel meanwhile included): record it.
     this.deps.db.transaction(
@@ -1076,24 +1077,24 @@ export class EngineeringStepService {
     const { task, repo, parent } = ctx;
     if (this.protectedBranches(task.repositoryId).includes(parent)) {
       this.attention(task.id, "merge_pr", "protected_branch");
-      throw new Error("protected_branch");
+      throw new ExecutorError("protected_branch");
     }
     const upstream = this.deps.prs.repoRef(repo.upstreamUrl ?? "");
     if (!upstream) {
       this.attention(task.id, "merge_pr", "unsupported_remote");
-      throw new Error("unsupported_remote");
+      throw new ExecutorError("unsupported_remote");
     }
     const pushedSha = this.stepOutput(task.id, "push_pr")?.pushedSha;
     if (typeof pushedSha !== "string" || pushedSha !== p.pushedSha) {
       this.attention(task.id, "merge_pr", "state_changed");
-      throw new Error("state_changed");
+      throw new ExecutorError("state_changed");
     }
     let merged: { merged: boolean; sha?: string };
     try {
       merged = await this.deps.prs.mergePr({ upstream, number: p.prNumber, headSha: pushedSha });
     } catch (e) {
       this.attention(task.id, "merge_pr", codeOf(e));
-      throw new Error(codeOf(e));
+      throw new ExecutorError(codeOf(e));
     }
     const out = { merged: merged.merged, ...(merged.sha ? { sha: merged.sha } : {}) };
     if (merged.merged && this.mergedAfterCancel(task.id, out, merged.sha ?? null, pushedSha)) {
@@ -1152,7 +1153,7 @@ export class EngineeringStepService {
 
   private async execute(a: Approval, step: ApprovalStep): Promise<unknown> {
     const parsed = PAYLOAD_SCHEMAS[step].safeParse(a.payload);
-    if (!parsed.success) throw new Error("invalid_payload");
+    if (!parsed.success) throw new ExecutorError("invalid_payload");
     const taskId = parsed.data.taskId;
     return this.track(taskId, async () => {
       const ctx = this.context(taskId);
@@ -1160,7 +1161,7 @@ export class EngineeringStepService {
         // M9: revalidation passed but the repository went away since: never leave the task
         // waiting on an approval that can no longer run.
         this.executeRefused(a, step, taskId, ctx.skip);
-        throw new Error(ctx.skip);
+        throw new ExecutorError(ctx.skip);
       }
       // Claim the step: awaiting this approval → in_progress. A cancelled task never executes.
       const claimed = this.deps.db.transaction(
@@ -1180,7 +1181,7 @@ export class EngineeringStepService {
         },
         { behavior: "immediate" },
       );
-      if (!claimed) throw new Error("state_changed");
+      if (!claimed) throw new ExecutorError("state_changed");
       switch (step) {
         case "commit":
           return this.executeCommit(ctx, parsed.data as CommitPayload);
@@ -1532,7 +1533,7 @@ export class EngineeringStepService {
    * cancel during the step, or the step itself ending the task).
    */
   private async track<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
-    if (this.#inFlight.has(taskId)) throw new Error("step_running");
+    if (this.#inFlight.has(taskId)) throw new ExecutorError("step_running");
     this.#inFlight.add(taskId);
     try {
       return await fn();

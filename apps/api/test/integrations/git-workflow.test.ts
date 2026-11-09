@@ -19,6 +19,7 @@ import {
   gitInvocation,
   spawnGit,
 } from "../../src/integrations/repository/git";
+import { INCLUDE_DEPTH_MAX } from "../../src/integrations/repository/git-includes";
 import {
   LocalGitWorkflow,
   remoteKey,
@@ -1301,5 +1302,168 @@ describe("origin host check (M10)", () => {
       }),
     );
     expect(code).toBe("origin_changed");
+  });
+});
+
+describe("fingerprint follows git config includes (K6.3)", () => {
+  test("include.path target: missing, present, changed", async () => {
+    const f = setup();
+    git(f.repo, "config", "include.path", "extra.cfg");
+    const a = await f.wf.configFingerprint(f.repo);
+    writeFileSync(join(f.repo, ".git", "extra.cfg"), "[core]\n\tpager = one\n");
+    const b = await f.wf.configFingerprint(f.repo);
+    expect(b).not.toBe(a);
+    writeFileSync(join(f.repo, ".git", "extra.cfg"), "[core]\n\tpager = two\n");
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(b);
+  });
+
+  test("global includeIf target changes the fingerprint and diffSummary reports git_dir_changed", async () => {
+    const f = setup();
+    writeFileSync(join(f.home, ".gitconfig"), '[includeIf "gitdir:/"]\n\tpath = ~/inc.cfg\n');
+    writeFileSync(join(f.home, "inc.cfg"), "[core]\n\tpager = one\n");
+    const base = await f.wf.gitDirFingerprint(f.repo);
+    const cfg = await f.wf.configFingerprint(f.repo);
+    writeFileSync(join(f.home, "inc.cfg"), "[core]\n\tpager = evil\n");
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(cfg);
+    expect((await f.wf.diffSummary(f.repo, { gitDirBaseline: base })).unsafeReasons).toEqual([
+      "git_dir_changed",
+    ]);
+  });
+
+  test("a cycle terminates with a stable fingerprint", async () => {
+    const f = setup();
+    git(f.repo, "config", "include.path", "extra.cfg");
+    writeFileSync(join(f.repo, ".git", "extra.cfg"), "[include]\n\tpath = b.cfg\n");
+    writeFileSync(join(f.repo, ".git", "b.cfg"), "[include]\n\tpath = extra.cfg\n");
+    const a = await f.wf.configFingerprint(f.repo);
+    expect(await f.wf.configFingerprint(f.repo)).toBe(a);
+  });
+
+  test("depth cap: the last level is hashed, the one below is not", async () => {
+    const f = setup();
+    const dir = join(f.repo, ".git");
+    const max = INCLUDE_DEPTH_MAX;
+    git(f.repo, "config", "include.path", "c1.cfg");
+    for (let i = 1; i <= max + 2; i++) {
+      writeFileSync(
+        join(dir, `c${i}.cfg`),
+        i < max + 2 ? `[include]\n\tpath = c${i + 1}.cfg\n` : "",
+      );
+    }
+    const base = await f.wf.configFingerprint(f.repo);
+    writeFileSync(join(dir, `c${max + 1}.cfg`), `[include]\n\tpath = c${max + 2}.cfg\n# changed\n`);
+    expect(await f.wf.configFingerprint(f.repo)).toBe(base);
+    writeFileSync(join(dir, `c${max}.cfg`), `[include]\n\tpath = c${max + 1}.cfg\n# changed\n`);
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(base);
+  });
+
+  test("a file first reached at the depth cap is still expanded when reached shallower", async () => {
+    const f = setup();
+    const dir = join(f.repo, ".git");
+    const max = INCLUDE_DEPTH_MAX;
+    const put = (n: string, inc: string[]) =>
+      writeFileSync(
+        join(dir, `${n}.cfg`),
+        inc.map((i) => `[include]\n\tpath = ${i}.cfg\n`).join(""),
+      );
+    put("root", []);
+    git(f.repo, "config", "--add", "include.path", "a1.cfg");
+    git(f.repo, "config", "--add", "include.path", "b.cfg");
+    for (let i = 1; i < max - 1; i++) put(`a${i}`, [`a${i + 1}`]);
+    put(`a${max - 1}`, ["w"]);
+    put("b", ["w"]);
+    put("w", ["v"]);
+    put("v", []);
+    const base = await f.wf.configFingerprint(f.repo);
+    writeFileSync(join(dir, "v.cfg"), "[core]\n\tpager = changed\n");
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(base);
+  });
+
+  test("a FIFO target neither blocks nor is read", async () => {
+    const f = setup();
+    git(f.repo, "config", "include.path", "pipe.cfg");
+    Bun.spawnSync(["mkfifo", join(f.repo, ".git", "pipe.cfg")]);
+    const a = await f.wf.configFingerprint(f.repo);
+    expect(await f.wf.configFingerprint(f.repo)).toBe(a);
+  });
+
+  test("a file over 1 MiB is fully hashed (edits visible) but its includes are not parsed", async () => {
+    const f = setup();
+    const cfg = join(f.repo, ".git", "config");
+    const orig = readFileSync(cfg, "utf8");
+    writeFileSync(cfg, `${orig}# ${"#".repeat(1024 * 1024 + 1)}\n`);
+    const a = await f.wf.configFingerprint(f.repo);
+    expect(await f.wf.configFingerprint(f.repo)).toBe(a);
+    writeFileSync(cfg, `${orig}# ${"#".repeat(1024 * 1024 + 1)}\n[filter "x"]\n\tclean = evil\n`);
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(a);
+  });
+
+  test("a relative include through a symlinked directory resolves like the kernel", async () => {
+    const f = setup();
+    const dir = join(f.repo, ".git");
+    mkdirSync(join(dir, "real", "sub"), { recursive: true });
+    symlinkSync(join(dir, "real", "sub"), join(dir, "l1"));
+    writeFileSync(join(dir, "real", "x.cfg"), "[core]\n\tpager = one\n");
+    writeFileSync(join(dir, "x.cfg"), "[core]\n\tpager = lexical\n");
+    git(f.repo, "config", "include.path", "l1/../x.cfg");
+    const a = await f.wf.configFingerprint(f.repo);
+    writeFileSync(join(dir, "real", "x.cfg"), "[core]\n\tpager = two\n");
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(a);
+  });
+
+  test("total include nodes per root are capped, with a truncated marker", async () => {
+    const f = setup();
+    const dir = join(f.repo, ".git");
+    const n = 70;
+    for (let i = 1; i <= n; i++) {
+      writeFileSync(join(dir, `n${i}.cfg`), "");
+      git(f.repo, "config", "--add", "include.path", `n${i}.cfg`);
+    }
+    const base = await f.wf.configFingerprint(f.repo);
+    writeFileSync(join(dir, `n${n}.cfg`), "# changed\n");
+    expect(await f.wf.configFingerprint(f.repo)).toBe(base);
+    writeFileSync(join(dir, "n3.cfg"), "# changed\n");
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(base);
+  });
+
+  test("symlinked directory aliases are one node (realpath)", async () => {
+    const f = setup();
+    const dir = join(f.repo, ".git");
+    mkdirSync(join(dir, "real"));
+    symlinkSync(join(dir, "real"), join(dir, "l1"));
+    symlinkSync(join(dir, "real"), join(dir, "l2"));
+    writeFileSync(
+      join(dir, "real", "x.cfg"),
+      "[include]\n\tpath = ../l1/x.cfg\n\tpath = ../l2/x.cfg\n",
+    );
+    git(f.repo, "config", "include.path", "l1/x.cfg");
+    const a = await f.wf.configFingerprint(f.repo);
+    expect(await f.wf.configFingerprint(f.repo)).toBe(a);
+  });
+
+  test("an unresolvable ~name target is hashed as a fixed marker", async () => {
+    const f = setup();
+    const cfg = join(f.repo, ".git", "config");
+    const orig = readFileSync(cfg, "utf8");
+    writeFileSync(cfg, `${orig}[include]\n\tpath = ~no-such-user/x.cfg\n`);
+    const a = await f.wf.configFingerprint(f.repo);
+    expect(await f.wf.configFingerprint(f.repo)).toBe(a);
+    writeFileSync(cfg, `${orig}[include]\n\tpath = ~no-such-user/y.cfg\n`);
+    expect(await f.wf.configFingerprint(f.repo)).not.toBe(a);
+  });
+
+  test("an unreadable target gives a stable fingerprint", async () => {
+    if (process.getuid?.() === 0) return;
+    const f = setup();
+    git(f.repo, "config", "include.path", "extra.cfg");
+    const p = join(f.repo, ".git", "extra.cfg");
+    writeFileSync(p, "[core]\n\tpager = x\n");
+    chmodSync(p, 0);
+    try {
+      const a = await f.wf.configFingerprint(f.repo);
+      expect(await f.wf.configFingerprint(f.repo)).toBe(a);
+    } finally {
+      chmodSync(p, 0o644);
+    }
   });
 });

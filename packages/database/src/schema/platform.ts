@@ -28,7 +28,10 @@ export const moduleDependencies = sqliteTable(
       .notNull()
       .references(() => modules.name),
   },
-  (t) => [uniqueIndex("module_dependencies_module_depends_on_uq").on(t.module, t.dependsOn)],
+  (t) => [
+    index("module_dependencies_depends_on_idx").on(t.dependsOn),
+    uniqueIndex("module_dependencies_module_depends_on_uq").on(t.module, t.dependsOn),
+  ],
 );
 
 export const scheduledTasks = sqliteTable("scheduled_tasks", {
@@ -113,7 +116,10 @@ export const jobAttempts = sqliteTable(
     error: json("error"),
     claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
   },
-  (t) => [index("job_attempts_job_id_idx").on(t.jobId)],
+  (t) => [
+    index("job_attempts_claude_run_id_idx").on(t.claudeRunId),
+    index("job_attempts_job_id_idx").on(t.jobId),
+  ],
 );
 
 export const jobCheckpoints = sqliteTable(
@@ -201,19 +207,23 @@ export const approvals = sqliteTable(
   (t) => [uniqueIndex("approvals_idempotency_key_uq").on(t.idempotencyKey)],
 );
 
-export const auditEvents = sqliteTable("audit_events", {
-  id: id(),
-  actor: text("actor").notNull(),
-  module: text("module"),
-  workerProfile: text("worker_profile"),
-  action: text("action").notNull(),
-  targetIntegration: text("target_integration"),
-  targetRef: text("target_ref"),
-  approvalId: text("approval_id").references(() => approvals.id),
-  result: text("result").notNull(),
-  details: json("details"),
-  occurredAt: text("occurred_at").notNull(),
-});
+export const auditEvents = sqliteTable(
+  "audit_events",
+  {
+    id: id(),
+    actor: text("actor").notNull(),
+    module: text("module"),
+    workerProfile: text("worker_profile"),
+    action: text("action").notNull(),
+    targetIntegration: text("target_integration"),
+    targetRef: text("target_ref"),
+    approvalId: text("approval_id").references(() => approvals.id),
+    result: text("result").notNull(),
+    details: json("details"),
+    occurredAt: text("occurred_at").notNull(),
+  },
+  (t) => [index("audit_events_approval_id_idx").on(t.approvalId)],
+);
 
 export const notifications = sqliteTable("notifications", {
   id: id(),
@@ -233,26 +243,34 @@ export const permissions = sqliteTable("permissions", {
   scope: json("scope"),
 });
 
-export const quotaSnapshots = sqliteTable("quota_snapshots", {
-  id: id(),
-  observedAt: text("observed_at").notNull(),
-  fiveHourUtilization: real("five_hour_utilization"),
-  fiveHourResetsAt: text("five_hour_resets_at"),
-  sevenDayUtilization: real("seven_day_utilization"),
-  sevenDayResetsAt: text("seven_day_resets_at"),
-  status: text("status").notNull(),
-  fiveHourStatus: text("five_hour_status"),
-  sevenDayStatus: text("seven_day_status"),
-  claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
-});
+export const quotaSnapshots = sqliteTable(
+  "quota_snapshots",
+  {
+    id: id(),
+    observedAt: text("observed_at").notNull(),
+    fiveHourUtilization: real("five_hour_utilization"),
+    fiveHourResetsAt: text("five_hour_resets_at"),
+    sevenDayUtilization: real("seven_day_utilization"),
+    sevenDayResetsAt: text("seven_day_resets_at"),
+    status: text("status").notNull(),
+    fiveHourStatus: text("five_hour_status"),
+    sevenDayStatus: text("seven_day_status"),
+    claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
+  },
+  (t) => [index("quota_snapshots_claude_run_id_idx").on(t.claudeRunId)],
+);
 
-export const authSnapshots = sqliteTable("auth_snapshots", {
-  id: id(),
-  observedAt: text("observed_at").notNull(),
-  accessExpiresAt: text("access_expires_at"),
-  refreshExpiresAt: text("refresh_expires_at"),
-  claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
-});
+export const authSnapshots = sqliteTable(
+  "auth_snapshots",
+  {
+    id: id(),
+    observedAt: text("observed_at").notNull(),
+    accessExpiresAt: text("access_expires_at"),
+    refreshExpiresAt: text("refresh_expires_at"),
+    claudeRunId: text("claude_run_id").references(() => claudeRuns.id),
+  },
+  (t) => [index("auth_snapshots_claude_run_id_idx").on(t.claudeRunId)],
+);
 
 export const integrations = sqliteTable(
   "integrations",
@@ -354,6 +372,8 @@ export const slackMessages = sqliteTable(
     commitmentsExtractedAt: text("commitments_extracted_at"),
   },
   (t) => [
+    index("slack_messages_sender_user_id_idx").on(t.senderUserId),
+
     uniqueIndex("slack_messages_conversation_id_ts_uq").on(t.conversationId, t.ts),
     index("slack_messages_sent_at_idx").on(t.sentAt),
     index("slack_messages_conversation_id_thread_ts_idx").on(t.conversationId, t.threadTs),
@@ -361,24 +381,32 @@ export const slackMessages = sqliteTable(
   ],
 );
 
-export const slackAttachments = sqliteTable("slack_attachments", {
-  id: id(),
-  messageId: text("message_id")
-    .notNull()
-    .references(() => slackMessages.id),
-  externalFileId: text("external_file_id").notNull(),
-  name: text("name"),
-  localPath: text("local_path"),
-});
+export const slackAttachments = sqliteTable(
+  "slack_attachments",
+  {
+    id: id(),
+    messageId: text("message_id")
+      .notNull()
+      .references(() => slackMessages.id),
+    externalFileId: text("external_file_id").notNull(),
+    name: text("name"),
+    localPath: text("local_path"),
+  },
+  (t) => [index("slack_attachments_message_id_idx").on(t.messageId)],
+);
 
-export const slackMessageReferences = sqliteTable("slack_message_references", {
-  id: id(),
-  messageId: text("message_id")
-    .notNull()
-    .references(() => slackMessages.id),
-  refType: text("ref_type").notNull(),
-  refId: text("ref_id").notNull(),
-});
+export const slackMessageReferences = sqliteTable(
+  "slack_message_references",
+  {
+    id: id(),
+    messageId: text("message_id")
+      .notNull()
+      .references(() => slackMessages.id),
+    refType: text("ref_type").notNull(),
+    refId: text("ref_id").notNull(),
+  },
+  (t) => [index("slack_message_references_message_id_idx").on(t.messageId)],
+);
 
 export const people = sqliteTable("people", {
   id: id(),
@@ -426,6 +454,9 @@ export const securityFlags = sqliteTable(
     updatedAt: text("updated_at").notNull(),
   },
   (t) => [
+    index("security_flags_claude_run_id_idx").on(t.claudeRunId),
+    index("security_flags_person_id_idx").on(t.personId),
+
     uniqueIndex("security_flags_message_id_detector_rule_id_uq").on(
       t.messageId,
       t.detector,
@@ -459,7 +490,10 @@ export const messageDrafts = sqliteTable(
     createdAt: text("created_at").notNull(),
     contentExpiredAt: text("content_expired_at"),
   },
-  (t) => [uniqueIndex("message_drafts_message_id_kind_uq").on(t.messageId, t.kind)],
+  (t) => [
+    index("message_drafts_claude_run_id_idx").on(t.claudeRunId),
+    uniqueIndex("message_drafts_message_id_kind_uq").on(t.messageId, t.kind),
+  ],
 );
 
 export const temporaryContacts = sqliteTable("temporary_contacts", {
@@ -504,7 +538,11 @@ export const peopleProfileRecommendations = sqliteTable(
     createdAt: text("created_at").notNull(),
     decidedAt: text("decided_at"),
   },
-  (t) => [index("people_profile_recommendations_person_id_status_idx").on(t.personId, t.status)],
+  (t) => [
+    index("people_profile_recommendations_claude_run_id_idx").on(t.claudeRunId),
+    index("people_profile_recommendations_approval_id_idx").on(t.approvalId),
+    index("people_profile_recommendations_person_id_status_idx").on(t.personId, t.status),
+  ],
 );
 
 export const peopleProfileVersions = sqliteTable(
@@ -522,7 +560,11 @@ export const peopleProfileVersions = sqliteTable(
     approvalId: text("approval_id").references(() => approvals.id),
     createdAt: text("created_at").notNull(),
   },
-  (t) => [uniqueIndex("people_profile_versions_profile_id_version_uq").on(t.profileId, t.version)],
+  (t) => [
+    index("people_profile_versions_approval_id_idx").on(t.approvalId),
+    index("people_profile_versions_recommendation_id_idx").on(t.recommendationId),
+    uniqueIndex("people_profile_versions_profile_id_version_uq").on(t.profileId, t.version),
+  ],
 );
 
 export const peopleProfileEvidence = sqliteTable(
@@ -538,6 +580,8 @@ export const peopleProfileEvidence = sqliteTable(
     observedAt: text("observed_at").notNull(),
   },
   (t) => [
+    index("people_profile_evidence_message_id_idx").on(t.messageId),
+
     index("people_profile_evidence_version_id_idx").on(t.versionId),
     index("people_profile_evidence_recommendation_id_idx").on(t.recommendationId),
   ],
@@ -587,6 +631,9 @@ export const commitmentSources = sqliteTable(
     createdAt: text("created_at").notNull(),
   },
   (t) => [
+    index("commitment_sources_claude_run_id_idx").on(t.claudeRunId),
+    index("commitment_sources_message_id_idx").on(t.messageId),
+
     uniqueIndex("commitment_sources_commitment_id_source_external_ref_uq").on(
       t.commitmentId,
       t.sourceExternalRef,
@@ -594,18 +641,22 @@ export const commitmentSources = sqliteTable(
   ],
 );
 
-export const commitmentUpdates = sqliteTable("commitment_updates", {
-  id: id(),
-  commitmentId: text("commitment_id")
-    .notNull()
-    .references(() => commitments.id),
-  actor: text("actor", { enum: ["user", "system", "ai"] }).notNull(),
-  field: text("field").notNull(),
-  fromValue: text("from_value"),
-  toValue: text("to_value"),
-  reason: text("reason"),
-  createdAt: text("created_at").notNull(),
-});
+export const commitmentUpdates = sqliteTable(
+  "commitment_updates",
+  {
+    id: id(),
+    commitmentId: text("commitment_id")
+      .notNull()
+      .references(() => commitments.id),
+    actor: text("actor", { enum: ["user", "system", "ai"] }).notNull(),
+    field: text("field").notNull(),
+    fromValue: text("from_value"),
+    toValue: text("to_value"),
+    reason: text("reason"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [index("commitment_updates_commitment_id_idx").on(t.commitmentId)],
+);
 
 export const outgoingMessages = sqliteTable(
   "outgoing_messages",
@@ -633,6 +684,8 @@ export const outgoingMessages = sqliteTable(
     updatedAt: text("updated_at").notNull(),
   },
   (t) => [
+    index("outgoing_messages_claude_run_id_idx").on(t.claudeRunId),
+
     index("outgoing_messages_status_idx").on(t.status),
     // At most one live send per follow-up (backstop for SendAlreadyPending).
     uniqueIndex("outgoing_messages_followup_live_uq")
@@ -676,18 +729,28 @@ export const followups = sqliteTable(
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
-  (t) => [index("followups_status_idx").on(t.status)],
+  (t) => [
+    index("followups_claude_run_id_idx").on(t.claudeRunId),
+    index("followups_approval_id_idx").on(t.approvalId),
+    index("followups_origin_message_id_idx").on(t.originMessageId),
+    index("followups_commitment_id_idx").on(t.commitmentId),
+    index("followups_status_idx").on(t.status),
+  ],
 );
 
-export const followupHistory = sqliteTable("followup_history", {
-  id: id(),
-  followupId: text("followup_id")
-    .notNull()
-    .references(() => followups.id),
-  event: text("event").notNull(),
-  detail: text("detail").notNull(),
-  createdAt: text("created_at").notNull(),
-});
+export const followupHistory = sqliteTable(
+  "followup_history",
+  {
+    id: id(),
+    followupId: text("followup_id")
+      .notNull()
+      .references(() => followups.id),
+    event: text("event").notNull(),
+    detail: text("detail").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [index("followup_history_followup_id_idx").on(t.followupId)],
+);
 
 export const awaySessions = sqliteTable(
   "away_sessions",
@@ -726,6 +789,8 @@ export const autoReplies = sqliteTable(
     createdAt: text("created_at").notNull(),
   },
   (t) => [
+    index("auto_replies_session_id_idx").on(t.sessionId),
+
     index("auto_replies_recipient_created_idx").on(t.recipientSlackUserId, t.createdAt),
     index("auto_replies_thread_created_idx").on(t.conversationExternalId, t.threadTs, t.createdAt),
     index("auto_replies_outgoing_idx").on(t.outgoingId),
@@ -755,6 +820,8 @@ export const jiraIssues = sqliteTable(
     attentionSince: text("attention_since"),
   },
   (t) => [
+    index("jira_issues_jira_id_idx").on(t.jiraId),
+
     index("jira_issues_scope_category_idx").on(t.inScope, t.statusCategory),
     index("jira_issues_updated_idx").on(t.jiraUpdatedAt),
   ],
@@ -773,6 +840,7 @@ export const repositories = sqliteTable("repositories", {
   testCommand: text("test_command"),
   headSha: text("head_sha"),
   inspectedHeadSha: text("inspected_head_sha"),
+  inspectionWarning: text("inspection_warning").$type<"permission_denied">(),
   drift: json("drift").$type<{
     offTrackedBranch?: string;
     missingEnvironmentBranches?: string[];
@@ -818,7 +886,10 @@ export const projectRepositories = sqliteTable(
       .notNull()
       .references(() => repositories.id, { onDelete: "cascade" }),
   },
-  (t) => [uniqueIndex("project_repositories_pair_uq").on(t.projectId, t.repositoryId)],
+  (t) => [
+    index("project_repositories_repository_id_idx").on(t.repositoryId),
+    uniqueIndex("project_repositories_pair_uq").on(t.projectId, t.repositoryId),
+  ],
 );
 
 export const projectFacts = sqliteTable(
@@ -863,7 +934,10 @@ export const projectMilestones = sqliteTable(
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
-  (t) => [index("project_milestones_project_date_idx").on(t.projectId, t.targetDate)],
+  (t) => [
+    index("project_milestones_environment_id_idx").on(t.environmentId),
+    index("project_milestones_project_date_idx").on(t.projectId, t.targetDate),
+  ],
 );
 
 const STEPS = [
@@ -926,6 +1000,8 @@ export const engineeringTasks = sqliteTable(
     updatedAt: text("updated_at").notNull(),
   },
   (t) => [
+    index("engineering_tasks_environment_id_idx").on(t.environmentId),
+
     index("engineering_tasks_status_idx").on(t.status),
     index("engineering_tasks_repository_idx").on(t.repositoryId),
   ],
@@ -989,7 +1065,10 @@ export const claudeSessionPrs = sqliteTable(
     firstSeenAt: text("first_seen_at").notNull(),
     remindedAt: text("reminded_at"),
   },
-  (t) => [index("claude_session_prs_repo_idx").on(t.repositoryId)],
+  (t) => [
+    index("claude_session_prs_session_id_idx").on(t.sessionId),
+    index("claude_session_prs_repo_idx").on(t.repositoryId),
+  ],
 );
 
 export const codeAnswers = sqliteTable(
@@ -1035,6 +1114,9 @@ export const codeAnswers = sqliteTable(
     updatedAt: text("updated_at").notNull(),
   },
   (t) => [
+    index("code_answers_auto_reply_id_idx").on(t.autoReplyId),
+    index("code_answers_repository_id_idx").on(t.repositoryId),
+
     // C4: one live row per (message, repository, trigger); failed and dismissed rows are replaced.
     uniqueIndex("code_answers_live_uq")
       .on(t.messageId, t.repositoryId, t.trigger)

@@ -21,6 +21,7 @@ export const repo = (o: Partial<RepositoryView> = {}): RepositoryView => ({
   notes: null,
   headSha: "abc123",
   inspectedHeadSha: "abc123",
+  inspectionWarning: null,
   drift: null,
   environments: [
     {

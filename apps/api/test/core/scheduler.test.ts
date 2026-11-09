@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "bun:test";
+import { beforeEach, expect, spyOn, test } from "bun:test";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
 import { eq } from "drizzle-orm";
@@ -134,4 +134,37 @@ test("runNow is false for a missing or disabled schedule", () => {
   expect(sched.runNow("missing")).toBe(false);
   sched.upsert({ name: "d", jobType: "t", intervalSeconds: 900, enabled: false });
   expect(sched.runNow("d")).toBe(false);
+});
+
+test("one failing task does not stop the others and is retried in 60 s", () => {
+  const real = new JobQueue(db, clock);
+  const queue = {
+    enqueue: (
+      tx: Parameters<JobQueue["enqueue"]>[0],
+      input: Parameters<JobQueue["enqueue"]>[1],
+    ) => {
+      if (input.type === "boom") throw new Error("nope");
+      return real.enqueue(tx, input);
+    },
+  } as unknown as JobQueue;
+  const s = new SchedulerService(db, clock, queue);
+  s.upsert({ name: "a", jobType: "boom", intervalSeconds: 600 });
+  s.upsert({ name: "b", jobType: "ok", intervalSeconds: 600 });
+  const spy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(s.tick()).toBe(1);
+    expect(jobs().map((j) => j.type)).toEqual(["ok"]);
+    expect(spy.mock.calls).toEqual([["scheduler: task failed name=a error=Error"]]);
+    expect(task("a").nextRunAt).toBe("2026-11-05T10:21:00.000Z");
+    expect(s.tick()).toBe(0);
+    expect(spy.mock.calls.length).toBe(1);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("upsert clamps intervalSeconds to 7 days", () => {
+  sched.upsert({ name: "big", jobType: "t", intervalSeconds: 10_000_000 });
+  expect(task("big").intervalSeconds).toBe(604_800);
+  expect(() => sched.upsert({ name: "z", jobType: "t", intervalSeconds: 0 })).toThrow();
 });

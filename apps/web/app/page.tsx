@@ -109,15 +109,18 @@ import {
   skipUnreadablePage,
   startBackup,
   type UrgentItemDto,
+  unregisterRepository,
+  updateJiraSettings,
   updateLayout,
   updateMilestone,
 } from "../lib/api";
 import { backupStartMessage } from "../lib/backup";
-import { brainPaletteItems, projectRowId } from "../lib/brain";
+import { brainPaletteItems, projectRowId, removeErrorLabel } from "../lib/brain";
 import { codeAnswerErrorText, codeAnswerEventMessageId } from "../lib/code-answers";
 import { trailingDebounce } from "../lib/debounce";
 import { clearDraft } from "../lib/drafts";
 import { engineeringErrorText, isTerminal, lockText, type TaskSource } from "../lib/engineering";
+import { footerAddresses } from "../lib/format";
 import { conversationTitle, filterConversations, type InboxFilter } from "../lib/inbox";
 import { jiraPaletteItems, jiraRowId } from "../lib/jira";
 import {
@@ -169,6 +172,7 @@ import { People } from "./components/people/People";
 import { ProfileDrawer } from "./components/people/ProfileDrawer";
 import { useQueuedEvaluations } from "./components/people/useQueuedEvaluations";
 import { Sidebar } from "./components/shell/Sidebar";
+import { AwayReplySettings } from "./components/system/AwayReplySettings";
 import { ClaudeCodeCard } from "./components/system/ClaudeCodeCard";
 import { ClaudeSettings } from "./components/system/ClaudeSettings";
 import { Running } from "./components/system/Running";
@@ -178,8 +182,6 @@ import { NeedsYou } from "./components/triage/NeedsYou";
 import { BACKFILL_CARD_ID } from "./components/triage/SetupCards";
 import { useNeedsYouActions } from "./components/triage/useNeedsYouActions";
 import { useToast } from "./components/ui/Toasts";
-
-const FOOTER = { api: "127.0.0.1:7400", web: ":7401" };
 
 /** Highlights the section in view (spec D1): the first one crossing the top 40% of the viewport. */
 function useActiveSection(
@@ -709,6 +711,32 @@ export default function Dashboard() {
     await refresh();
   };
 
+  const chooseJiraSite = async (id: string) => {
+    try {
+      await updateJiraSettings({ cloudId: id });
+      toast.show("Jira site saved");
+    } catch (e) {
+      toast.show(
+        e instanceof ApiError && e.code === "unknown_site"
+          ? "That site is no longer offered — use Sync now"
+          : "Couldn't save the Jira site",
+      );
+    }
+    await refresh();
+  };
+
+  const removeRepository = async (id: string) => {
+    try {
+      await unregisterRepository(id);
+      toast.show("Repository removed");
+    } catch (e) {
+      toast.show(
+        e instanceof ApiError ? removeErrorLabel(e.code) : "Couldn't remove the repository",
+      );
+    }
+    await refresh();
+  };
+
   const proposeRepository = async (path: string) => {
     try {
       return { ok: true, proposal: await inspectRepositoryPath(path) } as const;
@@ -1136,6 +1164,7 @@ export default function Dashboard() {
           onSync={feed.handlers.syncJira}
           onGoToSetup={() => goTo("triage")}
           onCreateTask={feed.handlers.createTaskFromJira}
+          onChooseSite={(id) => void chooseJiraSite(id)}
         />
       </>
     ),
@@ -1150,6 +1179,7 @@ export default function Dashboard() {
           registerSignal={registerSignal}
           onInspectNow={(id) => void inspectNow(id)}
           onAcceptRemotes={(id) => void act(() => acceptCurrentRemotes(id))}
+          onRemove={(id) => void removeRepository(id)}
           onProposal={proposeRepository}
           onRegister={register}
           onAcceptFact={feed.handlers.acceptBrainFact}
@@ -1246,6 +1276,17 @@ export default function Dashboard() {
               });
           }}
         />
+        <AwayReplySettings
+          values={claudeSettings}
+          onChange={(key, value) => {
+            void putSettings({ [key]: value })
+              .then(setClaudeSettings)
+              .catch(() => {
+                toast.show("Could not save that setting");
+                void refresh();
+              });
+          }}
+        />
       </>
     ),
   };
@@ -1272,7 +1313,7 @@ export default function Dashboard() {
           setActive(section);
           navigateTo(section);
         }}
-        footer={{ ...FOOTER, lock: lockText(overview?.engineeringLock) }}
+        footer={{ addresses: footerAddresses(runtime), lock: lockText(overview?.engineeringLock) }}
       />
       <main className="syn-main">
         <div className="syn-main-inner">

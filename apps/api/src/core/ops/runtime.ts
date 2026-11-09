@@ -47,6 +47,7 @@ export interface RuntimeDeps {
   diskFree: (path: string) => number | null;
   backup: Pick<BackupService, "list" | "lastAttempt">;
   version: Promise<string | null>;
+  endpoints: RuntimeView["endpoints"];
 }
 
 /** The operational numbers behind the System Runtime panel (R5). Names, sizes and counts only. */
@@ -95,6 +96,7 @@ export class RuntimeService {
           : null,
       },
       retention: this.d.settings.get("ops.retention.lastRun"),
+      endpoints: this.d.endpoints,
     };
   }
 

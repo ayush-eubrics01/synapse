@@ -641,7 +641,7 @@ describe("slack.send executor", () => {
       expect(o?.failure).toBe(failure);
       const a = t.approval(approvalId);
       expect(a?.status).toBe("failed");
-      expect(a?.executionResult).toEqual({ error: `slack send failed: ${failure}` });
+      expect(a?.executionResult).toEqual({ error: failure });
       expect(t.fu()?.status).toBe("draft");
       expect(t.verifyJobs()).toHaveLength(0);
       expect(t.request().outgoingId).not.toBe(outgoingId);
@@ -670,7 +670,7 @@ describe("slack.send executor", () => {
     expect(o?.failure).toBe("not_started");
     expect(s.approval(approvalId)?.status).toBe("failed");
     expect(s.approval(approvalId)?.executionResult).toEqual({
-      error: "slack send failed: not_started",
+      error: "not_started",
     });
     expect(s.fu()?.status).toBe("draft");
     expect(s.verifyJobs()).toHaveLength(0);
@@ -739,7 +739,7 @@ describe("slack.send executor", () => {
     expect(t.out(outgoingId)?.status).toBe("sending");
     expect(t.approval(approvalId)?.status).toBe("failed");
     expect(t.approval(approvalId)?.executionResult).toEqual({
-      error: "slack send failed: outcome_unrecorded",
+      error: "outcome_unrecorded",
     });
     expect(logs.join("")).not.toContain("SECRET");
     flag.on = false;

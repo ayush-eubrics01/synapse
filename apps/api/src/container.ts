@@ -67,6 +67,7 @@ import {
   isDedicatedDataDir,
   type PrivateFilesResult,
 } from "./infrastructure/private-files";
+import { type CommandRunner, runCommand } from "./infrastructure/run-command";
 import { ClaudeCliProvider } from "./integrations/claude-code/cli-provider";
 import { loadUserSettings } from "./integrations/claude-code/settings-override";
 import { GitHubCliProvider } from "./integrations/github/gh-cli";
@@ -76,6 +77,7 @@ import { LocalGitProvider } from "./integrations/repository/local-git";
 import { SlackConnectorSource } from "./integrations/slack/connector-source";
 import { normaliseSentText, SlackSender } from "./integrations/slack/sender";
 import { runRootMasked } from "./intelligence/engineering/develop-prompt";
+import { autoSentOutgoingIds } from "./modules/auto-reply/read";
 import { AutoReplyService } from "./modules/auto-reply/service";
 import { WipReminders } from "./modules/claude-activity/reminders";
 import { ClaudeActivityService } from "./modules/claude-activity/service";
@@ -211,7 +213,7 @@ export interface ContainerDeps {
   clock?: Clock;
   /** Replaces the real ClaudeCliProvider (tests inject a fake). */
   provider?: AIProvider;
-  run?: (cmd: string[]) => Promise<string>;
+  run?: CommandRunner;
   /** Resolves a binary on the service PATH (tests inject one; defaults to Bun.which). */
   which?: (bin: string) => string | null;
   /** Registers the `test.noop` job handler (set from SYNAPSE_TEST_HANDLERS by main.ts). */
@@ -264,13 +266,6 @@ function defaultDiskFree(p: string): number | null {
   } catch {
     return null;
   }
-}
-
-async function runCommand(cmd: string[]): Promise<string> {
-  const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "ignore" });
-  const out = await new Response(proc.stdout).text();
-  await proc.exited;
-  return out;
 }
 
 export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Container {
@@ -379,6 +374,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     settings,
     urgent,
     normalise: normaliseSentText,
+    autoSent: (ids) => autoSentOutgoingIds(db, ids),
   });
   const people = new PeopleService({ db, clock, events, audit, settings });
   const securityFlags = new SecurityFlagsService({
@@ -581,7 +577,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     settings,
     conversationLabel: (tx, conv) => participantLabel(tx, conv, settings.get("slack.selfUserId")),
   });
-  const jira = new JiraService({ db, clock, settings, sync, store: jiraStore, queue });
+  const jira = new JiraService({ db, clock, settings, sync, store: jiraStore, queue, audit });
   registerJiraJobs({
     db,
     clock,
@@ -770,6 +766,7 @@ export function createContainer(config: AppConfig, deps: ContainerDeps = {}): Co
     diskFree,
     backup,
     version: readVersion(REPO_ROOT, run),
+    endpoints: { api: config.api, web: config.web },
   });
   const retention = new RetentionService({ db, sqlite, clock, settings, audit, integrity });
   registerOpsJobs({ db, handlers, scheduler, queue, settings, clock, backup, retention });

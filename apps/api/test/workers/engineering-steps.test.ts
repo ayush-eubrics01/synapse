@@ -1047,6 +1047,22 @@ describe("develop sandbox (ADR-040)", () => {
 });
 
 describe("happy path (E8–E15)", () => {
+  test("an approval executed while a step is in flight stores the code step_running", async () => {
+    const id = await developed();
+    const a = pendingOf("engineering.commit") as Approval;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    // biome-ignore lint/suspicious/noExplicitAny: reaches the private in-flight guard
+    const hold = (steps as any).track(id, () => gate) as Promise<void>;
+    approvals.approve(a.id);
+    const outcome = await approvals.execute(a.id);
+    release();
+    await hold;
+    expect(outcome).toEqual({ status: "failed", result: { error: "step_running" } });
+  });
+
   test("develop → commit → update → merge_local → push + PR → merge_pr → completed, cleaned, lock released", async () => {
     const id = await developed();
     const task = taskRow(id);

@@ -21,6 +21,8 @@ export interface ScheduleInput {
 }
 
 const { scheduledTasks, jobs } = schema;
+export const MAX_INTERVAL_SECONDS = 604_800;
+export const FAILED_TASK_RETRY_MS = 60_000;
 const LIVE_STATUSES = ["PENDING", "RETRY", "RUNNING"] as const;
 
 export class SchedulerService {
@@ -42,7 +44,8 @@ export class SchedulerService {
       throw new Error(`schedule ${s.name}: intervalSeconds must be a positive integer`);
     }
     if (s.cron !== undefined) new Cron(s.cron, { timezone: "UTC" }); // throws if invalid
-    const intervalSeconds = s.intervalSeconds ?? null;
+    const intervalSeconds =
+      s.intervalSeconds === undefined ? null : Math.min(s.intervalSeconds, MAX_INTERVAL_SECONDS);
     const cron = s.cron ?? null;
     const now = isoNow(this.clock);
     if (s.coalesce) this.coalesced.add(s.name);
@@ -118,47 +121,64 @@ export class SchedulerService {
       .all();
     let enqueued = 0;
     for (const task of due) {
-      const done = this.db.transaction(
-        (tx) => {
-          const fresh = tx
-            .select()
-            .from(scheduledTasks)
+      let done = false;
+      try {
+        done = this.db.transaction(
+          (tx) => {
+            const fresh = tx
+              .select()
+              .from(scheduledTasks)
+              .where(eq(scheduledTasks.id, task.id))
+              .get();
+            if (!fresh?.enabled || !fresh.nextRunAt || fresh.nextRunAt > now) return false;
+            const skip =
+              this.coalesced.has(fresh.name) &&
+              tx
+                .select({ id: jobs.id })
+                .from(jobs)
+                .where(and(eq(jobs.type, fresh.jobType), inArray(jobs.status, [...LIVE_STATUSES])))
+                .limit(1)
+                .all().length > 0;
+            if (!skip) {
+              this.queue.enqueue(tx, {
+                type: fresh.jobType,
+                input: fresh.input,
+                priority: fresh.priority,
+                idempotencyKey: `sched:${fresh.name}:${fresh.nextRunAt}`,
+              });
+            }
+            let next: Date | null;
+            if (fresh.cron) {
+              next = new Cron(fresh.cron, { timezone: "UTC" }).nextRun(nowDate);
+            } else {
+              next = new Date(nowDate.getTime() + (fresh.intervalSeconds ?? 0) * 1000);
+            }
+            tx.update(scheduledTasks)
+              .set({
+                nextRunAt: next ? next.toISOString() : null,
+                ...(skip ? {} : { lastRunAt: now }),
+              })
+              .where(eq(scheduledTasks.id, fresh.id))
+              .run();
+            return !skip;
+          },
+          { behavior: "immediate" },
+        );
+      } catch (e) {
+        console.error(
+          `scheduler: task failed name=${task.name} error=${e instanceof Error ? e.name : "unknown"}`,
+        );
+        try {
+          this.db
+            .update(scheduledTasks)
+            .set({ nextRunAt: new Date(nowDate.getTime() + FAILED_TASK_RETRY_MS).toISOString() })
             .where(eq(scheduledTasks.id, task.id))
-            .get();
-          if (!fresh?.enabled || !fresh.nextRunAt || fresh.nextRunAt > now) return false;
-          const skip =
-            this.coalesced.has(fresh.name) &&
-            tx
-              .select({ id: jobs.id })
-              .from(jobs)
-              .where(and(eq(jobs.type, fresh.jobType), inArray(jobs.status, [...LIVE_STATUSES])))
-              .limit(1)
-              .all().length > 0;
-          if (!skip) {
-            this.queue.enqueue(tx, {
-              type: fresh.jobType,
-              input: fresh.input,
-              priority: fresh.priority,
-              idempotencyKey: `sched:${fresh.name}:${fresh.nextRunAt}`,
-            });
-          }
-          let next: Date | null;
-          if (fresh.cron) {
-            next = new Cron(fresh.cron, { timezone: "UTC" }).nextRun(nowDate);
-          } else {
-            next = new Date(nowDate.getTime() + (fresh.intervalSeconds ?? 0) * 1000);
-          }
-          tx.update(scheduledTasks)
-            .set({
-              nextRunAt: next ? next.toISOString() : null,
-              ...(skip ? {} : { lastRunAt: now }),
-            })
-            .where(eq(scheduledTasks.id, fresh.id))
             .run();
-          return !skip;
-        },
-        { behavior: "immediate" },
-      );
+        } catch {
+          // best effort: the task stays due and is retried on the next tick
+        }
+        continue;
+      }
       if (done) enqueued++;
     }
     return enqueued;

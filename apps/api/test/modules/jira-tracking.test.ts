@@ -3,8 +3,10 @@ import type { SourceIssue } from "@synapse/contracts";
 import { openDatabase, runMigrations, schema } from "@synapse/database";
 import { FakeClock } from "@synapse/shared";
 import { eq } from "drizzle-orm";
+import { AuditLogger } from "../../src/core/audit/audit";
 import { SettingsService } from "../../src/core/config/settings";
 import { EventPublisher } from "../../src/core/events/publisher";
+import { jobsCheck } from "../../src/core/health/checks";
 import { JobQueue } from "../../src/core/jobs/queue";
 import { SyncStateService } from "../../src/modules/inbox/sync-state";
 import {
@@ -18,7 +20,11 @@ import {
   syncMinutes,
   withExclusions,
 } from "../../src/modules/jira-tracking/jql";
-import { JiraDisabled, JiraService } from "../../src/modules/jira-tracking/service";
+import {
+  JiraDisabled,
+  JiraService,
+  JiraUnknownSite,
+} from "../../src/modules/jira-tracking/service";
 import { JiraStore } from "../../src/modules/jira-tracking/store";
 
 const SCOPE = "assignee = currentUser() AND updated >= -60d";
@@ -159,6 +165,8 @@ const jobs = (type?: string) =>
     .all()
     .filter((j) => !type || j.type === type);
 
+let audit: AuditLogger;
+
 beforeEach(() => {
   db = openDatabase(":memory:").db;
   runMigrations(db);
@@ -168,7 +176,8 @@ beforeEach(() => {
   sync = new SyncStateService(db, clock);
   queue = new JobQueue(db, clock);
   store = new JiraStore({ db, clock, events, settings, timeZone: "UTC" });
-  service = new JiraService({ db, clock, settings, sync, store, queue });
+  audit = new AuditLogger(clock);
+  service = new JiraService({ db, clock, settings, sync, store, queue, audit });
 });
 
 describe("store", () => {
@@ -472,6 +481,7 @@ describe("service", () => {
       lastError: null,
       scopeJql: SCOPE,
       excludedProjects: [],
+      sites: [],
     });
     store.upsertPage([issue(1)], { setScope: true });
     db.transaction((tx) => {
@@ -626,6 +636,112 @@ describe("service", () => {
     ).toThrow();
     expect(() => service.updateSettings({ scopeJql: "a\nb" })).toThrow();
     expect(settings.get("jira.enabled")).toBe(false);
+    expect(jobs()).toHaveLength(0);
+  });
+});
+
+describe("choosing the site", () => {
+  const ID1 = "11111111-1111-4111-8111-111111111111";
+  const ID2 = "22222222-2222-4222-8222-222222222222";
+  const audits = () => db.select().from(schema.auditEvents).all();
+  const parked = () => {
+    settings.set("jira.enabled", true);
+    settings.set("jira.cloudIdCandidates", [
+      { id: ID1, name: "Demo site" },
+      { id: ID2, name: "Demo site 2" },
+    ]);
+    db.transaction((tx) =>
+      sync.update(tx, "jira.issues", {
+        lastError: { kind: "needs_attention", message: "multiple_sites" },
+      }),
+    );
+  };
+
+  test("a candidate is stored, the parked state cleared, jobs queued and one audit row written", () => {
+    parked();
+    expect(service.status().sites).toHaveLength(2);
+    const s = service.updateSettings({ cloudId: ID1 });
+    expect(settings.get("jira.cloudId")).toBe(ID1);
+    expect(settings.get("jira.cloudIdCandidates")).toEqual([]);
+    expect(s.lastError).toBeNull();
+    expect(s.sites).toEqual([]);
+    expect(jobs().map((j) => j.type)).toEqual(["jira.sync_incremental", "jira.reconcile"]);
+    const rows = audits();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      module: "jira",
+      action: "settings.updated",
+      details: { keys: ["jira.cloudId"] },
+    });
+    expect(JSON.stringify(rows)).not.toContain("Demo site");
+  });
+
+  test("choosing a site resolves the parked lookup job; the health jobs check reads ok", async () => {
+    parked();
+    db.insert(schema.jobs)
+      .values({
+        id: "j-park",
+        type: "jira.resolve_cloud_id",
+        status: "NEEDS_ATTENTION",
+        idempotencyKey: "k-park",
+        priority: 100,
+        attempts: 1,
+        maxAttempts: 3,
+        runAfter: "2026-11-06T12:00:00.000Z",
+        createdAt: "2026-11-06T12:00:00.000Z",
+        updatedAt: "2026-11-06T12:00:00.000Z",
+      } as typeof schema.jobs.$inferInsert)
+      .run();
+    expect((await jobsCheck(db, clock)()).status).toBe("degraded");
+    service.updateSettings({ cloudId: ID1 });
+    const park = db.select().from(schema.jobs).where(eq(schema.jobs.id, "j-park")).get();
+    expect(park?.status).toBe("CANCELLED");
+    expect(park?.finishedAt).not.toBeNull();
+    expect(
+      db
+        .select()
+        .from(schema.jobs)
+        .all()
+        .some((j) => j.status === "NEEDS_ATTENTION"),
+    ).toBe(false);
+    expect(await jobsCheck(db, clock)()).toEqual({ status: "ok" });
+  });
+
+  test("an id outside the stored candidates is refused and nothing is written", () => {
+    parked();
+    expect(() =>
+      service.updateSettings({ cloudId: "0f0f0f0f-0000-0000-0000-00000000dead" }),
+    ).toThrow(JiraUnknownSite);
+    expect(settings.get("jira.cloudId")).toBeNull();
+    expect(settings.get("jira.cloudIdCandidates")).toHaveLength(2);
+    expect(service.status().lastError).toBe("multiple_sites");
+    expect(jobs()).toHaveLength(0);
+    expect(audits()).toHaveLength(0);
+  });
+
+  test("with no stored candidates any well-formed id is accepted", () => {
+    settings.set("jira.enabled", true);
+    service.updateSettings({ cloudId: ID1 });
+    expect(settings.get("jira.cloudId")).toBe(ID1);
+  });
+
+  test("changing a set cloudId resets the checkpoint and queues a fresh reconcile", () => {
+    settings.set("jira.enabled", true);
+    settings.set("jira.cloudId", ID1);
+    db.transaction((tx) =>
+      sync.update(tx, "jira.issues", { checkpoint: "2026-11-06T10:00:00.000Z" }),
+    );
+    service.updateSettings({ cloudId: ID2 });
+    expect(settings.get("jira.cloudId")).toBe(ID2);
+    expect(sync.get("jira.issues").checkpoint).toBeNull();
+    expect(jobs("jira.reconcile")).toHaveLength(1);
+  });
+
+  test("the same id is a no-op", () => {
+    settings.set("jira.enabled", true);
+    settings.set("jira.cloudId", ID1);
+    service.updateSettings({ cloudId: ID1 });
+    expect(audits()).toHaveLength(0);
     expect(jobs()).toHaveLength(0);
   });
 });

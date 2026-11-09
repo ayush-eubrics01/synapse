@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { RuntimeView } from "@synapse/contracts";
 import { renderToString } from "react-dom/server";
 import { Sidebar } from "../app/components/shell/Sidebar";
 import { Avatar } from "../app/components/ui/Avatar";
@@ -9,11 +10,15 @@ import { nextSegmentedValue, Segmented } from "../app/components/ui/Segmented";
 import { Switch } from "../app/components/ui/Switch";
 import { ToastProvider, Toasts, useToast } from "../app/components/ui/Toasts";
 import { hueFor } from "../lib/avatar";
+import { footerAddresses } from "../lib/format";
 import { sidebarItems } from "../lib/nav";
 
-const footer = { api: "127.0.0.1:7400", web: ":7401", lock: "not in use yet" };
+const footer = {
+  addresses: { api: "127.0.0.1:7400", web: ":7401" },
+  lock: "not in use yet",
+};
 
-const sidebar = (count: number) =>
+const sidebar = (count: number, f: Parameters<typeof Sidebar>[0]["footer"] = footer) =>
   renderToString(
     <Sidebar
       items={[
@@ -22,7 +27,7 @@ const sidebar = (count: number) =>
       ]}
       active="triage"
       onGo={() => {}}
-      footer={footer}
+      footer={f}
     />,
   );
 
@@ -48,6 +53,24 @@ test("Sidebar footer shows the endpoints and the lock text as given", () => {
   expect(html).toContain("not in use yet");
   expect(html).toContain("Dark");
   expect(html).toContain("Light");
+});
+
+test("Sidebar footer omits api and web when the addresses are unavailable", () => {
+  const html = sidebar(1, { addresses: null, lock: "free" });
+  expect(html).not.toContain("7400");
+  expect(html).not.toContain("<dt>api");
+  expect(html).not.toContain("<dt>web");
+  expect(html).toContain("eng lock");
+});
+
+test("footerAddresses reads the runtime endpoints, brackets IPv6, and is null without a runtime", () => {
+  const view = (host: string) =>
+    ({
+      endpoints: { api: { host, port: 7400 }, web: { host: "127.0.0.1", port: 7401 } },
+    }) as unknown as RuntimeView;
+  expect(footerAddresses(view("127.0.0.1"))).toEqual({ api: "127.0.0.1:7400", web: ":7401" });
+  expect(footerAddresses(view("::1"))?.api).toBe("[::1]:7400");
+  expect(footerAddresses(null)).toBeNull();
 });
 
 test("Switch disabled renders an unchecked, aria-disabled switch with its hint", () => {
