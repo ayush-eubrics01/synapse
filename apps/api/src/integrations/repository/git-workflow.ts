@@ -233,7 +233,8 @@ function realKey(p: string): string {
 
 /**
  * Reads a config file once (hash and parse the same bytes). Special files (a FIFO, device or
- * directory) are never opened: the marker is `special`. A regular file over INCLUDE_FILE_MAX
+ * directory) are refused before open (marker `special`); a file swapped in between stat and open is
+ * opened non-blocking and refused by fstat. A regular file over INCLUDE_FILE_MAX
  * is hashed in full, marker `<sha>:too_large_unparsed` (its includes are not parsed); never throws.
  */
 function loadConfig(path: string): LoadedConfig {

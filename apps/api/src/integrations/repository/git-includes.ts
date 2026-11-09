@@ -37,6 +37,8 @@ function parseValue(raw: string): string {
       continue;
     }
     if (!quoted && (c === ";" || c === "#")) break;
+    // Like git: unquoted space and tab are skipped while the value is still empty.
+    if (!quoted && out === "" && (c === " " || c === "\t")) continue;
     out += c;
     if (quoted || (c !== " " && c !== "\t")) end = out.length;
   }

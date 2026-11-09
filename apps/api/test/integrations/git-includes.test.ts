@@ -74,4 +74,18 @@ describe("includeTargets", () => {
       expect(t("[include]\npath = a.cfg \t\n")).toEqual(["/home/u/r/.git/a.cfg"]);
     });
   });
+  describe("leading whitespace after a continuation is skipped while the value is empty (git oracle values)", () => {
+    test("space then continuation, spaces on the next line", () => {
+      expect(t("[include]\npath = \\\n  lead.cfg\n")).toEqual(["/home/u/r/.git/lead.cfg"]);
+    });
+    test("tab on the next line", () => {
+      expect(t("[include]\npath = \\\n\tlead2.cfg\n")).toEqual(["/home/u/r/.git/lead2.cfg"]);
+    });
+    test("no space before the continuation", () => {
+      expect(t("[include]\npath =\\\n  lead3.cfg\n")).toEqual(["/home/u/r/.git/lead3.cfg"]);
+    });
+    test("two continuations in a row", () => {
+      expect(t("[include]\npath = \\\n\\\n  lead5.cfg\n")).toEqual(["/home/u/r/.git/lead5.cfg"]);
+    });
+  });
 });
